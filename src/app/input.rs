@@ -104,6 +104,7 @@ impl App {
                     self.mode = Mode::Normal;
                 }
             }
+            Command::NextAttention => self.next_attention(),
         }
         // The sidebar may have come or gone.
         self.report(|app| app.relayout());

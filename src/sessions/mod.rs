@@ -142,6 +142,8 @@ pub struct Session {
     pub updated: u64,
     /// Branches the main agent worked on, oldest first.
     pub tasks: Vec<Task>,
+    /// When a hook event last set the state (ms since the epoch).
+    pub hooked: Option<u64>,
 }
 
 impl Session {
@@ -153,9 +155,14 @@ impl Session {
             state: State::Unknown,
             updated: 0,
             tasks: Vec::new(),
+            hooked: None,
         }
     }
 }
+
+/// How long (ms) a hook event's state holds against `claude agents --json`,
+/// which can lag behind it by a poll or so.
+pub const HOOK_GRACE: u64 = 4_000;
 
 #[derive(Debug, Default)]
 pub struct Sessions {
@@ -182,6 +189,7 @@ impl Sessions {
         if let Some(state) = state_after(r) {
             s.state = state;
             s.updated = r.ts;
+            s.hooked = Some(r.ts);
         }
         if let (Some(branch), Some(cwd), None) = (&r.branch, &r.cwd, &r.agent_id) {
             match s.tasks.iter_mut().find(|t| t.branch == *branch) {
@@ -196,7 +204,8 @@ impl Sessions {
 
     /// Fold in a `claude agents --json` snapshot taken at `taken` (ms). It
     /// catches what hooks miss (an Esc interrupt fires no Stop) and finds
-    /// sessions no hook reported, but never overrides a newer hook event.
+    /// sessions no hook reported, but never overrides a newer hook event, nor
+    /// one less than [`HOOK_GRACE`] older.
     pub fn reconcile(&mut self, taken: u64, agents: &[Agent]) {
         for a in agents {
             let known = self
@@ -211,13 +220,15 @@ impl Sessions {
                 .by_pane
                 .entry(pane)
                 .or_insert_with(|| Session::new(Some(a.session_id.clone())));
-            if taken <= s.updated {
-                if s.session_id.as_deref() == Some(a.session_id.as_str()) {
+            let same = s.session_id.as_deref() == Some(a.session_id.as_str());
+            let fresh_hook = same && s.hooked.is_some_and(|h| taken <= h + HOOK_GRACE);
+            if taken <= s.updated || fresh_hook {
+                if same {
                     s.name.clone_from(&a.name);
                 }
                 continue;
             }
-            if s.session_id.as_deref() != Some(a.session_id.as_str()) {
+            if !same {
                 *s = Session::new(Some(a.session_id.clone()));
             }
             if s.cwd.is_none() {
@@ -358,7 +369,21 @@ mod tests {
         let mut s = Sessions::default();
         s.apply(&rec("UserPromptSubmit", 10));
         // The user pressed Esc: no Stop, but claude reports idle.
-        s.reconcile(20, &[agent(S1, "idle", None)]);
+        s.reconcile(10 + HOOK_GRACE + 1, &[agent(S1, "idle", None)]);
+        assert_eq!(state(&s), State::Idle);
+    }
+
+    #[test]
+    fn a_snapshot_right_after_a_hook_does_not_override_it() {
+        let mut s = Sessions::default();
+        s.apply(&rec("Stop", 10_000));
+        // `claude agents` still says busy a poll after Stop.
+        s.reconcile(13_000, &[agent(S1, "busy", None)]);
+        assert_eq!(state(&s), State::Idle);
+        // Once the hook is old, snapshots correct each other every poll.
+        s.reconcile(10_000 + HOOK_GRACE + 1, &[agent(S1, "busy", None)]);
+        assert_eq!(state(&s), State::Running);
+        s.reconcile(10_000 + HOOK_GRACE + 2, &[agent(S1, "idle", None)]);
         assert_eq!(state(&s), State::Idle);
     }
 

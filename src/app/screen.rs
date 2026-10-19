@@ -1,11 +1,12 @@
 //! The outer terminal paddock runs in: raw mode, alternate screen, mouse,
-//! bracketed paste and kitty key disambiguation, restored on drop (and so also
-//! when paddock fails).
+//! bracketed paste, focus reports and kitty key disambiguation, restored on
+//! drop (and so also when paddock fails).
 
 use anyhow::Result;
 use crossterm::event::{
-    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
+    EnableFocusChange, EnableMouseCapture, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+    PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -29,6 +30,7 @@ impl ScreenGuard {
             EnterAlternateScreen,
             EnableMouseCapture,
             EnableBracketedPaste,
+            EnableFocusChange,
             PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
         )?;
         let mut screen = ratatui::Terminal::new(CrosstermBackend::new(stdout()))?;
@@ -43,6 +45,7 @@ impl Drop for ScreenGuard {
         let _ = execute!(
             stdout(),
             PopKeyboardEnhancementFlags,
+            DisableFocusChange,
             DisableBracketedPaste,
             DisableMouseCapture,
             LeaveAlternateScreen

@@ -3,13 +3,24 @@
 //! right), with a border on its right edge.
 
 use crate::app::{Row, TaskRow};
+use crate::sessions::State;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 
 const TITLE: &str = "sessions";
 /// Rows above the first session row (the title).
 const FIRST_ROW: u16 = 1;
+
+/// How a row (or a tab holding it) in `state` stands out, in the terminal's
+/// own ANSI colours: strongly while waiting, softly while idle.
+pub fn highlight(state: State) -> Style {
+    match state {
+        State::Waiting => Style::default().fg(Color::Black).bg(Color::Yellow),
+        State::Idle => Style::default().fg(Color::Green),
+        State::Running | State::Stopped | State::Unknown => Style::default(),
+    }
+}
 
 /// Draw `rows` into `area`; `selected` is the focused row's pane, if focused.
 pub fn render(rows: &[Row], selected: Option<&str>, area: Rect, buf: &mut Buffer) {
@@ -28,11 +39,11 @@ pub fn render(rows: &[Row], selected: Option<&str>, area: Rect, buf: &mut Buffer
         let (text, style) = match task {
             None if selected == Some(row.pane.as_str()) => (
                 spread(1, &row.label, row.state.label(), width),
-                Style::default().add_modifier(Modifier::REVERSED),
+                highlight(row.state).add_modifier(Modifier::REVERSED),
             ),
             None => (
                 spread(1, &row.label, row.state.label(), width),
-                Style::default(),
+                highlight(row.state),
             ),
             Some(t) => (spread(2, &t.branch, &fields(t), width), Style::default()),
         };
@@ -102,7 +113,6 @@ fn spread(indent: usize, left: &str, right: &str, width: usize) -> String {
 mod tests {
     use super::*;
     use crate::git::Status;
-    use crate::sessions::State;
 
     fn row(label: &str, state: State) -> Row {
         Row {
@@ -221,5 +231,25 @@ mod tests {
         api.tasks = vec![task("feat/login", None, None)];
         render(&[api], None, area, &mut buf);
         assert_eq!(text(&buf, 1), " api           running │");
+    }
+
+    #[test]
+    fn waiting_rows_stand_out_strongly_and_idle_rows_softly() {
+        let area = Rect::new(0, 0, 16, 4);
+        let mut buf = Buffer::empty(area);
+        let rows = [
+            row("w", State::Waiting),
+            row("i", State::Idle),
+            row("r", State::Running),
+        ];
+        render(&rows, Some("%w"), area, &mut buf);
+        let (waiting, idle, running) = (&buf[(1, 1)], &buf[(1, 2)], &buf[(1, 3)]);
+        assert_eq!((waiting.fg, waiting.bg), (Color::Black, Color::Yellow));
+        assert!(
+            waiting.modifier.contains(Modifier::REVERSED),
+            "still selected"
+        );
+        assert_eq!((idle.fg, idle.bg), (Color::Green, Color::Reset));
+        assert_eq!((running.fg, running.bg), (Color::Reset, Color::Reset));
     }
 }

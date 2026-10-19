@@ -1,5 +1,7 @@
 //! The tab bar: one row above the terminals.
 
+use super::sidebar::highlight;
+use crate::sessions::State;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Modifier, Style};
@@ -12,6 +14,8 @@ pub struct TabBar<'a> {
     pub rename: Option<&'a str>,
     /// Shown at the right: a message, or the prefix while it is armed.
     pub status: Option<&'a str>,
+    /// The most urgent session state in each tab, for highlights.
+    pub states: Vec<State>,
 }
 
 /// Label of tab `index` (0-based) as drawn: `1:name`.
@@ -72,11 +76,10 @@ impl TabBar<'_> {
         let mut x = row.x;
         for (i, name) in self.names.iter().enumerate() {
             let text = cell(i, name);
-            let style = if i == self.current {
-                Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
-            } else {
-                Style::default()
-            };
+            let mut style = highlight(self.states.get(i).copied().unwrap_or(State::Unknown));
+            if i == self.current {
+                style = style.add_modifier(Modifier::REVERSED | Modifier::BOLD);
+            }
             let left = usize::from(row.right().saturating_sub(x));
             if left == 0 {
                 break;
@@ -90,6 +93,7 @@ impl TabBar<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::style::Color;
 
     fn draw(bar: &TabBar, width: u16) -> (Buffer, Option<Position>) {
         let area = Rect::new(0, 0, width, 1);
@@ -112,7 +116,22 @@ mod tests {
             current,
             rename: None,
             status: None,
+            states: vec![],
         }
+    }
+
+    #[test]
+    fn tabs_holding_sessions_that_need_you_stand_out() {
+        let b = TabBar {
+            states: vec![State::Waiting, State::Idle, State::Running],
+            ..bar(vec!["w", "i", "r"], 1)
+        };
+        let (buf, _) = draw(&b, 30);
+        let (waiting, idle, running) = (&buf[(1, 0)], &buf[(6, 0)], &buf[(11, 0)]);
+        assert_eq!((waiting.fg, waiting.bg), (Color::Black, Color::Yellow));
+        assert_eq!(idle.fg, Color::Green);
+        assert!(idle.modifier.contains(Modifier::REVERSED), "still current");
+        assert_eq!((running.fg, running.bg), (Color::Reset, Color::Reset));
     }
 
     #[test]

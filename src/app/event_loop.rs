@@ -1,5 +1,6 @@
 //! The main loop: feed terminal output, route input, redraw at most once a frame.
 
+use super::attention::tab_states;
 use super::input::Flow;
 use super::layout::Split;
 use super::screen::Screen;
@@ -108,9 +109,7 @@ fn handle(app: &mut App, event: Event, screen: &mut Screen) -> Result<(Flow, boo
         }
         Event::Tmux { .. } => return Ok((Flow::Continue, false)),
         Event::Hooks(records) => {
-            for r in &records {
-                app.sessions.apply(r);
-            }
+            app.hooks(&records);
             app.relayout()?;
             Flow::Continue
         }
@@ -134,6 +133,14 @@ fn handle(app: &mut App, event: Event, screen: &mut Screen) -> Result<(Flow, boo
             screen.autoresize()?;
             Flow::Continue
         }
+        Event::Input(ct::Event::FocusGained) => {
+            app.attention.window_focused = true;
+            return Ok((Flow::Continue, false));
+        }
+        Event::Input(ct::Event::FocusLost) => {
+            app.attention.window_focused = false;
+            return Ok((Flow::Continue, false));
+        }
         Event::Input(_) => return Ok((Flow::Continue, false)),
         Event::Detach => Flow::Quit,
     };
@@ -143,6 +150,7 @@ fn handle(app: &mut App, event: Event, screen: &mut Screen) -> Result<(Flow, boo
 fn draw(screen: &mut Screen, app: &App) -> Result<()> {
     screen.draw(|f| {
         let full = f.area();
+        let rows = app.rows();
         let side = app.sidebar_width().min(full.width);
         if side > 0 {
             let selected = match &app.mode {
@@ -153,7 +161,7 @@ fn draw(screen: &mut Screen, app: &App) -> Result<()> {
                 width: side,
                 ..full
             };
-            sidebar::render(&app.rows(), selected, side_area, f.buffer_mut());
+            sidebar::render(&rows, selected, side_area, f.buffer_mut());
         }
         let area = Rect {
             x: full.x + side,
@@ -185,6 +193,7 @@ fn draw(screen: &mut Screen, app: &App) -> Result<()> {
                 _ => None,
             },
             status: ask.as_deref().or(app.notice.as_deref()).or(armed),
+            states: tab_states(&rows, app.tabs.iter().count()),
         };
         let bar_cursor = bar.render(bar_area, f.buffer_mut());
         let mut term_cursor = None;

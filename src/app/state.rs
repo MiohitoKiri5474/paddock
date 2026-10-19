@@ -5,6 +5,7 @@
 //! A tab's name is the tmux session name of its first terminal, so it
 //! survives reattaching; when that terminal ends, the next one names the tab.
 
+use super::attention::Attention;
 use super::layout::{terminal_size, Layout};
 use super::mouse::Press;
 use super::saved;
@@ -94,6 +95,7 @@ pub struct App {
     pub(super) sidebar_hidden: bool,
     /// Where the held mouse button went, until it is released.
     pub(super) press: Option<Press>,
+    pub(super) attention: Attention,
 }
 
 /// The part of a screen of `(cols, rows)` that shows the current tab's
@@ -195,6 +197,7 @@ impl App {
             task_status: TaskStatus::new(),
             sidebar_hidden: false,
             press: None,
+            attention: Attention::from_env(),
         };
         let sessions = app.server.sessions();
         let saved = saved::load(&app.state_dir).unwrap_or_else(|e| {

@@ -48,6 +48,7 @@ impl Sandbox {
         std::fs::write(root.path().join("home/.zshrc"), rc).expect("zshrc");
         write_claude_stub(root.path());
         write_copy_stub(root.path());
+        write_osascript_stub(root.path());
         Self { root }
     }
 
@@ -78,6 +79,7 @@ impl Sandbox {
             ("TERM_PROGRAM".into(), "leaky-terminal".into()),
             // As if launched from inside someone's tmux pane.
             ("TMUX".into(), "/tmp/nope,1,0".into()),
+            ("PADDOCK_OSASCRIPT".into(), p("bin/osascript")),
         ]
     }
 
@@ -184,6 +186,31 @@ impl Sandbox {
         assert_eq!(self.clipboard().as_deref(), Some(text), "clipboard");
     }
 
+    /// Messages of the notifications shown so far, oldest first.
+    pub fn notifications(&self) -> Vec<String> {
+        std::fs::read_to_string(self.path("notifications.log"))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// Wait until `n` notifications were shown, then a little longer so a
+    /// late extra one is caught too, and return them all.
+    pub fn wait_for_notifications(&self, n: usize) -> Vec<String> {
+        let start = Instant::now();
+        while self.notifications().len() < n {
+            assert!(
+                start.elapsed() < TIMEOUT,
+                "notifications: {:?}",
+                self.notifications()
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        std::thread::sleep(Duration::from_millis(300));
+        self.notifications()
+    }
+
     /// A format evaluated by the sandbox's tmux server, trimmed.
     pub fn display(&self, target: &str, format: &str) -> String {
         self.tmux(&["display-message", "-p", "-t", target, format])
@@ -249,6 +276,21 @@ fn write_copy_stub(root: &std::path::Path) {
     );
     let path = root.join("bin/copy");
     std::fs::write(&path, script).expect("copy stub");
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod stub");
+}
+
+/// An `osascript` that appends each notification's message (its last
+/// argument) to `notifications.log` in the sandbox, so tests never show real
+/// notifications. paddock is pointed at it by path and finds it first on
+/// `PATH` too.
+fn write_osascript_stub(root: &std::path::Path) {
+    let script = format!(
+        "#!/bin/sh\nfor a in \"$@\"; do last=\"$a\"; done\nprintf '%s\\n' \"$last\" >> '{}/notifications.log'\n",
+        root.display()
+    );
+    let path = root.join("bin/osascript");
+    std::fs::write(&path, script).expect("osascript stub");
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod stub");
 }
@@ -431,6 +473,13 @@ impl Paddock {
 
     pub fn screen(&self) -> String {
         self.screen.lock().expect("screen lock").screen().contents()
+    }
+
+    /// Foreground and background colour of the cell at (row, col), 0-based.
+    pub fn colors(&self, row: u16, col: u16) -> (vt100::Color, vt100::Color) {
+        let parser = self.screen.lock().expect("screen lock");
+        let cell = parser.screen().cell(row, col).expect("cell on screen");
+        (cell.fgcolor(), cell.bgcolor())
     }
 
     pub fn rows(&self) -> Vec<String> {

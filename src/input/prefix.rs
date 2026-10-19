@@ -26,6 +26,8 @@ pub enum Command {
     Detach,
     FocusSidebar,
     ToggleSidebar,
+    /// Jump to the next session that is waiting or idle.
+    NextAttention,
 }
 
 /// A direction to move focus in.
@@ -60,6 +62,7 @@ pub const BINDINGS: &[(&str, &str)] = &[
     ("f", "fork Claude into a new tab"),
     ("s", "focus sidebar (j/k, Enter jumps, Esc back)"),
     ("b", "show or hide sidebar"),
+    ("a", "next session that needs you"),
     ("d", "detach: quit, terminals keep running"),
     ("?", "this help"),
 ];
@@ -96,6 +99,7 @@ fn command(key: &KeyEvent) -> Option<Command> {
         'd' => Command::Detach,
         's' => Command::FocusSidebar,
         'b' => Command::ToggleSidebar,
+        'a' => Command::NextAttention,
         _ => return None,
     })
 }
@@ -227,6 +231,10 @@ mod tests {
         assert_eq!(
             after_prefix('b', none),
             KeyAction::Command(Command::ToggleSidebar)
+        );
+        assert_eq!(
+            after_prefix('a', none),
+            KeyAction::Command(Command::NextAttention)
         );
     }
 

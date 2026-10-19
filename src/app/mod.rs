@@ -1,6 +1,7 @@
 //! The running app: connect to the hidden server, show its terminals as tabs,
 //! and pass input to the current one until the user detaches.
 
+mod attention;
 mod event_loop;
 mod input;
 mod layout;
