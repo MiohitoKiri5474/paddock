@@ -101,7 +101,9 @@ fn pipe_splits_side_by_side_into_a_new_terminal() {
 
     wait_for_sizes(&sandbox, &["terminal-1 50x29", "terminal-2 49x29"]);
     p.wait_for_tabs(&["1:terminal-1"]);
-    assert_eq!(cols(&p.rows()[1], V_BORDER, V_BORDER + 1), "│");
+    p.wait_for("vertical border", |_| {
+        cols(&p.rows()[1], V_BORDER, V_BORDER + 1) == "│"
+    });
     p.type_line("echo typed-into-the-new-split");
     wait_in_region(&p, "typed-into-the-new-split", ALL_ROWS, RIGHT);
     assert!(!in_region(&p, "typed-into-the-new-split", ALL_ROWS, LEFT));
@@ -115,7 +117,9 @@ fn minus_splits_top_and_bottom() {
     p.command(b"-");
 
     wait_for_sizes(&sandbox, &["terminal-1 100x14", "terminal-2 100x14"]);
-    assert!(p.rows()[H_BORDER].starts_with("────"), "{}", p.screen());
+    p.wait_for("horizontal border", |_| {
+        p.rows()[H_BORDER].starts_with("────")
+    });
     p.type_line("echo typed-below");
     wait_in_region(&p, "typed-below", (H_BORDER + 1, 30), (0, 100));
     assert!(!in_region(&p, "typed-below", (1, H_BORDER), (0, 100)));
@@ -241,7 +245,9 @@ fn the_layout_is_restored_after_detach_and_relaunch() {
     again.wait_for_current_tab("1:work");
     assert_eq!(sizes(&sandbox), before, "same terminals at the same sizes");
     wait_in_region(&again, PROMPT, (H_BORDER + 1, 30), RIGHT);
-    assert_eq!(cols(&again.rows()[1], V_BORDER, V_BORDER + 1), "│");
+    again.wait_for("vertical border", |_| {
+        cols(&again.rows()[1], V_BORDER, V_BORDER + 1) == "│"
+    });
     again.type_line("echo focus-restored");
     wait_in_region(&again, "focus-restored", (1, H_BORDER), RIGHT);
 }
