@@ -2,6 +2,7 @@
 
 mod app;
 mod config;
+mod git;
 mod hooks;
 mod input;
 mod instance;

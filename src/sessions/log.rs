@@ -39,6 +39,8 @@ pub fn record(event: &str, pane: &str, payload: &str, ts: u64) -> HookRecord {
         source: field("source"),
         notification_type: field("notification_type"),
         agent_id: field("agent_id"),
+        tool_name: field("tool_name"),
+        branch: None,
         ts,
     }
 }
@@ -117,8 +119,11 @@ mod tests {
     #[test]
     fn records_keep_only_what_paddock_uses() {
         let payload = r#"{"session_id":"s","cwd":"/r","hook_event_name":"Notification",
-            "notification_type":"permission_prompt","message":"big","agent_id":"a"}"#;
+            "notification_type":"permission_prompt","message":"big","agent_id":"a",
+            "tool_name":"Bash"}"#;
         let r = record("Notification", "%1", payload, 7);
+        assert_eq!(r.tool_name.as_deref(), Some("Bash"));
+        assert_eq!(r.branch, None, "the hook reads git, not the payload");
         assert_eq!(r.session_id.as_deref(), Some("s"));
         assert_eq!(r.notification_type.as_deref(), Some("permission_prompt"));
         assert_eq!(r.agent_id.as_deref(), Some("a"));

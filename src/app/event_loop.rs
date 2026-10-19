@@ -4,19 +4,46 @@ use super::input::Flow;
 use super::layout::Split;
 use super::screen::Screen;
 use super::state::{session_area, App, Mode, TAB_BAR_ROWS};
-use super::Event;
+use super::{watch, Event};
 use crate::tmux::Message;
 use crate::ui::{help, session_view, sidebar, tab_bar::TabBar};
 use anyhow::Result;
 use crossterm::event::{self as ct, KeyEventKind};
 use ratatui::layout::Rect;
-use std::sync::mpsc::{Receiver, RecvTimeoutError};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
 /// Minimum time between two draws (about 60 frames a second).
 const FRAME: Duration = Duration::from_millis(16);
 
-pub fn run(screen: &mut Screen, mut app: App, rx: &Receiver<Event>) -> Result<()> {
+/// Tells the git thread which task rows are on screen.
+struct GitFeed {
+    tx: Sender<watch::Tasks>,
+    sent: watch::Tasks,
+}
+
+impl GitFeed {
+    /// Send the tasks on screen if they changed, or always if `now`.
+    fn update(&mut self, app: &App, now: bool) {
+        let tasks = app.visible_tasks();
+        if now || tasks != self.sent {
+            // The thread only ends with the app.
+            let _ = self.tx.send(tasks.clone());
+            self.sent = tasks;
+        }
+    }
+}
+
+pub fn run(
+    screen: &mut Screen,
+    mut app: App,
+    rx: &Receiver<Event>,
+    git: Sender<watch::Tasks>,
+) -> Result<()> {
+    let mut git = GitFeed {
+        tx: git,
+        sent: Vec::new(),
+    };
     let mut dirty = true;
     let mut last_draw = Instant::now()
         .checked_sub(FRAME)
@@ -40,8 +67,15 @@ pub fn run(screen: &mut Screen, mut app: App, rx: &Receiver<Event>) -> Result<()
                 Err(_) => break,
             }
         };
+        // Hook events refresh git; anything else but terminal output and git
+        // itself may change which task rows are on screen.
+        let hooks = matches!(event, Event::Hooks(_));
+        let rows_may_move = !matches!(event, Event::Tmux { .. } | Event::Git(_));
         let (flow, changed) = handle(&mut app, event, screen)?;
         dirty |= changed;
+        if rows_may_move {
+            git.update(&app, hooks);
+        }
         if flow == Flow::Quit {
             break;
         }
@@ -83,6 +117,10 @@ fn handle(app: &mut App, event: Event, screen: &mut Screen) -> Result<(Flow, boo
         Event::Agents(taken, agents) => {
             app.sessions.reconcile(taken, &agents);
             app.relayout()?;
+            Flow::Continue
+        }
+        Event::Git(read) => {
+            app.task_status.extend(read);
             Flow::Continue
         }
         Event::Input(ct::Event::Key(key)) if key.kind != KeyEventKind::Release => app.key(key)?,

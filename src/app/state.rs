@@ -11,6 +11,7 @@ use super::saved;
 use super::tabs::Tabs;
 use super::Event;
 use crate::config::{key_name, Config};
+use crate::git::Status;
 use crate::input::PrefixKeys;
 use crate::sessions::{self, Session, Sessions, State};
 use crate::terminal::Terminal;
@@ -53,7 +54,21 @@ pub struct Row {
     pub tab: usize,
     pub label: String,
     pub state: State,
+    pub tasks: Vec<TaskRow>,
 }
+
+/// One task row, under its session row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskRow {
+    pub branch: String,
+    /// The directory git status is read in.
+    pub cwd: String,
+    /// `None` until git has been read.
+    pub status: Option<Status>,
+}
+
+/// Last known git status of each task, by `(directory, branch)`.
+pub type TaskStatus = HashMap<(String, String), Status>;
 
 pub struct App {
     pub(super) server: Server,
@@ -74,6 +89,7 @@ pub struct App {
     /// Where the layout is saved.
     pub(super) state_dir: PathBuf,
     pub(super) sessions: Sessions,
+    pub(super) task_status: TaskStatus,
     /// The user hid the sidebar (`C-a b`).
     pub(super) sidebar_hidden: bool,
     /// Where the held mouse button went, until it is released.
@@ -107,19 +123,36 @@ pub struct Placed<'a> {
     pub pane: &'a str,
 }
 
-/// Session rows of the given terminals, sorted by state, then by tab.
-pub fn rows<'a>(sessions: &Sessions, terminals: impl IntoIterator<Item = Placed<'a>>) -> Vec<Row> {
+/// Session rows of the given terminals, sorted by state, then by tab, each
+/// with its task rows.
+pub fn rows<'a>(
+    sessions: &Sessions,
+    status: &TaskStatus,
+    terminals: impl IntoIterator<Item = Placed<'a>>,
+) -> Vec<Row> {
     let mut rows: Vec<Row> = terminals
         .into_iter()
         .filter_map(|t| {
             let s = sessions.get(t.pane)?;
             let tab_name = (!is_default_name(t.tab_name)).then_some(t.tab_name);
+            let tasks = s
+                .tasks
+                .iter()
+                .map(|task| TaskRow {
+                    branch: task.branch.clone(),
+                    cwd: task.cwd.clone(),
+                    status: status
+                        .get(&(task.cwd.clone(), task.branch.clone()))
+                        .copied(),
+                })
+                .collect();
             Some(Row {
                 pane: t.pane.to_string(),
                 terminal: t.terminal.to_string(),
                 tab: t.tab,
                 label: sessions::label(s, tab_name),
                 state: s.state,
+                tasks,
             })
         })
         .collect();
@@ -159,6 +192,7 @@ impl App {
             start_dir,
             state_dir,
             sessions: Sessions::default(),
+            task_status: TaskStatus::new(),
             sidebar_hidden: false,
             press: None,
         };
@@ -207,7 +241,24 @@ impl App {
                 })
             })
         });
-        rows(&self.sessions, placed)
+        rows(&self.sessions, &self.task_status, placed)
+    }
+
+    /// Tasks whose rows the sidebar shows now, as `(directory, branch)`:
+    /// their git status is kept fresh.
+    pub fn visible_tasks(&self) -> Vec<(String, String)> {
+        if self.sidebar_width() == 0 {
+            return Vec::new();
+        }
+        // Below the sidebar's title, a line per session, then one per task.
+        let lines = usize::from(self.screen.1.saturating_sub(1));
+        self.rows()
+            .into_iter()
+            .flat_map(|r| std::iter::once(None).chain(r.tasks.into_iter().map(Some)))
+            .take(lines)
+            .flatten()
+            .map(|t| (t.cwd, t.branch))
+            .collect()
     }
 
     /// Columns the sidebar takes now: none while hidden or without rows.
@@ -487,7 +538,7 @@ mod tests {
                 terminal,
                 pane,
             });
-        let got: Vec<(String, String, State)> = rows(&s, placed)
+        let got: Vec<(String, String, State)> = rows(&s, &TaskStatus::new(), placed)
             .into_iter()
             .map(|r| (r.label, r.terminal, r.state))
             .collect();
@@ -502,6 +553,49 @@ mod tests {
             .map(|&(l, t, s)| (l.to_string(), t.to_string(), s))
             .collect();
         assert_eq!(got, want);
+    }
+
+    #[test]
+    fn task_rows_carry_the_status_read_for_their_directory() {
+        use crate::sessions::HookRecord;
+        let mut s = Sessions::default();
+        for (branch, cwd) in [("feat/a", "/r"), ("feat/b", "/r/wt")] {
+            s.apply(&HookRecord {
+                event: "PostToolUse".into(),
+                pane: "%1".into(),
+                cwd: Some(cwd.into()),
+                branch: Some(branch.into()),
+                ..Default::default()
+            });
+        }
+        let read = Status {
+            ahead_behind: Some((1, 0)),
+            changes: Some((3, 2)),
+        };
+        let status = TaskStatus::from([
+            (("/r".to_string(), "feat/a".to_string()), read),
+            (("/r".to_string(), "feat/b".to_string()), Status::default()),
+        ]);
+        let placed = [Placed {
+            tab: 0,
+            tab_name: "terminal-1",
+            terminal: "$1",
+            pane: "%1",
+        }];
+        let got = &rows(&s, &status, placed)[0].tasks;
+        let want = [
+            TaskRow {
+                branch: "feat/a".into(),
+                cwd: "/r".into(),
+                status: Some(read),
+            },
+            TaskRow {
+                branch: "feat/b".into(),
+                cwd: "/r/wt".into(),
+                status: None,
+            },
+        ];
+        assert_eq!(got, &want);
     }
 
     #[test]

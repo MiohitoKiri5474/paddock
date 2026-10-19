@@ -70,6 +70,13 @@ pub struct HookRecord {
     /// Set when a subagent, not the main agent, caused the event.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    /// The task branch checked out in `cwd` when the hook ran, for events
+    /// after which it may have changed (see [`needs_branch`]); `None` for the
+    /// default branch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
     /// Milliseconds since the Unix epoch.
     pub ts: u64,
 }
@@ -94,6 +101,26 @@ pub fn state_after(r: &HookRecord) -> Option<State> {
     (r.agent_id.is_none() || state == State::Waiting).then_some(state)
 }
 
+/// Whether the main agent may have switched branch before this event (it
+/// started, was prompted, or ran a shell command), so the hook records the
+/// branch checked out in its directory. Claude's transcripts carry a stale
+/// branch, so git is the only source.
+pub fn needs_branch(r: &HookRecord) -> bool {
+    let switched = match r.event.as_str() {
+        "SessionStart" | "UserPromptSubmit" => true,
+        "PostToolUse" => r.tool_name.as_deref() == Some("Bash"),
+        _ => false,
+    };
+    switched && r.agent_id.is_none() && r.cwd.is_some()
+}
+
+/// A task: one branch a session worked on, and the directory it was seen in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Task {
+    pub branch: String,
+    pub cwd: String,
+}
+
 /// A session reported by `claude agents --json`, with the terminal it runs in
 /// if paddock could find it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -113,6 +140,8 @@ pub struct Session {
     pub state: State,
     /// When the state was last set (ms since the epoch).
     pub updated: u64,
+    /// Branches the main agent worked on, oldest first.
+    pub tasks: Vec<Task>,
 }
 
 impl Session {
@@ -123,6 +152,7 @@ impl Session {
             name: None,
             state: State::Unknown,
             updated: 0,
+            tasks: Vec::new(),
         }
     }
 }
@@ -152,6 +182,15 @@ impl Sessions {
         if let Some(state) = state_after(r) {
             s.state = state;
             s.updated = r.ts;
+        }
+        if let (Some(branch), Some(cwd), None) = (&r.branch, &r.cwd, &r.agent_id) {
+            match s.tasks.iter_mut().find(|t| t.branch == *branch) {
+                Some(t) => t.cwd.clone_from(cwd),
+                None => s.tasks.push(Task {
+                    branch: branch.clone(),
+                    cwd: cwd.clone(),
+                }),
+            }
         }
     }
 
@@ -360,6 +399,77 @@ mod tests {
         let now = s.get("%1").unwrap();
         assert_eq!(now.session_id.as_deref(), Some("newer"));
         assert_eq!(now.state, State::Running);
+    }
+
+    #[test]
+    fn branches_are_read_when_the_main_agent_may_have_switched() {
+        let bash = |event: &str, tool: &str| HookRecord {
+            tool_name: Some(tool.into()),
+            ..rec(event, 1)
+        };
+        assert!(needs_branch(&rec("SessionStart", 1)));
+        assert!(needs_branch(&rec("UserPromptSubmit", 1)));
+        assert!(needs_branch(&bash("PostToolUse", "Bash")));
+        assert!(!needs_branch(&bash("PostToolUse", "Edit")));
+        assert!(!needs_branch(&rec("Stop", 1)));
+        assert!(!needs_branch(&HookRecord {
+            cwd: None,
+            ..rec("SessionStart", 1)
+        }));
+        assert!(!needs_branch(&HookRecord {
+            agent_id: Some("a1".into()),
+            ..bash("PostToolUse", "Bash")
+        }));
+    }
+
+    fn on(branch: &str, cwd: &str, ts: u64) -> HookRecord {
+        HookRecord {
+            branch: Some(branch.into()),
+            cwd: Some(cwd.into()),
+            ..rec("PostToolUse", ts)
+        }
+    }
+
+    fn tasks(s: &Sessions) -> Vec<(&str, &str)> {
+        s.get("%1")
+            .unwrap()
+            .tasks
+            .iter()
+            .map(|t| (t.branch.as_str(), t.cwd.as_str()))
+            .collect()
+    }
+
+    #[test]
+    fn each_branch_the_main_agent_works_on_becomes_one_task() {
+        let mut s = Sessions::default();
+        s.apply(&rec("SessionStart", 1));
+        assert!(tasks(&s).is_empty(), "default branch: no task");
+        s.apply(&on("feat/a", "/r", 2));
+        s.apply(&on("feat/b", "/r", 3));
+        s.apply(&on("feat/a", "/r/sub", 4));
+        s.apply(&rec("Stop", 5));
+        assert_eq!(tasks(&s), [("feat/a", "/r/sub"), ("feat/b", "/r")]);
+    }
+
+    #[test]
+    fn subagent_branches_are_not_main_agent_tasks() {
+        let mut s = Sessions::default();
+        s.apply(&HookRecord {
+            agent_id: Some("a1".into()),
+            ..on("fix/a", "/r/wt", 1)
+        });
+        assert!(tasks(&s).is_empty());
+    }
+
+    #[test]
+    fn a_new_conversation_starts_without_tasks() {
+        let mut s = Sessions::default();
+        s.apply(&on("feat/a", "/r", 1));
+        s.apply(&HookRecord {
+            session_id: Some("new".into()),
+            ..rec("SessionStart", 2)
+        });
+        assert!(tasks(&s).is_empty());
     }
 
     #[test]

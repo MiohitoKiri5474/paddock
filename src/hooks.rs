@@ -1,8 +1,9 @@
 //! Claude Code hooks: `paddock hooks install|uninstall` edits Claude's
 //! `settings.json`, and `paddock hook <event>` records one event.
 
+use crate::git;
 use crate::paths::Paths;
-use crate::sessions::log;
+use crate::sessions::{self, log};
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Map, Value};
 use std::io::Read;
@@ -188,7 +189,10 @@ fn record(event: &str) -> Result<()> {
     let Some((pid, pane)) = log::terminal(&var("TMUX"), &var("TMUX_PANE"), &paths.socket) else {
         return Ok(()); // not in paddock: an external session
     };
-    let r = log::record(event, &pane, &payload, now_ms());
+    let mut r = log::record(event, &pane, &payload, now_ms());
+    if sessions::needs_branch(&r) {
+        r.branch = r.cwd.as_deref().and_then(git::task_branch);
+    }
     log::append(&log::path(&paths.state_dir, pid), &r)
 }
 

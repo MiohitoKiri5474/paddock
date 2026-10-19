@@ -54,7 +54,10 @@ impl App {
         }
         if m.column < side {
             let area = Rect::new(0, 0, side, self.screen.1);
-            let row = sidebar::row_at(area, m.row).and_then(|i| self.rows().get(i).cloned());
+            let row = {
+                let rows = self.rows();
+                sidebar::row_at(&rows, area, m.row).and_then(|i| rows.get(i).cloned())
+            };
             let Some(row) = row.filter(|_| left) else {
                 return Ok(false);
             };

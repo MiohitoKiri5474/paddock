@@ -1,7 +1,8 @@
 //! The sidebar: a title, then one row per Claude session, label left and
-//! state right, with a border on its right edge.
+//! state right, each followed by its task rows (branch left, git fields
+//! right), with a border on its right edge.
 
-use crate::app::Row;
+use crate::app::{Row, TaskRow};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -21,40 +22,86 @@ pub fn render(rows: &[Row], selected: Option<&str>, area: Rect, buf: &mut Buffer
     }
     let dim = Style::default().add_modifier(Modifier::DIM);
     buf.set_stringn(area.x + 1, area.y, TITLE, usize::from(inner - 1), dim);
-    for (row, y) in rows.iter().zip(area.y + FIRST_ROW..area.bottom()) {
-        let style = if selected == Some(row.pane.as_str()) {
-            Style::default().add_modifier(Modifier::REVERSED)
-        } else {
-            Style::default()
+    let width = usize::from(inner);
+    for ((index, task), y) in lines(rows).zip(area.y + FIRST_ROW..area.bottom()) {
+        let row = &rows[index];
+        let (text, style) = match task {
+            None if selected == Some(row.pane.as_str()) => (
+                spread(1, &row.label, row.state.label(), width),
+                Style::default().add_modifier(Modifier::REVERSED),
+            ),
+            None => (
+                spread(1, &row.label, row.state.label(), width),
+                Style::default(),
+            ),
+            Some(t) => (spread(2, &t.branch, &fields(t), width), Style::default()),
         };
-        buf.set_string(area.x, y, line(row, usize::from(inner)), style);
+        buf.set_string(area.x, y, text, style);
     }
 }
 
-/// The session row drawn at screen row `y` of a sidebar over `area`, if any.
-pub fn row_at(area: Rect, y: u16) -> Option<usize> {
-    let first = area.y + FIRST_ROW;
-    (first..area.bottom())
-        .contains(&y)
-        .then(|| usize::from(y - first))
+/// The sidebar's lines in order: each session row (by index into `rows`),
+/// then its task rows.
+fn lines(rows: &[Row]) -> impl Iterator<Item = (usize, Option<&TaskRow>)> {
+    rows.iter().enumerate().flat_map(|(i, row)| {
+        std::iter::once((i, None)).chain(row.tasks.iter().map(move |t| (i, Some(t))))
+    })
 }
 
-/// ` label   state `, exactly `width` cells; long labels are cut.
-fn line(row: &Row, width: usize) -> String {
-    let state = row.state.label();
-    let label: String = row
-        .label
-        .chars()
-        .take(width.saturating_sub(state.len() + 3))
+/// The session row drawn at screen row `y` of a sidebar over `area`, if any;
+/// a task row counts as its session's.
+pub fn row_at(rows: &[Row], area: Rect, y: u16) -> Option<usize> {
+    let first = area.y + FIRST_ROW;
+    if !(first..area.bottom()).contains(&y) {
+        return None;
+    }
+    lines(rows).nth(usize::from(y - first)).map(|(i, _)| i)
+}
+
+/// A task's git fields, `↑ahead↓behind +added −removed`, leaving out what is
+/// zero or unknown.
+fn fields(task: &TaskRow) -> String {
+    let Some(status) = task.status else {
+        return String::new();
+    };
+    let arrows: String = status
+        .ahead_behind
+        .map(|(ahead, behind)| [("↑", ahead), ("↓", behind)])
+        .into_iter()
+        .flatten()
+        .filter(|&(_, n)| n > 0)
+        .map(|(arrow, n)| format!("{arrow}{n}"))
         .collect();
-    let gap = width.saturating_sub(label.chars().count() + state.len() + 2);
-    let text = format!(" {label}{}{state} ", " ".repeat(gap));
+    let changes = status
+        .changes
+        .filter(|&c| c != (0, 0))
+        .map(|(added, removed)| format!("+{added} −{removed}"));
+    [Some(arrows), changes]
+        .into_iter()
+        .flatten()
+        .filter(|p| !p.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// `left` after `indent` spaces and `right` at the end, then one space:
+/// exactly `width` cells; `left` is cut to fit.
+fn spread(indent: usize, left: &str, right: &str, width: usize) -> String {
+    let right_len = right.chars().count();
+    let min_gap = usize::from(right_len > 0);
+    let left: String = left
+        .chars()
+        .take(width.saturating_sub(indent + right_len + min_gap + 1))
+        .collect();
+    let gap = width.saturating_sub(indent + left.chars().count() + right_len + 1);
+    let text = format!("{}{left}{}{right} ", " ".repeat(indent), " ".repeat(gap));
     text.chars().take(width).collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::git::Status;
     use crate::sessions::State;
 
     fn row(label: &str, state: State) -> Row {
@@ -64,6 +111,22 @@ mod tests {
             tab: 0,
             label: label.into(),
             state,
+            tasks: Vec::new(),
+        }
+    }
+
+    fn task(
+        branch: &str,
+        ahead_behind: Option<(u32, u32)>,
+        changes: Option<(u32, u32)>,
+    ) -> TaskRow {
+        TaskRow {
+            branch: branch.into(),
+            cwd: "/r".into(),
+            status: Some(Status {
+                ahead_behind,
+                changes,
+            }),
         }
     }
 
@@ -105,10 +168,58 @@ mod tests {
 
     #[test]
     fn clicks_find_the_row_drawn_under_them() {
-        let area = Rect::new(0, 3, 16, 4);
-        assert_eq!(row_at(area, 3), None, "title");
-        assert_eq!(row_at(area, 4), Some(0));
-        assert_eq!(row_at(area, 6), Some(2));
-        assert_eq!(row_at(area, 7), None, "below the sidebar");
+        let area = Rect::new(0, 3, 16, 6);
+        let mut api = row("api", State::Idle);
+        api.tasks = vec![task("feat/a", None, None), task("feat/b", None, None)];
+        let rows = [api, row("web", State::Idle), row("db", State::Idle)];
+        assert_eq!(row_at(&rows, area, 3), None, "title");
+        assert_eq!(row_at(&rows, area, 4), Some(0));
+        assert_eq!(row_at(&rows, area, 5), Some(0), "a task row of api");
+        assert_eq!(row_at(&rows, area, 6), Some(0));
+        assert_eq!(row_at(&rows, area, 7), Some(1));
+        assert_eq!(row_at(&rows, area, 8), Some(2));
+        assert_eq!(row_at(&rows, area, 9), None, "below the sidebar");
+        assert_eq!(row_at(&rows[1..], area, 6), None, "below the last row");
+    }
+
+    #[test]
+    fn task_rows_follow_their_session_with_git_fields() {
+        let area = Rect::new(0, 0, 24, 7);
+        let mut buf = Buffer::empty(area);
+        let mut api = row("api", State::Running);
+        api.tasks = vec![
+            task("feat/login", Some((2, 1)), Some((30, 144))),
+            task("fix/a-very-long-branch-name", Some((0, 0)), Some((0, 0))),
+            task("docs", None, Some((5, 0))),
+            TaskRow {
+                branch: "unread".into(),
+                cwd: "/r".into(),
+                status: None,
+            },
+        ];
+        render(
+            &[api, row("web", State::Idle)],
+            Some("%api"),
+            area,
+            &mut buf,
+        );
+        assert_eq!(text(&buf, 1), " api           running │");
+        assert_eq!(text(&buf, 2), "  feat/l ↑2↓1 +30 −144 │");
+        assert_eq!(text(&buf, 3), "  fix/a-very-long-bran │");
+        assert_eq!(text(&buf, 4), "  docs           +5 −0 │");
+        assert_eq!(text(&buf, 5), "  unread               │");
+        assert_eq!(text(&buf, 6), " web              idle │");
+        assert!(buf[(1, 1)].modifier.contains(Modifier::REVERSED));
+        assert!(!buf[(2, 2)].modifier.contains(Modifier::REVERSED));
+    }
+
+    #[test]
+    fn rows_stop_at_the_bottom() {
+        let area = Rect::new(0, 0, 24, 2);
+        let mut buf = Buffer::empty(area);
+        let mut api = row("api", State::Running);
+        api.tasks = vec![task("feat/login", None, None)];
+        render(&[api], None, area, &mut buf);
+        assert_eq!(text(&buf, 1), " api           running │");
     }
 }

@@ -12,9 +12,10 @@ mod state;
 mod tabs;
 mod watch;
 
-pub use state::Row;
+pub use state::{Row, TaskRow};
 
 use crate::config::Config;
+use crate::git::Status;
 use crate::paths::Paths;
 use crate::sessions::{Agent, HookRecord};
 use crate::tmux::{Message, Server};
@@ -38,6 +39,8 @@ pub enum Event {
     Hooks(Vec<HookRecord>),
     /// A `claude agents --json` snapshot and when it was taken (ms).
     Agents(u64, Vec<Agent>),
+    /// Git status just read for tasks, by `(directory, branch)`.
+    Git(Vec<((String, String), Status)>),
 }
 
 pub fn run() -> Result<()> {
@@ -72,7 +75,7 @@ pub fn run() -> Result<()> {
         start_dir,
         state_dir.clone(),
     )?;
-    watch::start(&app.server, &state_dir, &tx)?;
+    let git = watch::start(&app.server, &state_dir, &tx)?;
 
     // Only now may another thread read stdin (ratatui has finished its queries).
     std::thread::spawn(move || {
@@ -83,7 +86,7 @@ pub fn run() -> Result<()> {
         }
     });
 
-    let result = event_loop::run(&mut screen, app, &rx);
+    let result = event_loop::run(&mut screen, app, &rx, git);
     drop(screen_guard);
     result
 }
