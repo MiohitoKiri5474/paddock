@@ -5,27 +5,29 @@ use super::server::Server;
 use anyhow::{bail, Context, Result};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Stdio};
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::{self, Receiver};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// `send-keys -H` arguments per command; keeps command lines short.
 const SEND_CHUNK: usize = 256;
 const REPLY_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Where the reader thread delivers messages. Returns false once nobody listens.
+type Sink = Box<dyn FnMut(Message) -> bool + Send>;
+
 pub struct ControlClient {
     child: Child,
     stdin: ChildStdin,
+    sink: Arc<Mutex<Sink>>,
 }
 
 impl ControlClient {
-    /// Attach to `session`. Messages are delivered to `tx`, wrapped by `wrap`,
-    /// so they can share a channel with other events.
-    pub fn attach<T: Send + 'static>(
-        server: &Server,
-        session: &str,
-        tx: Sender<T>,
-        wrap: fn(Message) -> T,
-    ) -> Result<Self> {
+    /// Attach to `session`. Messages first arrive on the returned private
+    /// receiver, so the caller can wait for its own replies without consuming
+    /// anything that belongs to other terminals; [`Self::forward`] then hands
+    /// them on.
+    pub fn attach(server: &Server, session: &str) -> Result<(Self, Receiver<Message>)> {
         let mut child = server
             .command()
             .args(["-C", "attach-session", "-t", session])
@@ -36,8 +38,23 @@ impl ControlClient {
             .context("failed to start the tmux control client")?;
         let stdin = child.stdin.take().context("no stdin")?;
         let stdout = child.stdout.take().context("no stdout")?;
-        std::thread::spawn(move || read_loop(BufReader::with_capacity(1 << 16, stdout), &tx, wrap));
-        Ok(Self { child, stdin })
+        let (tx, rx) = mpsc::channel();
+        let sink: Arc<Mutex<Sink>> = Arc::new(Mutex::new(Box::new(move |m| tx.send(m).is_ok())));
+        let reader_sink = Arc::clone(&sink);
+        std::thread::spawn(move || {
+            read_loop(BufReader::with_capacity(1 << 16, stdout), &reader_sink);
+        });
+        Ok((Self { child, stdin, sink }, rx))
+    }
+
+    /// From now on deliver messages to `deliver`, after first passing it
+    /// everything still queued on `pending`, so nothing is lost or reordered.
+    pub fn forward(
+        &self,
+        pending: &Receiver<Message>,
+        deliver: impl FnMut(Message) -> bool + Send + 'static,
+    ) {
+        redirect(&self.sink, pending, Box::new(deliver));
     }
 
     /// Send one command line. Several commands joined with ` ; ` run back to
@@ -71,7 +88,18 @@ impl ControlClient {
     }
 }
 
-fn read_loop<T>(mut r: impl BufRead, tx: &Sender<T>, wrap: fn(Message) -> T) {
+/// Swap the sink while holding its lock: the reader thread waits, so queued
+/// messages are delivered before any new one.
+fn redirect(sink: &Mutex<Sink>, pending: &Receiver<Message>, mut deliver: Sink) {
+    let mut current = sink.lock().unwrap_or_else(|e| e.into_inner());
+    for m in pending.try_iter() {
+        deliver(m);
+    }
+    *current = deliver;
+}
+
+fn read_loop(mut r: impl BufRead, sink: &Mutex<Sink>) {
+    let deliver = |m: Message| (sink.lock().unwrap_or_else(|e| e.into_inner()))(m);
     let mut parser = Parser::default();
     let mut line = Vec::new();
     loop {
@@ -85,30 +113,29 @@ fn read_loop<T>(mut r: impl BufRead, tx: &Sender<T>, wrap: fn(Message) -> T) {
         }
         if let Some(msg) = parser.line(&line) {
             let exit = msg == Message::Exit;
-            if tx.send(wrap(msg)).is_err() || exit {
+            if !deliver(msg) || exit {
                 return;
             }
         }
     }
-    let _ = tx.send(wrap(Message::Exit));
+    deliver(Message::Exit);
 }
 
 /// Wait for the next reply on `rx`, discarding everything else that arrives
-/// first (including pane output). `unwrap` extracts control messages from the
-/// channel's event type.
-pub fn wait_reply<T>(rx: &Receiver<T>, unwrap: fn(T) -> Option<Message>) -> Result<Vec<Vec<u8>>> {
+/// first (including pane output).
+pub fn wait_reply(rx: &Receiver<Message>) -> Result<Vec<Vec<u8>>> {
     let deadline = Instant::now() + REPLY_TIMEOUT;
     loop {
         let left = deadline.saturating_duration_since(Instant::now());
-        let event = rx
+        let msg = rx
             .recv_timeout(left)
             .context("timed out waiting for tmux")?;
-        match unwrap(event) {
-            Some(Message::Reply { ok: true, lines }) => return Ok(lines),
-            Some(Message::Reply { ok: false, lines }) => {
+        match msg {
+            Message::Reply { ok: true, lines } => return Ok(lines),
+            Message::Reply { ok: false, lines } => {
                 bail!("tmux error: {}", String::from_utf8_lossy(&lines.concat()))
             }
-            Some(Message::Exit) => bail!("tmux control client exited"),
+            Message::Exit => bail!("tmux control client exited"),
             _ => {}
         }
     }
@@ -117,14 +144,15 @@ pub fn wait_reply<T>(rx: &Receiver<T>, unwrap: fn(T) -> Option<Message>) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::mpsc;
 
     #[test]
     fn read_loop_turns_lines_into_messages_and_ends_with_exit() {
         let input: &[u8] =
             b"%begin 1 1 0\n%end 1 1 0\n%output %1 a\\015\n%begin 1 2 1\nx\n%end 1 2 1\n";
         let (tx, rx) = mpsc::channel();
-        read_loop(input, &tx, |m| m);
+        let sink: Mutex<Sink> = Mutex::new(Box::new(move |m| tx.send(m).is_ok()));
+        read_loop(input, &sink);
+        drop(sink);
         let got: Vec<Message> = rx.try_iter().collect();
         assert_eq!(
             got,
@@ -140,6 +168,27 @@ mod tests {
                 Message::Exit,
             ]
         );
+    }
+
+    #[test]
+    fn redirect_delivers_queued_messages_first() {
+        let (private_tx, private_rx) = mpsc::channel();
+        let sink: Mutex<Sink> = Mutex::new(Box::new(move |m| private_tx.send(m).is_ok()));
+        let out = |n: u8| Message::Output {
+            pane: "%1".into(),
+            data: vec![n],
+        };
+        (sink.lock().unwrap())(out(1));
+        (sink.lock().unwrap())(out(2));
+        let (shared_tx, shared_rx) = mpsc::channel();
+        redirect(
+            &sink,
+            &private_rx,
+            Box::new(move |m| shared_tx.send(m).is_ok()),
+        );
+        (sink.lock().unwrap())(out(3));
+        let got: Vec<Message> = shared_rx.try_iter().collect();
+        assert_eq!(got, vec![out(1), out(2), out(3)]);
     }
 
     #[test]
@@ -161,11 +210,8 @@ mod tests {
         })
         .unwrap();
         tx.send(Message::Exit).unwrap();
-        assert_eq!(wait_reply(&rx, Some).unwrap(), vec![b"r".to_vec()]);
-        assert!(wait_reply(&rx, Some)
-            .unwrap_err()
-            .to_string()
-            .contains("bad"));
-        assert!(wait_reply(&rx, Some).is_err());
+        assert_eq!(wait_reply(&rx).unwrap(), vec![b"r".to_vec()]);
+        assert!(wait_reply(&rx).unwrap_err().to_string().contains("bad"));
+        assert!(wait_reply(&rx).is_err());
     }
 }

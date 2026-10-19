@@ -13,8 +13,9 @@ use std::sync::mpsc::Receiver;
 
 const STATE_FORMAT: &str = "#{alternate_on} #{cursor_x} #{cursor_y} #{cursor_flag} \
 #{keypad_cursor_flag} #{bracket_paste_flag} #{mouse_standard_flag} #{mouse_button_flag} \
-#{mouse_any_flag} #{mouse_sgr_flag} #{scroll_region_upper} #{scroll_region_lower} #{pane_key_mode}";
-const STATE_FIELDS: usize = 13;
+#{mouse_any_flag} #{mouse_sgr_flag} #{scroll_region_upper} #{scroll_region_lower} #{history_size} \
+#{pane_key_mode}";
+const STATE_FIELDS: usize = 14;
 
 /// What tmux holds for a pane, as captured.
 #[derive(Debug, Default, Clone)]
@@ -27,27 +28,22 @@ pub struct Seed {
 
 /// Ask tmux for everything needed to rebuild `pane`. Pane output that arrives
 /// before the replies is discarded; output after them stays queued on `rx`.
-pub fn fetch<T>(
-    control: &mut ControlClient,
-    rx: &Receiver<T>,
-    unwrap: fn(T) -> Option<Message>,
-    pane: &str,
-) -> Result<Seed> {
+pub fn fetch(control: &mut ControlClient, rx: &Receiver<Message>, pane: &str) -> Result<Seed> {
     control.send(&format!(
         "display-message -p -t {pane} '{STATE_FORMAT}' ; \
          capture-pane -p -e -S - -E -1 -t {pane} ; \
          capture-pane -p -e -a -q -t {pane} ; \
          capture-pane -p -e -t {pane}"
     ))?;
-    let state = wait_reply(rx, unwrap)?;
+    let state = wait_reply(rx)?;
     Ok(Seed {
         state: state
             .first()
             .map(|l| String::from_utf8_lossy(l).into_owned())
             .unwrap_or_default(),
-        history: wait_reply(rx, unwrap)?,
-        saved_screen: wait_reply(rx, unwrap)?,
-        visible: wait_reply(rx, unwrap)?,
+        history: wait_reply(rx)?,
+        saved_screen: wait_reply(rx)?,
+        visible: wait_reply(rx)?,
     })
 }
 
@@ -73,7 +69,9 @@ pub fn stream(seed: &Seed) -> Result<Vec<u8>> {
     let flag = |i: usize| f[i] == "1";
     let num = |i: usize| f[i].parse::<u16>().unwrap_or(0);
     let mut s = Vec::new();
-    if !seed.history.is_empty() {
+    // With no history tmux still returns a line for `-S - -E -1`; ignore it.
+    let has_history = num(12) > 0;
+    if has_history && !seed.history.is_empty() {
         s.extend(lines_to_stream(&seed.history));
         s.extend_from_slice(b"\r\n");
     }
@@ -105,7 +103,7 @@ pub fn stream(seed: &Seed) -> Result<Vec<u8>> {
         s.extend_from_slice(b"\x1b[?25l");
     }
     // tmux remembers modifyOtherKeys ("Ext 1" / "Ext 2") but not kitty flags.
-    if let Some(level) = f[12..].join(" ").strip_prefix("Ext ") {
+    if let Some(level) = f[13..].join(" ").strip_prefix("Ext ") {
         s.extend(format!("\x1b[>4;{level}m").into_bytes());
     }
     Ok(s)
@@ -128,7 +126,7 @@ mod tests {
     #[test]
     fn rebuilds_history_screen_and_cursor() {
         let seed = Seed {
-            state: state(0, 2, 1, "1 0 1 0 0 0 0 0 2 VT10x"),
+            state: state(0, 2, 1, "1 0 1 0 0 0 0 0 2 2 VT10x"),
             history: lines(&["old 1", "\x1b[31mold 2"]),
             saved_screen: vec![],
             visible: lines(&["$ ls", "$ ", ""]),
@@ -147,7 +145,7 @@ mod tests {
     #[test]
     fn rebuilds_alternate_screen_and_mouse_and_key_modes() {
         let seed = Seed {
-            state: state(1, 0, 0, "0 1 1 1 1 1 1 0 2 Ext 2"),
+            state: state(1, 0, 0, "0 1 1 1 1 1 1 0 2 0 Ext 2"),
             history: vec![],
             saved_screen: lines(&["shell", "", ""]),
             visible: lines(&["full", "screen", "app"]),
@@ -164,6 +162,21 @@ mod tests {
         assert_eq!(k.modify_other_keys(), 2);
         e.feed(b"\x1b[?1049l");
         assert_eq!(e.row_text(0), "shell");
+    }
+
+    #[test]
+    fn empty_history_is_not_taken_from_the_capture() {
+        // With no history, `capture-pane -S - -E -1` still returns the first visible line.
+        let seed = Seed {
+            state: state(0, 0, 1, "1 0 0 0 0 0 0 0 2 0 VT10x"),
+            history: lines(&["first"]),
+            saved_screen: vec![],
+            visible: lines(&["first", "second", ""]),
+        };
+        let mut e = Emulator::new(10, 3, 100);
+        e.feed(&stream(&seed).unwrap());
+        assert_eq!(e.history_len(), 0);
+        assert_eq!(e.row_text(0), "first");
     }
 
     #[test]

@@ -9,12 +9,12 @@ use crate::tmux::{wait_reply, ControlClient, Message, Server};
 use anyhow::Result;
 use emulator::Emulator;
 use key_modes::{KeyModeScanner, KeyModes};
-use std::sync::mpsc::{Receiver, Sender};
 
 /// Lines of scrollback paddock keeps per terminal (matches tmux's history-limit).
 pub const SCROLLBACK: usize = 50_000;
 
 pub struct Terminal {
+    session: String,
     pane: String,
     emulator: Emulator,
     keys: KeyModeScanner,
@@ -22,23 +22,23 @@ pub struct Terminal {
 }
 
 impl Terminal {
-    /// Attach to an existing tmux session at the given size and rebuild its
-    /// screen and history. Its output then arrives on `tx` as [`Message`]s.
-    pub fn attach<T: Send + 'static>(
+    /// Attach to the tmux session `session` (its `$N` id) at the given size and
+    /// rebuild its screen and history. Afterwards every control message for it,
+    /// in order, goes to `deliver`.
+    pub fn attach(
         server: &Server,
         session: &str,
         (cols, rows): (u16, u16),
-        channel: (Sender<T>, &Receiver<T>),
-        wrap: fn(Message) -> T,
-        unwrap: fn(T) -> Option<Message>,
+        deliver: impl FnMut(Message) -> bool + Send + 'static,
     ) -> Result<Self> {
-        let (tx, rx) = channel;
-        let pane = server.pane_id(session)?;
-        let mut control = ControlClient::attach(server, session, tx, wrap)?;
+        let pane = server.display(session, "#{pane_id}")?;
+        let (mut control, rx) = ControlClient::attach(server, session)?;
         control.resize(cols, rows)?;
-        wait_reply(rx, unwrap)?;
-        let seed = seed::fetch(&mut control, rx, unwrap, &pane)?;
+        wait_reply(&rx)?;
+        let seed = seed::fetch(&mut control, &rx, &pane)?;
+        control.forward(&rx, deliver);
         let mut terminal = Self {
+            session: session.to_string(),
             pane,
             emulator: Emulator::new(cols, rows, SCROLLBACK),
             keys: KeyModeScanner::default(),
@@ -48,8 +48,9 @@ impl Terminal {
         Ok(terminal)
     }
 
-    pub fn pane(&self) -> &str {
-        &self.pane
+    /// The tmux session id (`$N`) this terminal runs in.
+    pub fn session(&self) -> &str {
+        &self.session
     }
 
     /// Feed bytes the program wrote.

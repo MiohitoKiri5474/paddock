@@ -175,7 +175,8 @@ fn mouse_wheel_goes_to_programs_that_ask_for_the_mouse() {
     paddock.type_line("printf '\\033[?1000h\\033[?1006h'; stty -echo; cat -v");
     std::thread::sleep(std::time::Duration::from_millis(300));
 
-    paddock.wheel(true, 4, 9);
+    // Outer row 10 is terminal row 9 (the tab bar takes row 0): reported 1-based as 10.
+    paddock.wheel(true, 4, 10);
     paddock.send(b"\r"); // cat reads whole lines
 
     paddock.wait_for_text("^[[<64;5;10M");
@@ -267,13 +268,13 @@ fn resizing_the_outer_terminal_resizes_the_terminal() {
         ])
     };
     let start = std::time::Instant::now();
-    while size().trim() != "80x20" {
+    while size().trim() != "80x19" {
         assert!(start.elapsed() < harness::TIMEOUT, "pane is {}", size());
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     paddock.type_line("stty size");
 
-    paddock.wait_for_text("20 80");
+    paddock.wait_for_text("19 80"); // one row is the tab bar
 }
 
 #[test]

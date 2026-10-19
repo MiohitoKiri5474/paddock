@@ -98,6 +98,33 @@ impl Sandbox {
             .collect()
     }
 
+    /// Write paddock's `config.toml`.
+    pub fn write_config(&self, text: &str) {
+        let dir = self.path("config/paddock");
+        std::fs::create_dir_all(&dir).expect("config dir");
+        std::fs::write(dir.join("config.toml"), text).expect("write config");
+    }
+
+    /// Session names on the hidden server, oldest first.
+    pub fn session_names(&self) -> Vec<String> {
+        let out = self.tmux(&[
+            "list-sessions",
+            "-F",
+            "#{session_created} #{session_id} #{session_name}",
+        ]);
+        let mut rows: Vec<(u64, u64, String)> = out
+            .lines()
+            .filter_map(|l| {
+                let mut p = l.splitn(3, ' ');
+                let created = p.next()?.parse().ok()?;
+                let id = p.next()?.trim_start_matches('$').parse().ok()?;
+                Some((created, id, p.next()?.to_string()))
+            })
+            .collect();
+        rows.sort();
+        rows.into_iter().map(|(_, _, n)| n).collect()
+    }
+
     pub fn launch(&self) -> Paddock {
         Paddock::launch(self)
     }
@@ -192,6 +219,54 @@ impl Paddock {
             .expect("screen lock")
             .screen_mut()
             .set_size(nonzero(rows), nonzero(cols));
+    }
+
+    /// The prefix (`C-a`) followed by a command key.
+    pub fn command(&mut self, key: &[u8]) {
+        self.send(b"\x01");
+        self.send(key);
+    }
+
+    /// The tab bar row.
+    pub fn tab_bar(&self) -> String {
+        self.rows().into_iter().next().unwrap_or_default()
+    }
+
+    /// Text of the highlighted (current) tab in the tab bar, trimmed.
+    pub fn current_tab(&self) -> String {
+        let parser = self.screen.lock().expect("screen lock");
+        let screen = parser.screen();
+        (0..COLS)
+            .filter_map(|x| screen.cell(0, x))
+            .filter(|c| c.inverse())
+            .map(|c| c.contents().to_string())
+            .collect::<String>()
+            .trim()
+            .to_string()
+    }
+
+    /// Wait until the tab bar shows exactly these labels (e.g. `1:terminal-1`).
+    pub fn wait_for_tabs(&self, labels: &[&str]) {
+        let expected = labels.iter().map(|l| format!(" {l} ")).collect::<String>();
+        let expected = expected.trim_end().to_string();
+        self.wait_for(&format!("tabs {labels:?}"), |s| {
+            s.lines().next().unwrap_or("").trim_end() == expected
+        });
+    }
+
+    pub fn wait_for_current_tab(&self, label: &str) {
+        let start = Instant::now();
+        while start.elapsed() < TIMEOUT {
+            if self.current_tab() == label {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        panic!(
+            "current tab is {:?}, not {label:?}; screen:\n{}",
+            self.current_tab(),
+            self.screen()
+        );
     }
 
     /// `C-a d`

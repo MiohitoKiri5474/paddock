@@ -112,28 +112,24 @@ impl Server {
             .with_context(|| format!("failed to write {}", conf.display()))
     }
 
-    /// Names of the tmux sessions on the server, oldest first; empty if no server runs.
-    pub fn sessions(&self) -> Vec<String> {
-        let Ok(out) = self.run(&["list-sessions", "-F", "#{session_created} #{session_name}"])
-        else {
-            return Vec::new();
-        };
-        let mut rows: Vec<(u64, String)> = out
-            .lines()
-            .filter_map(|l| l.split_once(' '))
-            .map(|(t, n)| (t.parse().unwrap_or(0), n.to_string()))
-            .collect();
-        rows.sort();
-        rows.into_iter().map(|(_, n)| n).collect()
+    /// The tmux sessions on the server, oldest first; empty if no server runs.
+    pub fn sessions(&self) -> Vec<Session> {
+        let format = "#{session_created} #{session_id} #{session_name}";
+        self.run(&["list-sessions", "-F", format])
+            .map(|out| parse_sessions(&out))
+            .unwrap_or_default()
     }
 
     /// Start a session running the user's shell, starting the server if needed.
-    pub fn new_session(&self, name: &str, cwd: &Path, cols: u16, rows: u16) -> Result<()> {
+    pub fn new_session(&self, name: &str, cwd: &Path, (cols, rows): (u16, u16)) -> Result<Session> {
         let cwd = cwd.to_string_lossy();
         let (x, y) = (cols.to_string(), rows.to_string());
-        self.run(&[
+        let args = [
             "new-session",
             "-d",
+            "-P",
+            "-F",
+            "#{session_id}",
             "-s",
             name,
             "-x",
@@ -142,17 +138,53 @@ impl Server {
             &y,
             "-c",
             &cwd,
-        ])?;
-        Ok(())
+        ];
+        let id = self.run(&args)?.trim().to_string();
+        Ok(Session {
+            id,
+            name: name.to_string(),
+        })
     }
 
-    /// The id (`%N`) of a session's active pane.
-    pub fn pane_id(&self, session: &str) -> Result<String> {
+    pub fn rename_session(&self, id: &str, name: &str) -> Result<()> {
+        self.run(&["rename-session", "-t", id, name]).map(drop)
+    }
+
+    /// End a session and everything running in it.
+    pub fn kill_session(&self, id: &str) -> Result<()> {
+        self.run(&["kill-session", "-t", id]).map(drop)
+    }
+
+    /// A format evaluated against a session's active pane, such as `#{pane_id}`.
+    pub fn display(&self, id: &str, format: &str) -> Result<String> {
         Ok(self
-            .run(&["display-message", "-p", "-t", session, "#{pane_id}"])?
+            .run(&["display-message", "-p", "-t", id, format])?
             .trim()
             .to_string())
     }
+}
+
+/// One tmux session: its stable id (`$N`) and its current name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Session {
+    pub id: String,
+    pub name: String,
+}
+
+fn parse_sessions(out: &str) -> Vec<Session> {
+    let mut rows: Vec<(u64, u64, Session)> = out
+        .lines()
+        .filter_map(|l| {
+            let mut parts = l.splitn(3, ' ');
+            let created = parts.next()?.parse().unwrap_or(0);
+            let id = parts.next()?.to_string();
+            let name = parts.next().unwrap_or_default().to_string();
+            let number = id.trim_start_matches('$').parse().unwrap_or(u64::MAX);
+            Some((created, number, Session { id, name }))
+        })
+        .collect();
+    rows.sort_by_key(|(created, number, _)| (*created, *number));
+    rows.into_iter().map(|(_, _, s)| s).collect()
 }
 
 #[cfg(test)]
@@ -194,6 +226,15 @@ mod tests {
         ] {
             assert!(c.lines().any(|l| l == line), "missing {line:?}");
         }
+    }
+
+    #[test]
+    fn sessions_are_ordered_by_creation_then_id_and_keep_spaces_in_names() {
+        let out = "200 $10 later\n100 $3 my tab name\n100 $2 first\n";
+        let got = parse_sessions(out);
+        let ids: Vec<&str> = got.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, ["$2", "$3", "$10"]);
+        assert_eq!(got[1].name, "my tab name");
     }
 
     #[test]

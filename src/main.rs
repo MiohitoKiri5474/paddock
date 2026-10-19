@@ -1,6 +1,7 @@
 //! paddock: a terminal workspace for running Claude Code.
 
 mod app;
+mod config;
 mod input;
 mod paths;
 mod terminal;
