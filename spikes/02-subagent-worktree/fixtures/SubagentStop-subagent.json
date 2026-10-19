@@ -1,0 +1,33 @@
+{
+  "session_id": "11111111-2222-4333-8444-555555555555",
+  "transcript_path": "/home/user/.claude/projects/-tmp-repo/11111111-2222-4333-8444-555555555555.jsonl",
+  "cwd": "/tmp/repo/.claude/worktrees/agent-a02c2bd27020e23b4",
+  "prompt_id": "6ead5051-ad1f-40ad-837c-72acc08402ad",
+  "permission_mode": "bypassPermissions",
+  "agent_id": "a02c2bd27020e23b4",
+  "agent_type": "general-purpose",
+  "effort": {
+    "level": "medium"
+  },
+  "hook_event_name": "SubagentStop",
+  "stop_hook_active": false,
+  "agent_transcript_path": "/home/user/.claude/projects/-tmp-repo/11111111-2222-4333-8444-555555555555/subagents/agent-a02c2bd27020e23b4.jsonl",
+  "last_assistant_message": "The branch `fix/a` now has a commit containing `a.txt` with the single line `a`. Nothing was pushed, and no other branch or file was touched.\n\n- Commit hash: `2aa1118`\n- `git log -1 --format=%B` output:\n\n```\nfeat: add a.txt\n\nDisclosure: Based on Claude Code generated output.\n\nCo-Authored-By: Claude Haiku 5.5 <noreply@anthropic.com>\n```",
+  "background_tasks": [
+    {
+      "id": "a02c2bd27020e23b4",
+      "type": "subagent",
+      "status": "running",
+      "description": "Create fix/a branch and a.txt",
+      "agent_type": "general-purpose"
+    },
+    {
+      "id": "a9700dfeed5ef352c",
+      "type": "subagent",
+      "status": "running",
+      "description": "Create fix/b branch and b.txt",
+      "agent_type": "general-purpose"
+    }
+  ],
+  "session_crons": []
+}

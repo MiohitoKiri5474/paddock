@@ -1,0 +1,17 @@
+{
+  "session_id": "11111111-2222-4333-8444-555555555555",
+  "transcript_path": "/home/user/.claude/projects/-tmp-repo/11111111-2222-4333-8444-555555555555.jsonl",
+  "cwd": "/tmp/repo",
+  "prompt_id": "3a86b82b-9872-4475-929d-c57373cbabdf",
+  "permission_mode": "bypassPermissions",
+  "effort": {
+    "level": "medium"
+  },
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "git -C /tmp/repo branch --list 'fix/*' && git -C /tmp/repo log -1 --format='%h %s' fix/a && git -C /tmp/repo log -1 --format='%h %s' fix/b",
+    "description": "Verify fix/a and fix/b branches and commits"
+  },
+  "tool_use_id": "toolu_018AnkVpgJo9LLxZsjXfS3ua"
+}
