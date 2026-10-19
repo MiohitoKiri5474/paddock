@@ -324,6 +324,11 @@ impl App {
         else {
             bail!("no Claude session here");
         };
+        // The id comes from a hook payload and is typed into a shell, where a
+        // control character would end the line even inside quotes.
+        if !is_session_id(&session_id) {
+            bail!("unexpected Claude session id");
+        }
         let dir = cwd
             .map(PathBuf::from)
             .filter(|p| p.is_dir())
@@ -508,5 +513,23 @@ mod tests {
         assert_eq!(next_name(Vec::<&str>::new()), "terminal-1");
         assert_eq!(next_name(vec!["terminal-1", "terminal-3"]), "terminal-2");
         assert_eq!(next_name(vec!["terminal-2", "logs"]), "terminal-1");
+    }
+}
+
+/// Whether `id` looks like a Claude session id (a UUID: hex digits and `-`).
+fn is_session_id(id: &str) -> bool {
+    !id.is_empty() && id.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+}
+
+#[cfg(test)]
+mod session_id_tests {
+    use super::is_session_id;
+
+    #[test]
+    fn only_uuid_shaped_session_ids_are_typed_into_a_shell() {
+        assert!(is_session_id("7f3c2a10-1b2c-4d5e-8f90-0123456789ab"));
+        for bad in ["", "x\r; rm -rf ~", "a b", "abc$(id)", "abc\u{1b}"] {
+            assert!(!is_session_id(bad), "{bad:?}");
+        }
     }
 }
