@@ -24,6 +24,20 @@ impl App {
                 self.rename_key(text, key);
                 Ok(Flow::Continue)
             }
+            Mode::Sidebar(selected) => match self.prefix.handle(key) {
+                KeyAction::Command(c) => {
+                    self.mode = Mode::Sidebar(selected);
+                    self.command(c)
+                }
+                KeyAction::Forward(key) => {
+                    self.sidebar_key(selected, key);
+                    Ok(Flow::Continue)
+                }
+                KeyAction::None => {
+                    self.mode = Mode::Sidebar(selected);
+                    Ok(Flow::Continue)
+                }
+            },
             Mode::Normal => match self.prefix.handle(key) {
                 KeyAction::Forward(key) => {
                     if let Some(t) = self.current_mut() {
@@ -62,10 +76,51 @@ impl App {
             Command::Equalise => self.report(|app| app.equalise()),
             Command::Help => self.mode = Mode::Help,
             Command::Detach => return Ok(Flow::Quit),
+            Command::FocusSidebar => match self.rows().first() {
+                Some(row) => {
+                    self.sidebar_hidden = false;
+                    self.mode = Mode::Sidebar(Some(row.pane.clone()));
+                }
+                None => self.notice = Some("no Claude sessions yet".into()),
+            },
+            Command::ToggleSidebar => {
+                self.sidebar_hidden = !self.sidebar_hidden;
+                if self.sidebar_hidden && matches!(self.mode, Mode::Sidebar(_)) {
+                    self.mode = Mode::Normal;
+                }
+            }
         }
+        // The sidebar may have come or gone.
+        self.report(|app| app.relayout());
         // Keep the saved layout current, in case paddock does not get to detach.
         self.report(|app| app.save());
         Ok(Flow::Continue)
+    }
+
+    /// `j`/`k` (or arrows) move, `Enter` jumps to the row's terminal, `Esc`
+    /// gives the keyboard back to the terminal.
+    fn sidebar_key(&mut self, selected: Option<String>, key: KeyEvent) {
+        let rows = self.rows();
+        let at = rows
+            .iter()
+            .position(|r| Some(&r.pane) == selected.as_ref())
+            .unwrap_or(0);
+        let pick = |i: usize| rows.get(i).map(|r| r.pane.clone());
+        self.mode = match key.code {
+            KeyCode::Char('j') | KeyCode::Down => Mode::Sidebar(pick(at + 1).or(selected)),
+            KeyCode::Char('k') | KeyCode::Up => {
+                Mode::Sidebar(at.checked_sub(1).and_then(pick).or(selected))
+            }
+            KeyCode::Enter => {
+                if let Some(row) = rows.get(at) {
+                    self.jump_to(row.tab, &row.terminal);
+                }
+                Mode::Normal
+            }
+            KeyCode::Esc => Mode::Normal,
+            _ => Mode::Sidebar(selected),
+        };
+        self.report(|app| app.relayout());
     }
 
     /// Run a command whose failure the user should see but that is not fatal.
@@ -97,6 +152,7 @@ impl App {
         match &mut self.mode {
             Mode::Rename(name) => name.extend(text.chars().filter(|c| !c.is_control())),
             Mode::Help => self.mode = Mode::Normal,
+            Mode::Sidebar(_) => {}
             Mode::Normal => {
                 if let Some(t) = self.current_mut() {
                     let bytes = encode_paste(text, t.emulator().modes().bracketed_paste);

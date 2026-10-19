@@ -11,6 +11,7 @@ use super::tabs::Tabs;
 use super::Event;
 use crate::config::{key_name, Config};
 use crate::input::PrefixKeys;
+use crate::sessions::{self, Sessions, State};
 use crate::terminal::Terminal;
 use crate::tmux::Server;
 use anyhow::Result;
@@ -21,6 +22,8 @@ use std::sync::mpsc::Sender;
 
 /// Rows above the terminals taken by the tab bar.
 pub const TAB_BAR_ROWS: u16 = 1;
+/// Columns the sidebar takes, its border included, while it is shown.
+pub const SIDEBAR_COLS: u16 = 24;
 /// New terminals are named `terminal-N` until the user renames them.
 const NAME_STEM: &str = "terminal-";
 
@@ -29,6 +32,20 @@ pub enum Mode {
     /// Renaming the current tab; holds the text typed so far.
     Rename(String),
     Help,
+    /// The sidebar has the keyboard; holds the selected row's pane.
+    Sidebar(Option<String>),
+}
+
+/// One session row of the sidebar.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Row {
+    pub pane: String,
+    /// The terminal's tmux session id.
+    pub terminal: String,
+    /// Index of the tab holding the terminal.
+    pub tab: usize,
+    pub label: String,
+    pub state: State,
 }
 
 pub struct App {
@@ -49,16 +66,56 @@ pub struct App {
     pub(super) start_dir: PathBuf,
     /// Where the layout is saved.
     pub(super) state_dir: PathBuf,
+    pub(super) sessions: Sessions,
+    /// The user hid the sidebar (`C-a b`).
+    pub(super) sidebar_hidden: bool,
 }
 
-/// The part of a screen of `(cols, rows)` that shows the current tab's terminals.
-pub fn session_area((cols, rows): (u16, u16)) -> Rect {
+/// The part of a screen of `(cols, rows)` that shows the current tab's
+/// terminals, right of a sidebar `sidebar` columns wide.
+pub fn session_area((cols, rows): (u16, u16), sidebar: u16) -> Rect {
+    let sidebar = sidebar.min(cols);
     Rect {
-        x: 0,
+        x: sidebar,
         y: TAB_BAR_ROWS.min(rows),
-        width: cols,
+        width: cols - sidebar,
         height: rows.saturating_sub(TAB_BAR_ROWS),
     }
+}
+
+/// Whether a tab still has the name paddock gave it (so it says nothing).
+fn is_default_name(name: &str) -> bool {
+    name.strip_prefix(NAME_STEM)
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// A terminal as the sidebar sees it: its tab's index and name, its tmux
+/// session id and its pane id.
+pub struct Placed<'a> {
+    pub tab: usize,
+    pub tab_name: &'a str,
+    pub terminal: &'a str,
+    pub pane: &'a str,
+}
+
+/// Session rows of the given terminals, sorted by state, then by tab.
+pub fn rows<'a>(sessions: &Sessions, terminals: impl IntoIterator<Item = Placed<'a>>) -> Vec<Row> {
+    let mut rows: Vec<Row> = terminals
+        .into_iter()
+        .filter_map(|t| {
+            let s = sessions.get(t.pane)?;
+            let tab_name = (!is_default_name(t.tab_name)).then_some(t.tab_name);
+            Some(Row {
+                pane: t.pane.to_string(),
+                terminal: t.terminal.to_string(),
+                tab: t.tab,
+                label: sessions::label(s, tab_name),
+                state: s.state,
+            })
+        })
+        .collect();
+    rows.sort_by_key(|r| (r.state.rank(), r.tab));
+    rows
 }
 
 /// The first `terminal-N` not already taken.
@@ -92,6 +149,8 @@ impl App {
             screen,
             start_dir,
             state_dir,
+            sessions: Sessions::default(),
+            sidebar_hidden: false,
         };
         let sessions = app.server.sessions();
         let saved = saved::load(&app.state_dir).unwrap_or_else(|e| {
@@ -123,7 +182,44 @@ impl App {
 
     /// Where the current tab's terminals are drawn.
     pub fn area(&self) -> Rect {
-        session_area(self.screen)
+        session_area(self.screen, self.sidebar_width())
+    }
+
+    /// The sidebar's session rows, in display order.
+    pub fn rows(&self) -> Vec<Row> {
+        let placed = self.tabs.iter().enumerate().flat_map(|(tab, t)| {
+            t.content.leaves().into_iter().filter_map(move |id| {
+                Some(Placed {
+                    tab,
+                    tab_name: &t.name,
+                    terminal: id,
+                    pane: self.terminals.get(id)?.pane(),
+                })
+            })
+        });
+        rows(&self.sessions, placed)
+    }
+
+    /// Columns the sidebar takes now: none while hidden or without rows.
+    pub fn sidebar_width(&self) -> u16 {
+        let focused = matches!(self.mode, Mode::Sidebar(_));
+        let shown = !self.sidebar_hidden && (focused || !self.rows().is_empty());
+        if shown {
+            SIDEBAR_COLS
+        } else {
+            0
+        }
+    }
+
+    /// Bring terminal `id` to the screen: its tab becomes current and it
+    /// gets the focus.
+    pub fn jump_to(&mut self, tab: usize, id: &str) {
+        self.tabs.select(tab);
+        if let Some(t) = self.tabs.current_mut() {
+            if t.content.contains(&id.to_string()) {
+                t.content.focus = id.to_string();
+            }
+        }
     }
 
     /// Attach the terminal in tmux session `id` at `size`.
@@ -275,8 +371,77 @@ mod tests {
 
     #[test]
     fn terminals_get_the_screen_minus_the_tab_bar() {
-        assert_eq!(session_area((100, 30)), Rect::new(0, 1, 100, 29));
-        assert_eq!(session_area((1, 0)), Rect::new(0, 0, 1, 0));
+        assert_eq!(session_area((100, 30), 0), Rect::new(0, 1, 100, 29));
+        assert_eq!(session_area((1, 0), 0), Rect::new(0, 0, 1, 0));
+    }
+
+    #[test]
+    fn the_sidebar_takes_columns_from_the_left() {
+        assert_eq!(
+            session_area((100, 30), SIDEBAR_COLS),
+            Rect::new(24, 1, 76, 29)
+        );
+        assert_eq!(session_area((10, 5), SIDEBAR_COLS), Rect::new(10, 1, 0, 4));
+    }
+
+    #[test]
+    fn rows_cover_terminals_with_sessions_sorted_by_state_then_tab() {
+        use crate::sessions::HookRecord;
+        let mut s = Sessions::default();
+        for (pane, event, cwd) in [
+            ("%1", "SessionEnd", "/w/a"),
+            ("%2", "Stop", "/w/b"),
+            ("%3", "PermissionRequest", "/w/c"),
+            ("%4", "Stop", "/w/d"),
+            ("%9", "Stop", "/w/gone"),
+        ] {
+            s.apply(&HookRecord {
+                event: event.into(),
+                pane: pane.into(),
+                session_id: Some(pane.into()),
+                cwd: Some(cwd.into()),
+                ..Default::default()
+            });
+        }
+        // Tab 3 is split: both of its terminals run Claude.
+        let terminals = [
+            (0, "terminal-1", "$1", "%1"),
+            (1, "api", "$2", "%2"),
+            (2, "terminal-3", "$3", "%3"),
+            (2, "terminal-3", "$4", "%4"),
+            (3, "shell", "$5", "%5"),
+        ];
+        let placed = terminals
+            .iter()
+            .map(|&(tab, tab_name, terminal, pane)| Placed {
+                tab,
+                tab_name,
+                terminal,
+                pane,
+            });
+        let got: Vec<(String, String, State)> = rows(&s, placed)
+            .into_iter()
+            .map(|r| (r.label, r.terminal, r.state))
+            .collect();
+        let want = [
+            ("c", "$3", State::Waiting),
+            ("api", "$2", State::Idle),
+            ("d", "$4", State::Idle),
+            ("a", "$1", State::Stopped),
+        ];
+        let want: Vec<(String, String, State)> = want
+            .iter()
+            .map(|&(l, t, s)| (l.to_string(), t.to_string(), s))
+            .collect();
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn only_paddocks_own_names_count_as_default() {
+        assert!(is_default_name("terminal-12"));
+        assert!(!is_default_name("terminal-"));
+        assert!(!is_default_name("terminal-x"));
+        assert!(!is_default_name("api"));
     }
 
     #[test]

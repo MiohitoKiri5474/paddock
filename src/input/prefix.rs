@@ -22,6 +22,8 @@ pub enum Command {
     Equalise,
     Help,
     Detach,
+    FocusSidebar,
+    ToggleSidebar,
 }
 
 /// A direction to move focus in.
@@ -53,6 +55,8 @@ pub const BINDINGS: &[(&str, &str)] = &[
     ("hjkl", "move focus (also arrows)"),
     ("=", "equalise split sizes"),
     ("x", "close terminal (ends it)"),
+    ("s", "focus sidebar (j/k, Enter jumps, Esc back)"),
+    ("b", "show or hide sidebar"),
     ("d", "detach: quit, terminals keep running"),
     ("?", "this help"),
 ];
@@ -86,6 +90,8 @@ fn command(key: &KeyEvent) -> Option<Command> {
         '=' => Command::Equalise,
         '?' => Command::Help,
         'd' => Command::Detach,
+        's' => Command::FocusSidebar,
+        'b' => Command::ToggleSidebar,
         _ => return None,
     })
 }
@@ -209,6 +215,14 @@ mod tests {
             KeyAction::Command(Command::Help)
         );
         assert_eq!(after_prefix('d', none), KeyAction::Command(Command::Detach));
+        assert_eq!(
+            after_prefix('s', none),
+            KeyAction::Command(Command::FocusSidebar)
+        );
+        assert_eq!(
+            after_prefix('b', none),
+            KeyAction::Command(Command::ToggleSidebar)
+        );
     }
 
     #[test]

@@ -6,7 +6,7 @@ use super::screen::Screen;
 use super::state::{session_area, App, Mode, TAB_BAR_ROWS};
 use super::Event;
 use crate::tmux::Message;
-use crate::ui::{help, session_view, tab_bar::TabBar};
+use crate::ui::{help, session_view, sidebar, tab_bar::TabBar};
 use anyhow::Result;
 use crossterm::event::{self as ct, KeyEventKind};
 use ratatui::layout::Rect;
@@ -73,6 +73,18 @@ fn handle(app: &mut App, event: Event, screen: &mut Screen) -> Result<(Flow, boo
             }
         }
         Event::Tmux { .. } => return Ok((Flow::Continue, false)),
+        Event::Hooks(records) => {
+            for r in &records {
+                app.sessions.apply(r);
+            }
+            app.relayout()?;
+            Flow::Continue
+        }
+        Event::Agents(taken, agents) => {
+            app.sessions.reconcile(taken, &agents);
+            app.relayout()?;
+            Flow::Continue
+        }
         Event::Input(ct::Event::Key(key)) if key.kind != KeyEventKind::Release => app.key(key)?,
         Event::Input(ct::Event::Paste(text)) => {
             app.paste(&text)?;
@@ -92,13 +104,30 @@ fn handle(app: &mut App, event: Event, screen: &mut Screen) -> Result<(Flow, boo
 
 fn draw(screen: &mut Screen, app: &App) -> Result<()> {
     screen.draw(|f| {
-        let area = f.area();
+        let full = f.area();
+        let side = app.sidebar_width().min(full.width);
+        if side > 0 {
+            let selected = match &app.mode {
+                Mode::Sidebar(pane) => pane.as_deref(),
+                _ => None,
+            };
+            let side_area = Rect {
+                width: side,
+                ..full
+            };
+            sidebar::render(&app.rows(), selected, side_area, f.buffer_mut());
+        }
+        let area = Rect {
+            x: full.x + side,
+            width: full.width - side,
+            ..full
+        };
         let bar_height = TAB_BAR_ROWS.min(area.height);
         let bar_area = Rect {
             height: bar_height,
             ..area
         };
-        let term_area = session_area((area.width, area.height));
+        let term_area = session_area((full.width, full.height), side);
         let armed = app.prefix.armed().then_some(app.prefix_name.as_str());
         let bar = TabBar {
             names: app.tabs.iter().map(|t| t.name.as_str()).collect(),
@@ -127,7 +156,9 @@ fn draw(screen: &mut Screen, app: &App) -> Result<()> {
             }
         }
         if let Mode::Help = app.mode {
-            help::render(&app.prefix_name, area, f.buffer_mut());
+            help::render(&app.prefix_name, full, f.buffer_mut());
+        } else if let Mode::Sidebar(_) = app.mode {
+            // The sidebar has the keyboard: no terminal cursor.
         } else if let Some(cursor) = bar_cursor.or(term_cursor) {
             f.set_cursor_position(cursor);
         }

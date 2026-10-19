@@ -53,6 +53,11 @@ impl Terminal {
         &self.session
     }
 
+    /// The tmux pane id (`%N`) of its shell; hooks name terminals by it.
+    pub fn pane(&self) -> &str {
+        &self.pane
+    }
+
     /// Feed bytes the program wrote.
     pub fn output(&mut self, bytes: &[u8]) {
         self.keys.feed(bytes);

@@ -36,12 +36,13 @@ impl Sandbox {
             .prefix("pdk")
             .tempdir_in("/tmp")
             .expect("tempdir");
-        for dir in ["home", "state", "config", "tmux"] {
+        for dir in ["home", "state", "config", "tmux", "bin"] {
             std::fs::create_dir_all(root.path().join(dir)).expect("mkdir");
         }
         // A plain, predictable shell: no user rc files, a fixed prompt.
         let rc = format!("PS1='{PROMPT} '\nunsetopt PROMPT_SP\nunset HISTFILE\n");
         std::fs::write(root.path().join("home/.zshrc"), rc).expect("zshrc");
+        write_claude_stub(root.path());
         Self { root }
     }
 
@@ -58,7 +59,7 @@ impl Sandbox {
         let p = |n: &str| self.path(n).to_string_lossy().into_owned();
         vec![
             ("HOME".into(), p("home")),
-            ("PATH".into(), std::env::var("PATH").unwrap_or_default()),
+            ("PATH".into(), self.path_var()),
             ("SHELL".into(), "/bin/zsh".into()),
             ("LANG".into(), "en_US.UTF-8".into()),
             ("TERM".into(), "xterm-256color".into()),
@@ -128,6 +129,77 @@ impl Sandbox {
     pub fn launch(&self) -> Paddock {
         Paddock::launch(self)
     }
+
+    /// `PATH` with the sandbox's `bin` (holding the stub `claude`) first.
+    fn path_var(&self) -> String {
+        format!(
+            "{}:{}",
+            self.path("bin").display(),
+            std::env::var("PATH").unwrap_or_default()
+        )
+    }
+
+    /// What the stub `claude agents --json` prints from now on.
+    pub fn set_agents(&self, json: &str) {
+        let tmp = self.path("agents.json.tmp");
+        std::fs::write(&tmp, json).expect("write agents");
+        std::fs::rename(tmp, self.path("agents.json")).expect("rename agents");
+    }
+
+    /// A format evaluated by the sandbox's tmux server, trimmed.
+    pub fn display(&self, target: &str, format: &str) -> String {
+        self.tmux(&["display-message", "-p", "-t", target, format])
+            .trim()
+            .to_string()
+    }
+
+    /// Run the paddock binary with these arguments, environment and stdin,
+    /// outside any terminal (as Claude Code runs a hook).
+    pub fn run(&self, args: &[&str], env: &[(&str, &str)], stdin: &str) -> std::process::Output {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_paddock"));
+        cmd.env_clear()
+            .envs(self.env().into_iter().filter(|(k, _)| k != "TMUX"))
+            .envs(env.iter().copied())
+            .args(args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let mut child = cmd.spawn().expect("spawn paddock");
+        child
+            .stdin
+            .take()
+            .expect("stdin")
+            .write_all(stdin.as_bytes())
+            .expect("write stdin");
+        child.wait_with_output().expect("wait paddock")
+    }
+
+    /// `paddock hook <event>` with `payload` on stdin, as Claude Code would
+    /// run it inside the terminal of tmux session `terminal`.
+    pub fn hook(&self, terminal: &str, event: &str, payload: &str) -> std::process::Output {
+        let tmux = self.display(terminal, "#{socket_path},#{pid},0");
+        let pane = self.display(terminal, "#{pane_id}");
+        let out = self.run(
+            &["hook", event],
+            &[("TMUX", &tmux), ("TMUX_PANE", &pane)],
+            payload,
+        );
+        assert!(out.status.success(), "hook failed: {out:?}");
+        out
+    }
+}
+
+/// A `claude` that only answers `agents --json`, from `agents.json` in the
+/// sandbox (`[]` until a test sets it), so tests never see real sessions.
+fn write_claude_stub(root: &std::path::Path) {
+    let script = format!(
+        "#!/bin/sh\n[ \"$1 $2\" = \"agents --json\" ] || exit 1\ncat '{}/agents.json' 2>/dev/null || echo '[]'\n",
+        root.display()
+    );
+    let path = root.join("bin/claude");
+    std::fs::write(&path, script).expect("claude stub");
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod stub");
 }
 
 impl Drop for Sandbox {

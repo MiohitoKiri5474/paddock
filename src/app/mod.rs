@@ -9,9 +9,13 @@ mod screen;
 mod splits;
 mod state;
 mod tabs;
+mod watch;
+
+pub use state::Row;
 
 use crate::config::Config;
 use crate::paths::Paths;
+use crate::sessions::{Agent, HookRecord};
 use crate::tmux::{Message, Server};
 use anyhow::{Context, Result};
 use crossterm::event as ct;
@@ -29,6 +33,10 @@ pub enum Event {
     Input(ct::Event),
     /// Asked to detach (SIGTERM), e.g. by a second launch taking over.
     Detach,
+    /// Hook events recorded since the last batch.
+    Hooks(Vec<HookRecord>),
+    /// A `claude agents --json` snapshot and when it was taken (ms).
+    Agents(u64, Vec<Agent>),
 }
 
 pub fn run() -> Result<()> {
@@ -61,8 +69,9 @@ pub fn run() -> Result<()> {
         (size.width, size.height),
         tx.clone(),
         start_dir,
-        state_dir,
+        state_dir.clone(),
     )?;
+    watch::start(&app.server, &state_dir, &tx)?;
 
     // Only now may another thread read stdin (ratatui has finished its queries).
     std::thread::spawn(move || {
