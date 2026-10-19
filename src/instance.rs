@@ -41,7 +41,7 @@ pub fn claim(state_dir: &Path) -> Result<Option<Instance>> {
     if !try_lock(&file)? {
         let mut text = String::new();
         file.read_to_string(&mut text)?;
-        let Ok(pid) = text.trim().parse::<i32>() else {
+        let Some(pid) = parse_pid(&text) else {
             bail!("another paddock is starting ({} is locked)", path.display());
         };
         if !ask_to_take_over(pid)? {
@@ -65,6 +65,11 @@ fn ask_to_take_over(pid: i32) -> Result<bool> {
 
 /// Ask paddock `pid` to detach and wait until its lock is free.
 fn take_over(file: &File, pid: i32) -> Result<()> {
+    // The prompt can wait a long time; if the old paddock exited meanwhile its
+    // pid may belong to another process now, so never signal it.
+    if try_lock(file)? {
+        return Ok(());
+    }
     // SAFETY: kill has no memory-safety preconditions.
     if unsafe { libc::kill(pid, libc::SIGTERM) } != 0 {
         let err = std::io::Error::last_os_error();
@@ -83,6 +88,12 @@ fn take_over(file: &File, pid: i32) -> Result<()> {
     Ok(())
 }
 
+/// The pid in the lock file. Rejects 0, 1 and negatives: `kill` would signal
+/// a process group, launchd, or every process the user owns.
+fn parse_pid(text: &str) -> Option<i32> {
+    text.trim().parse::<i32>().ok().filter(|&pid| pid > 1)
+}
+
 /// Take the exclusive lock without waiting. Returns whether it was taken.
 fn try_lock(file: &File) -> Result<bool> {
     // SAFETY: the descriptor is valid for as long as `file` is borrowed.
@@ -94,5 +105,18 @@ fn try_lock(file: &File) -> Result<bool> {
         Ok(false)
     } else {
         Err(err).context("cannot lock the paddock instance file")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_pid;
+
+    #[test]
+    fn parse_pid_accepts_only_real_process_ids() {
+        assert_eq!(parse_pid("4242\n"), Some(4242));
+        for bad in ["", "0", "1", "-1", "-4242", "abc"] {
+            assert_eq!(parse_pid(bad), None, "{bad:?}");
+        }
     }
 }
