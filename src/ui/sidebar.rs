@@ -76,4 +76,20 @@ mod tests {
         assert!(buf[(1, 1)].modifier.contains(Modifier::REVERSED));
         assert!(!buf[(1, 2)].modifier.contains(Modifier::REVERSED));
     }
+
+    #[test]
+    fn control_characters_in_labels_never_reach_the_screen() {
+        // Labels come from `claude agents`, tab names and directories; an
+        // escape sequence in one must not be written to the outer terminal.
+        let area = Rect::new(0, 0, 30, 2);
+        let mut buf = Buffer::empty(area);
+        render(
+            &[row("a\x1b]52;c;eA==\x07b", State::Idle)],
+            None,
+            area,
+            &mut buf,
+        );
+        let drawn = text(&buf, 1);
+        assert!(!drawn.contains(char::is_control), "{drawn:?}");
+    }
 }
