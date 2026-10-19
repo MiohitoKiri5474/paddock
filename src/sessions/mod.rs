@@ -77,6 +77,9 @@ pub struct HookRecord {
     /// default branch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
+    /// A subagent's task description, when the hook could find it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     /// Milliseconds since the Unix epoch.
     pub ts: u64,
 }
@@ -101,17 +104,48 @@ pub fn state_after(r: &HookRecord) -> Option<State> {
     (r.agent_id.is_none() || state == State::Waiting).then_some(state)
 }
 
-/// Whether the main agent may have switched branch before this event (it
-/// started, was prompted, or ran a shell command), so the hook records the
-/// branch checked out in its directory. Claude's transcripts carry a stale
-/// branch, so git is the only source.
+/// Whether the agent may have switched branch before this event (it started,
+/// was prompted, ran a shell command, or a subagent finished), so the hook
+/// records the branch checked out in its directory: the session's for the
+/// main agent, the worktree's for a subagent. Claude's transcripts carry a
+/// stale branch, so git is the only source.
 pub fn needs_branch(r: &HookRecord) -> bool {
     let switched = match r.event.as_str() {
-        "SessionStart" | "UserPromptSubmit" => true,
+        "SessionStart" | "UserPromptSubmit" | "SubagentStart" | "SubagentStop" => true,
         "PostToolUse" => r.tool_name.as_deref() == Some("Bash"),
         _ => false,
     };
-    switched && r.agent_id.is_none() && r.cwd.is_some()
+    switched && r.cwd.is_some()
+}
+
+/// A subagent task's state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskState {
+    Running,
+    Waiting,
+    Done,
+    Stopped,
+}
+
+impl TaskState {
+    pub fn label(self) -> &'static str {
+        match self {
+            TaskState::Running => "running",
+            TaskState::Waiting => "waiting",
+            TaskState::Done => "done",
+            TaskState::Stopped => "stopped",
+        }
+    }
+}
+
+/// The state a subagent's own event leads to, if it changes it.
+fn subagent_state(r: &HookRecord) -> Option<TaskState> {
+    match (r.event.as_str(), state_after(r)) {
+        ("SubagentStop", _) => Some(TaskState::Done),
+        (_, Some(State::Waiting)) => Some(TaskState::Waiting),
+        ("SubagentStart" | "PostToolUse", _) => Some(TaskState::Running),
+        _ => None,
+    }
 }
 
 /// A task: one branch a session worked on, and the directory it was seen in.
@@ -119,6 +153,28 @@ pub fn needs_branch(r: &HookRecord) -> bool {
 pub struct Task {
     pub branch: String,
     pub cwd: String,
+    /// Set when subagents, not the main agent, work on the branch.
+    pub subagent: Option<SubagentTask>,
+}
+
+/// What a subagent task row shows: the latest subagent on the branch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubagentTask {
+    pub agent_id: String,
+    pub description: Option<String>,
+    /// Running or waiting while any subagent on the branch is.
+    pub state: TaskState,
+}
+
+/// A subagent of a session, as its hook events left it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Subagent {
+    id: String,
+    cwd: String,
+    /// Its worktree's task branch, once read.
+    branch: Option<String>,
+    description: Option<String>,
+    state: TaskState,
 }
 
 /// A session reported by `claude agents --json`, with the terminal it runs in
@@ -140,10 +196,12 @@ pub struct Session {
     pub state: State,
     /// When the state was last set (ms since the epoch).
     pub updated: u64,
-    /// Branches the main agent worked on, oldest first.
+    /// Branches the main agent and its subagents worked on, oldest first.
     pub tasks: Vec<Task>,
     /// When a hook event last set the state (ms since the epoch).
     pub hooked: Option<u64>,
+    /// Subagents seen, in the order they reached their current branch.
+    subagents: Vec<Subagent>,
 }
 
 impl Session {
@@ -156,6 +214,122 @@ impl Session {
             updated: 0,
             tasks: Vec::new(),
             hooked: None,
+            subagents: Vec::new(),
+        }
+    }
+
+    /// Fold in an event of subagent `id`.
+    fn apply_subagent(&mut self, id: &str, r: &HookRecord) {
+        let i = match self.subagents.iter().position(|a| a.id == id) {
+            Some(i) => i,
+            None => {
+                self.subagents.push(Subagent {
+                    id: id.to_string(),
+                    cwd: String::new(),
+                    branch: None,
+                    description: None,
+                    state: TaskState::Running,
+                });
+                self.subagents.len() - 1
+            }
+        };
+        let a = &mut self.subagents[i];
+        if let Some(cwd) = &r.cwd {
+            a.cwd.clone_from(cwd);
+        }
+        if r.description.is_some() {
+            a.description.clone_from(&r.description);
+        }
+        if let Some(state) = subagent_state(r) {
+            a.state = state;
+        }
+        let moved = r.branch.is_some() && r.branch != a.branch;
+        let old = if moved {
+            std::mem::replace(&mut a.branch, r.branch.clone())
+        } else {
+            None
+        };
+        if moved {
+            // The latest subagent on a branch is the last one to reach it.
+            let a = self.subagents.remove(i);
+            self.subagents.push(a);
+        }
+        let branch = self
+            .subagents
+            .iter()
+            .find(|a| a.id == id)
+            .and_then(|a| a.branch.clone());
+        if let Some(old) = old {
+            // Claude names a worktree's first branch after the agent; the
+            // agent's real task branch replaces it, in place.
+            if old == format!("worktree-agent-{id}") && !self.on_branch(&old) {
+                let new = branch.as_deref().unwrap_or_default();
+                let taken = self.tasks.iter().any(|t| t.branch == new);
+                let first = |t: &Task| t.branch == old && t.subagent.is_some();
+                match self.tasks.iter_mut().find(|t| first(t)) {
+                    Some(t) if !taken => t.branch = new.to_string(),
+                    _ => self.tasks.retain(|t| !first(t)),
+                }
+            }
+            self.sync(&old);
+        }
+        if let Some(branch) = branch {
+            self.sync(&branch);
+        }
+    }
+
+    fn on_branch(&self, branch: &str) -> bool {
+        self.subagents
+            .iter()
+            .any(|a| a.branch.as_deref() == Some(branch))
+    }
+
+    /// The session ended: subagents still at work never finish.
+    fn stop_subagents(&mut self) {
+        for a in &mut self.subagents {
+            if matches!(a.state, TaskState::Running | TaskState::Waiting) {
+                a.state = TaskState::Stopped;
+            }
+        }
+        let branches: Vec<String> = self.tasks.iter().map(|t| t.branch.clone()).collect();
+        for b in branches {
+            self.sync(&b);
+        }
+    }
+
+    /// Bring `branch`'s task row up to date with the subagents on it. The
+    /// main agent's own branch stays its row.
+    fn sync(&mut self, branch: &str) {
+        let on: Vec<&Subagent> = self
+            .subagents
+            .iter()
+            .filter(|a| a.branch.as_deref() == Some(branch))
+            .collect();
+        let Some(latest) = on.last() else {
+            return;
+        };
+        let busy = |s: TaskState| on.iter().any(|a| a.state == s);
+        let state = [TaskState::Waiting, TaskState::Running]
+            .into_iter()
+            .find(|&s| busy(s))
+            .unwrap_or(latest.state);
+        let task = SubagentTask {
+            agent_id: latest.id.clone(),
+            description: on.iter().rev().find_map(|a| a.description.clone()),
+            state,
+        };
+        let cwd = latest.cwd.clone();
+        match self.tasks.iter_mut().find(|t| t.branch == branch) {
+            Some(t) if t.subagent.is_none() => {}
+            Some(t) => {
+                t.cwd = cwd;
+                t.subagent = Some(task);
+            }
+            None => self.tasks.push(Task {
+                branch: branch.to_string(),
+                cwd,
+                subagent: Some(task),
+            }),
         }
     }
 }
@@ -183,7 +357,8 @@ impl Sessions {
         if r.session_id.is_some() && r.session_id != s.session_id {
             *s = Session::new(r.session_id.clone());
         }
-        if r.cwd.is_some() {
+        // A subagent's directory is its worktree, not the session's.
+        if r.cwd.is_some() && r.agent_id.is_none() {
             s.cwd.clone_from(&r.cwd);
         }
         if let Some(state) = state_after(r) {
@@ -191,12 +366,20 @@ impl Sessions {
             s.updated = r.ts;
             s.hooked = Some(r.ts);
         }
-        if let (Some(branch), Some(cwd), None) = (&r.branch, &r.cwd, &r.agent_id) {
+        if let Some(id) = &r.agent_id {
+            s.apply_subagent(id, r);
+            return;
+        }
+        if r.event == "SessionEnd" {
+            s.stop_subagents();
+        }
+        if let (Some(branch), Some(cwd)) = (&r.branch, &r.cwd) {
             match s.tasks.iter_mut().find(|t| t.branch == *branch) {
                 Some(t) => t.cwd.clone_from(cwd),
                 None => s.tasks.push(Task {
                     branch: branch.clone(),
                     cwd: cwd.clone(),
+                    subagent: None,
                 }),
             }
         }
@@ -441,10 +624,16 @@ mod tests {
             cwd: None,
             ..rec("SessionStart", 1)
         }));
-        assert!(!needs_branch(&HookRecord {
+        // A subagent's worktree branch is read too, from its own directory.
+        let sub = |event: &str| HookRecord {
             agent_id: Some("a1".into()),
-            ..bash("PostToolUse", "Bash")
-        }));
+            tool_name: Some("Bash".into()),
+            ..rec(event, 1)
+        };
+        assert!(needs_branch(&sub("PostToolUse")));
+        assert!(needs_branch(&sub("SubagentStart")));
+        assert!(needs_branch(&sub("SubagentStop")));
+        assert!(!needs_branch(&sub("PermissionRequest")));
     }
 
     fn on(branch: &str, cwd: &str, ts: u64) -> HookRecord {
@@ -476,14 +665,182 @@ mod tests {
         assert_eq!(tasks(&s), [("feat/a", "/r/sub"), ("feat/b", "/r")]);
     }
 
+    const WT_A: &str = "/r/.claude/worktrees/agent-a1";
+    const WT_B: &str = "/r/.claude/worktrees/agent-b2";
+
+    /// An event of subagent `id` working in `cwd`, on `branch` if read.
+    fn sub(event: &str, id: &str, cwd: &str, branch: Option<&str>, ts: u64) -> HookRecord {
+        HookRecord {
+            agent_id: Some(id.into()),
+            cwd: Some(cwd.into()),
+            branch: branch.map(str::to_string),
+            tool_name: Some("Bash".into()),
+            ..rec(event, ts)
+        }
+    }
+
+    fn described(r: HookRecord, description: &str) -> HookRecord {
+        HookRecord {
+            description: Some(description.into()),
+            ..r
+        }
+    }
+
+    type Line = (String, Option<String>, Option<TaskState>);
+
+    /// Task rows as `(branch, label, state)`; main-agent rows have neither.
+    fn subtasks(s: &Sessions) -> Vec<Line> {
+        s.get("%1")
+            .unwrap()
+            .tasks
+            .iter()
+            .map(|t| match &t.subagent {
+                Some(a) => (t.branch.clone(), a.description.clone(), Some(a.state)),
+                None => (t.branch.clone(), None, None),
+            })
+            .collect()
+    }
+
+    fn line(branch: &str, label: Option<&str>, state: Option<TaskState>) -> Line {
+        (branch.into(), label.map(str::to_string), state)
+    }
+
     #[test]
-    fn subagent_branches_are_not_main_agent_tasks() {
+    fn parallel_subagents_get_a_task_row_per_worktree_branch() {
+        use TaskState::{Done, Running, Stopped};
         let mut s = Sessions::default();
-        s.apply(&HookRecord {
-            agent_id: Some("a1".into()),
-            ..on("fix/a", "/r/wt", 1)
-        });
-        assert!(tasks(&s).is_empty());
+        s.apply(&rec("UserPromptSubmit", 1));
+        s.apply(&described(
+            sub("SubagentStart", "a1", WT_A, Some("worktree-agent-a1"), 2),
+            "Fix a",
+        ));
+        s.apply(&sub(
+            "SubagentStart",
+            "b2",
+            WT_B,
+            Some("worktree-agent-b2"),
+            3,
+        ));
+        assert_eq!(
+            subtasks(&s),
+            [
+                line("worktree-agent-a1", Some("Fix a"), Some(Running)),
+                line("worktree-agent-b2", None, Some(Running)),
+            ]
+        );
+        // Leaving the branch Claude made for the worktree moves the row.
+        s.apply(&sub("PostToolUse", "a1", WT_A, Some("fix/a"), 4));
+        s.apply(&sub("PostToolUse", "b2", WT_B, Some("fix/b"), 5));
+        // The main agent's Stop says nothing about its subagents.
+        s.apply(&rec("Stop", 6));
+        assert_eq!(state(&s), State::Idle);
+        s.apply(&sub("SubagentStop", "a1", WT_A, Some("fix/a"), 7));
+        assert_eq!(
+            subtasks(&s),
+            [
+                line("fix/a", Some("Fix a"), Some(Done)),
+                line("fix/b", None, Some(Running)),
+            ]
+        );
+        assert_eq!(s.get("%1").unwrap().tasks[1].cwd, WT_B);
+        // The session ends with b still at work.
+        s.apply(&rec("SessionEnd", 8));
+        assert_eq!(
+            subtasks(&s),
+            [
+                line("fix/a", Some("Fix a"), Some(Done)),
+                line("fix/b", None, Some(Stopped)),
+            ]
+        );
+        let session = s.get("%1").unwrap();
+        assert_eq!(
+            session.cwd.as_deref(),
+            Some("/tmp/repo"),
+            "subagents never move the session"
+        );
+    }
+
+    #[test]
+    fn rows_keep_their_place_when_subagents_switch_branch() {
+        let mut s = Sessions::default();
+        s.apply(&sub(
+            "SubagentStart",
+            "a1",
+            WT_A,
+            Some("worktree-agent-a1"),
+            1,
+        ));
+        s.apply(&sub(
+            "SubagentStart",
+            "b2",
+            WT_B,
+            Some("worktree-agent-b2"),
+            2,
+        ));
+        s.apply(&sub("PostToolUse", "b2", WT_B, Some("fix/b"), 3));
+        s.apply(&sub("PostToolUse", "a1", WT_A, Some("fix/a"), 4));
+        let branches: Vec<&str> = tasks(&s).into_iter().map(|(b, _)| b).collect();
+        assert_eq!(branches, ["fix/a", "fix/b"]);
+    }
+
+    #[test]
+    fn a_subagent_waits_then_runs_again() {
+        let mut s = Sessions::default();
+        s.apply(&sub("SubagentStart", "a1", WT_A, Some("fix/a"), 1));
+        s.apply(&sub("PermissionRequest", "a1", WT_A, None, 2));
+        assert_eq!(
+            subtasks(&s),
+            [line("fix/a", None, Some(TaskState::Waiting))]
+        );
+        assert_eq!(state(&s), State::Waiting, "it blocks its session");
+        s.apply(&sub("PostToolUse", "a1", WT_A, Some("fix/a"), 3));
+        assert_eq!(
+            subtasks(&s),
+            [line("fix/a", None, Some(TaskState::Running))]
+        );
+    }
+
+    #[test]
+    fn a_description_seen_later_labels_the_row() {
+        let mut s = Sessions::default();
+        s.apply(&sub("SubagentStart", "a1", WT_A, Some("fix/a"), 1));
+        s.apply(&described(
+            sub("SubagentStop", "a1", WT_A, Some("fix/a"), 2),
+            "Fix a",
+        ));
+        assert_eq!(
+            subtasks(&s),
+            [line("fix/a", Some("Fix a"), Some(TaskState::Done))]
+        );
+    }
+
+    #[test]
+    fn subagents_sharing_a_branch_share_one_row_labelled_by_the_latest() {
+        use TaskState::{Done, Running};
+        let mut s = Sessions::default();
+        let start = |id, cwd, ts| sub("SubagentStart", id, cwd, Some("fix/x"), ts);
+        s.apply(&described(start("a1", WT_A, 1), "First"));
+        s.apply(&described(start("b2", WT_B, 2), "Second"));
+        assert_eq!(subtasks(&s), [line("fix/x", Some("Second"), Some(Running))]);
+        // Still running while any of them is.
+        s.apply(&sub("SubagentStop", "b2", WT_B, Some("fix/x"), 3));
+        assert_eq!(subtasks(&s), [line("fix/x", Some("Second"), Some(Running))]);
+        s.apply(&sub("SubagentStop", "a1", WT_A, Some("fix/x"), 4));
+        assert_eq!(subtasks(&s), [line("fix/x", Some("Second"), Some(Done))]);
+    }
+
+    #[test]
+    fn subagents_on_the_main_agents_branch_or_the_default_get_no_row() {
+        let mut s = Sessions::default();
+        s.apply(&on("feat/main", "/tmp/repo", 1));
+        // No worktree: the subagent works in the main agent's directory.
+        s.apply(&described(
+            sub("SubagentStart", "a1", "/tmp/repo", Some("feat/main"), 2),
+            "Helper",
+        ));
+        s.apply(&sub("SubagentStart", "b2", WT_B, None, 3));
+        s.apply(&sub("SubagentStop", "b2", WT_B, None, 4));
+        assert_eq!(subtasks(&s), [line("feat/main", None, None)]);
     }
 
     #[test]

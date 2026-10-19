@@ -41,8 +41,35 @@ pub fn record(event: &str, pane: &str, payload: &str, ts: u64) -> HookRecord {
         agent_id: field("agent_id"),
         tool_name: field("tool_name"),
         branch: None,
+        description: description(&v),
         ts,
     }
+}
+
+/// A subagent's description as its payload gives it: `SubagentStop` lists
+/// the session's background tasks, the subagent among them.
+fn description(v: &Value) -> Option<String> {
+    let id = v.get("agent_id")?;
+    v.get("background_tasks")?
+        .as_array()?
+        .iter()
+        .find(|t| t.get("id") == Some(id))?
+        .get("description")?
+        .as_str()
+        .map(str::to_string)
+}
+
+/// The description in a subagent's `agent-<id>.meta.json`, which Claude
+/// keeps next to the session's transcript (`<transcript>.jsonl` →
+/// `<transcript>/subagents/`).
+pub fn meta_description(transcript: &str, agent_id: &str) -> Option<String> {
+    if agent_id.is_empty() || !agent_id.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return None;
+    }
+    let dir = Path::new(transcript.strip_suffix(".jsonl")?).join("subagents");
+    let text = std::fs::read_to_string(dir.join(format!("agent-{agent_id}.meta.json"))).ok()?;
+    let v: Value = serde_json::from_str(&text).ok()?;
+    v.get("description")?.as_str().map(str::to_string)
 }
 
 /// Append one record as one line, in a single write.
@@ -131,6 +158,44 @@ mod tests {
         let bad = record("Stop", "%1", "not json", 8);
         assert_eq!(bad.event, "Stop");
         assert_eq!(bad.session_id, None);
+    }
+
+    const SPIKE: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/spikes/02-subagent-worktree/fixtures"
+    );
+
+    #[test]
+    fn a_subagents_description_comes_from_its_stop_payload() {
+        let stop = std::fs::read_to_string(format!("{SPIKE}/SubagentStop-subagent.json")).unwrap();
+        let r = record("SubagentStop", "%1", &stop, 1);
+        assert_eq!(
+            r.description.as_deref(),
+            Some("Create fix/a branch and a.txt")
+        );
+        let start =
+            std::fs::read_to_string(format!("{SPIKE}/SubagentStart-subagent.json")).unwrap();
+        assert_eq!(record("SubagentStart", "%1", &start, 1).description, None);
+        // The main agent's Stop lists subagents too, but describes none itself.
+        let main = std::fs::read_to_string(format!("{SPIKE}/Stop.json")).unwrap();
+        assert_eq!(record("Stop", "%1", &main, 1).description, None);
+    }
+
+    #[test]
+    fn a_subagents_description_is_read_from_its_meta_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let transcript = dir.path().join("s1.jsonl");
+        let transcript = transcript.to_str().unwrap();
+        std::fs::create_dir_all(dir.path().join("s1/subagents")).unwrap();
+        std::fs::write(
+            dir.path().join("s1/subagents/agent-a1.meta.json"),
+            r#"{"agentType":"general-purpose","description":"Fix a","finished":false}"#,
+        )
+        .unwrap();
+        assert_eq!(meta_description(transcript, "a1").as_deref(), Some("Fix a"));
+        assert_eq!(meta_description(transcript, "b2"), None, "no meta file");
+        assert_eq!(meta_description(transcript, "../a1"), None);
+        assert_eq!(meta_description("/no/transcript", "a1"), None);
     }
 
     #[test]

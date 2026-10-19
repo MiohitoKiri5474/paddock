@@ -19,6 +19,8 @@ pub const EVENTS: &[&str] = &[
     "Notification",
     "Stop",
     "SessionEnd",
+    "SubagentStart",
+    "SubagentStop",
 ];
 
 /// Hooks of the tmux plugin paddock replaces; install removes them.
@@ -192,6 +194,13 @@ fn record(event: &str) -> Result<()> {
     let mut r = log::record(event, &pane, &payload, now_ms());
     if sessions::needs_branch(&r) {
         r.branch = r.cwd.as_deref().and_then(git::task_branch);
+        if let (Some(id), None) = (&r.agent_id, &r.description) {
+            let v: Value = serde_json::from_str(&payload).unwrap_or(Value::Null);
+            r.description = v
+                .get("transcript_path")
+                .and_then(Value::as_str)
+                .and_then(|t| log::meta_description(t, id));
+        }
     }
     log::append(&log::path(&paths.state_dir, pid), &r)
 }

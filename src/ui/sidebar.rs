@@ -3,7 +3,7 @@
 //! right), with a border on its right edge.
 
 use crate::app::{Row, TaskRow};
-use crate::sessions::State;
+use crate::sessions::{State, TaskState};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -45,10 +45,34 @@ pub fn render(rows: &[Row], selected: Option<&str>, area: Rect, buf: &mut Buffer
                 spread(1, &row.label, row.state.label(), width),
                 highlight(row.state),
             ),
-            Some(t) => (spread(2, &t.branch, &fields(t), width), Style::default()),
+            Some(t) => task_line(t, width),
         };
         buf.set_string(area.x, y, text, style);
     }
+}
+
+/// A task row: the branch and git fields, or for a subagent's task its
+/// description (else the branch), git fields and state, standing out like a
+/// session row while waiting and, softly, once done.
+fn task_line(task: &TaskRow, width: usize) -> (String, Style) {
+    let Some(sub) = &task.subagent else {
+        return (
+            spread(2, &task.branch, &fields(task), width),
+            Style::default(),
+        );
+    };
+    let label = sub.description.as_deref().unwrap_or(&task.branch);
+    let right = [fields(task), sub.state.label().to_string()]
+        .into_iter()
+        .filter(|p| !p.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let style = match sub.state {
+        TaskState::Waiting => highlight(State::Waiting),
+        TaskState::Done => highlight(State::Idle),
+        TaskState::Running | TaskState::Stopped => Style::default(),
+    };
+    (spread(2, label, &right, width), style)
 }
 
 /// The sidebar's lines in order: each session row (by index into `rows`),
@@ -137,6 +161,7 @@ mod tests {
                 ahead_behind,
                 changes,
             }),
+            subagent: None,
         }
     }
 
@@ -205,6 +230,7 @@ mod tests {
                 branch: "unread".into(),
                 cwd: "/r".into(),
                 status: None,
+                subagent: None,
             },
         ];
         render(
@@ -221,6 +247,41 @@ mod tests {
         assert_eq!(text(&buf, 6), " web              idle │");
         assert!(buf[(1, 1)].modifier.contains(Modifier::REVERSED));
         assert!(!buf[(2, 2)].modifier.contains(Modifier::REVERSED));
+    }
+
+    #[test]
+    fn subagent_task_rows_show_their_description_and_state() {
+        use crate::sessions::{SubagentTask, TaskState};
+        let area = Rect::new(0, 0, 24, 5);
+        let mut buf = Buffer::empty(area);
+        let sub = |branch: &str, description: Option<&str>, state, changes| TaskRow {
+            subagent: Some(SubagentTask {
+                agent_id: "a1".into(),
+                description: description.map(str::to_string),
+                state,
+            }),
+            ..task(branch, None, changes)
+        };
+        let mut api = row("api", State::Idle);
+        api.tasks = vec![
+            sub(
+                "fix/a",
+                Some("Create fix/a branch"),
+                TaskState::Running,
+                None,
+            ),
+            sub("fix/b", None, TaskState::Done, Some((3, 1))),
+            sub("fix/c", Some("Ask"), TaskState::Waiting, None),
+            sub("fix/d", Some("Gone"), TaskState::Stopped, None),
+        ];
+        render(&[api], None, area, &mut buf);
+        assert_eq!(text(&buf, 1), " api              idle │");
+        assert_eq!(text(&buf, 2), "  Create fix/a running │");
+        assert_eq!(text(&buf, 3), "  fix/b     +3 −1 done │");
+        assert_eq!(text(&buf, 4), "  Ask          waiting │");
+        assert_eq!(buf[(2, 3)].fg, Color::Green, "done stands out softly");
+        assert_eq!(buf[(2, 4)].bg, Color::Yellow, "waiting stands out");
+        assert_eq!(buf[(2, 2)].fg, Color::Reset);
     }
 
     #[test]

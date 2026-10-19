@@ -14,7 +14,7 @@ use super::Event;
 use crate::config::{key_name, Config};
 use crate::git::Status;
 use crate::input::PrefixKeys;
-use crate::sessions::{self, Session, Sessions, State};
+use crate::sessions::{self, Session, Sessions, State, SubagentTask};
 use crate::terminal::Terminal;
 use crate::tmux::server::quote;
 use crate::tmux::Server;
@@ -66,6 +66,8 @@ pub struct TaskRow {
     pub cwd: String,
     /// `None` until git has been read.
     pub status: Option<Status>,
+    /// Set for a subagent task: its label and state.
+    pub subagent: Option<SubagentTask>,
 }
 
 /// Last known git status of each task, by `(directory, branch)`.
@@ -146,6 +148,7 @@ pub fn rows<'a>(
                     status: status
                         .get(&(task.cwd.clone(), task.branch.clone()))
                         .copied(),
+                    subagent: task.subagent.clone(),
                 })
                 .collect();
             Some(Row {
@@ -591,11 +594,13 @@ mod tests {
                 branch: "feat/a".into(),
                 cwd: "/r".into(),
                 status: Some(read),
+                subagent: None,
             },
             TaskRow {
                 branch: "feat/b".into(),
                 cwd: "/r/wt".into(),
                 status: None,
+                subagent: None,
             },
         ];
         assert_eq!(got, &want);

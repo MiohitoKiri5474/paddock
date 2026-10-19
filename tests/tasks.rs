@@ -103,9 +103,12 @@ fn wait_for_sidebar(paddock: &Paddock, want: &[&str]) {
     );
 }
 
-/// A sidebar line as drawn and trimmed: `left`, then `right` at the end.
+/// A sidebar line as drawn and trimmed: `left`, cut to fit, then `right` at
+/// the end.
 fn line(indent: usize, left: &str, right: &str) -> String {
-    let gap = SIDEBAR - indent - 1 - left.chars().count() - right.chars().count();
+    let room = SIDEBAR - indent - 1 - right.chars().count();
+    let left: String = left.chars().take(room - 1).collect();
+    let gap = room - left.chars().count();
     format!("{left}{}{right}", " ".repeat(gap))
 }
 
@@ -220,4 +223,148 @@ fn no_rows_for_the_default_branch_or_shells_without_claude() {
     wait_for_sidebar(&paddock, &[&session("running")]);
     std::thread::sleep(Duration::from_millis(500));
     assert_eq!(sidebar(&paddock), [session("running")]);
+}
+
+// Ticket 09: subagent task rows, from spike 02's recorded subagent payloads.
+
+const AGENT_A: &str = "a02c2bd27020e23b4";
+const AGENT_B: &str = "a9700dfeed5ef352c";
+const SESSION: &str = "11111111-2222-4333-8444-555555555555";
+const FIX_A: &str = "Create fix/a branch and a.txt";
+const FIX_B: &str = "Create fix/b branch and b.txt";
+
+/// A recorded payload for the test repository `repo` and the sandbox's home.
+/// The recorded subagent is agent A; for agent B the two agents' ids and
+/// descriptions swap places.
+fn recorded(sandbox: &Sandbox, name: &str, repo: &Path, agent: &str) -> String {
+    let path = format!("{SPIKE}/{name}.json");
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
+    let swap =
+        |text: String, a: &str, b: &str| text.replace(a, "\u{0}").replace(b, a).replace('\u{0}', b);
+    let text = if agent == AGENT_B {
+        swap(swap(text, AGENT_A, AGENT_B), FIX_A, FIX_B)
+    } else {
+        text
+    };
+    let home = sandbox.path("home");
+    text.replace("\"/tmp/repo", &format!("\"{}", repo.display()))
+        .replace("\"/home/user", &format!("\"{}", home.display()))
+}
+
+/// The worktree Claude makes for a subagent, on its first branch.
+fn worktree(repo: &Path, agent: &str) -> PathBuf {
+    let dir = repo.join(format!(".claude/worktrees/agent-{agent}"));
+    let branch = format!("worktree-agent-{agent}");
+    git(
+        repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            &branch,
+            dir.to_str().unwrap(),
+        ],
+    );
+    dir
+}
+
+/// Agent A's `.meta.json`, as Claude writes it next to the transcript;
+/// agent B has none, so its description only arrives with its SubagentStop.
+fn write_meta(sandbox: &Sandbox) {
+    let dir = sandbox.path(&format!(
+        "home/.claude/projects/-tmp-repo/{SESSION}/subagents"
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join(format!("agent-{AGENT_A}.meta.json")),
+        format!(r#"{{"agentType":"general-purpose","description":"{FIX_A}","finished":false}}"#),
+    )
+    .unwrap();
+}
+
+fn sub(label: &str, state: &str) -> String {
+    line(2, label, state)
+}
+
+#[test]
+fn parallel_subagents_show_as_task_rows_from_running_to_done() {
+    let sandbox = Sandbox::new();
+    let dir = repo(&sandbox);
+    write_meta(&sandbox);
+    let (wt_a, wt_b) = (worktree(&dir, AGENT_A), worktree(&dir, AGENT_B));
+    let paddock = ready(&sandbox);
+    let hook = |name: &str, event: &str, agent: &str| {
+        sandbox.hook("terminal-1", event, &recorded(&sandbox, name, &dir, agent));
+    };
+
+    hook("SessionStart", "SessionStart", AGENT_A);
+    hook("UserPromptSubmit", "UserPromptSubmit", AGENT_A);
+    hook("SubagentStart-subagent", "SubagentStart", AGENT_A);
+    hook("SubagentStart-subagent", "SubagentStart", AGENT_B);
+    let first_b = format!("worktree-agent-{AGENT_B}");
+    wait_for_sidebar(
+        &paddock,
+        &[
+            &session("running"),
+            &sub(FIX_A, "running"),
+            &sub(&first_b, "running"),
+        ],
+    );
+
+    git(&wt_a, &["switch", "-q", "-c", "fix/a"]);
+    hook("PostToolUse-subagent", "PostToolUse", AGENT_A);
+    git(&wt_b, &["switch", "-q", "-c", "fix/b"]);
+    hook("PostToolUse-subagent", "PostToolUse", AGENT_B);
+    // The main agent stops while its subagents still run.
+    hook("Stop", "Stop", AGENT_A);
+    wait_for_sidebar(
+        &paddock,
+        &[
+            &session("idle"),
+            &sub(FIX_A, "running"),
+            &sub("fix/b", "running"),
+        ],
+    );
+
+    hook("SubagentStop-subagent", "SubagentStop", AGENT_A);
+    hook("SubagentStop-subagent", "SubagentStop", AGENT_B);
+    wait_for_sidebar(
+        &paddock,
+        &[&session("idle"), &sub(FIX_A, "done"), &sub(FIX_B, "done")],
+    );
+}
+
+#[test]
+fn subagent_work_done_while_paddock_is_closed_appears_on_reopen() {
+    let sandbox = Sandbox::new();
+    let dir = repo(&sandbox);
+    write_meta(&sandbox);
+    let (wt_a, wt_b) = (worktree(&dir, AGENT_A), worktree(&dir, AGENT_B));
+    let mut paddock = ready(&sandbox);
+    paddock.detach_keys();
+    assert!(paddock.wait_exit());
+
+    let hook = |name: &str, event: &str, agent: &str| {
+        sandbox.hook("terminal-1", event, &recorded(&sandbox, name, &dir, agent));
+    };
+    hook("UserPromptSubmit", "UserPromptSubmit", AGENT_A);
+    for (agent, wt, branch) in [(AGENT_A, &wt_a, "fix/a"), (AGENT_B, &wt_b, "fix/b")] {
+        hook("SubagentStart-subagent", "SubagentStart", agent);
+        git(wt, &["switch", "-q", "-c", branch]);
+        hook("PostToolUse-subagent", "PostToolUse", agent);
+    }
+    hook("SubagentStop-subagent", "SubagentStop", AGENT_A);
+    // The session ends while agent B still runs.
+    hook("SessionEnd", "SessionEnd", AGENT_A);
+
+    let again = ready(&sandbox);
+    wait_for_sidebar(
+        &again,
+        &[
+            &session("stopped"),
+            &sub(FIX_A, "done"),
+            &sub("fix/b", "stopped"),
+        ],
+    );
 }
