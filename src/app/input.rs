@@ -24,6 +24,13 @@ impl App {
                 self.rename_key(text, key);
                 Ok(Flow::Continue)
             }
+            // `y` closes; any other key keeps the terminal, and is not passed on.
+            Mode::ConfirmClose { terminal, .. } => {
+                if key.code == KeyCode::Char('y') {
+                    self.report(|app| app.server.kill_session(&terminal));
+                }
+                Ok(Flow::Continue)
+            }
             Mode::Sidebar(selected) => match self.prefix.handle(key) {
                 KeyAction::Command(c) => {
                     self.mode = Mode::Sidebar(selected);
@@ -69,7 +76,16 @@ impl App {
                     .unwrap_or_default();
                 self.mode = Mode::Rename(name);
             }
-            Command::Close => self.report(|app| app.close()),
+            Command::Close => {
+                if let Some(id) = self.focused() {
+                    self.report(|app| app.close(&id));
+                }
+            }
+            Command::Fork => {
+                if let Some(id) = self.focused() {
+                    self.report(|app| app.fork(&id));
+                }
+            }
             Command::SplitColumns => self.report(|app| app.split(Split::Columns)),
             Command::SplitRows => self.report(|app| app.split(Split::Rows)),
             Command::Focus(dir) => self.move_focus(dir),
@@ -97,14 +113,34 @@ impl App {
         Ok(Flow::Continue)
     }
 
-    /// `j`/`k` (or arrows) move, `Enter` jumps to the row's terminal, `Esc`
-    /// gives the keyboard back to the terminal.
+    /// The focused terminal's tmux session id.
+    fn focused(&self) -> Option<String> {
+        self.tabs.current().map(|t| t.content.focus.clone())
+    }
+
+    /// `j`/`k` (or arrows) move, `Enter` jumps to the row's terminal, `x`
+    /// closes it, `f` forks its session, `Esc` gives the keyboard back to the
+    /// terminal.
     fn sidebar_key(&mut self, selected: Option<String>, key: KeyEvent) {
         let rows = self.rows();
         let at = rows
             .iter()
             .position(|r| Some(&r.pane) == selected.as_ref())
             .unwrap_or(0);
+        match (key.code, rows.get(at)) {
+            (KeyCode::Char('x'), Some(row)) => {
+                // Asking takes the keyboard; otherwise the sidebar keeps it.
+                self.mode = Mode::Sidebar(selected);
+                self.report(|app| app.close(&row.terminal));
+                return self.report(|app| app.relayout());
+            }
+            (KeyCode::Char('f'), Some(row)) => {
+                // The fork's tab gets the keyboard.
+                self.report(|app| app.fork(&row.terminal));
+                return self.report(|app| app.relayout());
+            }
+            _ => {}
+        }
         let pick = |i: usize| rows.get(i).map(|r| r.pane.clone());
         self.mode = match key.code {
             KeyCode::Char('j') | KeyCode::Down => Mode::Sidebar(pick(at + 1).or(selected)),
@@ -152,7 +188,7 @@ impl App {
         match &mut self.mode {
             Mode::Rename(name) => name.extend(text.chars().filter(|c| !c.is_control())),
             Mode::Help => self.mode = Mode::Normal,
-            Mode::Sidebar(_) => {}
+            Mode::Sidebar(_) | Mode::ConfirmClose { .. } => {}
             Mode::Normal => {
                 if let Some(t) = self.current_mut() {
                     let bytes = encode_paste(text, t.emulator().modes().bracketed_paste);

@@ -14,6 +14,8 @@ pub enum Command {
     RenameTab,
     /// End the focused terminal; its tab goes with its last terminal.
     Close,
+    /// Continue a copy of the focused session in a new tab.
+    Fork,
     /// Split the focused terminal side by side.
     SplitColumns,
     /// Split the focused terminal top and bottom.
@@ -54,7 +56,8 @@ pub const BINDINGS: &[(&str, &str)] = &[
     ("-", "split top and bottom"),
     ("hjkl", "move focus (also arrows)"),
     ("=", "equalise split sizes"),
-    ("x", "close terminal (ends it)"),
+    ("x", "close terminal (asks if Claude is busy)"),
+    ("f", "fork Claude into a new tab"),
     ("s", "focus sidebar (j/k, Enter jumps, Esc back)"),
     ("b", "show or hide sidebar"),
     ("d", "detach: quit, terminals keep running"),
@@ -81,6 +84,7 @@ fn command(key: &KeyEvent) -> Option<Command> {
         '1'..='9' => Command::GoToTab(c as usize - '1' as usize),
         ',' => Command::RenameTab,
         'x' => Command::Close,
+        'f' => Command::Fork,
         '|' => Command::SplitColumns,
         '-' => Command::SplitRows,
         'h' => Command::Focus(Direction::Left),
@@ -190,6 +194,7 @@ mod tests {
             KeyAction::Command(Command::RenameTab)
         );
         assert_eq!(after_prefix('x', none), KeyAction::Command(Command::Close));
+        assert_eq!(after_prefix('f', none), KeyAction::Command(Command::Fork));
         assert_eq!(
             after_prefix('|', KeyModifiers::SHIFT),
             KeyAction::Command(Command::SplitColumns)

@@ -35,7 +35,8 @@ pub fn clean_env(vars: impl IntoIterator<Item = (String, String)>) -> Vec<(Strin
     kept
 }
 
-fn quote(s: &str) -> String {
+/// `s` as one single-quoted shell word.
+pub(crate) fn quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
 

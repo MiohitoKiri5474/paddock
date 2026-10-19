@@ -11,10 +11,11 @@ use super::tabs::Tabs;
 use super::Event;
 use crate::config::{key_name, Config};
 use crate::input::PrefixKeys;
-use crate::sessions::{self, Sessions, State};
+use crate::sessions::{self, Session, Sessions, State};
 use crate::terminal::Terminal;
+use crate::tmux::server::quote;
 use crate::tmux::Server;
-use anyhow::Result;
+use anyhow::{bail, Result};
 use ratatui::layout::Rect;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -34,6 +35,11 @@ pub enum Mode {
     Help,
     /// The sidebar has the keyboard; holds the selected row's pane.
     Sidebar(Option<String>),
+    /// Asking before closing terminal `terminal`, where Claude is `state`.
+    ConfirmClose {
+        terminal: String,
+        state: State,
+    },
 }
 
 /// One session row of the sidebar.
@@ -239,21 +245,33 @@ impl App {
         Ok(())
     }
 
+    /// Terminal `id`'s shell directory, if it still exists.
+    fn dir_of(&self, id: &str) -> Option<PathBuf> {
+        self.server
+            .display(id, "#{pane_current_path}")
+            .ok()
+            .map(PathBuf::from)
+            .filter(|p| p.is_dir())
+    }
+
+    /// The focused terminal's shell directory, if it still exists.
+    fn current_dir(&self) -> Option<PathBuf> {
+        self.dir_of(self.current()?.session())
+    }
+
     /// Start a shell named `terminal-N` at `size`, in the focused terminal's
     /// directory, and attach it. Returns its session id.
     pub(super) fn new_terminal(&mut self, size: (u16, u16)) -> Result<String> {
+        let dir = self.current_dir();
+        self.new_terminal_in(size, dir)
+    }
+
+    /// Start a shell named `terminal-N` at `size` in `dir` (else the start
+    /// directory) and attach it. Returns its session id.
+    fn new_terminal_in(&mut self, size: (u16, u16), dir: Option<PathBuf>) -> Result<String> {
         let sessions = self.server.sessions();
         let name = next_name(sessions.iter().map(|s| s.name.as_str()));
-        let dir = self
-            .current()
-            .and_then(|t| {
-                self.server
-                    .display(t.session(), "#{pane_current_path}")
-                    .ok()
-            })
-            .map(PathBuf::from)
-            .filter(|p| p.is_dir())
-            .unwrap_or_else(|| self.start_dir.clone());
+        let dir = dir.unwrap_or_else(|| self.start_dir.clone());
         let session = self.server.new_session(&name, &dir, size)?;
         self.attach(&session.id, size)?;
         Ok(session.id)
@@ -261,18 +279,59 @@ impl App {
 
     /// Start a shell in a new tab and make it current.
     pub fn new_tab(&mut self) -> Result<()> {
-        let id = self.new_terminal(terminal_size(self.area()))?;
-        let name = self.server.display(&id, "#{session_name}")?;
-        self.tabs.push(name, Layout::new(id));
-        self.tabs.select_last();
-        Ok(())
+        let dir = self.current_dir();
+        self.open_tab(dir).map(drop)
     }
 
-    /// End the focused terminal. It leaves its tab when tmux reports that the
-    /// session ended, the same way as when its shell exits.
-    pub fn close(&mut self) -> Result<()> {
-        match self.current() {
-            Some(t) => self.server.kill_session(t.session()),
+    /// Start a shell in `dir` in a new tab and make it current. Returns its
+    /// session id.
+    fn open_tab(&mut self, dir: Option<PathBuf>) -> Result<String> {
+        let id = self.new_terminal_in(terminal_size(self.area()), dir)?;
+        let name = self.server.display(&id, "#{session_name}")?;
+        self.tabs.push(name, Layout::new(id.clone()));
+        self.tabs.select_last();
+        Ok(id)
+    }
+
+    /// The Claude session in terminal `id`, if any.
+    fn session_in(&self, id: &str) -> Option<&Session> {
+        self.sessions.get(self.terminals.get(id)?.pane())
+    }
+
+    /// End terminal `id`, first asking if Claude there is running or
+    /// waiting. It leaves its tab when tmux reports that the session ended,
+    /// the same way as when its shell exits.
+    pub fn close(&mut self, id: &str) -> Result<()> {
+        match self.session_in(id).map(|s| s.state) {
+            Some(state @ (State::Running | State::Waiting)) => {
+                self.mode = Mode::ConfirmClose {
+                    terminal: id.to_string(),
+                    state,
+                };
+                Ok(())
+            }
+            _ => self.server.kill_session(id),
+        }
+    }
+
+    /// Continue a copy of the Claude session in terminal `id` in a new tab,
+    /// in the session's directory: `claude --resume <id> --fork-session`,
+    /// typed into the new shell so the tab stays when Claude exits.
+    pub fn fork(&mut self, id: &str) -> Result<()> {
+        let Some((session_id, cwd)) = self
+            .session_in(id)
+            .and_then(|s| Some((s.session_id.clone()?, s.cwd.clone())))
+        else {
+            bail!("no Claude session here");
+        };
+        let dir = cwd
+            .map(PathBuf::from)
+            .filter(|p| p.is_dir())
+            .or_else(|| self.dir_of(id));
+        let new = self.open_tab(dir)?;
+        let command = format!("claude --resume {} --fork-session\r", quote(&session_id));
+        match self.terminals.get_mut(&new) {
+            Some(t) => t.input(command.as_bytes()),
             None => Ok(()),
         }
     }

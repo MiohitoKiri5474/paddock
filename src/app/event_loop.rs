@@ -129,14 +129,24 @@ fn draw(screen: &mut Screen, app: &App) -> Result<()> {
         };
         let term_area = session_area((full.width, full.height), side);
         let armed = app.prefix.armed().then_some(app.prefix_name.as_str());
+        let ask = match &app.mode {
+            Mode::ConfirmClose { state, .. } => {
+                Some(format!("Claude is {}: close? y/n", state.label()))
+            }
+            _ => None,
+        };
         let bar = TabBar {
-            names: app.tabs.iter().map(|t| t.name.as_str()).collect(),
+            // The question takes the whole bar, so it always fits.
+            names: match ask {
+                Some(_) => Vec::new(),
+                None => app.tabs.iter().map(|t| t.name.as_str()).collect(),
+            },
             current: app.tabs.current_index(),
             rename: match &app.mode {
                 Mode::Rename(text) => Some(text.as_str()),
                 _ => None,
             },
-            status: app.notice.as_deref().or(armed),
+            status: ask.as_deref().or(app.notice.as_deref()).or(armed),
         };
         let bar_cursor = bar.render(bar_area, f.buffer_mut());
         let mut term_cursor = None;

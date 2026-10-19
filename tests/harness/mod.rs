@@ -39,8 +39,12 @@ impl Sandbox {
         for dir in ["home", "state", "config", "tmux", "bin"] {
             std::fs::create_dir_all(root.path().join(dir)).expect("mkdir");
         }
-        // A plain, predictable shell: no user rc files, a fixed prompt.
-        let rc = format!("PS1='{PROMPT} '\nunsetopt PROMPT_SP\nunset HISTFILE\n");
+        // A plain, predictable shell: no user rc files, a fixed prompt, and
+        // the stub `claude` first on PATH even after macOS's path_helper.
+        let rc = format!(
+            "PS1='{PROMPT} '\nunsetopt PROMPT_SP\nunset HISTFILE\nexport PATH='{}/bin':$PATH\n",
+            root.path().display()
+        );
         std::fs::write(root.path().join("home/.zshrc"), rc).expect("zshrc");
         write_claude_stub(root.path());
         Self { root }
@@ -146,6 +150,20 @@ impl Sandbox {
         std::fs::rename(tmp, self.path("agents.json")).expect("rename agents");
     }
 
+    /// Calls of the stub `claude` other than `agents --json`, one
+    /// `<directory> <arguments>` line each; waits for at least one.
+    pub fn claude_calls(&self) -> Vec<String> {
+        let start = Instant::now();
+        loop {
+            let log = std::fs::read_to_string(self.path("claude.log")).unwrap_or_default();
+            if !log.is_empty() {
+                return log.lines().map(str::to_string).collect();
+            }
+            assert!(start.elapsed() < TIMEOUT, "claude was never run");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
     /// A format evaluated by the sandbox's tmux server, trimmed.
     pub fn display(&self, target: &str, format: &str) -> String {
         self.tmux(&["display-message", "-p", "-t", target, format])
@@ -189,12 +207,13 @@ impl Sandbox {
     }
 }
 
-/// A `claude` that only answers `agents --json`, from `agents.json` in the
-/// sandbox (`[]` until a test sets it), so tests never see real sessions.
+/// A `claude` that answers `agents --json` from `agents.json` in the sandbox
+/// (`[]` until a test sets it), so tests never see real sessions. Any other
+/// call only appends `<directory> <arguments>` to `claude.log`.
 fn write_claude_stub(root: &std::path::Path) {
+    let dir = root.display();
     let script = format!(
-        "#!/bin/sh\n[ \"$1 $2\" = \"agents --json\" ] || exit 1\ncat '{}/agents.json' 2>/dev/null || echo '[]'\n",
-        root.display()
+        "#!/bin/sh\nif [ \"$1 $2\" != \"agents --json\" ]; then\n  echo \"$(pwd -P) $*\" >> '{dir}/claude.log'\n  exit 0\nfi\ncat '{dir}/agents.json' 2>/dev/null || echo '[]'\n"
     );
     let path = root.join("bin/claude");
     std::fs::write(&path, script).expect("claude stub");
