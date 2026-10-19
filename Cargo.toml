@@ -1,0 +1,24 @@
+[package]
+name = "paddock"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "A terminal workspace for running Claude Code"
+publish = false
+
+[[bin]]
+name = "paddock"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+crossterm = "0.29"
+ratatui = "0.30"
+# alacritty_terminal 0.26 plus the VS16 emoji width fix (ADR 0005). The library
+# name is still `alacritty_terminal`; pinned exactly until the fix is upstream.
+alacritty_terminal = { package = "yas-alacritty-terminal", version = "=0.26.0-yas.1" }
+
+[dev-dependencies]
+portable-pty = "0.9"
+tempfile = "3"
+vt100 = "0.18"
