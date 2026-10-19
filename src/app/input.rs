@@ -2,10 +2,9 @@
 
 use super::layout::Split;
 use super::state::{App, Mode};
-use crate::input::{encode_key, encode_paste, route_mouse, Command, KeyAction, MouseAction};
+use crate::input::{encode_key, encode_paste, Command, KeyAction};
 use anyhow::Result;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
-use ratatui::layout::Position;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 /// What the event loop should do next.
 #[derive(Debug, PartialEq, Eq)]
@@ -197,29 +196,5 @@ impl App {
             }
         }
         Ok(())
-    }
-
-    /// Mouse events over the focused terminal, in its coordinates. The tab
-    /// bar and the other terminals do not take the mouse yet.
-    pub fn mouse(&mut self, m: MouseEvent) -> Result<bool> {
-        if !matches!(self.mode, Mode::Normal) {
-            return Ok(false);
-        }
-        let area = self.area();
-        let Some(rect) = self.tabs.current().and_then(|t| t.content.focus_rect(area)) else {
-            return Ok(false);
-        };
-        if !rect.contains(Position::new(m.column, m.row)) {
-            return Ok(false);
-        }
-        let Some(t) = self.current_mut() else {
-            return Ok(false);
-        };
-        match route_mouse(&m, m.column - rect.x, m.row - rect.y, t.emulator().modes()) {
-            MouseAction::Report(bytes) => t.input(&bytes)?,
-            MouseAction::Scroll(lines) => t.emulator_mut().scroll(lines),
-            MouseAction::Ignore => return Ok(false),
-        }
-        Ok(true)
     }
 }

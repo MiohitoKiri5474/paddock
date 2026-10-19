@@ -16,6 +16,7 @@ fn colour(c: Colour) -> Color {
 /// Draw the terminal into `area`. Returns where the cursor should be, if visible.
 pub fn render(emu: &Emulator, area: Rect, buf: &mut Buffer) -> Option<Position> {
     let (cols, rows) = emu.size();
+    let selected = emu.selection();
     for y in 0..rows.min(area.height) {
         for x in 0..cols.min(area.width) {
             let c = emu.cell(y, x);
@@ -28,7 +29,8 @@ pub fn render(emu: &Emulator, area: Rect, buf: &mut Buffer) -> Option<Position> 
             m.set(Modifier::DIM, c.dim);
             m.set(Modifier::ITALIC, c.italic);
             m.set(Modifier::UNDERLINED, c.underline);
-            m.set(Modifier::REVERSED, c.inverse);
+            let highlight = selected.as_ref().is_some_and(|s| s.contains(y, x));
+            m.set(Modifier::REVERSED, c.inverse != highlight);
             let style = Style::default()
                 .fg(colour(c.fg))
                 .bg(colour(c.bg))
@@ -111,6 +113,19 @@ mod tests {
         assert_eq!(buf[(0, 0)].fg, Color::Rgb(1, 2, 3));
         assert!(buf[(0, 0)].modifier.contains(Modifier::BOLD));
         assert_eq!(cursor, Some(Position::new(7, 0)));
+    }
+
+    #[test]
+    fn selected_cells_are_reversed() {
+        let mut e = Emulator::new(5, 1, 0);
+        e.feed(b"\x1b[7mab\x1b[0mcd");
+        e.select(0, 1);
+        e.select_to(0, 2);
+        let (buf, _) = draw(&e, 5, 1);
+        let reversed: Vec<bool> = (0..4)
+            .map(|x| buf[(x, 0)].modifier.contains(Modifier::REVERSED))
+            .collect();
+        assert_eq!(reversed, [true, false, true, false]);
     }
 
     #[test]

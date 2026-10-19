@@ -1,5 +1,5 @@
 //! What a mouse event over a terminal does: report it to a program that asked
-//! for the mouse, or scroll paddock's own scrollback.
+//! for the mouse, or scroll or select in paddock's own view.
 
 use crate::terminal::emulator::{Modes, MouseMode};
 use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
@@ -13,6 +13,8 @@ pub enum MouseAction {
     Report(Vec<u8>),
     /// Scroll paddock's own view by this many lines (positive = into history).
     Scroll(i32),
+    /// Start selecting text in paddock's own view.
+    Select,
     Ignore,
 }
 
@@ -30,6 +32,7 @@ pub fn route(ev: &MouseEvent, col: u16, row: u16, modes: Modes) -> MouseAction {
     match ev.kind {
         MouseEventKind::ScrollUp => MouseAction::Scroll(WHEEL_LINES),
         MouseEventKind::ScrollDown => MouseAction::Scroll(-WHEEL_LINES),
+        MouseEventKind::Down(MouseButton::Left) => MouseAction::Select,
         _ => MouseAction::Ignore,
     }
 }
@@ -120,7 +123,7 @@ mod tests {
                 1,
                 m
             ),
-            MouseAction::Ignore
+            MouseAction::Select
         );
     }
 
@@ -135,6 +138,8 @@ mod tests {
             route(&ev(MouseEventKind::ScrollUp, KeyModifiers::SHIFT), 4, 9, m),
             MouseAction::Scroll(3)
         );
+        let shift_press = ev(MouseEventKind::Down(MouseButton::Left), KeyModifiers::SHIFT);
+        assert_eq!(route(&shift_press, 4, 9, m), MouseAction::Select);
     }
 
     #[test]

@@ -7,6 +7,8 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 
 const TITLE: &str = "sessions";
+/// Rows above the first session row (the title).
+const FIRST_ROW: u16 = 1;
 
 /// Draw `rows` into `area`; `selected` is the focused row's pane, if focused.
 pub fn render(rows: &[Row], selected: Option<&str>, area: Rect, buf: &mut Buffer) {
@@ -19,7 +21,7 @@ pub fn render(rows: &[Row], selected: Option<&str>, area: Rect, buf: &mut Buffer
     }
     let dim = Style::default().add_modifier(Modifier::DIM);
     buf.set_stringn(area.x + 1, area.y, TITLE, usize::from(inner - 1), dim);
-    for (row, y) in rows.iter().zip(area.y + 1..area.bottom()) {
+    for (row, y) in rows.iter().zip(area.y + FIRST_ROW..area.bottom()) {
         let style = if selected == Some(row.pane.as_str()) {
             Style::default().add_modifier(Modifier::REVERSED)
         } else {
@@ -27,6 +29,14 @@ pub fn render(rows: &[Row], selected: Option<&str>, area: Rect, buf: &mut Buffer
         };
         buf.set_string(area.x, y, line(row, usize::from(inner)), style);
     }
+}
+
+/// The session row drawn at screen row `y` of a sidebar over `area`, if any.
+pub fn row_at(area: Rect, y: u16) -> Option<usize> {
+    let first = area.y + FIRST_ROW;
+    (first..area.bottom())
+        .contains(&y)
+        .then(|| usize::from(y - first))
 }
 
 /// ` label   state `, exactly `width` cells; long labels are cut.
@@ -91,5 +101,14 @@ mod tests {
         );
         let drawn = text(&buf, 1);
         assert!(!drawn.contains(char::is_control), "{drawn:?}");
+    }
+
+    #[test]
+    fn clicks_find_the_row_drawn_under_them() {
+        let area = Rect::new(0, 3, 16, 4);
+        assert_eq!(row_at(area, 3), None, "title");
+        assert_eq!(row_at(area, 4), Some(0));
+        assert_eq!(row_at(area, 6), Some(2));
+        assert_eq!(row_at(area, 7), None, "below the sidebar");
     }
 }

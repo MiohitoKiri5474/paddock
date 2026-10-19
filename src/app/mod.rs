@@ -4,6 +4,7 @@
 mod event_loop;
 mod input;
 mod layout;
+mod mouse;
 mod saved;
 mod screen;
 mod splits;

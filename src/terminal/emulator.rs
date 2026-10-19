@@ -3,7 +3,8 @@
 
 use alacritty_terminal::event::VoidListener;
 use alacritty_terminal::grid::{Dimensions, Scroll};
-use alacritty_terminal::index::{Column, Line};
+use alacritty_terminal::index::{Column, Line, Point, Side};
+use alacritty_terminal::selection::{Selection, SelectionRange, SelectionType};
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::{Config, Term, TermMode};
 use alacritty_terminal::vte::ansi::{Color as AnsiColor, NamedColor, Processor};
@@ -70,6 +71,8 @@ impl Dimensions for Size {
 pub struct Emulator {
     term: Term<VoidListener>,
     parser: Processor,
+    /// Where the current selection started.
+    anchor: Option<Point>,
 }
 
 impl Emulator {
@@ -88,6 +91,7 @@ impl Emulator {
         Self {
             term: Term::new(config, &size, VoidListener),
             parser: Processor::new(),
+            anchor: None,
         }
     }
 
@@ -196,6 +200,74 @@ impl Emulator {
     pub fn history_len(&self) -> usize {
         self.term.grid().history_size()
     }
+
+    /// The grid point under a viewport position, clamped to the screen.
+    fn point(&self, row: u16, col: u16) -> Point {
+        let (cols, rows) = self.size();
+        let offset = i32::try_from(self.scroll_offset()).unwrap_or(i32::MAX);
+        Point::new(
+            Line(i32::from(row.min(rows - 1)) - offset),
+            Column(col.min(cols - 1).into()),
+        )
+    }
+
+    /// Start selecting at a viewport position. Nothing is selected until
+    /// [`select_to`](Self::select_to).
+    pub fn select(&mut self, row: u16, col: u16) {
+        let anchor = self.point(row, col);
+        self.anchor = Some(anchor);
+        self.term.selection = Some(Selection::new(SelectionType::Simple, anchor, Side::Left));
+    }
+
+    /// Select from the anchor to a viewport position, both cells included,
+    /// in either direction.
+    pub fn select_to(&mut self, row: u16, col: u16) {
+        let Some(anchor) = self.anchor else {
+            return;
+        };
+        let point = self.point(row, col);
+        let (from, to) = if point >= anchor {
+            (Side::Left, Side::Right)
+        } else {
+            (Side::Right, Side::Left)
+        };
+        let mut selection = Selection::new(SelectionType::Simple, anchor, from);
+        selection.update(point, to);
+        self.term.selection = Some(selection);
+    }
+
+    pub fn clear_selection(&mut self) {
+        self.anchor = None;
+        self.term.selection = None;
+    }
+
+    /// The selected text: lines joined with `\n`, trailing spaces removed.
+    pub fn selected_text(&self) -> Option<String> {
+        self.term.selection_to_string().filter(|t| !t.is_empty())
+    }
+
+    /// The selected cells, for drawing.
+    pub fn selection(&self) -> Option<Selected> {
+        let range = self.term.selection.as_ref()?.to_range(&self.term)?;
+        Some(Selected {
+            range,
+            offset: i32::try_from(self.scroll_offset()).unwrap_or(i32::MAX),
+        })
+    }
+}
+
+/// The selected cells of an emulator's view.
+pub struct Selected {
+    range: SelectionRange,
+    offset: i32,
+}
+
+impl Selected {
+    /// Whether the cell at a viewport position is selected.
+    pub fn contains(&self, row: u16, col: u16) -> bool {
+        let line = Line(i32::from(row) - self.offset);
+        self.range.contains(Point::new(line, Column(col.into())))
+    }
 }
 
 fn colour(c: AnsiColor) -> Colour {
@@ -260,6 +332,38 @@ mod tests {
         let m = e.modes();
         assert!(m.app_cursor && m.bracketed_paste && m.sgr_mouse && m.alt_screen && !m.show_cursor);
         assert_eq!(m.mouse, MouseMode::Drag);
+    }
+
+    #[test]
+    fn selections_copy_text_in_reading_order_either_way() {
+        let mut e = Emulator::new(12, 3, 10);
+        e.feed("ab 漢字\r\ncd   \r\nef".as_bytes());
+        e.select(0, 1);
+        assert_eq!(e.selected_text(), None, "a click selects nothing");
+        e.select_to(1, 0);
+        assert_eq!(e.selected_text().as_deref(), Some("b 漢字\nc"));
+        assert!(e
+            .selection()
+            .is_some_and(|s| s.contains(0, 5) && !s.contains(1, 1)));
+        // Backwards: the same cells, both ends included.
+        e.select(2, 1);
+        e.select_to(1, 1);
+        assert_eq!(e.selected_text().as_deref(), Some("d\nef"));
+        e.clear_selection();
+        assert_eq!(e.selected_text(), None);
+        assert!(e.selection().is_none());
+    }
+
+    #[test]
+    fn selections_follow_the_scrolled_view() {
+        let mut e = Emulator::new(10, 2, 100);
+        for i in 0..6 {
+            e.feed(format!("l{i}\r\n").as_bytes());
+        }
+        e.scroll(2);
+        e.select(0, 0);
+        e.select_to(1, 1);
+        assert_eq!(e.selected_text().as_deref(), Some("l3\nl4"));
     }
 
     #[test]

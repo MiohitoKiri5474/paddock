@@ -47,6 +47,7 @@ impl Sandbox {
         );
         std::fs::write(root.path().join("home/.zshrc"), rc).expect("zshrc");
         write_claude_stub(root.path());
+        write_copy_stub(root.path());
         Self { root }
     }
 
@@ -71,6 +72,8 @@ impl Sandbox {
             ("PADDOCK_TMUX_SOCKET".into(), SOCKET.into()),
             ("XDG_STATE_HOME".into(), p("state")),
             ("XDG_CONFIG_HOME".into(), p("config")),
+            // Never the real clipboard: copies land in the sandbox's `clipboard` file.
+            ("PADDOCK_COPY_COMMAND".into(), p("bin/copy")),
             ("SUPACODE_TEST_LEAK".into(), "leaked".into()),
             ("TERM_PROGRAM".into(), "leaky-terminal".into()),
             // As if launched from inside someone's tmux pane.
@@ -164,6 +167,23 @@ impl Sandbox {
         }
     }
 
+    /// What paddock last copied, if anything.
+    pub fn clipboard(&self) -> Option<String> {
+        std::fs::read_to_string(self.path("clipboard")).ok()
+    }
+
+    /// Wait until paddock has copied exactly `text`.
+    pub fn wait_for_clipboard(&self, text: &str) {
+        let start = Instant::now();
+        while start.elapsed() < TIMEOUT {
+            if self.clipboard().as_deref() == Some(text) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(self.clipboard().as_deref(), Some(text), "clipboard");
+    }
+
     /// A format evaluated by the sandbox's tmux server, trimmed.
     pub fn display(&self, target: &str, format: &str) -> String {
         self.tmux(&["display-message", "-p", "-t", target, format])
@@ -217,6 +237,18 @@ fn write_claude_stub(root: &std::path::Path) {
     );
     let path = root.join("bin/claude");
     std::fs::write(&path, script).expect("claude stub");
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod stub");
+}
+
+/// A copy command that writes what it is given to `clipboard` in the sandbox.
+fn write_copy_stub(root: &std::path::Path) {
+    let dir = root.display();
+    let script = format!(
+        "#!/bin/sh\ncat > '{dir}/clipboard.tmp' && mv '{dir}/clipboard.tmp' '{dir}/clipboard'\n"
+    );
+    let path = root.join("bin/copy");
+    std::fs::write(&path, script).expect("copy stub");
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod stub");
 }
@@ -294,6 +326,38 @@ impl Paddock {
     pub fn wheel(&mut self, up: bool, col: u16, row: u16) {
         let button = if up { 64 } else { 65 };
         self.send(format!("\x1b[<{button};{};{}M", col + 1, row + 1).as_bytes());
+    }
+
+    /// A left-button mouse event at (col, row), 0-based, as an SGR report:
+    /// `code` 0 is a press, 32 a drag; `release` ends the press. Shift adds 4.
+    pub fn mouse(&mut self, code: u16, col: u16, row: u16, release: bool) {
+        let fin = if release { 'm' } else { 'M' };
+        self.send(format!("\x1b[<{code};{};{}{fin}", col + 1, row + 1).as_bytes());
+    }
+
+    /// A left click at (col, row), 0-based.
+    pub fn click(&mut self, col: u16, row: u16) {
+        self.mouse(0, col, row, false);
+        self.mouse(0, col, row, true);
+    }
+
+    /// Press at `from`, drag to `to` and release there, as (col, row) 0-based.
+    pub fn drag(&mut self, from: (u16, u16), to: (u16, u16), shift: bool) {
+        let mods = if shift { 4 } else { 0 };
+        self.mouse(mods, from.0, from.1, false);
+        self.mouse(32 + mods, to.0, to.1, false);
+        self.mouse(mods, to.0, to.1, true);
+    }
+
+    /// Where `text` is first drawn, as (col, row) 0-based.
+    pub fn find(&self, text: &str) -> Option<(u16, u16)> {
+        self.rows().iter().enumerate().find_map(|(y, r)| {
+            let x = r.find(text)?;
+            Some((
+                u16::try_from(r[..x].chars().count()).ok()?,
+                u16::try_from(y).ok()?,
+            ))
+        })
     }
 
     /// Resize the outer terminal (sends SIGWINCH to paddock).

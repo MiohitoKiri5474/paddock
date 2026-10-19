@@ -6,6 +6,7 @@
 //! survives reattaching; when that terminal ends, the next one names the tab.
 
 use super::layout::{terminal_size, Layout};
+use super::mouse::Press;
 use super::saved;
 use super::tabs::Tabs;
 use super::Event;
@@ -75,6 +76,8 @@ pub struct App {
     pub(super) sessions: Sessions,
     /// The user hid the sidebar (`C-a b`).
     pub(super) sidebar_hidden: bool,
+    /// Where the held mouse button went, until it is released.
+    pub(super) press: Option<Press>,
 }
 
 /// The part of a screen of `(cols, rows)` that shows the current tab's
@@ -157,6 +160,7 @@ impl App {
             state_dir,
             sessions: Sessions::default(),
             sidebar_hidden: false,
+            press: None,
         };
         let sessions = app.server.sessions();
         let saved = saved::load(&app.state_dir).unwrap_or_else(|e| {

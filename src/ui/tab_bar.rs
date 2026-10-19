@@ -19,6 +19,20 @@ pub fn label(index: usize, name: &str) -> String {
     format!("{}:{name}", index + 1)
 }
 
+/// Tab `index` as drawn in the bar, with a space on either side.
+fn cell(index: usize, name: &str) -> String {
+    format!(" {} ", label(index, name))
+}
+
+/// The tab drawn at column `x` of the bar (0 = its left edge), if any.
+pub fn tab_at(names: &[&str], x: u16) -> Option<usize> {
+    let mut right = 0;
+    names.iter().enumerate().find_map(|(i, name)| {
+        right += Span::raw(cell(i, name)).width();
+        (usize::from(x) < right).then_some(i)
+    })
+}
+
 impl TabBar<'_> {
     /// Draw into the first row of `area`. Returns the cursor position while renaming.
     pub fn render(&self, area: Rect, buf: &mut Buffer) -> Option<Position> {
@@ -57,7 +71,7 @@ impl TabBar<'_> {
     fn render_tabs(&self, row: Rect, buf: &mut Buffer) -> u16 {
         let mut x = row.x;
         for (i, name) in self.names.iter().enumerate() {
-            let text = format!(" {} ", label(i, name));
+            let text = cell(i, name);
             let style = if i == self.current {
                 Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
             } else {
@@ -131,5 +145,16 @@ mod tests {
         assert_eq!(text(&buf), " 1:a  2:b       C-a");
         let (buf, _) = draw(&bar(vec!["a-very-long-tab-name"], 0), 10);
         assert_eq!(text(&buf), " 1:a-very-");
+    }
+
+    #[test]
+    fn clicks_find_the_tab_drawn_under_them() {
+        let names = ["shell", "漢字"];
+        // " 1:shell " is columns 0-8, " 2:漢字 " 9-16.
+        assert_eq!(tab_at(&names, 0), Some(0));
+        assert_eq!(tab_at(&names, 8), Some(0));
+        assert_eq!(tab_at(&names, 9), Some(1));
+        assert_eq!(tab_at(&names, 16), Some(1));
+        assert_eq!(tab_at(&names, 17), None);
     }
 }

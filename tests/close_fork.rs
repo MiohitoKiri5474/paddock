@@ -138,7 +138,11 @@ fn f_forks_the_session_into_a_new_tab_in_its_directory() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     let (dir, canonical) = repo(&sandbox);
-    sandbox.hook("terminal-1", "Stop", &payload("Stop", "0000aaaa-0000-4000-8000-00000000000a", &dir));
+    sandbox.hook(
+        "terminal-1",
+        "Stop",
+        &payload("Stop", "0000aaaa-0000-4000-8000-00000000000a", &dir),
+    );
     paddock.wait_for_text("idle");
 
     paddock.command(b"f");
@@ -146,7 +150,9 @@ fn f_forks_the_session_into_a_new_tab_in_its_directory() {
     paddock.wait_for_current_tab("2:terminal-2");
     assert_eq!(
         sandbox.claude_calls(),
-        [format!("{canonical} --resume 0000aaaa-0000-4000-8000-00000000000a --fork-session")]
+        [format!(
+            "{canonical} --resume 0000aaaa-0000-4000-8000-00000000000a --fork-session"
+        )]
     );
 }
 
@@ -155,7 +161,11 @@ fn f_on_a_sidebar_row_forks_that_session() {
     let sandbox = Sandbox::new();
     let mut paddock = two_tabs(&sandbox);
     let (dir, canonical) = repo(&sandbox);
-    sandbox.hook("terminal-1", "Stop", &payload("Stop", "0000bbbb-0000-4000-8000-00000000000b", &dir));
+    sandbox.hook(
+        "terminal-1",
+        "Stop",
+        &payload("Stop", "0000bbbb-0000-4000-8000-00000000000b", &dir),
+    );
     paddock.wait_for_text("idle");
 
     paddock.command(b"s");
@@ -164,7 +174,9 @@ fn f_on_a_sidebar_row_forks_that_session() {
     paddock.wait_for_current_tab("3:terminal-3");
     assert_eq!(
         sandbox.claude_calls(),
-        [format!("{canonical} --resume 0000bbbb-0000-4000-8000-00000000000b --fork-session")]
+        [format!(
+            "{canonical} --resume 0000bbbb-0000-4000-8000-00000000000b --fork-session"
+        )]
     );
     // The keyboard is back in the new terminal.
     paddock.type_line("echo in-the-fork");
