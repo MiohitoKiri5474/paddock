@@ -58,9 +58,31 @@ pub fn render(emu: &Emulator, area: Rect, buf: &mut Buffer) -> Option<Position> 
     visible.then(|| Position::new(area.x + col, area.y + row))
 }
 
+/// Draw the border between two split terminals over `area`: a vertical line
+/// between side-by-side terminals, else a horizontal one.
+pub fn border(area: Rect, vertical: bool, buf: &mut Buffer) {
+    let symbol = if vertical { "│" } else { "─" };
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            buf[(x, y)].set_symbol(symbol).set_style(Style::reset());
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn borders_are_lines_across_their_area() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 3, 2));
+        border(Rect::new(1, 0, 1, 2), true, &mut buf);
+        border(Rect::new(0, 1, 1, 1), false, &mut buf);
+        assert_eq!(buf[(1, 0)].symbol(), "│");
+        assert_eq!(buf[(1, 1)].symbol(), "│");
+        assert_eq!(buf[(0, 1)].symbol(), "─");
+        assert_eq!(buf[(0, 0)].symbol(), " ");
+    }
 
     /// Render into a fresh buffer, as a frame would.
     fn draw(emu: &Emulator, w: u16, h: u16) -> (Buffer, Option<Position>) {

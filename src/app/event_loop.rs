@@ -1,8 +1,9 @@
 //! The main loop: feed terminal output, route input, redraw at most once a frame.
 
 use super::input::Flow;
+use super::layout::Split;
 use super::screen::Screen;
-use super::state::{App, Mode, TAB_BAR_ROWS};
+use super::state::{session_area, App, Mode, TAB_BAR_ROWS};
 use super::Event;
 use crate::tmux::Message;
 use crate::ui::{help, session_view, tab_bar::TabBar};
@@ -45,8 +46,7 @@ pub fn run(screen: &mut Screen, mut app: App, rx: &Receiver<Event>) -> Result<()
             break;
         }
     }
-    app.detach_all();
-    Ok(())
+    app.detach_all()
 }
 
 /// Apply one event. Returns whether to go on and whether the screen may have changed.
@@ -56,11 +56,10 @@ fn handle(app: &mut App, event: Event, screen: &mut Screen) -> Result<(Flow, boo
             session,
             msg: Message::Output { data, .. },
         } => {
-            let current = app.current().is_some_and(|t| t.session() == session);
-            if let Some(tab) = app.tabs.find_mut(|t| t.session() == session) {
-                tab.content.output(&data);
+            if let Some(t) = app.terminals.get_mut(&session) {
+                t.output(&data);
             }
-            return Ok((Flow::Continue, current));
+            return Ok((Flow::Continue, app.shows(&session)));
         }
         // That terminal's tmux session ended: its shell exited or it was closed.
         Event::Tmux {
@@ -99,11 +98,7 @@ fn draw(screen: &mut Screen, app: &App) -> Result<()> {
             height: bar_height,
             ..area
         };
-        let term_area = Rect {
-            y: area.y + bar_height,
-            height: area.height - bar_height,
-            ..area
-        };
+        let term_area = session_area((area.width, area.height));
         let armed = app.prefix.armed().then_some(app.prefix_name.as_str());
         let bar = TabBar {
             names: app.tabs.iter().map(|t| t.name.as_str()).collect(),
@@ -115,9 +110,22 @@ fn draw(screen: &mut Screen, app: &App) -> Result<()> {
             status: app.notice.as_deref().or(armed),
         };
         let bar_cursor = bar.render(bar_area, f.buffer_mut());
-        let term_cursor = app
-            .current()
-            .and_then(|t| session_view::render(t.emulator(), term_area, f.buffer_mut()));
+        let mut term_cursor = None;
+        if let Some(tab) = app.tabs.current() {
+            let (panes, borders) = tab.content.rects(term_area);
+            for (id, rect) in panes {
+                let Some(t) = app.terminals.get(&id) else {
+                    continue;
+                };
+                let cursor = session_view::render(t.emulator(), rect, f.buffer_mut());
+                if id == tab.content.focus {
+                    term_cursor = cursor;
+                }
+            }
+            for b in borders {
+                session_view::border(b.area, b.split == Split::Columns, f.buffer_mut());
+            }
+        }
         if let Mode::Help = app.mode {
             help::render(&app.prefix_name, area, f.buffer_mut());
         } else if let Some(cursor) = bar_cursor.or(term_cursor) {

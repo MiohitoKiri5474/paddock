@@ -12,9 +12,25 @@ pub enum Command {
     /// Go to tab N (0-based).
     GoToTab(usize),
     RenameTab,
-    CloseTab,
+    /// End the focused terminal; its tab goes with its last terminal.
+    Close,
+    /// Split the focused terminal side by side.
+    SplitColumns,
+    /// Split the focused terminal top and bottom.
+    SplitRows,
+    Focus(Direction),
+    Equalise,
     Help,
     Detach,
+}
+
+/// A direction to move focus in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    Left,
+    Down,
+    Up,
+    Right,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,7 +48,11 @@ pub const BINDINGS: &[(&str, &str)] = &[
     ("n / p", "next / previous tab"),
     ("1-9", "go to tab"),
     (",", "rename tab"),
-    ("x", "close tab (ends its terminal)"),
+    ("|", "split side by side"),
+    ("-", "split top and bottom"),
+    ("hjkl", "move focus (also arrows)"),
+    ("=", "equalise split sizes"),
+    ("x", "close terminal (ends it)"),
     ("d", "detach: quit, terminals keep running"),
     ("?", "this help"),
 ];
@@ -42,8 +62,13 @@ fn command(key: &KeyEvent) -> Option<Command> {
     if !(key.modifiers - KeyModifiers::SHIFT).is_empty() {
         return None;
     }
-    let KeyCode::Char(c) = key.code else {
-        return None;
+    let c = match key.code {
+        KeyCode::Char(c) => c,
+        KeyCode::Left => 'h',
+        KeyCode::Down => 'j',
+        KeyCode::Up => 'k',
+        KeyCode::Right => 'l',
+        _ => return None,
     };
     Some(match c {
         'c' => Command::NewTab,
@@ -51,7 +76,14 @@ fn command(key: &KeyEvent) -> Option<Command> {
         'p' => Command::PreviousTab,
         '1'..='9' => Command::GoToTab(c as usize - '1' as usize),
         ',' => Command::RenameTab,
-        'x' => Command::CloseTab,
+        'x' => Command::Close,
+        '|' => Command::SplitColumns,
+        '-' => Command::SplitRows,
+        'h' => Command::Focus(Direction::Left),
+        'j' => Command::Focus(Direction::Down),
+        'k' => Command::Focus(Direction::Up),
+        'l' => Command::Focus(Direction::Right),
+        '=' => Command::Equalise,
         '?' => Command::Help,
         'd' => Command::Detach,
         _ => return None,
@@ -151,15 +183,49 @@ mod tests {
             after_prefix(',', none),
             KeyAction::Command(Command::RenameTab)
         );
+        assert_eq!(after_prefix('x', none), KeyAction::Command(Command::Close));
         assert_eq!(
-            after_prefix('x', none),
-            KeyAction::Command(Command::CloseTab)
+            after_prefix('|', KeyModifiers::SHIFT),
+            KeyAction::Command(Command::SplitColumns)
         );
+        assert_eq!(
+            after_prefix('-', none),
+            KeyAction::Command(Command::SplitRows)
+        );
+        assert_eq!(
+            after_prefix('=', none),
+            KeyAction::Command(Command::Equalise)
+        );
+        for (c, d) in [
+            ('h', Direction::Left),
+            ('j', Direction::Down),
+            ('k', Direction::Up),
+            ('l', Direction::Right),
+        ] {
+            assert_eq!(after_prefix(c, none), KeyAction::Command(Command::Focus(d)));
+        }
         assert_eq!(
             after_prefix('?', KeyModifiers::SHIFT),
             KeyAction::Command(Command::Help)
         );
         assert_eq!(after_prefix('d', none), KeyAction::Command(Command::Detach));
+    }
+
+    #[test]
+    fn arrows_after_the_prefix_move_focus() {
+        let mut p = ctrl_a();
+        for (code, d) in [
+            (KeyCode::Left, Direction::Left),
+            (KeyCode::Down, Direction::Down),
+            (KeyCode::Up, Direction::Up),
+            (KeyCode::Right, Direction::Right),
+        ] {
+            p.handle(k('a', KeyModifiers::CONTROL));
+            assert_eq!(
+                p.handle(KeyEvent::new(code, KeyModifiers::NONE)),
+                KeyAction::Command(Command::Focus(d))
+            );
+        }
     }
 
     #[test]

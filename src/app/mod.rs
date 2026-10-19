@@ -3,7 +3,10 @@
 
 mod event_loop;
 mod input;
+mod layout;
+mod saved;
 mod screen;
+mod splits;
 mod state;
 mod tabs;
 
@@ -35,6 +38,7 @@ pub fn run() -> Result<()> {
     let Some(_instance) = crate::instance::claim(&paths.state_dir)? else {
         return Ok(());
     };
+    let state_dir = paths.state_dir.clone();
     let server = Server::new(paths);
     server.write_config()?;
     let start_dir = std::env::current_dir().context("no current directory")?;
@@ -57,6 +61,7 @@ pub fn run() -> Result<()> {
         (size.width, size.height),
         tx.clone(),
         start_dir,
+        state_dir,
     )?;
 
     // Only now may another thread read stdin (ratatui has finished its queries).

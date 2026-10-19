@@ -1,9 +1,11 @@
 //! Applying outer-terminal input to the app, depending on its mode.
 
-use super::state::{App, Mode, TAB_BAR_ROWS};
+use super::layout::Split;
+use super::state::{App, Mode};
 use crate::input::{encode_key, encode_paste, route_mouse, Command, KeyAction, MouseAction};
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
+use ratatui::layout::Position;
 
 /// What the event loop should do next.
 #[derive(Debug, PartialEq, Eq)]
@@ -53,15 +55,21 @@ impl App {
                     .unwrap_or_default();
                 self.mode = Mode::Rename(name);
             }
-            Command::CloseTab => self.report(|app| app.close_tab()),
+            Command::Close => self.report(|app| app.close()),
+            Command::SplitColumns => self.report(|app| app.split(Split::Columns)),
+            Command::SplitRows => self.report(|app| app.split(Split::Rows)),
+            Command::Focus(dir) => self.move_focus(dir),
+            Command::Equalise => self.report(|app| app.equalise()),
             Command::Help => self.mode = Mode::Help,
             Command::Detach => return Ok(Flow::Quit),
         }
+        // Keep the saved layout current, in case paddock does not get to detach.
+        self.report(|app| app.save());
         Ok(Flow::Continue)
     }
 
     /// Run a command whose failure the user should see but that is not fatal.
-    fn report(&mut self, f: impl FnOnce(&mut Self) -> Result<()>) {
+    pub(super) fn report(&mut self, f: impl FnOnce(&mut Self) -> Result<()>) {
         if let Err(e) = f(self) {
             self.notice = Some(format!("{e:#}"));
         }
@@ -99,16 +107,23 @@ impl App {
         Ok(())
     }
 
-    /// Mouse events over the terminal, in terminal coordinates. The tab bar
-    /// does not take clicks yet.
+    /// Mouse events over the focused terminal, in its coordinates. The tab
+    /// bar and the other terminals do not take the mouse yet.
     pub fn mouse(&mut self, m: MouseEvent) -> Result<bool> {
-        if m.row < TAB_BAR_ROWS || !matches!(self.mode, Mode::Normal) {
+        if !matches!(self.mode, Mode::Normal) {
+            return Ok(false);
+        }
+        let area = self.area();
+        let Some(rect) = self.tabs.current().and_then(|t| t.content.focus_rect(area)) else {
+            return Ok(false);
+        };
+        if !rect.contains(Position::new(m.column, m.row)) {
             return Ok(false);
         }
         let Some(t) = self.current_mut() else {
             return Ok(false);
         };
-        match route_mouse(&m, m.column, m.row - TAB_BAR_ROWS, t.emulator().modes()) {
+        match route_mouse(&m, m.column - rect.x, m.row - rect.y, t.emulator().modes()) {
             MouseAction::Report(bytes) => t.input(&bytes)?,
             MouseAction::Scroll(lines) => t.emulator_mut().scroll(lines),
             MouseAction::Ignore => return Ok(false),

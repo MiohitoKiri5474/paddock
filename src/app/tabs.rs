@@ -41,10 +41,6 @@ impl<T> Tabs<T> {
         self.tabs.iter()
     }
 
-    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut Tab<T>> {
-        self.tabs.iter_mut()
-    }
-
     /// Add a tab at the end. It does not become current.
     pub fn push(&mut self, name: impl Into<String>, content: T) {
         self.tabs.push(Tab {
