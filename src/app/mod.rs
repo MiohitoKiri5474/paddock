@@ -12,6 +12,8 @@ use crate::paths::Paths;
 use crate::tmux::{Message, Server};
 use anyhow::{Context, Result};
 use crossterm::event as ct;
+use signal_hook::consts::SIGTERM;
+use signal_hook::iterator::Signals;
 use std::sync::mpsc;
 
 /// Everything the event loop waits on, from tmux and from the outer terminal.
@@ -22,19 +24,33 @@ pub enum Event {
         msg: Message,
     },
     Input(ct::Event),
+    /// Asked to detach (SIGTERM), e.g. by a second launch taking over.
+    Detach,
 }
 
 pub fn run() -> Result<()> {
     let paths = Paths::from_env()?;
     // Read the config before touching the screen, so errors print normally.
     let config = Config::load(&paths.config_dir)?;
+    let Some(_instance) = crate::instance::claim(&paths.state_dir)? else {
+        return Ok(());
+    };
     let server = Server::new(paths);
     server.write_config()?;
     let start_dir = std::env::current_dir().context("no current directory")?;
 
+    let (tx, rx) = mpsc::channel();
+    // Before taking over the screen, so SIGTERM never leaves it in raw mode.
+    let mut signals = Signals::new([SIGTERM]).context("cannot handle SIGTERM")?;
+    let detach = tx.clone();
+    std::thread::spawn(move || {
+        if signals.forever().next().is_some() {
+            let _ = detach.send(Event::Detach);
+        }
+    });
+
     let (screen_guard, mut screen) = screen::ScreenGuard::enter()?;
     let size = screen.size().context("cannot read the terminal size")?;
-    let (tx, rx) = mpsc::channel();
     let app = state::App::start(
         server,
         &config,

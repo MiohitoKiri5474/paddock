@@ -3,6 +3,7 @@
 mod app;
 mod config;
 mod input;
+mod instance;
 mod paths;
 mod terminal;
 mod tmux;

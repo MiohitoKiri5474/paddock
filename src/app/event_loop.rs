@@ -86,6 +86,7 @@ fn handle(app: &mut App, event: Event, screen: &mut Screen) -> Result<(Flow, boo
             Flow::Continue
         }
         Event::Input(_) => return Ok((Flow::Continue, false)),
+        Event::Detach => Flow::Quit,
     };
     Ok((flow, true))
 }

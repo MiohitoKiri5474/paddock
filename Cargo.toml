@@ -13,8 +13,10 @@ path = "src/main.rs"
 [dependencies]
 anyhow = "1"
 crossterm = "0.29"
+libc = "0.2"
 ratatui = "0.30"
 serde = { version = "1", features = ["derive"] }
+signal-hook = "0.3"
 toml = "1"
 # alacritty_terminal 0.26 plus the VS16 emoji width fix (ADR 0005). The library
 # name is still `alacritty_terminal`; pinned exactly until the fix is upstream.
