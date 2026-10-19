@@ -1,10 +1,10 @@
 # paddock draws every terminal itself, fed by tmux control mode
 
-paddock's frontend is its own: a sidebar, workspaces, tabs and splits, with scrollback, selection and search that behave the same in any terminal app. So paddock connects to its tmux server as a control-mode client, feeds each pane's raw output into its own terminal-emulator instance, and draws the result with ratatui, instead of showing a real tmux client.
+paddock's frontend is its own: a sidebar, workspaces, tabs and splits, with scrollback, selection and search that behave the same in any terminal app. So paddock connects to its tmux server as a control-mode client, feeds each tmux pane's raw output into its own terminal-emulator instance, and draws the result with ratatui, instead of showing a real tmux client.
 
 ## Considered options
 
-- **Show a real tmux client** (a nested client, or moving the agent's pane into the main area): least code, but the session view would be tmux's, not paddock's.
+- **Show a real tmux client** (a nested client, or moving the agent's tmux pane into the main area): least code, but the session view would be tmux's, not paddock's.
 - **Embed one tmux client per terminal in a pseudo-terminal**: simpler input handling and tidier output to emulate, but scrollback, selection and search would stay in tmux copy mode.
 
 ## Consequences

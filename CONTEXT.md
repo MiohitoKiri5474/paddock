@@ -19,7 +19,7 @@ One shell inside paddock, shown in a tab or a split. It keeps running when paddo
 _Avoid_: pane, tmux session
 
 **Sidebar**:
-The always-visible list on the left: the workspace panel above the task tree.
+The list on the left, which can be shown or hidden: the workspace panel above the task tree.
 
 **Session view**:
 The main area, showing the current tab's terminals.
@@ -34,7 +34,7 @@ A live picture of a session's screen inside the dashboard. In interactive previe
 ### Agents and work
 
 **Session**:
-A Claude Code conversation running, or that ran, in a terminal.
+A Claude Code conversation running, or that ran, in a terminal. One running outside paddock's terminals is an external session.
 _Avoid_: agent (too broad), terminal, tmux session
 
 **Main agent**:

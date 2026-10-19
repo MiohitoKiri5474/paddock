@@ -12,7 +12,7 @@ Not in scope for now: agents other than Claude Code, Linux, remote machines, a s
 
 - **One binary, no daemon** ([ADR 0003](adr/0003-no-daemon-single-instance.md)). `paddock` opens the app. While it is closed, only two things run: the hidden tmux server and Claude Code hooks.
 - **Hidden tmux server** ([ADR 0001](adr/0001-tmux-as-hidden-backend.md)). `tmux -L paddock`, one tmux session per terminal, started with paddock's own minimal config (`escape-time 0`, `extended-keys on`, no status line, no prefix) and a clean environment (`SUPACODE_*`, `TERM_PROGRAM` and similar variables removed). The user's own tmux is never touched.
-- **Own renderer** ([ADR 0002](adr/0002-own-renderer-via-control-mode.md)). paddock is a tmux control-mode client. Each pane's raw output feeds its own terminal-emulator instance; paddock draws everything with ratatui and keeps scrollback, selection and search itself. Spike 0a picks the emulator crate. Written in Rust.
+- **Own renderer** ([ADR 0002](adr/0002-own-renderer-via-control-mode.md)). paddock is a tmux control-mode client. Each tmux pane's raw output feeds its own terminal-emulator instance; paddock draws everything with ratatui and keeps scrollback, selection and search itself. Spike 0a picks the emulator crate. Written in Rust.
 - **One instance at a time.** A second launch offers to take over from the first.
 - **State** lives in `~/.local/state/paddock/`: layout, task rows, hook events and logs. **Config** lives in `~/.config/paddock/config.toml`: prefix, keys, colours and notification switches.
 - **Hooks.** `paddock hooks install` and `paddock hooks uninstall` edit `~/.claude/settings.json`. Supacode's hooks stay; the old tmux-claude-session-manager hooks are removed. Every hook calls `paddock hook <event>`, which finds its terminal through `$TMUX_PANE` and appends the event to the state directory, so tasks created while paddock is closed still appear. `claude agents --json` is used to discover sessions and reconcile state.
@@ -84,7 +84,7 @@ Prefix `C-a`, configurable; pressing it twice sends a literal `C-a`.
 |---|---|
 | `c` | new shell tab |
 | `\|` / `-` | split side by side / top and bottom |
-| `x` | close terminal (asks if Claude is busy) |
+| `x` | close terminal (asks if Claude is running or waiting) |
 | `f` | fork Claude into a new tab |
 | `h` `j` `k` `l` / arrows | move focus |
 | `1`–`9` | go to tab |
@@ -96,7 +96,7 @@ Prefix `C-a`, configurable; pressing it twice sends a literal `C-a`.
 | `b` | show or hide sidebar |
 | `w` | workspace panel (v1.2) |
 | `?` | key help |
-| `d` | detach: paddock quits, terminals keep running |
+| `d` | detach: leave paddock, terminals keep running |
 | `,` | rename tab |
 | `[` | keyboard copy mode (v1.2) |
 | `/` | search scrollback (v1.2) |
@@ -131,7 +131,10 @@ Each step leaves something usable.
 
 ## Testing
 
-Test-first with at least 80% coverage: unit tests for the model and git parsing, integration tests against a real tmux on a temporary socket, and ratatui `TestBackend` snapshots for the UI.
+Test-first with at least 80% coverage:
+
+- **App-level harness**: the real `paddock` binary runs in a PTY against a tmux server on a temporary socket, fed recorded hook payloads, with `osascript` stubbed.
+- **Pure-function tests** for turning hook events into the task tree.
 
 ## Facts checked during design (Claude Code 2.1.303, tmux 3.8)
 
