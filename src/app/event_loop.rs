@@ -171,6 +171,12 @@ fn handle(app: &mut App, event: Event, screen: &mut Screen) -> Result<(Flow, boo
             app.places.extend(read);
             Ok((Flow::Continue, true))
         }
+        Event::NotifyFailed(error) => {
+            if let Some(notice) = app.attention.notify_failed(&error) {
+                app.notice = Some(notice);
+            }
+            Ok((Flow::Continue, true))
+        }
     }
 }
 

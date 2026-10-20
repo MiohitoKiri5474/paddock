@@ -52,6 +52,8 @@ pub enum Event {
     Details(Vec<((String, String), Details)>),
     /// Each space's directory and branch just read, by tmux session id.
     Spaces(Vec<(String, watch::Place)>),
+    /// Showing a notification failed, with what the notifier said.
+    NotifyFailed(String),
 }
 
 pub fn run() -> Result<()> {

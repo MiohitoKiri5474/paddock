@@ -7,10 +7,19 @@
 
 use super::rows::Row;
 use super::state::{App, Mode};
+use super::Event;
 use crate::hooks::now_ms;
 use crate::sessions::{self, state_after, HookRecord, State};
 use std::collections::HashMap;
 use std::process::{Command, Stdio};
+
+/// The AppleScript that shows a notification; its message is the script's
+/// first argument, so it needs no AppleScript quoting.
+const NOTIFY_SCRIPT: [&str; 3] = [
+    "on run argv",
+    "display notification (item 1 of argv) with title \"paddock\"",
+    "end run",
+];
 
 /// Overrides the command that shows notifications (tests use a stub).
 const OSASCRIPT_VAR: &str = "PADDOCK_OSASCRIPT";
@@ -76,6 +85,9 @@ pub struct Attention {
     /// focus changes (CSI ?1004); assumed until it says otherwise.
     pub window_focused: bool,
     osascript: String,
+    /// A failure to notify was shown; later ones are not, to avoid a notice
+    /// on every notification.
+    notify_failure_shown: bool,
 }
 
 impl Attention {
@@ -88,7 +100,18 @@ impl Attention {
                 .ok()
                 .filter(|v| !v.is_empty())
                 .unwrap_or_else(|| "osascript".into()),
+            notify_failure_shown: false,
         }
+    }
+
+    /// The notice for a notification that failed with `error`: the first
+    /// time only.
+    pub fn notify_failed(&mut self, error: &str) -> Option<String> {
+        if self.notify_failure_shown {
+            return None;
+        }
+        self.notify_failure_shown = true;
+        Some(format!("cannot notify: {error}"))
     }
 }
 
@@ -162,24 +185,36 @@ impl App {
             Alert::Idle => "idle",
         };
         let message = format!("{label} is {what}");
-        // The message goes in as an argument: no AppleScript quoting needed.
-        let child = Command::new(&self.attention.osascript)
-            .args(["-e", "on run argv"])
-            .args([
-                "-e",
-                "display notification (space 1 of argv) with title \"paddock\"",
-            ])
-            .args(["-e", "end run", &message])
+        let mut command = Command::new(&self.attention.osascript);
+        for line in NOTIFY_SCRIPT {
+            command.args(["-e", line]);
+        }
+        let child = command
+            .arg(&message)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .spawn();
         match child {
-            // Reap it without holding up the event loop.
-            Ok(mut child) => {
-                std::thread::spawn(move || child.wait());
+            // Wait for it without holding up the event loop; a failure comes
+            // back as an event.
+            Ok(child) => {
+                let events = self.events.clone();
+                std::thread::spawn(move || {
+                    let Ok(out) = child.wait_with_output() else {
+                        return;
+                    };
+                    if !out.status.success() {
+                        let error = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                        let _ = events.send(Event::NotifyFailed(error));
+                    }
+                });
             }
-            Err(e) => self.notice = Some(format!("cannot notify: {e}")),
+            Err(e) => {
+                if let Some(notice) = self.attention.notify_failed(&e.to_string()) {
+                    self.notice = Some(notice);
+                }
+            }
         }
     }
 }
@@ -207,6 +242,39 @@ mod tests {
             notification_type: Some(kind.into()),
             ..rec("Notification", "s")
         }
+    }
+
+    #[test]
+    fn the_notification_script_compiles() {
+        // `osacompile` checks the AppleScript without running it; skip
+        // where there is none (not macOS).
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        let out = dir.path().join("notify.scpt");
+        let mut cmd = Command::new("osacompile");
+        for line in NOTIFY_SCRIPT {
+            cmd.args(["-e", line]);
+        }
+        let Ok(result) = cmd.arg("-o").arg(&out).output() else {
+            return;
+        };
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+
+    #[test]
+    fn a_failing_notifier_is_reported_once() {
+        let mut a = Attention::from_env();
+        let first = a.notify_failed("osascript: syntax error");
+        assert_eq!(
+            first.as_deref(),
+            Some("cannot notify: osascript: syntax error")
+        );
+        assert_eq!(a.notify_failed("again"), None);
     }
 
     #[test]

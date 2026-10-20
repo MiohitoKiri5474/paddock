@@ -259,3 +259,20 @@ fn a_turn_finished_in_view_is_idle_at_once() {
     paddock.wait_for("idle", |_| paddock.full_screen().contains("idle"));
     assert!(!paddock.full_screen().contains("done"));
 }
+
+#[test]
+fn a_notifier_that_fails_says_so_in_a_notice() {
+    let sandbox = Sandbox::new();
+    let stub = sandbox.path("bin/osascript");
+    std::fs::write(&stub, "#!/bin/sh\necho 'syntax error' >&2\nexit 1\n").unwrap();
+    let mut paddock = ready(&sandbox);
+    new_tab(&mut paddock, "2:home"); // look away from the first tab
+
+    hooks(
+        &sandbox,
+        "space-1:0",
+        &["UserPromptSubmit", "PermissionRequest"],
+    );
+
+    paddock.wait_for_text("cannot notify: syntax error");
+}
