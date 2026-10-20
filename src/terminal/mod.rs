@@ -4,10 +4,12 @@
 
 pub mod emulator;
 pub mod key_modes;
+pub mod screen_title;
 pub mod seed;
 
 use emulator::Emulator;
 use key_modes::{KeyModeScanner, KeyModes};
+use screen_title::ScreenTitleFilter;
 
 /// Lines of scrollback paddock keeps per terminal (matches tmux's history-limit).
 pub const SCROLLBACK: usize = 50_000;
@@ -15,6 +17,7 @@ pub const SCROLLBACK: usize = 50_000;
 pub struct Terminal {
     emulator: Emulator,
     keys: KeyModeScanner,
+    titles: ScreenTitleFilter,
 }
 
 impl Terminal {
@@ -23,13 +26,16 @@ impl Terminal {
         Self {
             emulator: Emulator::new(cols, rows, SCROLLBACK),
             keys: KeyModeScanner::default(),
+            titles: ScreenTitleFilter::default(),
         }
     }
 
-    /// Feed bytes the program wrote.
+    /// Feed bytes the program wrote, minus screen title escapes the emulator
+    /// would draw as text.
     pub fn output(&mut self, bytes: &[u8]) {
-        self.keys.feed(bytes);
-        self.emulator.feed(bytes);
+        let bytes = self.titles.filter(bytes);
+        self.keys.feed(&bytes);
+        self.emulator.feed(&bytes);
     }
 
     pub fn key_modes(&self) -> KeyModes {

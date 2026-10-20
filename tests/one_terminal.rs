@@ -31,6 +31,27 @@ fn launching_shows_a_working_shell() {
 }
 
 #[test]
+fn screen_title_escapes_are_not_drawn() {
+    let sandbox = Sandbox::new();
+    let mut paddock = sandbox.launch();
+    paddock.wait_for_text(PROMPT);
+
+    // oh-my-zsh sets the title like this inside tmux; it must not land on screen.
+    paddock.type_line("printf '\\033k%s\\033\\\\' cla''ude; echo done");
+
+    paddock.wait_for("command output", |s| {
+        s.lines()
+            .any(|l| l.trim_end().ends_with("done") && !l.contains("echo"))
+    });
+    let rows = paddock.rows();
+    assert!(
+        rows.iter().any(|l| l == "done") && !rows.iter().any(|l| l.contains("claude")),
+        "title drawn on screen:\n{}",
+        paddock.screen()
+    );
+}
+
+#[test]
 fn typed_text_and_utf8_reach_the_shell() {
     let sandbox = Sandbox::new();
     let mut paddock = sandbox.launch();
