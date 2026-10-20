@@ -47,11 +47,14 @@ Prefix `C-a`, then:
 | `s` | focus sidebar |
 | `b` | show or hide sidebar |
 | `a` | next session that needs you |
+| `o` | dashboard: every session and task with details and a live preview |
 | `d` | detach: paddock quits, terminals keep running |
 | `?` | key help |
 | `C-a` | literal `C-a` |
 
 In the sidebar: `j`/`k` move, `Enter` jumps, `D` dismisses a row, `x` closes, `f` forks, `Esc` goes back.
+
+In the dashboard: `j`/`k` move, `Enter` jumps, `D` dismisses, `x` closes, `f` forks, `I` types into the previewed terminal (`Esc` leaves and is never passed on), `Esc` closes it. Task rows show line changes, ahead/behind, the diff and changed files against the base branch (`origin/HEAD`, else `main`/`master`), the last commit's age, and `merged` once the branch is in its base.
 
 Mouse: click to focus a split, switch tabs or jump to a row; wheel scrolls history; drag selects and copies (hold Shift over programs that use the mouse).
 
