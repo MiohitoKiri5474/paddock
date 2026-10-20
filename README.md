@@ -38,6 +38,7 @@ Prefix `C-a`, then:
 | `c` | new tab in the current space |
 | `C` | new space |
 | `n` / `p` | next / previous tab |
+| `Tab` | last page: back to the space and tab shown before (again: return) |
 | `1`–`9` | go to tab |
 | `,` | rename tab |
 | `$` | rename space |

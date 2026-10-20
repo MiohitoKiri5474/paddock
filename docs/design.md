@@ -106,6 +106,7 @@ Prefix `C-a`, configurable; pressing it twice sends a literal `C-a`.
 | `h` `j` `k` `l` / arrows | move focus |
 | `1`–`9` | go to tab |
 | `n` / `p` | next / previous tab |
+| `Tab` | last page: the space and tab shown before, across spaces (not kept across reopening) |
 | `a` | next session that needs you |
 | `=` | even out the focused split and its neighbours |
 | `o` | dashboard |

@@ -604,3 +604,30 @@ fn c_a_angle_brackets_move_the_tab_left_and_right() {
     paddock.wait_for_current_tab("2:c");
     assert_eq!(windows(&sandbox, "space-1"), ["a", "c", "b"]);
 }
+
+#[test]
+fn c_a_tab_goes_back_to_the_last_page_across_spaces() {
+    let sandbox = Sandbox::new();
+    let mut paddock = ready(&sandbox);
+    paddock.command(b"\t");
+    paddock.wait_for_text("no last page");
+    paddock.type_line("echo one-$((1))");
+    paddock.wait_for_text("one-1\n");
+    new_tab(&mut paddock, &["1:home", "2:home"]);
+    paddock.command(b"C");
+    paddock.wait_for_tabs(&["1:home"]);
+    paddock.wait_for_text(PROMPT);
+
+    paddock.command(b"\t");
+    paddock.wait_for_tabs(&["1:home", "2:home"]);
+    paddock.wait_for_current_tab("2:home");
+    paddock.command(b"\t");
+    paddock.wait_for_tabs(&["1:home"]);
+    // And back once more, to space-1's second tab.
+    paddock.command(b"\t");
+    paddock.wait_for_current_tab("2:home");
+    paddock.type_line("echo where-$((2))");
+    paddock.wait_for_text("where-2\n");
+    let capture = sandbox.tmux(&["capture-pane", "-p", "-t", "space-1:1"]);
+    assert!(capture.contains("where-2"), "{capture}");
+}

@@ -36,6 +36,8 @@ pub enum Command {
     MoveTab(isize),
     /// Make the sidebar wider (`true`) or narrower.
     ResizeSidebar(bool),
+    /// Show the space and tab shown before the current ones.
+    LastPage,
     ToggleSidebar,
     /// Jump to the next session that is waiting or idle.
     NextAttention,
@@ -66,6 +68,7 @@ pub const BINDINGS: &[(&str, &str)] = &[
     ("c", "new tab in this space"),
     ("C", "new space"),
     ("n / p", "next / previous tab"),
+    ("Tab", "last page: the space and tab before"),
     ("1-9", "go to tab"),
     (",", "rename tab"),
     ("$", "rename space"),
@@ -92,6 +95,7 @@ fn command(key: &KeyEvent) -> Option<Command> {
         return None;
     }
     let c = match key.code {
+        KeyCode::Tab => return Some(Command::LastPage),
         KeyCode::Char(c) => c,
         KeyCode::Left => 'h',
         KeyCode::Down => 'j',
@@ -294,6 +298,16 @@ mod tests {
         assert_eq!(
             after_prefix('o', none),
             KeyAction::Command(Command::Dashboard)
+        );
+    }
+
+    #[test]
+    fn tab_after_the_prefix_shows_the_last_page() {
+        let mut p = ctrl_a();
+        p.handle(k('a', KeyModifiers::CONTROL));
+        assert_eq!(
+            p.handle(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
+            KeyAction::Command(Command::LastPage)
         );
     }
 

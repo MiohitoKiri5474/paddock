@@ -135,6 +135,7 @@ pub fn run(
 fn after(app: &mut App, git: &mut GitFeed, kind: &Kind) {
     // Any event may show a tab or bring the window back.
     app.see_current();
+    app.track_page();
     if !kind.output {
         app.settle_tabs();
     }

@@ -7,6 +7,7 @@ mod dashboard;
 mod event_loop;
 mod input;
 mod mouse;
+mod pages;
 mod rows;
 mod saved;
 mod screen;

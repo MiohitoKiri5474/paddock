@@ -118,6 +118,7 @@ impl App {
             Command::FocusSidebar => self.focus_sidebar(false),
             Command::FocusSpaces => self.focus_sidebar(true),
             Command::MoveTab(step) => self.report(|app| app.move_tab(step)),
+            Command::LastPage => self.last_page(),
             Command::ResizeSidebar(wider) => {
                 self.resize_sidebar(if wider { SIDEBAR_STEP } else { -SIDEBAR_STEP });
             }

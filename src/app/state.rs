@@ -6,6 +6,7 @@
 use super::attention::Attention;
 use super::dashboard::Dashboard;
 use super::mouse::Press;
+use super::pages::Pages;
 use super::rows::{rows, Placed, Row, RowId, TaskDetails, TaskStatus};
 use super::saved;
 use super::sidebar::Selection;
@@ -122,6 +123,8 @@ pub struct App {
     /// The width the user resized the sidebar to, saved so that it comes
     /// back; `None` while the configured width applies.
     pub(super) sidebar_resized: Option<u16>,
+    /// The page shown now and the one before, for `C-a Tab`.
+    pub(super) pages: Pages,
     /// Where the held mouse button went, until it is released.
     pub(super) press: Option<Press>,
     pub(super) attention: Attention,
@@ -196,6 +199,7 @@ impl App {
             sidebar_hidden: false,
             sidebar_cols: config.sidebar_width,
             sidebar_resized: None,
+            pages: Pages::default(),
             press: None,
             attention: Attention::from_env(),
             current_space_bg: config.current_space,
