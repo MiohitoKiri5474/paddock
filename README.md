@@ -27,7 +27,7 @@ paddock hooks install               # adds paddock's hooks to ~/.claude/settings
 paddock          # open (a second launch offers to take over)
 ```
 
-Open a terminal with `C-a c` and run `claude` in it; the session appears in the sidebar with its state (running, waiting, idle, stopped) and the branches it works on. You get a macOS notification when a session starts waiting or a main agent finishes a turn.
+The sidebar lists your workspaces. Each is a tmux session on paddock's hidden server: its tabs are the session's windows and its splits their panes, so `tmux -L paddock attach` shows the same thing. Open a tab with `C-a c` and run `claude` in it; its workspace and tab show its state (running, waiting, idle, stopped), and the dashboard (`C-a o`) shows the branches it works on. You get a macOS notification when a session starts waiting or a main agent finishes a turn.
 
 ### Keys
 
@@ -35,15 +35,17 @@ Prefix `C-a`, then:
 
 | Key | Action |
 |---|---|
-| `c` | new shell tab |
+| `c` | new tab in the current workspace |
+| `C` | new workspace |
 | `n` / `p` | next / previous tab |
 | `1`–`9` | go to tab |
 | `,` | rename tab |
+| `$` | rename workspace |
 | `\|` / `-` | split side by side / top and bottom |
 | `h` `j` `k` `l` / arrows | move focus |
-| `=` | equalise split sizes |
-| `x` | close terminal (asks if Claude is busy) |
-| `f` | fork Claude into a new tab |
+| `=` | even out the focused split and its neighbours |
+| `x` | close pane; the last one closes its tab, the last tab its workspace (asks if Claude is busy) |
+| `f` | fork Claude into a new tab of the same workspace |
 | `s` | focus sidebar |
 | `b` | show or hide sidebar |
 | `a` | next session that needs you |
@@ -52,11 +54,11 @@ Prefix `C-a`, then:
 | `?` | key help |
 | `C-a` | literal `C-a` |
 
-In the sidebar: `j`/`k` move, `Enter` jumps, `D` dismisses a row, `x` closes, `f` forks, `Esc` goes back.
+In the sidebar: `j`/`k` move, `Enter` shows that workspace's tabs, `x` closes the workspace, `f` forks its Claude that needs you most, `Esc` goes back.
 
 In the dashboard: `j`/`k` move, `Enter` jumps, `D` dismisses, `x` closes, `f` forks, `I` types into the previewed terminal (`Esc` leaves and is never passed on), `Esc` closes it. Task rows show line changes, ahead/behind, the diff and changed files against the base branch (`origin/HEAD`, else `main`/`master`), the last commit's age, and `merged` once the branch is in its base.
 
-Mouse: click to focus a split, switch tabs or jump to a row; wheel scrolls history; drag selects and copies (hold Shift over programs that use the mouse).
+Mouse: click to focus a split, switch tabs or pick a workspace; wheel scrolls history; drag selects and copies (hold Shift over programs that use the mouse).
 
 ## Configure
 
@@ -65,11 +67,14 @@ Mouse: click to focus a split, switch tabs or jump to a row; wheel scrolls histo
 ```toml
 [keys]
 prefix = "C-a"
+
+[colors]
+current_item = 236        # the current workspace's background: 256-colour index or "#rrggbb"
 ```
 
 ## Files
 
-- State: `~/.local/state/paddock/` (layout, event logs, dismissed rows, `hook-errors.log`)
+- State: `~/.local/state/paddock/` (current workspace, event logs, dismissed rows, `hook-errors.log`); tabs and splits live in tmux
 - Hidden server: `tmux -L paddock ls`
 
 ## Uninstall

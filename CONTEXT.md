@@ -6,26 +6,28 @@ paddock is a terminal workspace for running Claude Code. It keeps your terminals
 
 ### Layout
 
-**Workspace**:
-A named group of tabs you create to organise work, optionally tied to a root directory where new terminals start. With the workspace panel hidden, everything lives in one default workspace.
+**Workspace** (sidebar item):
+A named group of tabs you create to organise work, listed in the sidebar. It is a tmux session on the hidden server.
 _Avoid_: project, group, category
 
+**Current workspace**:
+The workspace whose tabs the tab bar shows. It has its own background in the sidebar.
+
 **Tab**:
-One page of a workspace, holding one or more terminals arranged as splits.
-_Avoid_: window
+One page of a workspace, holding one or more terminals arranged as splits. It is a tmux window of the workspace's session.
 
 **Terminal**:
-One shell inside paddock, shown in a tab or a split. It keeps running when paddock is closed.
-_Avoid_: pane, tmux session
+One shell inside paddock, shown in a tab or a split. It is a tmux pane and keeps running when paddock is closed.
+_Avoid_: tmux session
 
 **Sidebar**:
-The always-visible list on the left: the workspace panel above the task tree.
+The list of workspaces on the left, each with the most urgent Claude state in it and its number of tabs.
 
 **Session view**:
 The main area, showing the current tab's terminals.
 
 **Dashboard**:
-An overlay with full details and a live preview of the selected row.
+An overlay with the task tree, full details and a live preview of the selected row.
 _Avoid_: overview screen
 
 **Preview**:
@@ -74,15 +76,15 @@ No state has been reported yet.
 ### Actions
 
 **Dismiss**:
-Remove a row from the task tree. Git and running processes are untouched.
+Remove a row from the dashboard's task tree. Git and running processes are untouched.
 _Avoid_: delete, clear
 
 **Close**:
-End a terminal and everything running in it.
+End a terminal and everything running in it. A tab closes with its last terminal, a workspace with its last tab.
 _Avoid_: terminate, kill
 
 **Fork**:
-Start a new session that continues a copy of another session's conversation, in a new tab in the same directory.
+Start a new session that continues a copy of another session's conversation, in a new tab of the same workspace, in the same directory.
 _Avoid_: clone, duplicate
 
 **Detach**:

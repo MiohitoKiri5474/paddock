@@ -11,29 +11,29 @@ Not in scope for now: agents other than Claude Code, Linux, remote machines, a s
 ## Architecture
 
 - **One binary, no daemon** ([ADR 0003](adr/0003-no-daemon-single-instance.md)). `paddock` opens the app. While it is closed, only two things run: the hidden tmux server and Claude Code hooks.
-- **Hidden tmux server** ([ADR 0001](adr/0001-tmux-as-hidden-backend.md)). `tmux -L paddock`, one tmux session per terminal, started with paddock's own minimal config (`escape-time 0`, `extended-keys on`, no status line, no prefix) and a clean environment (`SUPACODE_*`, `TERM_PROGRAM` and similar variables removed). The user's own tmux is never touched.
-- **Own renderer** ([ADR 0002](adr/0002-own-renderer-via-control-mode.md)). paddock is a tmux control-mode client. Each pane's raw output feeds its own terminal-emulator instance; paddock draws everything with ratatui and keeps scrollback, selection and search itself. Spike 0a picks the emulator crate. Written in Rust.
+- **Hidden tmux server** ([ADR 0001](adr/0001-tmux-as-hidden-backend.md)). `tmux -L paddock`, started with paddock's own minimal config (`escape-time 0`, `extended-keys on`, no status line, no prefix) and a clean environment (`SUPACODE_*`, `TERM_PROGRAM` and similar variables removed). The user's own tmux is never touched. Each sidebar item is a tmux session, its tabs the session's windows and its splits their panes ([ADR 0006](adr/0006-sidebar-items-are-tmux-sessions.md)), so `tmux -L paddock attach` shows the same structure.
+- **Own renderer** ([ADR 0002](adr/0002-own-renderer-via-control-mode.md)). paddock is a tmux control-mode client, one per sidebar item. Each pane's raw output feeds its own terminal-emulator instance; paddock draws everything with ratatui and keeps scrollback, selection and search itself. Spike 0a picks the emulator crate. Written in Rust.
 - **One instance at a time.** A second launch offers to take over from the first.
-- **State** lives in `~/.local/state/paddock/`: layout, task rows, hook events and logs. **Config** lives in `~/.config/paddock/config.toml`: prefix, keys, colours and notification switches.
+- **State** lives in `~/.local/state/paddock/`: the current item (tmux holds tabs, splits, sizes and focus), dismissed rows, hook events and logs. **Config** lives in `~/.config/paddock/config.toml`: prefix, keys, colours and notification switches.
 - **Hooks.** `paddock hooks install` and `paddock hooks uninstall` edit `~/.claude/settings.json`. Supacode's hooks stay; the old tmux-claude-session-manager hooks are removed. Every hook calls `paddock hook <event>`, which finds its terminal through `$TMUX_PANE` and appends the event to the state directory, so tasks created while paddock is closed still appear. `claude agents --json` is used to discover sessions and reconcile state.
 - **Commands.** `paddock`, `paddock hooks install|uninstall`, and the internal `paddock hook <event>`.
 - **Any terminal app.** Only standard VT features; truecolor with a 256-colour fallback; the UI uses the terminal's 16 ANSI colours so it follows the user's theme; copying goes through `pbcopy` and notifications through `osascript`; no key depends on Option/Alt. paddock makes no network calls.
-- **Refresh.** Git info refreshes on hook events and every few seconds for rows on screen.
+- **Refresh.** Git info refreshes on hook events and every few seconds for the dashboard's rows while it is open.
 
 ## Interface
 
 ### Layout
 
-- Left: the **sidebar**, a closable workspace panel above the task tree.
-- Right: the **session view**, the current workspace's tab bar and the current tab's terminals (tabs and splits).
-- The **dashboard** opens as an overlay (`C-a o`).
-- Workspaces are created and named by the user, each with an optional root directory. With the panel closed, everything lives in one default workspace.
-- A new terminal (`C-a c`) is a blank shell; paddock notices when Claude starts in it.
+- Left: the **sidebar**, a closable list of workspaces (sidebar items). Each item takes two lines and a blank one: its name (the tmux session name), then, dimmed and indented, the most urgent Claude state among its panes (waiting, idle, running, stopped; nothing without Claude) and its number of tabs, as in `● waiting · 3 tabs`. The current item (the one whose tabs are shown) has its own background (`[colors] current_item`, a 256-colour index or `#rrggbb`, default 236); the selected item is reversed while the sidebar has the keyboard.
+- Right: the **session view**, the current item's tab bar and the current tab's terminals (splits).
+- Tabs are numbered and set apart by thin lines; the current one is reversed and bold. A tab is named after what runs in its focused pane (`claude` while Claude runs there, else the command, or the directory for a shell) until the user renames it. A tab holding a waiting or idle Claude gets its colour and a `●`.
+- The **dashboard** opens as an overlay (`C-a o`) and holds the task tree.
+- A new workspace (`C-a C`) and a new tab (`C-a c`) start a blank shell in the focused terminal's directory; paddock notices when Claude starts in it.
 
 ### Task tree
 
-- Levels: workspace → session → task. The workspace level disappears when the panel is closed.
-- A session row is a terminal where Claude runs or ran. Its label is the Claude session name if set, else the tab name, else the directory name.
+- Shown in the dashboard. Levels: session → task.
+- A session row is a terminal where Claude runs or ran. Its label is the Claude session name if set, else the tab name if the user gave one, else the directory name.
 - Task rows are the main agent's branch plus each subagent's branch, labelled with the subagent's task description.
 - Plain shells and the default branch get no row.
 - Rows stay until dismissed (`D`).
@@ -43,8 +43,8 @@ Not in scope for now: agents other than Claude Code, Linux, remote machines, a s
 
 | Where | Fields |
 |---|---|
-| Sidebar row | state and highlight, branch, ahead/behind upstream, line changes (`+30 −144`, uncommitted) |
-| Dashboard | everything in the sidebar, plus base diff, number of changed files, last commit age, merged badge; PR number and state after v1 |
+| Sidebar item | name, most urgent Claude state and highlight, number of tabs |
+| Dashboard | state and highlight, branch, ahead/behind upstream, line changes (`+30 −144`, uncommitted), base diff, number of changed files, last commit age, merged badge; PR number and state after v1 |
 
 ### States
 
@@ -55,7 +55,7 @@ Not in scope for now: agents other than Claude Code, Linux, remote machines, a s
 
 ### Attention
 
-- Waiting rows get a strong highlight; idle and done rows a soft one. Tabs holding such sessions are highlighted too.
+- Waiting rows and items get a strong highlight; idle and done ones a soft one. Tabs holding such sessions are highlighted and marked `●` too.
 - macOS notifications fire when a session starts waiting and when a main agent goes idle, but not when that terminal is already focused.
 
 ### Preview
@@ -65,13 +65,13 @@ Not in scope for now: agents other than Claude Code, Linux, remote machines, a s
 
 ### Actions
 
-- **Close** (`x`, session rows): kills the terminal's tmux session; asks first if Claude is running or waiting.
-- **Fork** (`f`, session rows): runs `claude --resume <id> --fork-session` in a new tab in the same directory. Moving the fork into its own worktree is Claude's job (its `EnterWorktree` tool).
+- **Close** (`x`): closes the focused pane, or in the dashboard the row's pane; its tab goes with its last pane and its workspace with its last tab. In the sidebar, `x` closes the selected workspace. Asks first if Claude is running or waiting there.
+- **Fork** (`f`): runs `claude --resume <id> --fork-session` in a new tab of the same workspace, in the session's directory. Moving the fork into its own worktree is Claude's job (its `EnterWorktree` tool).
 - A single subagent can only be stopped from inside its session.
 
 ### Mouse
 
-- Click: focus a terminal, jump to a row, switch tabs.
+- Click: focus a terminal, pick a workspace, switch tabs.
 - Wheel: scroll a terminal's history.
 - Drag: select text; releasing copies it.
 - Programs that ask for the mouse (vim, htop) receive it; hold Shift to select anyway.
@@ -83,27 +83,28 @@ Prefix `C-a`, configurable; pressing it twice sends a literal `C-a`.
 
 | Key | Action |
 |---|---|
-| `c` | new shell tab |
+| `c` | new tab in the current workspace |
+| `C` | new workspace |
 | `\|` / `-` | split side by side / top and bottom |
-| `x` | close terminal (asks if Claude is busy) |
+| `x` | close pane (asks if Claude is busy) |
 | `f` | fork Claude into a new tab |
 | `h` `j` `k` `l` / arrows | move focus |
 | `1`–`9` | go to tab |
 | `n` / `p` | next / previous tab |
 | `a` | next session that needs you |
-| `=` | equalise split sizes |
+| `=` | even out the focused split and its neighbours |
 | `o` | dashboard |
 | `s` | focus sidebar |
 | `b` | show or hide sidebar |
-| `w` | workspace panel (v1.2) |
 | `?` | key help |
 | `d` | detach: paddock quits, terminals keep running |
 | `,` | rename tab |
+| `$` | rename workspace |
 | `[` | keyboard copy mode (v1.2) |
 | `/` | search scrollback (v1.2) |
 | `C-a` | literal `C-a` |
 
-In the sidebar and dashboard: `j`/`k` move, `Enter` jumps, `D` dismisses, `x` closes, `f` forks, `Esc` goes back. Dashboard only: `I` for interactive preview.
+In the sidebar: `j`/`k` move, `Enter` shows the workspace's tabs, `x` closes the workspace, `f` forks its most urgent Claude, `Esc` goes back. In the dashboard: `j`/`k` move, `Enter` jumps, `D` dismisses, `x` closes, `f` forks, `I` for interactive preview, `Esc` goes back.
 
 ## Tasks and worktrees
 
@@ -111,8 +112,8 @@ A task is a branch ([ADR 0004](adr/0004-task-is-a-branch.md)). paddock reads `gi
 
 ## Scope
 
-- **v1**: hidden tmux server, control-mode rendering with own scrollback, single instance, layout restored on reopen; one default workspace, tabs, minimal splits (split, close, move focus, equalise), prefix keys, mouse (click, wheel, drag to copy); hooks, states, sidebar task tree including subagents, sidebar git fields, highlights, notifications, dismiss; close and fork; dashboard (details, live preview, interactive preview).
-- **v1.2**: workspaces and the workspace panel, scrollback search, keyboard copy mode, external sessions group.
+- **v1**: hidden tmux server, control-mode rendering with own scrollback, single instance, layout kept in tmux; workspaces (tmux sessions) in the sidebar, tabs, minimal splits (split, close, move focus, even out), prefix keys, mouse (click, wheel, drag to copy); hooks, states, highlights, notifications; dashboard with the task tree including subagents, git fields, dismiss, live and interactive preview; close and fork.
+- **v1.2**: a root directory per workspace, scrollback search, keyboard copy mode, external sessions group.
 - **Later**: restore after reboot (`claude --resume` per terminal), PR column, resizing splits, other agents, Linux.
 
 ## Build order
