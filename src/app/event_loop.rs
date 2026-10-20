@@ -96,6 +96,8 @@ pub fn run(
             (Flow::Continue, true)
         });
         dirty |= changed;
+        // Any event may show a tab or bring the window back.
+        app.see_current();
         if rows_may_move {
             app.anchor_dashboard();
             git.update(&app, hooks);

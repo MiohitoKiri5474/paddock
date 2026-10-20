@@ -95,10 +95,7 @@ impl Attention {
 /// The row after the focused terminal's among those waiting or idle, in
 /// sidebar order and wrapping around; the first one if it is not among them.
 pub fn next_needing<'a>(rows: &'a [Row], focused: Option<&str>) -> Option<&'a Row> {
-    let needy: Vec<&Row> = rows
-        .iter()
-        .filter(|r| matches!(r.state, State::Waiting | State::Idle))
-        .collect();
+    let needy: Vec<&Row> = rows.iter().filter(|r| r.state.needs_you()).collect();
     let at = needy.iter().position(|r| Some(r.pane.as_str()) == focused);
     let next = at.map_or(0, |i| (i + 1) % needy.len());
     needy.get(next).copied()
@@ -129,6 +126,21 @@ impl App {
                 self.mode = Mode::Normal;
             }
             None => self.notice = Some("no session needs you".into()),
+        }
+    }
+
+    /// Turns done in the tab you are looking at (the current space's
+    /// current tab, with the outer window focused) become idle.
+    pub(super) fn see_current(&mut self) {
+        if !self.attention.window_focused {
+            return;
+        }
+        let Some(window) = self.current_item().and_then(|i| i.current_window()) else {
+            return;
+        };
+        let panes: Vec<String> = window.panes.iter().map(|p| p.id.clone()).collect();
+        for pane in panes {
+            self.sessions.see(&pane);
         }
     }
 

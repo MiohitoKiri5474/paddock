@@ -198,7 +198,7 @@ fn the_preview_shows_the_selected_terminal_live() {
     sandbox.set_agents("not json");
     let mut paddock = two_tabs(&sandbox);
     claude(&sandbox, "workspace-1:0", "Stop", "s1", "/w/repo");
-    wait_anywhere(&paddock, "idle");
+    wait_anywhere(&paddock, "done");
     open(&mut paddock);
     paddock.wait_for_text("preview: repo");
 
@@ -231,7 +231,7 @@ fn i_types_into_the_previewed_terminal_and_esc_is_never_sent() {
     let sandbox = Sandbox::new();
     let mut paddock = two_tabs(&sandbox);
     claude(&sandbox, "workspace-1:0", "Stop", "s1", "/w/repo");
-    wait_anywhere(&paddock, "idle");
+    wait_anywhere(&paddock, "done");
     // The first tab's pane writes every byte it reads to a file, ESC shown as `^[`.
     let out = sandbox.path("typed.txt");
     let cat = format!("cat -v > {}", out.display());
@@ -260,7 +260,7 @@ fn esc_and_a_key_in_one_read_leave_interactive_preview_unsent() {
     let sandbox = Sandbox::new();
     let mut paddock = two_tabs(&sandbox);
     claude(&sandbox, "workspace-1:0", "Stop", "s1", "/w/repo");
-    wait_anywhere(&paddock, "idle");
+    wait_anywhere(&paddock, "done");
     let out = sandbox.path("typed.txt");
     let cat = format!("cat -v > {}", out.display());
     sandbox.tmux(&["send-keys", "-t", "workspace-1:0", &cat, "Enter"]);
@@ -312,7 +312,7 @@ fn f_forks_the_selected_session() {
     let dir = dir.canonicalize().unwrap();
     let id = "0000cccc-0000-4000-8000-00000000000c";
     claude(&sandbox, "workspace-1:0", "Stop", id, dir.to_str().unwrap());
-    wait_anywhere(&paddock, "idle");
+    wait_anywhere(&paddock, "done");
 
     open(&mut paddock);
     paddock.send(b"f");

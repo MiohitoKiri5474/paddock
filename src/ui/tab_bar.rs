@@ -34,7 +34,7 @@ pub struct TabBar<'a> {
 
 /// Whether a tab in `state` gets the marker.
 fn needs_you(state: State) -> bool {
-    matches!(state, State::Waiting | State::Idle)
+    state.needs_you()
 }
 
 /// Tab `index` as drawn in the bar: ` 1:name ` (` 1:name ● ` if it needs you).

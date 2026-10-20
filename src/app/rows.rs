@@ -77,7 +77,7 @@ fn task_rank(task: &TaskRow, session: State) -> u8 {
         match session {
             State::Waiting => TaskState::Waiting,
             State::Running => TaskState::Running,
-            State::Idle => TaskState::Done,
+            State::Done | State::Idle => TaskState::Done,
             State::Stopped | State::Unknown => TaskState::Stopped,
         },
         |s| s.state,
@@ -300,8 +300,8 @@ mod tests {
         // Claude no longer runs in a closed pane: its row is stopped.
         let want = [
             ("c", "$2", "@3", State::Waiting, false),
-            ("api", "$2", "@2", State::Idle, false),
-            ("d", "$2", "@3", State::Idle, false),
+            ("api", "$2", "@2", State::Done, false),
+            ("d", "$2", "@3", State::Done, false),
             ("a", "$1", "@1", State::Stopped, false),
             ("gone", "", "", State::Stopped, true),
             ("ten", "", "", State::Stopped, true),

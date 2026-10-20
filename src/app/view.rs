@@ -38,7 +38,10 @@ impl App {
             .iter()
             .map(|w| {
                 let claude = self.session_in(&w.active).is_some_and(|s| {
-                    matches!(s.state, State::Running | State::Waiting | State::Idle)
+                    matches!(
+                        s.state,
+                        State::Running | State::Waiting | State::Done | State::Idle
+                    )
                 });
                 let name = if w.auto_name && claude {
                     CLAUDE.to_string()

@@ -230,3 +230,31 @@ fn c_a_a_focuses_the_split_running_the_session() {
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
 }
+
+#[test]
+fn a_turn_finished_out_of_sight_is_done_until_you_look_at_it() {
+    let sandbox = Sandbox::new();
+    let mut paddock = ready(&sandbox);
+    new_tab(&mut paddock, "2:home");
+
+    hooks(&sandbox, "workspace-1:0", &["UserPromptSubmit", "Stop"]);
+    paddock.wait_for("done", |_| paddock.full_screen().contains("done"));
+
+    // Looking at it, with the outer window focused, makes it idle.
+    paddock.command(b"1");
+    paddock.wait_for("idle", |_| {
+        let s = paddock.full_screen();
+        s.contains("idle") && !s.contains("done")
+    });
+}
+
+#[test]
+fn a_turn_finished_in_view_is_idle_at_once() {
+    let sandbox = Sandbox::new();
+    let paddock = ready(&sandbox);
+
+    hooks(&sandbox, "workspace-1:0", &["UserPromptSubmit", "Stop"]);
+
+    paddock.wait_for("idle", |_| paddock.full_screen().contains("idle"));
+    assert!(!paddock.full_screen().contains("done"));
+}

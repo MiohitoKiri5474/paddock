@@ -207,7 +207,7 @@ fn f_on_a_sidebar_item_forks_its_session_into_a_new_tab_of_that_item() {
         "Stop",
         &payload("Stop", "0000bbbb-0000-4000-8000-00000000000b", &dir),
     );
-    paddock.wait_for("idle", |_| paddock.full_screen().contains("idle"));
+    paddock.wait_for("done", |_| paddock.full_screen().contains("done"));
 
     paddock.command(b"s");
     paddock.send(b"k");

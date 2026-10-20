@@ -19,27 +19,36 @@ use std::path::Path;
 pub enum State {
     Running,
     Waiting,
+    /// The main agent finished a turn you have not looked at yet.
+    Done,
     Idle,
     Stopped,
     Unknown,
 }
 
 impl State {
-    /// Sort order of rows: waiting, idle, running, stopped, then unknown.
+    /// Sort order of rows: waiting, done, idle, running, stopped, then unknown.
     pub fn rank(self) -> u8 {
         match self {
             State::Waiting => 0,
-            State::Idle => 1,
-            State::Running => 2,
-            State::Stopped => 3,
-            State::Unknown => 4,
+            State::Done => 1,
+            State::Idle => 2,
+            State::Running => 3,
+            State::Stopped => 4,
+            State::Unknown => 5,
         }
+    }
+
+    /// Whether the session needs you: it waits, or finished a turn.
+    pub fn needs_you(self) -> bool {
+        matches!(self, State::Waiting | State::Done | State::Idle)
     }
 
     pub fn label(self) -> &'static str {
         match self {
             State::Running => "running",
             State::Waiting => "waiting",
+            State::Done => "done",
             State::Idle => "idle",
             State::Stopped => "stopped",
             State::Unknown => "unknown",
@@ -430,6 +439,15 @@ impl Sessions {
         list
     }
 
+    /// You looked at pane `pane`: a turn done there becomes idle.
+    pub fn see(&mut self, pane: &str) {
+        if let Some(s) = self.by_pane.get_mut(pane) {
+            if s.state == State::Done {
+                s.state = State::Idle;
+            }
+        }
+    }
+
     /// Note an event about a row at `ts`.
     fn touch(&mut self, pane: &str, branch: Option<String>, ts: u64) {
         let seen = self.seen.entry((pane.to_string(), branch)).or_insert(ts);
@@ -465,7 +483,13 @@ impl Sessions {
             s.cwd.clone_from(&r.cwd);
         }
         if let Some(state) = state_after(r) {
-            s.state = state;
+            s.state = match state {
+                // A finished turn is done until you look at it (see
+                // `Sessions::see`); later idle reminders keep it done.
+                State::Idle if r.event == "Stop" => State::Done,
+                State::Idle if s.state == State::Done && r.event != "SessionStart" => State::Done,
+                state => state,
+            };
             s.updated = r.ts;
             s.hooked = Some(r.ts);
         }
@@ -522,7 +546,11 @@ impl Sessions {
                 s.cwd.clone_from(&a.cwd);
             }
             s.name.clone_from(&a.name);
-            s.state = State::from_status(&a.status);
+            let state = State::from_status(&a.status);
+            // Claude says idle for a turn you have not looked at yet.
+            if !(same && state == State::Idle && s.state == State::Done) {
+                s.state = state;
+            }
             s.updated = taken;
             // A conversation no hook reported counts as an event of its row.
             if found || !same {
@@ -636,7 +664,7 @@ mod tests {
         s.apply(&rec("UserPromptSubmit", 2));
         assert_eq!(state(&s), State::Running);
         s.apply(&rec("Stop", 3));
-        assert_eq!(state(&s), State::Idle);
+        assert_eq!(state(&s), State::Done);
         s.apply(&HookRecord {
             session_id: Some("new".into()),
             cwd: None,
@@ -649,6 +677,50 @@ mod tests {
             now.cwd, None,
             "only tasks are kept from the old conversation"
         );
+    }
+
+    #[test]
+    fn a_finished_turn_is_done_until_seen() {
+        let mut s = Sessions::default();
+        s.apply(&rec("SessionStart", 1));
+        assert_eq!(state(&s), State::Idle, "starting finished nothing");
+        s.apply(&rec("UserPromptSubmit", 2));
+        s.apply(&rec("Stop", 3));
+        assert_eq!(state(&s), State::Done);
+        // Claude's later reminder that it is idle keeps it done.
+        s.apply(&HookRecord {
+            notification_type: Some("idle_prompt".into()),
+            ..rec("Notification", 4)
+        });
+        assert_eq!(state(&s), State::Done);
+        s.see("%9");
+        assert_eq!(state(&s), State::Done, "another pane was seen");
+        s.see("%1");
+        assert_eq!(state(&s), State::Idle);
+        s.apply(&rec("UserPromptSubmit", 5));
+        s.see("%1");
+        assert_eq!(state(&s), State::Running, "seeing only ends done");
+    }
+
+    #[test]
+    fn a_snapshot_saying_idle_keeps_a_turn_done() {
+        let mut s = Sessions::default();
+        s.apply(&rec("Stop", 10));
+        s.reconcile(10 + HOOK_GRACE + 1, &[agent(S1, "idle", None)]);
+        assert_eq!(state(&s), State::Done);
+        s.reconcile(10 + HOOK_GRACE + 2, &[agent(S1, "busy", None)]);
+        assert_eq!(state(&s), State::Running);
+    }
+
+    #[test]
+    fn a_subagents_stop_is_not_the_main_agents_turn() {
+        let mut s = Sessions::default();
+        s.apply(&rec("UserPromptSubmit", 1));
+        s.apply(&HookRecord {
+            agent_id: Some("a1".into()),
+            ..rec("Stop", 2)
+        });
+        assert_eq!(state(&s), State::Running);
     }
 
     #[test]
@@ -673,7 +745,7 @@ mod tests {
         s.apply(&rec("Stop", 10_000));
         // `claude agents` still says busy a poll after Stop.
         s.reconcile(13_000, &[agent(S1, "busy", None)]);
-        assert_eq!(state(&s), State::Idle);
+        assert_eq!(state(&s), State::Done);
         // Once the hook is old, snapshots correct each other every poll.
         s.reconcile(10_000 + HOOK_GRACE + 1, &[agent(S1, "busy", None)]);
         assert_eq!(state(&s), State::Running);
@@ -692,7 +764,7 @@ mod tests {
                 ..agent(S1, "busy", None)
             }],
         );
-        assert_eq!(state(&s), State::Idle);
+        assert_eq!(state(&s), State::Done);
         assert_eq!(s.get("%1").unwrap().name.as_deref(), Some("named"));
     }
 
@@ -844,7 +916,7 @@ mod tests {
         s.apply(&sub("PostToolUse", "b2", WT_B, Some("fix/b"), 5));
         // The main agent's Stop says nothing about its subagents.
         s.apply(&rec("Stop", 6));
-        assert_eq!(state(&s), State::Idle);
+        assert_eq!(state(&s), State::Done);
         s.apply(&sub("SubagentStop", "a1", WT_A, Some("fix/a"), 7));
         assert_eq!(
             subtasks(&s),
@@ -1057,17 +1129,21 @@ mod tests {
     }
 
     #[test]
-    fn rows_sort_waiting_idle_running_stopped_unknown() {
+    fn rows_sort_waiting_done_idle_running_stopped_unknown() {
         let mut all = [
             State::Unknown,
             State::Stopped,
             State::Running,
             State::Idle,
+            State::Done,
             State::Waiting,
         ];
         all.sort_by_key(|s| s.rank());
         let names: Vec<&str> = all.iter().map(|s| s.label()).collect();
-        assert_eq!(names, ["waiting", "idle", "running", "stopped", "unknown"]);
+        assert_eq!(
+            names,
+            ["waiting", "done", "idle", "running", "stopped", "unknown"]
+        );
         assert_eq!(State::from_status("busy"), State::Running);
         assert_eq!(State::from_status("odd"), State::Unknown);
     }
