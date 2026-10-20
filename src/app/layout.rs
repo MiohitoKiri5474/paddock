@@ -322,9 +322,11 @@ impl<T: Clone + PartialEq> Node<T> {
                 borders.push(Border { area: line, split });
                 offset += BORDER;
             }
-            child
-                .node
-                .place(along(area, split, offset, size).intersection(area), panes, borders);
+            child.node.place(
+                along(area, split, offset, size).intersection(area),
+                panes,
+                borders,
+            );
             offset += size;
         }
     }
@@ -547,11 +549,21 @@ mod tests {
         l.split(Split::Columns, 2);
         l.split(Split::Columns, 3);
         l.split(Split::Rows, 4);
-        for area in [Rect::new(20, 1, 0, 5), Rect::new(0, 1, 1, 5), Rect::new(0, 1, 9, 0)] {
+        for area in [
+            Rect::new(20, 1, 0, 5),
+            Rect::new(0, 1, 1, 5),
+            Rect::new(0, 1, 9, 0),
+        ] {
             let (panes, borders) = l.rects(area);
-            let rects = panes.iter().map(|(_, r)| *r).chain(borders.iter().map(|b| b.area));
+            let rects = panes
+                .iter()
+                .map(|(_, r)| *r)
+                .chain(borders.iter().map(|b| b.area));
             for r in rects {
-                assert!(r.is_empty() || area.intersection(r) == r, "{r:?} in {area:?}");
+                assert!(
+                    r.is_empty() || area.intersection(r) == r,
+                    "{r:?} in {area:?}"
+                );
             }
         }
     }

@@ -140,6 +140,11 @@ pub fn edit_file(path: &Path, f: impl FnOnce(Value) -> Result<Value>) -> Result<
     let path = &std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let tmp = path.with_extension("json.paddock-tmp");
     std::fs::write(&tmp, out).with_context(|| format!("cannot write {}", tmp.display()))?;
+    // The settings may hold tokens: keep a private file private.
+    if let Ok(meta) = std::fs::metadata(path) {
+        std::fs::set_permissions(&tmp, meta.permissions())
+            .with_context(|| format!("cannot set permissions on {}", tmp.display()))?;
+    }
     std::fs::rename(&tmp, path).with_context(|| format!("cannot replace {}", path.display()))
 }
 
@@ -338,5 +343,17 @@ mod tests {
             "{oops",
             "left untouched"
         );
+    }
+
+    #[test]
+    fn edit_file_keeps_the_files_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, "{}").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        edit_file(&path, |s| install(s, EXE)).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "settings may hold tokens");
     }
 }

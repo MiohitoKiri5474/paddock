@@ -82,9 +82,11 @@ pub fn run() -> Result<()> {
     std::thread::spawn(move || {
         while let Ok(ev) = ct::read() {
             if tx.send(Event::Input(ev)).is_err() {
-                break;
+                return;
             }
         }
+        // No more input: nothing could ever detach, so detach now.
+        let _ = tx.send(Event::Detach);
     });
 
     let result = event_loop::run(&mut screen, app, &rx, git);

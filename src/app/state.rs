@@ -214,6 +214,17 @@ pub fn rows<'a>(
     rows
 }
 
+/// A state file that cannot be read is moved to `<name>.bad`, so the next
+/// save does not overwrite what it held. Returns the message for the user.
+fn set_aside(dir: &std::path::Path, name: &str, e: &anyhow::Error) -> String {
+    let path = dir.join(name);
+    let bad = dir.join(format!("{name}.bad"));
+    match std::fs::rename(&path, &bad) {
+        Ok(()) => format!("{e:#} (kept as {})", bad.display()),
+        Err(r) => format!("{e:#} (cannot keep it: {r})"),
+    }
+}
+
 /// The first `terminal-N` not already taken.
 pub fn next_name<'a>(taken: impl IntoIterator<Item = &'a str> + Clone) -> String {
     (1..)
@@ -257,20 +268,29 @@ impl App {
                     app.sessions.dismiss(&d.pane, d.branch.as_deref(), d.at);
                 }
             }
-            Err(e) => app.notice = Some(format!("{e:#}")),
+            Err(e) => app.notice = Some(set_aside(&app.state_dir, dismissed::FILE_NAME, &e)),
         }
         let sessions = app.server.sessions();
         let saved = saved::load(&app.state_dir).unwrap_or_else(|e| {
-            app.notice = Some(format!("{e:#}"));
+            app.notice = Some(set_aside(&app.state_dir, saved::FILE_NAME, &e));
             None
         });
         let live: Vec<String> = sessions.iter().map(|s| s.id.clone()).collect();
         let restored = saved::restore(saved, &live);
         let area = app.area();
-        for layout in restored.tabs {
-            // Attach at the final size, so no shell sees a resize.
+        for mut layout in restored.tabs {
+            // Attach at the final size, so no shell sees a resize. A terminal
+            // that cannot be attached (it just ended) keeps paddock from
+            // opening no other.
+            let mut failed = Vec::new();
             for (id, rect) in layout.rects(area).0 {
-                app.attach(&id, terminal_size(rect))?;
+                if let Err(e) = app.attach(&id, terminal_size(rect)) {
+                    app.notice = Some(format!("{e:#}"));
+                    failed.push(id);
+                }
+            }
+            if !failed.iter().all(|id| layout.remove(id)) {
+                continue;
             }
             let first = layout.leaves()[0];
             let name = sessions
@@ -284,6 +304,7 @@ impl App {
         if app.tabs.is_empty() {
             app.new_tab()?;
         }
+        app.report(|app| app.relayout());
         Ok(app)
     }
 
@@ -407,7 +428,11 @@ impl App {
         let name = next_name(sessions.iter().map(|s| s.name.as_str()));
         let dir = dir.unwrap_or_else(|| self.start_dir.clone());
         let session = self.server.new_session(&name, &dir, size)?;
-        self.attach(&session.id, size)?;
+        if let Err(e) = self.attach(&session.id, size) {
+            // Best effort: never leave a shell running out of sight.
+            let _ = self.server.kill_session(&session.id);
+            return Err(e);
+        }
         Ok(session.id)
     }
 
@@ -503,9 +528,10 @@ impl App {
                     tab.name = name;
                 }
             }
-            app.relayout()?;
-            app.save()
+            Ok(())
         });
+        self.report(|app| app.relayout());
+        self.report(|app| app.save());
         !self.tabs.is_empty()
     }
 

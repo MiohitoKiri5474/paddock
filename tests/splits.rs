@@ -266,3 +266,20 @@ fn without_a_saved_layout_every_terminal_comes_back_as_a_tab() {
     again.wait_for_tabs(&["1:terminal-1", "2:terminal-2"]);
     wait_for_sizes(&sandbox, &["terminal-1 100x29", "terminal-2 100x29"]);
 }
+
+#[test]
+fn an_unreadable_layout_is_kept_aside_not_overwritten() {
+    let sandbox = Sandbox::new();
+    let mut p = ready(&sandbox);
+    p.detach_keys();
+    assert!(p.wait_exit());
+    let layout = sandbox.path("state/paddock/layout.toml");
+    std::fs::write(&layout, "not a layout").unwrap();
+
+    let mut again = ready(&sandbox);
+    again.command(b"c");
+    again.wait_for_tabs(&["1:terminal-1", "2:terminal-2"]);
+
+    let aside = sandbox.path("state/paddock/layout.toml.bad");
+    assert_eq!(std::fs::read_to_string(aside).unwrap(), "not a layout");
+}

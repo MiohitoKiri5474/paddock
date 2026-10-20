@@ -72,7 +72,12 @@ pub fn run(
         // itself may change which task rows are on screen.
         let hooks = matches!(event, Event::Hooks(_));
         let rows_may_move = !matches!(event, Event::Tmux { .. } | Event::Git(_));
-        let (flow, changed) = handle(&mut app, event, screen)?;
+        // A terminal can end with its exit still queued: a write to it fails
+        // then. Say so, and go on rather than quit without saving.
+        let (flow, changed) = handle(&mut app, event, screen).unwrap_or_else(|e| {
+            app.notice = Some(format!("{e:#}"));
+            (Flow::Continue, true)
+        });
         dirty |= changed;
         if rows_may_move {
             git.update(&app, hooks);

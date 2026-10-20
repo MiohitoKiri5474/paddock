@@ -18,6 +18,9 @@ const KEPT_VARS: &[&str] = &[
     "LANG",
     "TMPDIR",
     "TMUX_TMPDIR",
+    // `paddock hook` in a terminal needs paddock's own state dir and socket.
+    "XDG_STATE_HOME",
+    "PADDOCK_TMUX_SOCKET",
 ];
 
 /// `TERM` tmux itself sees (the panes get `default-terminal`).
@@ -210,9 +213,22 @@ mod tests {
             ("TMUX", "/tmp/x,1,0"),
             ("LC_ALL", "C"),
             ("PATH", "/bin"),
+            ("XDG_STATE_HOME", "/s"),
+            ("PADDOCK_TMUX_SOCKET", "p"),
         ]));
         let keys: Vec<&str> = env.iter().map(|(k, _)| k.as_str()).collect();
-        assert_eq!(keys, ["HOME", "LC_ALL", "PATH", "TERM"]);
+        // Hooks in the terminals must find the same state and socket.
+        assert_eq!(
+            keys,
+            [
+                "HOME",
+                "LC_ALL",
+                "PADDOCK_TMUX_SOCKET",
+                "PATH",
+                "XDG_STATE_HOME",
+                "TERM"
+            ]
+        );
         assert!(env.contains(&("TERM".into(), "xterm-256color".into())));
     }
 
@@ -253,7 +269,11 @@ mod tests {
         std::fs::create_dir(&dir).unwrap();
         let started = server.new_session("t", &dir, (80, 24));
         let got = started.and_then(|s| server.display(&s.id, "#{pane_current_path}"));
+        let socket = server.run(&["display-message", "-p", "#{socket_path}"]);
         let _ = server.run(&["kill-server"]);
+        if let Ok(socket) = socket {
+            let _ = std::fs::remove_file(socket.trim());
+        }
         assert_eq!(got.unwrap(), dir.to_string_lossy());
     }
 

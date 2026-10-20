@@ -46,16 +46,20 @@ impl App {
     /// Give every terminal, in every tab, the size its layout gives it.
     pub(super) fn relayout(&mut self) -> Result<()> {
         let area = self.area();
+        // One terminal that cannot be resized (it just ended) stops no other.
+        let mut result = Ok(());
         for tab in self.tabs.iter() {
             for (id, rect) in tab.content.rects(area).0 {
                 let (cols, rows) = terminal_size(rect);
                 match self.terminals.get_mut(&id) {
-                    Some(t) if t.emulator().size() != (cols, rows) => t.resize(cols, rows)?,
+                    Some(t) if t.emulator().size() != (cols, rows) => {
+                        result = result.and(t.resize(cols, rows));
+                    }
                     _ => {}
                 }
             }
         }
-        Ok(())
+        result
     }
 
     /// Write the tabs and their layouts to the state directory.
