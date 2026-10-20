@@ -211,6 +211,7 @@ fn parse_base_diff(out: &str) -> BaseDiff {
     }
 }
 
+/// Seconds in a minute, an hour and a day, for ages.
 const MINUTE: u64 = 60;
 const HOUR: u64 = 60 * MINUTE;
 const DAY: u64 = 24 * HOUR;
