@@ -50,15 +50,10 @@ impl App {
             self.mode = Mode::Normal;
             return;
         }
-        match row_ids(&self.rows()).into_iter().next() {
-            Some(first) => {
-                self.mode = Mode::Dashboard(Dashboard {
-                    selected: Some(first),
-                    interactive: false,
-                });
-            }
-            None => self.notice = Some("no Claude sessions yet".into()),
-        }
+        self.mode = Mode::Dashboard(Dashboard {
+            selected: row_ids(&self.rows()).into_iter().next(),
+            interactive: false,
+        });
     }
 
     /// Tasks to keep git fresh for: all of the dashboard's, with details,

@@ -95,8 +95,11 @@ fn repo(sandbox: &Sandbox) -> PathBuf {
 fn o_opens_the_dashboard_and_esc_closes_it() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
-    paddock.command(b"o");
+    // Empty, it still opens, and says so.
+    open(&mut paddock);
     paddock.wait_for_text("no Claude sessions yet");
+    paddock.send(b"\x1b");
+    paddock.wait_for("the empty dashboard closed", |s| !s.contains(OPEN));
 
     claude(&sandbox, "terminal-1", "Stop", "s1", "/w/repo");
     paddock.wait_for_text("idle");

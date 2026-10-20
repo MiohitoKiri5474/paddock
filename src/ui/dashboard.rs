@@ -14,6 +14,8 @@ use ratatui::widgets::{Clear, Widget};
 
 pub const TITLE: &str = "dashboard";
 const KEYS: &str = "j/k move  Enter jump  D dismiss  x close  f fork  I interact  Esc back";
+/// The list's only line without rows.
+const EMPTY: &str = " no Claude sessions yet";
 /// From this width on, the preview sits beside the list instead of below it.
 const SIDE_BY_SIDE: u16 = 140;
 
@@ -200,6 +202,9 @@ fn render_list(view: &View, area: Rect, buf: &mut Buffer) {
     let width = usize::from(area.width);
     render_title(area, buf);
     let lines = lines(view.rows);
+    if lines.is_empty() && area.height > 1 {
+        buf.set_stringn(area.x, area.y + 1, EMPTY, width, Style::default());
+    }
     let picked = lines.iter().position(|(row, task)| {
         view.selected.is_some_and(|s| {
             s.pane == row.pane && s.branch.as_deref() == task.map(|t| t.branch.as_str())
@@ -234,7 +239,12 @@ fn render_preview(view: &View, area: Rect, buf: &mut Buffer) -> Option<Position>
     let label = view
         .selected
         .and_then(|s| view.rows.iter().find(|r| r.pane == s.pane))
-        .map_or("", |r| r.label.as_str());
+        .map(|r| r.label.as_str());
+    let Some(label) = label else {
+        // No rows: nothing to preview.
+        buf.set_stringn(area.x, area.y, "─".repeat(width), width, Style::default());
+        return None;
+    };
     let (title, title_style) = match (view.preview, view.interactive) {
         (None, _) => (format!("─ {label}: no terminal "), Style::default()),
         (Some(_), false) => (format!("─ preview: {label}  I to type "), Style::default()),
@@ -500,6 +510,23 @@ mod tests {
         };
         render(&view, area, &mut buf);
         assert!(text(&buf, 3).starts_with("─ gone: no terminal ─"));
+    }
+
+    #[test]
+    fn without_rows_it_says_there_are_no_sessions() {
+        let area = Rect::new(0, 0, 40, 6);
+        let mut buf = Buffer::empty(area);
+        let view = View {
+            rows: &[],
+            details: &TaskDetails::new(),
+            selected: None,
+            preview: None,
+            interactive: false,
+            now: 0,
+        };
+        render(&view, area, &mut buf);
+        assert_eq!(text(&buf, 1), " no Claude sessions yet");
+        assert_eq!(text(&buf, 3), "─".repeat(40));
     }
 
     #[test]
