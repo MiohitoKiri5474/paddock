@@ -3,7 +3,8 @@
 
 use super::space::MIN_SIZE;
 use super::state::{App, Mode};
-use crossterm::event::{KeyCode, KeyEvent};
+use crate::input::keymap::Panel;
+use crossterm::event::KeyEvent;
 
 /// The narrowest the sidebar gets.
 pub const MIN_SIDEBAR: u16 = 16;
@@ -126,23 +127,24 @@ impl App {
         }
     }
 
-    /// `j`/`k` (or arrows) move over the spaces and agents; `Enter` shows a
-    /// space's tabs or jumps to an agent's pane, giving the keyboard back;
-    /// `x` closes the space or the agent's pane; `f` forks the agent (or
-    /// the space's agent that needs you most); `Esc` gives the keyboard back.
+    /// `[keys.sidebar]` (by default): `j`/`k` (or arrows) move over the
+    /// spaces and agents; `Enter` shows a space's tabs or jumps to an
+    /// agent's pane, giving the keyboard back; `x` closes the space or the
+    /// agent's pane; `f` forks the agent (or the space's agent that needs
+    /// you most); `Esc` gives the keyboard back.
     pub(super) fn sidebar_key(&mut self, s: Selection, key: KeyEvent) {
         let picks = self.sidebar_picks();
         let s = s.anchored(&picks);
-        self.mode = match key.code {
-            KeyCode::Char('j') | KeyCode::Down => Mode::Sidebar(s.moved(&picks, 1)),
-            KeyCode::Char('k') | KeyCode::Up => Mode::Sidebar(s.moved(&picks, -1)),
-            KeyCode::Enter => {
+        self.mode = match self.keymap.sidebar.get(&key) {
+            Some(Panel::Down) => Mode::Sidebar(s.moved(&picks, 1)),
+            Some(Panel::Up) => Mode::Sidebar(s.moved(&picks, -1)),
+            Some(Panel::Open) => {
                 if let Some(p) = &s.pick {
                     self.open(p);
                 }
                 Mode::Normal
             }
-            KeyCode::Char('x') => {
+            Some(Panel::Close) => {
                 // Asking takes the keyboard; otherwise the sidebar keeps it.
                 self.mode = Mode::Sidebar(s.clone());
                 match &s.pick {
@@ -152,7 +154,7 @@ impl App {
                 }
                 return;
             }
-            KeyCode::Char('f') => match self.agent_of(s.pick.as_ref()) {
+            Some(Panel::Fork) => match self.agent_of(s.pick.as_ref()) {
                 // The fork's tab gets the keyboard.
                 Some(pane) => {
                     self.report(|app| app.fork(&pane));
@@ -163,7 +165,7 @@ impl App {
                     Mode::Sidebar(s)
                 }
             },
-            KeyCode::Esc => Mode::Normal,
+            Some(Panel::Back) => Mode::Normal,
             _ => Mode::Sidebar(s),
         };
         self.relayout_and_save();

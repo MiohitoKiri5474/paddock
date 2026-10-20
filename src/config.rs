@@ -4,6 +4,13 @@
 //! [keys]
 //! prefix = "C-b"
 //!
+//! [keys.commands]            # keys after the prefix, by action
+//! new_tab = "t"              # a key, a list of keys, or "" for none
+//! split_right = ["|", "\\"]
+//!
+//! [keys.sidebar]             # while the sidebar has the keyboard
+//! [keys.dashboard]           # while the dashboard is open
+//!
 //! [colors]
 //! current_space = 236        # or "#303030": the current space's background
 //! tab_bar = 235              # the tab bar's row
@@ -13,12 +20,16 @@
 //! [sidebar]
 //! width = 32                 # columns, until resized (then remembered)
 //! ```
+//!
+//! `paddock keys` prints every action with its default keys.
 
+use crate::input::keymap::{Given, Key, Keymap};
 use crate::ui::tab_bar::TabColors;
 use anyhow::{bail, Context, Result};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::Color;
 use serde::Deserialize;
+use std::collections::BTreeMap;
 use std::path::Path;
 
 pub const FILE_NAME: &str = "config.toml";
@@ -31,6 +42,9 @@ const DEFAULT_CURRENT_SPACE: Color = Color::Indexed(236);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
     pub prefix: KeyEvent,
+    pub keys: Keymap,
+    /// Settings that work but may surprise, to show at start.
+    pub warnings: Vec<String>,
     /// Background of the current space.
     pub current_space: Color,
     pub tabs: TabColors,
@@ -87,6 +101,31 @@ enum RawColor {
 #[serde(deny_unknown_fields)]
 struct RawKeys {
     prefix: Option<String>,
+    #[serde(default)]
+    commands: BTreeMap<String, RawKeyList>,
+    #[serde(default)]
+    sidebar: BTreeMap<String, RawKeyList>,
+    #[serde(default)]
+    dashboard: BTreeMap<String, RawKeyList>,
+}
+
+/// An action's keys as written: one key, or a list of them.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum RawKeyList {
+    One(String),
+    Many(Vec<String>),
+}
+
+/// A `[keys.<section>]` table as lists of keys by action.
+fn given(section: BTreeMap<String, RawKeyList>) -> Given {
+    section
+        .into_iter()
+        .map(|(name, keys)| match keys {
+            RawKeyList::One(key) => (name, vec![key]),
+            RawKeyList::Many(keys) => (name, keys),
+        })
+        .collect()
 }
 
 impl Config {
@@ -103,11 +142,16 @@ impl Config {
 
     pub fn parse(text: &str) -> Result<Self> {
         let raw: RawConfig = toml::from_str(text)?;
-        let prefix = raw.keys.prefix.as_deref().unwrap_or(DEFAULT_PREFIX);
+        let prefix = parse_key(raw.keys.prefix.as_deref().unwrap_or(DEFAULT_PREFIX))?;
+        let sections = [raw.keys.commands, raw.keys.sidebar, raw.keys.dashboard].map(given);
+        let mut warnings = Vec::new();
+        let keys = Keymap::configured(Key::of(&prefix), sections.each_ref(), &mut warnings)?;
         let c = raw.colors;
         let tabs = TabColors::default();
         Ok(Self {
-            prefix: parse_key(prefix)?,
+            prefix,
+            keys,
+            warnings,
             current_space: colour(c.current_space, DEFAULT_CURRENT_SPACE)?,
             tabs: TabColors {
                 bar: colour(c.tab_bar, tabs.bar)?,
@@ -123,11 +167,25 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             prefix: KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
+            keys: Keymap::default(),
+            warnings: Vec::new(),
             current_space: DEFAULT_CURRENT_SPACE,
             tabs: TabColors::default(),
             sidebar_width: DEFAULT_SIDEBAR_WIDTH,
         }
     }
+}
+
+/// Every key setting with its default, as `paddock keys` prints it.
+pub fn default_keys_toml() -> String {
+    format!(
+        "# paddock's default keys. Copy what you change into {FILE_NAME}\n\
+         # (~/.config/paddock/{FILE_NAME}); \"\" unbinds an action.\n\
+         # Not configurable: the prefix pressed twice sends it to the terminal,\n\
+         # and Esc always leaves typing into the dashboard preview.\n\
+         [keys]\nprefix = \"{DEFAULT_PREFIX}\"\n\n{}",
+        Keymap::default().toml()
+    )
 }
 
 /// Parse a colour written `236` (a 256-colour index) or `#rrggbb`.
@@ -183,6 +241,8 @@ pub fn key_name(key: &KeyEvent) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::input::keymap::Panel;
+    use crate::input::Command;
 
     fn ctrl(c: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
@@ -283,6 +343,60 @@ mod tests {
             "{err}"
         );
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_printed_default_keys_read_back_as_the_defaults() {
+        let text = default_keys_toml();
+        assert!(text.contains("[keys.commands]\nnew_tab = \"c\""), "{text}");
+        assert_eq!(Config::parse(&text).unwrap(), Config::default());
+    }
+
+    #[test]
+    fn remapped_keys_come_from_the_keys_sections() {
+        let c = Config::parse(
+            "[keys.commands]\nnew_tab = \"t\"\n[keys.sidebar]\nback = [\"q\", \"Esc\"]\n",
+        )
+        .unwrap();
+        let key = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+        assert_eq!(c.keys.commands.get(&key('t')), Some(Command::NewTab));
+        assert_eq!(c.keys.commands.get(&key('c')), None);
+        assert_eq!(c.keys.sidebar.get(&key('q')), Some(Panel::Back));
+        assert!(c.warnings.is_empty());
+        let alt = Config::parse("[keys.dashboard]\ninteract = \"M-i\"\n").unwrap();
+        assert_eq!(alt.warnings.len(), 1);
+    }
+
+    #[test]
+    fn key_errors_name_the_section_and_unknown_sections_are_rejected() {
+        let err = |t: &str| format!("{:#}", Config::parse(t).unwrap_err());
+        assert!(err("[keys.commands]\nnew_tabs = \"t\"\n").contains("[keys.commands] new_tabs"));
+        assert!(err("[keys.sidebar]\nback = \"Ctrl+q\"\n").contains("invalid key \"Ctrl+q\""));
+        assert!(err("[keys.commands]\nhelp = \"C-a\"\n").contains("is the prefix key"));
+        assert!(err("[keys.dashboard]\nup = \"D\"\n").contains("bound to both"));
+        assert!(Config::parse("[keys.panes]\nx = \"y\"\n").is_err());
+        assert!(Config::parse("[keys.commands]\nnew_tab = 1\n").is_err());
+    }
+
+    #[test]
+    fn the_readme_example_config_is_valid() {
+        let readme = include_str!("../README.md");
+        let configure = &readme[readme.find("## Configure").unwrap()..];
+        let start = configure.find("```toml\n").unwrap() + "```toml\n".len();
+        let example = &configure[start..start + configure[start..].find("```").unwrap()];
+        let c = Config::parse(example).unwrap();
+        assert_ne!(c.keys, Keymap::default());
+    }
+
+    #[test]
+    fn the_prefix_setting_and_the_commands_table_are_different_keys() {
+        // TOML cannot have `keys.prefix` as both the prefix and a table.
+        assert!(
+            Config::parse("[keys]\nprefix = \"C-b\"\n[keys.prefix]\nnew_tab = \"t\"\n").is_err()
+        );
+        assert!(
+            Config::parse("[keys]\nprefix = \"C-b\"\n[keys.commands]\nnew_tab = \"t\"\n").is_ok()
+        );
     }
 
     #[test]

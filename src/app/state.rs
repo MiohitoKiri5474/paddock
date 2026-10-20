@@ -16,6 +16,7 @@ use super::watch::Place;
 use super::Event;
 use crate::config::{key_name, Config};
 use crate::hooks::now_ms;
+use crate::input::keymap::Keymap;
 use crate::input::PrefixKeys;
 use crate::sessions::{dismissed, Session, Sessions, State};
 use crate::terminal::Terminal;
@@ -101,6 +102,8 @@ pub struct App {
     pub(super) terminals: HashMap<String, Terminal>,
     pub(super) prefix: PrefixKeys,
     pub(super) prefix_name: String,
+    /// Every key binding, as configured.
+    pub(super) keymap: Keymap,
     pub(super) mode: Mode,
     /// A message for the user, shown in the tab bar until the next key.
     pub(super) notice: Option<String>,
@@ -186,10 +189,12 @@ impl App {
             spaces: Vec::new(),
             current: 0,
             terminals: HashMap::new(),
-            prefix: PrefixKeys::new(config.prefix),
+            prefix: PrefixKeys::new(config.prefix, config.keys.commands.clone()),
             prefix_name: key_name(&config.prefix),
+            keymap: config.keys.clone(),
             mode: Mode::Normal,
-            notice: None,
+            // Settings that work but may surprise.
+            notice: (!config.warnings.is_empty()).then(|| config.warnings.join("; ")),
             screen,
             start_dir,
             state_dir,

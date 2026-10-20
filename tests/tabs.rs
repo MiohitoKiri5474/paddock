@@ -348,7 +348,8 @@ fn question_mark_shows_key_help_and_any_key_closes_it() {
     for line in [
         "new tab in this space",
         "new space",
-        "next / previous tab",
+        "next tab",
+        "previous tab",
         "rename tab",
         "rename space",
         "send C-a to the terminal",

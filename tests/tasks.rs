@@ -19,7 +19,7 @@ const SPIKE: &str = concat!(
     "/spikes/02-subagent-worktree/fixtures"
 );
 /// The dashboard's title line, as drawn while it is open.
-const OPEN: &str = "dashboard  j/k move";
+const OPEN: &str = "dashboard  j down  k up";
 
 /// A recorded main-agent payload for `cwd`; `tool` renames its tool.
 fn payload(name: &str, cwd: &Path, tool: Option<&str>) -> String {

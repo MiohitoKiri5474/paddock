@@ -1,7 +1,8 @@
 //! The prefix key (`C-a` unless configured): the key after it is a paddock
 //! command instead of input for the terminal.
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use super::keymap::Keys;
+use crossterm::event::KeyEvent;
 
 /// What paddock does for a command key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,87 +67,17 @@ pub enum KeyAction {
 /// Columns `C-a {` and `C-a }` take away or add.
 pub const SIDEBAR_STEP: i16 = 2;
 
-/// Command keys, for both dispatch and the key help.
-pub const BINDINGS: &[(&str, &str)] = &[
-    ("c", "new tab in this space"),
-    ("C", "new space"),
-    ("n / p", "next / previous tab"),
-    ("Tab", "last page: the space and tab before"),
-    ("1-9", "go to tab"),
-    (",", "rename tab"),
-    ("$", "rename space"),
-    ("< / >", "move the tab left / right"),
-    ("|", "split side by side"),
-    ("-", "split top and bottom"),
-    ("hjkl", "move focus (also arrows)"),
-    ("=", "even out the focused split"),
-    ("x", "close pane (asks if Claude is busy)"),
-    ("f", "fork Claude into a new tab"),
-    ("s", "focus sidebar: spaces, agents (j/k Enter x f Esc)"),
-    ("w", "focus sidebar on the current space"),
-    ("b", "show or hide sidebar"),
-    ("{ / }", "sidebar narrower / wider"),
-    ("a", "next session that needs you"),
-    ("o", "dashboard (j/k, Enter, D, x, f, I types, Esc back)"),
-    ("d", "detach: quit, terminals keep running"),
-    ("?", "this help"),
-];
-
-fn command(key: &KeyEvent) -> Option<Command> {
-    // Shift is part of characters like `?`; any other modifier is not a command.
-    if !(key.modifiers - KeyModifiers::SHIFT).is_empty() {
-        return None;
-    }
-    let c = match key.code {
-        KeyCode::Tab => return Some(Command::LastPage),
-        KeyCode::Char(c) => c,
-        KeyCode::Left => 'h',
-        KeyCode::Down => 'j',
-        KeyCode::Up => 'k',
-        KeyCode::Right => 'l',
-        _ => return None,
-    };
-    Some(match c {
-        'c' => Command::NewTab,
-        'C' => Command::NewSpace,
-        '$' => Command::RenameSpace,
-        'n' => Command::NextTab,
-        'p' => Command::PreviousTab,
-        '1'..='9' => Command::GoToTab(c as usize - '1' as usize),
-        ',' => Command::RenameTab,
-        'x' => Command::Close,
-        'f' => Command::Fork,
-        '|' => Command::SplitColumns,
-        '-' => Command::SplitRows,
-        'h' => Command::Focus(Direction::Left),
-        'j' => Command::Focus(Direction::Down),
-        'k' => Command::Focus(Direction::Up),
-        'l' => Command::Focus(Direction::Right),
-        '=' => Command::Equalise,
-        '?' => Command::Help,
-        'd' => Command::Detach,
-        's' => Command::FocusSidebar,
-        'w' => Command::FocusSpaces,
-        '<' => Command::MoveTab(-1),
-        '>' => Command::MoveTab(1),
-        '{' => Command::ResizeSidebar(-SIDEBAR_STEP),
-        '}' => Command::ResizeSidebar(SIDEBAR_STEP),
-        'b' => Command::ToggleSidebar,
-        'a' => Command::NextAttention,
-        'o' => Command::Dashboard,
-        _ => return None,
-    })
-}
-
 pub struct PrefixKeys {
     prefix: KeyEvent,
+    commands: Keys<Command>,
     armed: bool,
 }
 
 impl PrefixKeys {
-    pub fn new(prefix: KeyEvent) -> Self {
+    pub fn new(prefix: KeyEvent, commands: Keys<Command>) -> Self {
         Self {
             prefix,
+            commands,
             armed: false,
         }
     }
@@ -173,20 +104,24 @@ impl PrefixKeys {
             // Pressing the prefix twice sends it literally.
             return KeyAction::Forward(key);
         }
-        command(&key).map_or(KeyAction::None, KeyAction::Command)
+        self.commands
+            .get(&key)
+            .map_or(KeyAction::None, KeyAction::Command)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::input::keymap::COMMANDS;
+    use crossterm::event::{KeyCode, KeyModifiers};
 
     fn k(c: char, m: KeyModifiers) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(c), m)
     }
 
     fn ctrl_a() -> PrefixKeys {
-        PrefixKeys::new(k('a', KeyModifiers::CONTROL))
+        PrefixKeys::new(k('a', KeyModifiers::CONTROL), Keys::defaults(COMMANDS))
     }
 
     fn after_prefix(c: char, m: KeyModifiers) -> KeyAction {
@@ -348,7 +283,7 @@ mod tests {
 
     #[test]
     fn any_prefix_key_works() {
-        let mut p = PrefixKeys::new(k('b', KeyModifiers::CONTROL));
+        let mut p = PrefixKeys::new(k('b', KeyModifiers::CONTROL), Keys::defaults(COMMANDS));
         assert_eq!(
             p.handle(k('a', KeyModifiers::CONTROL)),
             KeyAction::Forward(k('a', KeyModifiers::CONTROL))
