@@ -3,6 +3,7 @@
 use super::attention::tab_states;
 use super::input::Flow;
 use super::layout::Split;
+use super::rows::Row;
 use super::screen::Screen;
 use super::state::{session_area, App, Mode, TAB_BAR_ROWS};
 use super::{watch, Event};
@@ -11,12 +12,15 @@ use crate::tmux::Message;
 use crate::ui::{dashboard, help, session_view, sidebar, tab_bar::TabBar};
 use anyhow::Result;
 use crossterm::event::{self as ct, KeyEventKind};
-use ratatui::layout::Rect;
+use ratatui::buffer::Buffer;
+use ratatui::layout::{Position, Rect};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
 /// Minimum time between two draws (about 60 frames a second).
 const FRAME: Duration = Duration::from_millis(16);
+/// Milliseconds in a second.
+const MS_PER_SEC: u64 = 1000;
 
 /// Tells the git thread which task rows are on screen.
 struct GitFeed {
@@ -100,7 +104,7 @@ fn handle(app: &mut App, event: Event, screen: &mut Screen) -> Result<(Flow, boo
             if let Some(t) = app.terminals.get_mut(&session) {
                 t.output(&data);
             }
-            let seen = app.shows(&session) || app.previews(&session);
+            let seen = app.shows(&session) || app.shows_in_preview(&session);
             return Ok((Flow::Continue, seen));
         }
         // That terminal's tmux session ended: its shell exited or it was closed.
@@ -179,64 +183,14 @@ fn draw(screen: &mut Screen, app: &App) -> Result<()> {
             width: full.width - side,
             ..full
         };
-        let bar_height = TAB_BAR_ROWS.min(area.height);
         let bar_area = Rect {
-            height: bar_height,
+            height: TAB_BAR_ROWS.min(area.height),
             ..area
         };
+        let bar_cursor = draw_tab_bar(app, &rows, bar_area, f.buffer_mut());
         let term_area = session_area((full.width, full.height), side);
-        let armed = app.prefix.armed().then_some(app.prefix_name.as_str());
-        let ask = match &app.mode {
-            Mode::ConfirmClose { state, .. } => {
-                Some(format!("Claude is {}: close? y/n", state.label()))
-            }
-            _ => None,
-        };
-        let bar = TabBar {
-            // The question takes the whole bar, so it always fits.
-            names: match ask {
-                Some(_) => Vec::new(),
-                None => app.tabs.iter().map(|t| t.name.as_str()).collect(),
-            },
-            current: app.tabs.current_index(),
-            rename: match &app.mode {
-                Mode::Rename(text) => Some(text.as_str()),
-                _ => None,
-            },
-            status: ask.as_deref().or(app.notice.as_deref()).or(armed),
-            states: tab_states(&rows, app.tabs.iter().count()),
-        };
-        let bar_cursor = bar.render(bar_area, f.buffer_mut());
-        let mut term_cursor = None;
-        if let Some(tab) = app.tabs.current() {
-            let (panes, borders) = tab.content.rects(term_area);
-            for (id, rect) in panes {
-                let Some(t) = app.terminals.get(&id) else {
-                    continue;
-                };
-                let cursor = session_view::render(t.emulator(), rect, f.buffer_mut());
-                if id == tab.content.focus {
-                    term_cursor = cursor;
-                }
-            }
-            for b in borders {
-                session_view::border(b.area, b.split == Split::Columns, f.buffer_mut());
-            }
-        }
-        let dash_cursor = app.dashboard().and_then(|d| {
-            let row = app.dashboard_row(d);
-            let view = dashboard::View {
-                rows: &rows,
-                details: &app.task_details,
-                selected: d.selected.as_ref(),
-                preview: row
-                    .and_then(|r| app.terminals.get(&r.terminal))
-                    .map(|t| t.emulator()),
-                interactive: d.interactive,
-                now: now_ms() / 1000,
-            };
-            dashboard::render(&view, term_area, f.buffer_mut())
-        });
+        let term_cursor = draw_terminals(app, term_area, f.buffer_mut());
+        let dash_cursor = draw_dashboard(app, &rows, term_area, f.buffer_mut());
         if let Mode::Help = app.mode {
             help::render(&app.prefix_name, full, f.buffer_mut());
         } else if app.dashboard().is_some() {
@@ -251,4 +205,70 @@ fn draw(screen: &mut Screen, app: &App) -> Result<()> {
         }
     })?;
     Ok(())
+}
+
+/// The tab bar, or the question before a close. Returns the cursor while
+/// renaming.
+fn draw_tab_bar(app: &App, rows: &[Row], area: Rect, buf: &mut Buffer) -> Option<Position> {
+    let armed = app.prefix.armed().then_some(app.prefix_name.as_str());
+    let ask = match &app.mode {
+        Mode::ConfirmClose { state, .. } => {
+            Some(format!("Claude is {}: close? y/n", state.label()))
+        }
+        _ => None,
+    };
+    let bar = TabBar {
+        // The question takes the whole bar, so it always fits.
+        names: match ask {
+            Some(_) => Vec::new(),
+            None => app.tabs.iter().map(|t| t.name.as_str()).collect(),
+        },
+        current: app.tabs.current_index(),
+        rename: match &app.mode {
+            Mode::Rename(text) => Some(text.as_str()),
+            _ => None,
+        },
+        status: ask.as_deref().or(app.notice.as_deref()).or(armed),
+        states: tab_states(rows, app.tabs.iter().count()),
+    };
+    bar.render(area, buf)
+}
+
+/// The current tab's terminals and the borders between them. Returns the
+/// focused terminal's cursor.
+fn draw_terminals(app: &App, area: Rect, buf: &mut Buffer) -> Option<Position> {
+    let tab = app.tabs.current()?;
+    let (panes, borders) = tab.content.rects(area);
+    let mut cursor = None;
+    for (id, rect) in panes {
+        let Some(t) = app.terminals.get(&id) else {
+            continue;
+        };
+        let at = session_view::render(t.emulator(), rect, buf);
+        if id == tab.content.focus {
+            cursor = at;
+        }
+    }
+    for b in borders {
+        session_view::border(b.area, b.split == Split::Columns, buf);
+    }
+    cursor
+}
+
+/// The dashboard over the terminals, if open. Returns the previewed
+/// terminal's cursor while typing into it.
+fn draw_dashboard(app: &App, rows: &[Row], area: Rect, buf: &mut Buffer) -> Option<Position> {
+    let d = app.dashboard()?;
+    let row = app.dashboard_row(d);
+    let view = dashboard::View {
+        rows,
+        details: &app.task_details,
+        selected: d.selected.as_ref(),
+        preview: row
+            .and_then(|r| app.terminals.get(&r.terminal))
+            .map(|t| t.emulator()),
+        interactive: d.interactive,
+        now: now_ms() / MS_PER_SEC,
+    };
+    dashboard::render(&view, area, buf)
 }

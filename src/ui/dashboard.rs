@@ -71,11 +71,9 @@ pub fn fields(task: &TaskRow, details: Option<&Details>, now: u64) -> String {
         .changes
         .filter(|&c| c != (0, 0))
         .map(|(added, removed)| format!("+{added} −{removed}"));
-    let base = details
-        .and_then(|d| d.base_diff)
-        .filter(|&(_, _, files)| files > 0);
-    let base_diff = base.map(|(added, removed, _)| format!("base +{added} −{removed}"));
-    let files = base.map(|(_, _, n)| match n {
+    let base = details.and_then(|d| d.base_diff).filter(|b| b.files > 0);
+    let base_diff = base.map(|b| format!("base +{} −{}", b.added, b.removed));
+    let files = base.map(|b| match b.files {
         1 => "1 file".to_string(),
         n => format!("{n} files"),
     });
@@ -160,20 +158,47 @@ pub fn render(view: &View, area: Rect, buf: &mut Buffer) -> Option<Position> {
     render_preview(view, preview, buf)
 }
 
-fn render_list(view: &View, area: Rect, buf: &mut Buffer) {
-    if area.height == 0 || area.width == 0 {
-        return;
-    }
-    let width = usize::from(area.width);
+/// The title and the keys, on the list's first line.
+fn render_title(area: Rect, buf: &mut Buffer) {
     let bold = Style::default().add_modifier(Modifier::BOLD);
     let title = format!(" {TITLE}");
-    buf.set_stringn(area.x, area.y, &title, width, bold);
+    buf.set_stringn(area.x, area.y, &title, usize::from(area.width), bold);
     let keys_at = u16::try_from(title.len() + 2).unwrap_or(u16::MAX);
     if keys_at < area.width {
         let dim = Style::default().add_modifier(Modifier::DIM);
         let room = usize::from(area.width - keys_at);
         buf.set_stringn(area.x + keys_at, area.y, KEYS, room, dim);
     }
+}
+
+/// A list line's text, `width` cells, and style: a session row's label and
+/// state, or a task row's label and fields.
+fn line(view: &View, row: &Row, task: Option<&TaskRow>, width: usize) -> (String, Style) {
+    let Some(t) = task else {
+        return (
+            spread(1, &row.label, row.state.label(), width),
+            style(row.state),
+        );
+    };
+    let label = match t.subagent.as_ref().and_then(|s| s.description.as_ref()) {
+        Some(d) => format!("{d} · {}", t.branch),
+        None => t.branch.clone(),
+    };
+    let details = view.details.get(&(t.cwd.clone(), t.branch.clone()));
+    let right = fields(t, details, view.now);
+    let style = t
+        .subagent
+        .as_ref()
+        .map_or(Style::default(), |s| task_style(s.state));
+    (spread(3, &label, &right, width), style)
+}
+
+fn render_list(view: &View, area: Rect, buf: &mut Buffer) {
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+    let width = usize::from(area.width);
+    render_title(area, buf);
     let lines = lines(view.rows);
     let picked = lines.iter().position(|(row, task)| {
         view.selected.is_some_and(|s| {
@@ -189,28 +214,7 @@ fn render_list(view: &View, area: Rect, buf: &mut Buffer) {
         .skip(skip)
         .zip(area.y + 1..area.bottom())
     {
-        let (text, style) = match task {
-            None => (
-                spread(1, &row.label, row.state.label(), width),
-                style(row.state),
-            ),
-            Some(t) => {
-                let label = match t.subagent.as_ref().and_then(|s| s.description.as_ref()) {
-                    Some(d) => format!("{d} · {}", t.branch),
-                    None => t.branch.clone(),
-                };
-                let right = fields(
-                    t,
-                    view.details.get(&(t.cwd.clone(), t.branch.clone())),
-                    view.now,
-                );
-                let style = t
-                    .subagent
-                    .as_ref()
-                    .map_or(Style::default(), |s| task_style(s.state));
-                (spread(3, &label, &right, width), style)
-            }
-        };
+        let (text, style) = line(view, row, *task, width);
         let style = if Some(i) == picked {
             style.add_modifier(Modifier::REVERSED)
         } else {
@@ -276,7 +280,7 @@ pub fn first_row(emu: &Emulator, height: u16) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::git::Status;
+    use crate::git::{BaseDiff, Status};
     use crate::sessions::SubagentTask;
 
     fn row(label: &str, state: State, tasks: Vec<TaskRow>) -> Row {
@@ -315,7 +319,11 @@ mod tests {
             changes: Some((30, 144)),
         };
         let details = Details {
-            base_diff: Some((12, 3, 4)),
+            base_diff: Some(BaseDiff {
+                added: 12,
+                removed: 3,
+                files: 4,
+            }),
             last_commit: Some(1_000),
             merged: true,
         };
@@ -325,7 +333,11 @@ mod tests {
             "↑2  +30 −144  base +12 −3  4 files  2h  merged"
         );
         let one = Details {
-            base_diff: Some((1, 0, 1)),
+            base_diff: Some(BaseDiff {
+                added: 1,
+                removed: 0,
+                files: 1,
+            }),
             last_commit: None,
             merged: false,
         };
@@ -334,7 +346,11 @@ mod tests {
             "↑2  +30 −144  base +1 −0  1 file"
         );
         let none = Details {
-            base_diff: Some((0, 0, 0)),
+            base_diff: Some(BaseDiff {
+                added: 0,
+                removed: 0,
+                files: 0,
+            }),
             ..Details::default()
         };
         assert_eq!(fields(&task("b", None), Some(&none), 0), "");
@@ -414,7 +430,11 @@ mod tests {
         let details = TaskDetails::from([(
             ("/r".to_string(), "feat/a".to_string()),
             Details {
-                base_diff: Some((5, 0, 2)),
+                base_diff: Some(BaseDiff {
+                    added: 5,
+                    removed: 0,
+                    files: 2,
+                }),
                 last_commit: None,
                 merged: true,
             },

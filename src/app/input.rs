@@ -95,7 +95,7 @@ impl App {
             }
             Command::Close => {
                 if let Some(id) = self.focused() {
-                    self.report(|app| app.close(&id));
+                    self.report(|app| app.close(&id, None));
                 }
             }
             Command::Fork => {
@@ -159,7 +159,7 @@ impl App {
             (KeyCode::Char('x'), Some(row)) => {
                 // Asking takes the keyboard; otherwise the sidebar keeps it.
                 self.mode = Mode::Sidebar(selected);
-                self.report(|app| app.close(&row.terminal));
+                self.report(|app| app.close(&row.terminal, None));
                 return self.report(|app| app.relayout());
             }
             (KeyCode::Char('f'), Some(row)) => {

@@ -38,7 +38,7 @@ impl App {
     }
 
     /// Whether the dashboard shows terminal `session` in its preview.
-    pub fn previews(&self, session: &str) -> bool {
+    pub fn shows_in_preview(&self, session: &str) -> bool {
         self.dashboard()
             .and_then(|d| self.dashboard_row(d))
             .is_some_and(|r| !r.closed && r.terminal == session)
@@ -81,90 +81,112 @@ impl App {
         }
     }
 
-    /// A key for the dashboard. Interactive: every key but `Esc` goes to the
-    /// previewed terminal, and `Esc` only leaves. Else `j`/`k` (or arrows)
-    /// move, `Enter` jumps to the row's terminal, `D` dismisses the row, `x`
-    /// closes and `f` forks its terminal, `I` types into it, `Esc` closes the
-    /// dashboard. A closed terminal's row can only be dismissed.
+    /// A key for the dashboard. Interactive: see [`Self::interactive_key`].
+    /// Else `j`/`k` (or arrows) move, `Enter` jumps to the row's terminal,
+    /// `D` dismisses the row, `x` closes and `f` forks its terminal, `I`
+    /// types into it, `Esc` closes the dashboard. A closed terminal's row can
+    /// only be dismissed.
     pub(super) fn dashboard_key(&mut self, d: Dashboard, key: KeyEvent) {
-        let row = self.dashboard_row(&d).filter(|r| !r.closed);
         if d.interactive {
-            if key.code == KeyCode::Esc {
-                self.mode = Mode::Dashboard(Dashboard {
-                    interactive: false,
-                    ..d
-                });
-                return;
-            }
-            self.mode = Mode::Dashboard(d);
-            if let Some(t) = row.and_then(|r| self.terminals.get_mut(&r.terminal)) {
-                if let Some(bytes) = encode_key(&key, t.key_modes()) {
-                    let sent = t.input(&bytes);
-                    self.report(|_| sent);
-                }
-            }
+            return self.interactive_key(d, key);
+        }
+        self.mode = match key.code {
+            KeyCode::Char('j') | KeyCode::Down => self.dashboard_move(d, 1),
+            KeyCode::Char('k') | KeyCode::Up => self.dashboard_move(d, -1),
+            KeyCode::Char('D') => self.dashboard_dismiss(d),
+            KeyCode::Esc => Mode::Normal,
+            code => self.dashboard_act(d, code),
+        };
+        self.report(|app| app.relayout());
+    }
+
+    /// Interactive: every key but `Esc` goes to the previewed terminal, and
+    /// `Esc` only leaves.
+    fn interactive_key(&mut self, d: Dashboard, key: KeyEvent) {
+        if key.code == KeyCode::Esc {
+            self.mode = Mode::Dashboard(Dashboard {
+                interactive: false,
+                ..d
+            });
             return;
         }
+        let row = self.dashboard_row(&d).filter(|r| !r.closed);
+        self.mode = Mode::Dashboard(d);
+        if let Some(t) = row.and_then(|r| self.terminals.get_mut(&r.terminal)) {
+            if let Some(bytes) = encode_key(&key, t.key_modes()) {
+                let sent = t.input(&bytes);
+                self.report(|_| sent);
+            }
+        }
+    }
+
+    /// The line `step` lines away from the selected one; at either end, the
+    /// selected one.
+    fn dashboard_move(&self, d: Dashboard, step: isize) -> Mode {
         let ids = row_ids(&self.rows());
         let at = ids
             .iter()
             .position(|id| Some(id) == d.selected.as_ref())
             .unwrap_or(0);
-        let pick = |i: usize| ids.get(i).cloned();
-        let keep = |selected| {
-            Mode::Dashboard(Dashboard {
-                selected,
+        let selected = at
+            .checked_add_signed(step)
+            .and_then(|i| ids.get(i).cloned())
+            .or(d.selected);
+        Mode::Dashboard(Dashboard {
+            selected,
+            interactive: false,
+        })
+    }
+
+    /// Dismiss the selected line, then select the line that took its place,
+    /// else the one above.
+    fn dashboard_dismiss(&mut self, d: Dashboard) -> Mode {
+        let ids = row_ids(&self.rows());
+        let at = ids
+            .iter()
+            .position(|id| Some(id) == d.selected.as_ref())
+            .unwrap_or(0);
+        if let Some(id) = ids.get(at) {
+            self.report(|app| app.dismiss(id));
+        }
+        let ids = row_ids(&self.rows());
+        match ids.get(at.min(ids.len().saturating_sub(1))) {
+            Some(next) => Mode::Dashboard(Dashboard {
+                selected: Some(next.clone()),
                 interactive: false,
-            })
+            }),
+            None => Mode::Normal,
+        }
+    }
+
+    /// `Enter`, `x`, `f` and `I` on the selected row's terminal, unless it
+    /// was closed.
+    fn dashboard_act(&mut self, d: Dashboard, code: KeyCode) -> Mode {
+        let Some(row) = self.dashboard_row(&d).filter(|r| !r.closed) else {
+            return Mode::Dashboard(d);
         };
-        self.mode = match (key.code, row) {
-            (KeyCode::Char('j') | KeyCode::Down, _) => keep(pick(at + 1).or(d.selected)),
-            (KeyCode::Char('k') | KeyCode::Up, _) => {
-                keep(at.checked_sub(1).and_then(pick).or(d.selected))
-            }
-            (KeyCode::Char('D'), _) => {
-                if let Some(id) = ids.get(at) {
-                    self.report(|app| app.dismiss(id));
-                }
-                // The line that took its place, else the one above.
-                let ids = row_ids(&self.rows());
-                match ids.get(at.min(ids.len().saturating_sub(1))) {
-                    Some(next) => keep(Some(next.clone())),
-                    None => Mode::Normal,
-                }
-            }
-            (KeyCode::Enter, Some(row)) => {
+        match code {
+            KeyCode::Enter => {
                 self.jump_to(row.tab, &row.terminal);
                 Mode::Normal
             }
-            (KeyCode::Char('x'), Some(row)) => {
+            KeyCode::Char('x') => {
                 self.mode = Mode::Dashboard(d.clone());
-                self.report(|app| app.close(&row.terminal));
+                self.report(|app| app.close(&row.terminal, Some(d)));
                 // Asking takes the keyboard, then comes back here.
-                match std::mem::replace(&mut self.mode, Mode::Normal) {
-                    Mode::ConfirmClose {
-                        terminal, state, ..
-                    } => Mode::ConfirmClose {
-                        terminal,
-                        state,
-                        back: Some(d),
-                    },
-                    mode => mode,
-                }
+                std::mem::replace(&mut self.mode, Mode::Normal)
             }
-            (KeyCode::Char('f'), Some(row)) => {
+            KeyCode::Char('f') => {
                 // The fork's tab gets the keyboard.
                 self.report(|app| app.fork(&row.terminal));
                 Mode::Normal
             }
-            (KeyCode::Char('I'), Some(_)) => Mode::Dashboard(Dashboard {
+            KeyCode::Char('I') => Mode::Dashboard(Dashboard {
                 interactive: true,
                 ..d
             }),
-            (KeyCode::Esc, _) => Mode::Normal,
             _ => Mode::Dashboard(d),
-        };
-        self.report(|app| app.relayout());
+        }
     }
 
     /// Pasted text goes to the previewed terminal while interactive, and is

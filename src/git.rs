@@ -47,36 +47,32 @@ pub fn current_branch(dir: &str) -> Option<String> {
 /// The repository's default branch: what `origin/HEAD` points at, else the
 /// first of `main` and `master` that exists.
 pub fn default_branch(dir: &str) -> Option<String> {
+    let base = base_ref(dir)?;
+    let name = base
+        .strip_prefix("refs/remotes/origin/")
+        .or_else(|| base.strip_prefix("refs/heads/"))
+        .unwrap_or(&base);
+    Some(name.to_string())
+}
+
+/// The default branch as a full ref, which tasks are compared with: the
+/// remote branch `origin/HEAD` points at, else the first of `main` and
+/// `master` that exists.
+fn base_ref(dir: &str) -> Option<String> {
     let origin = git(
         dir,
-        &[
-            "symbolic-ref",
-            "--quiet",
-            "--short",
-            "refs/remotes/origin/HEAD",
-        ],
+        &["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"],
     );
-    if let Some(b) = origin
-        .as_deref()
-        .and_then(|o| o.trim().strip_prefix("origin/"))
+    if let Some(r) = origin
+        .map(|o| o.trim().to_string())
+        .filter(|r| !r.is_empty())
     {
-        return Some(b.to_string());
+        return Some(r);
     }
     DEFAULTS
         .iter()
-        .find(|b| {
-            git(
-                dir,
-                &[
-                    "rev-parse",
-                    "--verify",
-                    "--quiet",
-                    &format!("refs/heads/{b}"),
-                ],
-            )
-            .is_some()
-        })
-        .map(|b| b.to_string())
+        .map(|b| format!("refs/heads/{b}"))
+        .find(|r| git(dir, &["rev-parse", "--verify", "--quiet", r]).is_some())
 }
 
 /// The branch checked out in `dir` if it is a task's: not the default branch.
@@ -99,36 +95,26 @@ pub fn status(dir: &str, branch: &str) -> Status {
     }
 }
 
+/// What a branch changed since it left its base.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BaseDiff {
+    /// Lines added and removed.
+    pub added: u32,
+    pub removed: u32,
+    /// Files changed.
+    pub files: u32,
+}
+
 /// What the dashboard shows of a task branch beyond its [`Status`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Details {
-    /// Lines added and removed, and files changed, on the branch since it
-    /// left its base; `None` without a base.
-    pub base_diff: Option<(u32, u32, u32)>,
+    /// What the branch changed since it left its base; `None` without a base.
+    pub base_diff: Option<BaseDiff>,
     /// When the branch's last commit was made (seconds since the epoch).
     pub last_commit: Option<u64>,
     /// The branch's commits are all in its base, and it is not just the
     /// base's tip (as a branch with no commits of its own is).
     pub merged: bool,
-}
-
-/// The branch tasks are compared with: the remote branch `origin/HEAD`
-/// points at, else the first of `main` and `master` that exists.
-fn base_ref(dir: &str) -> Option<String> {
-    let origin = git(
-        dir,
-        &["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"],
-    );
-    if let Some(r) = origin
-        .map(|o| o.trim().to_string())
-        .filter(|r| !r.is_empty())
-    {
-        return Some(r);
-    }
-    DEFAULTS
-        .iter()
-        .map(|b| format!("refs/heads/{b}"))
-        .find(|r| git(dir, &["rev-parse", "--verify", "--quiet", r]).is_some())
 }
 
 /// `branch`'s details, read in `dir`.
@@ -159,19 +145,27 @@ pub fn details(dir: &str, branch: &str) -> Details {
 }
 
 /// `diff --numstat` output as lines added, removed, and files changed.
-fn parse_base_diff(out: &str) -> (u32, u32, u32) {
+fn parse_base_diff(out: &str) -> BaseDiff {
     let (added, removed) = parse_numstat(out);
     let files = out.lines().filter(|l| !l.is_empty()).count();
-    (added, removed, u32::try_from(files).unwrap_or(u32::MAX))
+    BaseDiff {
+        added,
+        removed,
+        files: u32::try_from(files).unwrap_or(u32::MAX),
+    }
 }
+
+const MINUTE: u64 = 60;
+const HOUR: u64 = 60 * MINUTE;
+const DAY: u64 = 24 * HOUR;
 
 /// A short age: `now`, `5m`, `2h`, `3d`.
 pub fn age(secs: u64) -> String {
     match secs {
-        0..=59 => "now".to_string(),
-        60..=3599 => format!("{}m", secs / 60),
-        3600..=86_399 => format!("{}h", secs / 3600),
-        _ => format!("{}d", secs / 86_400),
+        0..MINUTE => "now".to_string(),
+        MINUTE..HOUR => format!("{}m", secs / MINUTE),
+        HOUR..DAY => format!("{}h", secs / HOUR),
+        _ => format!("{}d", secs / DAY),
     }
 }
 
@@ -275,6 +269,14 @@ mod tests {
         p.to_str().unwrap()
     }
 
+    fn diff(added: u32, removed: u32, files: u32) -> BaseDiff {
+        BaseDiff {
+            added,
+            removed,
+            files,
+        }
+    }
+
     #[test]
     fn parses_counts_and_numstat() {
         assert_eq!(parse_counts("3\t1\n"), Some((3, 1)));
@@ -352,9 +354,9 @@ mod tests {
     fn parses_base_numstat_and_ages() {
         assert_eq!(
             parse_base_diff("2\t1\ta.txt\n-\t-\tlogo.png\n10\t0\tb.rs\n"),
-            (12, 1, 3)
+            diff(12, 1, 3)
         );
-        assert_eq!(parse_base_diff(""), (0, 0, 0));
+        assert_eq!(parse_base_diff(""), diff(0, 0, 0));
         assert_eq!(age(0), "now");
         assert_eq!(age(59), "now");
         assert_eq!(age(60), "1m");
@@ -370,7 +372,7 @@ mod tests {
         let dir = repo(tmp.path());
         run(&dir, &["switch", "-q", "-c", "feat/x"]);
         let fresh = details(s(&dir), "feat/x");
-        assert_eq!(fresh.base_diff, Some((0, 0, 0)));
+        assert_eq!(fresh.base_diff, Some(diff(0, 0, 0)));
         assert!(!fresh.merged, "a branch with no commits of its own");
         std::fs::write(dir.join("f.txt"), "1\nchanged\n3\nnew\n").unwrap();
         commit(&dir, "a");
@@ -378,7 +380,7 @@ mod tests {
         std::fs::write(dir.join("loose.txt"), "x\n").unwrap();
         let d = details(s(&dir), "feat/x");
         // f.txt +2 -1, a +1
-        assert_eq!(d.base_diff, Some((3, 1, 2)));
+        assert_eq!(d.base_diff, Some(diff(3, 1, 2)));
         assert!(d.last_commit.is_some_and(|t| t > 0));
         assert!(!d.merged);
         assert_eq!(details(s(&dir), "nope"), Details::default());
@@ -395,7 +397,7 @@ mod tests {
         run(&dir, &["merge", "-q", "--no-edit", "feat/x"]);
         let d = details(s(&dir), "feat/x");
         assert!(d.merged);
-        assert_eq!(d.base_diff, Some((0, 0, 0)));
+        assert_eq!(d.base_diff, Some(diff(0, 0, 0)));
     }
 
     #[test]
@@ -410,7 +412,7 @@ mod tests {
         run(&clone, &["switch", "-q", "-c", "feat/x"]);
         commit(&clone, "a");
         let d = details(s(&clone), "feat/x");
-        assert_eq!(d.base_diff, Some((2, 0, 2)), "vs origin/trunk");
+        assert_eq!(d.base_diff, Some(diff(2, 0, 2)), "vs origin/trunk");
     }
 
     #[test]

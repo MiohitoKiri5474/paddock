@@ -338,14 +338,15 @@ impl App {
 
     /// End terminal `id`, first asking if Claude there is running or
     /// waiting. It leaves its tab when tmux reports that the session ended,
-    /// the same way as when its shell exits.
-    pub fn close(&mut self, id: &str) -> Result<()> {
+    /// the same way as when its shell exits. Asking from the dashboard
+    /// `back` returns to it after.
+    pub fn close(&mut self, id: &str, back: Option<Dashboard>) -> Result<()> {
         match self.session_in(id).map(|s| s.state) {
             Some(state @ (State::Running | State::Waiting)) => {
                 self.mode = Mode::ConfirmClose {
                     terminal: id.to_string(),
                     state,
-                    back: None,
+                    back,
                 };
                 Ok(())
             }
