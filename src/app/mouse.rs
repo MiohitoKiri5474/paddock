@@ -47,27 +47,10 @@ impl App {
         let left = m.kind == MouseEventKind::Down(MouseButton::Left);
         let side = self.sidebar_width();
         if m.row < TAB_BAR_ROWS && m.column >= side {
-            let part = tab_bar::part_at(&self.tab_layout(), m.column - side);
-            match part.filter(|_| left) {
-                Some(Part::Tab(i)) => self.report(|app| app.select_tab(i)),
-                Some(Part::Left(true)) => self.tab_first = self.tab_first.saturating_sub(1),
-                Some(Part::Right(true)) => self.tab_first += 1,
-                Some(Part::Plus) => self.report(|app| app.new_tab()),
-                _ => return Ok(false),
-            }
-            return Ok(self.settle());
+            return Ok(left && self.press_tab_bar(m.column - side));
         }
         if m.column < side {
-            let area = Rect::new(0, 0, side, self.screen.1);
-            let picks = self.sidebar_picks();
-            let spaces = self.spaces.len();
-            let agents = picks.len() - spaces;
-            let picked = sidebar::pick_at(spaces, agents, area, m.row).and_then(|i| picks.get(i));
-            let Some(pick) = picked.filter(|_| left) else {
-                return Ok(false);
-            };
-            self.open(pick);
-            return Ok(self.settle());
+            return Ok(left && self.press_sidebar(m.row));
         }
         let Some((pane, rect)) = self.under(m.column, m.row) else {
             return Ok(false);
@@ -94,6 +77,34 @@ impl App {
             MouseAction::Scroll(_) | MouseAction::Ignore => {}
         }
         Ok(!left || self.settle())
+    }
+
+    /// A left click at column `x` of the tab bar: a tab, `<`, `>` or `+`.
+    /// Returns whether it hit one.
+    fn press_tab_bar(&mut self, x: u16) -> bool {
+        match tab_bar::part_at(&self.tab_layout(), x) {
+            Some(Part::Tab(i)) => self.report(|app| app.select_tab(i)),
+            Some(Part::Left(true)) => self.tab_first = self.tab_first.saturating_sub(1),
+            Some(Part::Right(true)) => self.tab_first += 1,
+            Some(Part::Plus) => self.report(|app| app.new_tab()),
+            _ => return false,
+        }
+        self.settle()
+    }
+
+    /// A left click on screen row `y` of the sidebar: opens the space or
+    /// agent there. Returns whether it hit one.
+    fn press_sidebar(&mut self, y: u16) -> bool {
+        let area = Rect::new(0, 0, self.sidebar_width(), self.screen.1);
+        let picks = self.sidebar_picks();
+        let spaces = self.spaces.len();
+        let agents = picks.len() - spaces;
+        let Some(pick) = sidebar::pick_at(spaces, agents, area, y).and_then(|i| picks.get(i))
+        else {
+            return false;
+        };
+        self.open(pick);
+        self.settle()
     }
 
     /// Focus pane `pane` of the current tab, here at once and in tmux.

@@ -108,32 +108,38 @@ pub fn start(server: &Server, state_dir: &Path, tx: &Sender<Event>) -> Result<Se
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => break,
             }
-            let read = places(&server, &watched.spaces);
-            if !read.is_empty() && events.send(Event::Spaces(read)).is_err() {
-                break;
-            }
-            let tasks = &watched.tasks;
-            if tasks.is_empty() {
-                continue;
-            }
-            let read = tasks
-                .iter()
-                .map(|(dir, branch)| ((dir.clone(), branch.clone()), git::status(dir, branch)))
-                .collect();
-            if events.send(Event::Git(read)).is_err() {
-                break;
-            }
-            if !watched.details {
-                continue;
-            }
-            let read = tasks
-                .iter()
-                .map(|(dir, branch)| ((dir.clone(), branch.clone()), git::details(dir, branch)))
-                .collect();
-            if events.send(Event::Details(read)).is_err() {
+            if !read_watched(&server, &watched, &events) {
                 break;
             }
         }
     });
     Ok(tasks_tx)
+}
+
+/// Read what `watched` asks for (spaces' places, tasks' git status, and
+/// their details if wanted) and send it. Returns false once nobody listens.
+fn read_watched(server: &Server, watched: &Watched, events: &Sender<Event>) -> bool {
+    let read = places(server, &watched.spaces);
+    if !read.is_empty() && events.send(Event::Spaces(read)).is_err() {
+        return false;
+    }
+    let tasks = &watched.tasks;
+    if tasks.is_empty() {
+        return true;
+    }
+    let read = tasks
+        .iter()
+        .map(|(dir, branch)| ((dir.clone(), branch.clone()), git::status(dir, branch)))
+        .collect();
+    if events.send(Event::Git(read)).is_err() {
+        return false;
+    }
+    if !watched.details {
+        return true;
+    }
+    let read = tasks
+        .iter()
+        .map(|(dir, branch)| ((dir.clone(), branch.clone()), git::details(dir, branch)))
+        .collect();
+    events.send(Event::Details(read)).is_ok()
 }

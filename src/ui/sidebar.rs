@@ -133,45 +133,72 @@ pub fn render(
     if area.width < 2 || area.height == 0 {
         return;
     }
-    let inner = area.width - 1;
     for y in area.top()..area.bottom() {
         buf.set_string(area.right() - 1, y, "│", Style::default());
     }
-    let dim = Style::default().add_modifier(Modifier::DIM);
+    let sidebar = Sidebar {
+        spaces,
+        agents,
+        selected,
+        current_bg,
+    };
     for (line, y) in lines(spaces.len(), agents.len())
         .into_iter()
         .zip(area.top()..area.bottom())
     {
-        let row = Rect::new(area.x, y, inner, 1);
+        sidebar.draw_line(line, Rect::new(area.x, y, area.width - 1, 1), buf);
+    }
+}
+
+/// What [`render`] draws, line by line.
+struct Sidebar<'a> {
+    spaces: &'a [SpaceLine],
+    agents: &'a [AgentLine],
+    selected: Option<usize>,
+    current_bg: Color,
+}
+
+impl Sidebar<'_> {
+    /// The style a line starts from: the current space's background, and
+    /// reversed if selected.
+    fn base(&self, line: Line) -> Style {
         let mut base = Style::default();
         if let Line::Space(i) | Line::SpacePlace(i) = line {
-            if spaces[i].current {
-                base = base.bg(current_bg);
+            if self.spaces[i].current {
+                base = base.bg(self.current_bg);
             }
         }
-        if selected.is_some() && pick(line, spaces.len()) == selected {
+        if self.selected.is_some() && pick(line, self.spaces.len()) == self.selected {
             base = base.add_modifier(Modifier::REVERSED);
         }
+        base
+    }
+
+    /// Draw `line` over `row` (the sidebar's width, less its border).
+    fn draw_line(&self, line: Line, row: Rect, buf: &mut Buffer) {
+        let base = self.base(line);
         buf.set_style(row, base);
         let mut put = |x: u16, text: &str, style: Style| {
             let room = usize::from(row.right().saturating_sub(x));
-            buf.set_stringn(x, y, text, room, base.patch(style)).0
+            buf.set_stringn(x, row.y, text, room, base.patch(style)).0
         };
-        let (name_x, end) = (area.x + INDENT, row.right().saturating_sub(1));
+        let dim = Style::default().add_modifier(Modifier::DIM);
+        let (dot_x, name_x) = (row.x + 1, row.x + INDENT);
+        let end = row.right().saturating_sub(1);
         match line {
             Line::Header(title) => {
-                put(area.x + 1, title, dim.add_modifier(Modifier::BOLD));
+                put(dot_x, title, dim.add_modifier(Modifier::BOLD));
             }
             Line::Space(i) => {
-                let s = &spaces[i];
+                let s = &self.spaces[i];
                 if let Some(state) = s.state {
-                    put(area.x + 1, STATE_DOT, dot(state));
+                    put(dot_x, STATE_DOT, dot(state));
                 }
                 put(name_x, &s.name, Style::default());
             }
             Line::Agent(i) => {
-                let a = &agents[i];
-                put(area.x + 1, STATE_DOT, dot(a.state));
+                let a = &self.agents[i];
+                put(dot_x, STATE_DOT, dot(a.state));
                 let state = a.state.label();
                 let width = u16::try_from(state.chars().count()).unwrap_or(0);
                 let state_x = end.saturating_sub(width).max(name_x);
@@ -182,13 +209,13 @@ pub fn render(
             }
             Line::SpacePlace(i) => {
                 let room = usize::from(end.saturating_sub(name_x));
-                let s = &spaces[i];
+                let s = &self.spaces[i];
                 if let Some(path) = &s.path {
                     put(name_x, &place(path, s.branch.as_deref(), room), dim);
                 }
             }
             Line::AgentPlace(i) => {
-                put(name_x, &agents[i].place, dim);
+                put(name_x, &self.agents[i].place, dim);
             }
             Line::Blank => {}
         }

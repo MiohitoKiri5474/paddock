@@ -32,51 +32,60 @@ impl App {
                 }
                 Ok(Flow::Continue)
             }
-            Mode::Dashboard(d) => match self.prefix.handle(key) {
-                KeyAction::Command(c) => {
-                    self.mode = Mode::Dashboard(d);
-                    self.command(c)
+            Mode::Dashboard(d) => {
+                let kept = Mode::Dashboard(d.clone());
+                self.panel_key(key, kept, |app, key| app.dashboard_key(d, key))
+            }
+            Mode::Sidebar(selected) => {
+                let kept = Mode::Sidebar(selected.clone());
+                self.panel_key(key, kept, |app, key| app.sidebar_key(selected, key))
+            }
+            Mode::Normal => self.normal_key(key),
+        }
+    }
+
+    /// A key while a panel (the sidebar or the dashboard) has the keyboard:
+    /// commands work and keep it in `kept`; other keys go to `on_key`.
+    fn panel_key(
+        &mut self,
+        key: KeyEvent,
+        kept: Mode,
+        on_key: impl FnOnce(&mut Self, KeyEvent),
+    ) -> Result<Flow> {
+        match self.prefix.handle(key) {
+            KeyAction::Command(c) => {
+                self.mode = kept;
+                self.command(c)
+            }
+            KeyAction::Forward(key) => {
+                on_key(self, key);
+                Ok(Flow::Continue)
+            }
+            KeyAction::None => {
+                self.mode = kept;
+                Ok(Flow::Continue)
+            }
+        }
+    }
+
+    /// A key while the focused pane has the keyboard.
+    fn normal_key(&mut self, key: KeyEvent) -> Result<Flow> {
+        match self.prefix.handle(key) {
+            KeyAction::Forward(key) => {
+                let Some(pane) = self.current_pane() else {
+                    return Ok(Flow::Continue);
+                };
+                let bytes = self
+                    .terminals
+                    .get(&pane)
+                    .and_then(|t| encode_key(&key, t.key_modes()));
+                if let Some(bytes) = bytes {
+                    self.input(&pane, &bytes)?;
                 }
-                KeyAction::Forward(key) => {
-                    self.dashboard_key(d, key);
-                    Ok(Flow::Continue)
-                }
-                KeyAction::None => {
-                    self.mode = Mode::Dashboard(d);
-                    Ok(Flow::Continue)
-                }
-            },
-            Mode::Sidebar(selected) => match self.prefix.handle(key) {
-                KeyAction::Command(c) => {
-                    self.mode = Mode::Sidebar(selected);
-                    self.command(c)
-                }
-                KeyAction::Forward(key) => {
-                    self.sidebar_key(selected, key);
-                    Ok(Flow::Continue)
-                }
-                KeyAction::None => {
-                    self.mode = Mode::Sidebar(selected);
-                    Ok(Flow::Continue)
-                }
-            },
-            Mode::Normal => match self.prefix.handle(key) {
-                KeyAction::Forward(key) => {
-                    let Some(pane) = self.current_pane() else {
-                        return Ok(Flow::Continue);
-                    };
-                    let bytes = self
-                        .terminals
-                        .get(&pane)
-                        .and_then(|t| encode_key(&key, t.key_modes()));
-                    if let Some(bytes) = bytes {
-                        self.input(&pane, &bytes)?;
-                    }
-                    Ok(Flow::Continue)
-                }
-                KeyAction::Command(c) => self.command(c),
-                KeyAction::None => Ok(Flow::Continue),
-            },
+                Ok(Flow::Continue)
+            }
+            KeyAction::Command(c) => self.command(c),
+            KeyAction::None => Ok(Flow::Continue),
         }
     }
 

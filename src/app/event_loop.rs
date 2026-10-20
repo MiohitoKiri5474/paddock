@@ -60,6 +60,33 @@ fn next_event(rx: &Receiver<Event>, dirty: bool, last_draw: Instant) -> Wait {
     }
 }
 
+/// What kind of event came, for what to do after handling it.
+struct Kind {
+    /// Hook events refresh git at once.
+    hooks: bool,
+    /// Pane output: the most frequent event, changing nothing but a screen.
+    output: bool,
+    /// Anything but tmux and the readers' results may change which rows are
+    /// on screen.
+    rows_may_move: bool,
+}
+
+impl Kind {
+    fn of(event: &Event) -> Self {
+        Self {
+            hooks: matches!(event, Event::Hooks(_)),
+            output: matches!(
+                event,
+                Event::Tmux {
+                    msg: Message::Output { .. },
+                    ..
+                }
+            ),
+            rows_may_move: !matches!(event, Event::Tmux { .. } | Event::Git(_) | Event::Spaces(_)),
+        }
+    }
+}
+
 pub fn run(
     screen: &mut Screen,
     mut app: App,
@@ -87,17 +114,7 @@ pub fn run(
             Wait::FrameDue => continue,
             Wait::Closed => break,
         };
-        // Hook events refresh git; anything else but terminal output and git
-        // itself may change which task rows are on screen.
-        let hooks = matches!(event, Event::Hooks(_));
-        let output = matches!(
-            event,
-            Event::Tmux {
-                msg: Message::Output { .. },
-                ..
-            }
-        );
-        let rows_may_move = !matches!(event, Event::Tmux { .. } | Event::Git(_) | Event::Spaces(_));
+        let kind = Kind::of(&event);
         // A terminal can end with its exit still queued: a write to it fails
         // then. Say so, and go on rather than quit without saving.
         let (flow, changed) = handle(&mut app, event, screen).unwrap_or_else(|e| {
@@ -105,15 +122,7 @@ pub fn run(
             (Flow::Continue, true)
         });
         dirty |= changed;
-        // Any event may show a tab or bring the window back.
-        app.see_current();
-        if !output {
-            app.settle_tabs();
-        }
-        if rows_may_move {
-            app.anchor_dashboard();
-            git.update(&app, hooks);
-        }
+        after(&mut app, &mut git, &kind);
         if flow == Flow::Quit {
             break;
         }
@@ -121,84 +130,96 @@ pub fn run(
     app.detach_all()
 }
 
+/// Keep up with an event of `kind` just handled: turns seen, the tab bar
+/// scrolled to the current tab, the dashboard's selection and git's tasks.
+fn after(app: &mut App, git: &mut GitFeed, kind: &Kind) {
+    // Any event may show a tab or bring the window back.
+    app.see_current();
+    if !kind.output {
+        app.settle_tabs();
+    }
+    if kind.rows_may_move {
+        app.anchor_dashboard();
+        git.update(app, kind.hooks);
+    }
+}
+
 /// Apply one event. Returns whether to go on and whether the screen may have changed.
 fn handle(app: &mut App, event: Event, screen: &mut Screen) -> Result<(Flow, bool)> {
-    let flow = match event {
-        Event::Tmux {
-            session,
-            msg: Message::Output { pane, data },
-        } => {
+    match event {
+        Event::Tmux { session, msg } => Ok(tmux(app, &session, msg)),
+        Event::Input(input) => self::input(app, input, screen),
+        Event::Detach => Ok((Flow::Quit, true)),
+        Event::Hooks(records) => {
+            app.hooks(&records);
+            Ok((Flow::Continue, true))
+        }
+        Event::Agents(taken, agents) => {
+            app.sessions.reconcile(taken, &agents);
+            Ok((Flow::Continue, true))
+        }
+        Event::Git(read) => {
+            app.task_status.extend(read);
+            Ok((Flow::Continue, true))
+        }
+        Event::Details(read) => {
+            app.task_details.extend(read);
+            Ok((Flow::Continue, true))
+        }
+        Event::Spaces(read) => {
+            app.places.extend(read);
+            Ok((Flow::Continue, true))
+        }
+    }
+}
+
+/// A control message from space `session`'s client.
+fn tmux(app: &mut App, session: &str, msg: Message) -> (Flow, bool) {
+    match msg {
+        Message::Output { pane, data } => {
             if !app.terminals.contains_key(&pane) {
                 // A pane made since the last look, maybe through `tmux
                 // attach`.
-                app.refresh_reported(&session);
+                app.refresh_reported(session);
             }
             if let Some(t) = app.terminals.get_mut(&pane) {
                 t.output(&data);
             }
-            let seen = app.shows(&pane) || app.shows_in_preview(&pane);
-            return Ok((Flow::Continue, seen));
+            (
+                Flow::Continue,
+                app.shows(&pane) || app.shows_in_preview(&pane),
+            )
         }
-        // That space's tmux session ended: its last pane exited or was closed.
-        Event::Tmux {
-            session,
-            msg: Message::Exit,
-        } => {
-            if app.space_ended(&session) {
-                Flow::Continue
-            } else {
-                Flow::Quit
-            }
+        // The space's tmux session ended: its last pane exited or was closed.
+        Message::Exit if app.space_ended(session) => (Flow::Continue, true),
+        Message::Exit => (Flow::Quit, true),
+        Message::Notification(n) if changes_structure(&n) => {
+            app.refresh_reported(session);
+            (Flow::Continue, true)
         }
-        Event::Tmux {
-            session,
-            msg: Message::Notification(n),
-        } if changes_structure(&n) => {
-            app.refresh_reported(&session);
-            Flow::Continue
-        }
-        Event::Tmux { .. } => return Ok((Flow::Continue, false)),
-        Event::Hooks(records) => {
-            app.hooks(&records);
-            Flow::Continue
-        }
-        Event::Agents(taken, agents) => {
-            app.sessions.reconcile(taken, &agents);
-            Flow::Continue
-        }
-        Event::Git(read) => {
-            app.task_status.extend(read);
-            Flow::Continue
-        }
-        Event::Details(read) => {
-            app.task_details.extend(read);
-            Flow::Continue
-        }
-        Event::Spaces(read) => {
-            app.places.extend(read);
-            Flow::Continue
-        }
-        Event::Input(ct::Event::Key(key)) if key.kind != KeyEventKind::Release => app.key(key)?,
-        Event::Input(ct::Event::Paste(text)) => {
+        Message::Notification(_) | Message::Reply { .. } => (Flow::Continue, false),
+    }
+}
+
+/// Input from the outer terminal.
+fn input(app: &mut App, event: ct::Event, screen: &mut Screen) -> Result<(Flow, bool)> {
+    let flow = match event {
+        ct::Event::Key(key) if key.kind != KeyEventKind::Release => app.key(key)?,
+        ct::Event::Paste(text) => {
             app.paste(&text)?;
             Flow::Continue
         }
-        Event::Input(ct::Event::Mouse(m)) => return Ok((Flow::Continue, app.mouse(m)?)),
-        Event::Input(ct::Event::Resize(cols, rows)) => {
+        ct::Event::Mouse(m) => return Ok((Flow::Continue, app.mouse(m)?)),
+        ct::Event::Resize(cols, rows) => {
             app.resize((cols, rows))?;
             screen.autoresize()?;
             Flow::Continue
         }
-        Event::Input(ct::Event::FocusGained) => {
-            app.attention.window_focused = true;
+        ct::Event::FocusGained | ct::Event::FocusLost => {
+            app.attention.window_focused = matches!(event, ct::Event::FocusGained);
             return Ok((Flow::Continue, false));
         }
-        Event::Input(ct::Event::FocusLost) => {
-            app.attention.window_focused = false;
-            return Ok((Flow::Continue, false));
-        }
-        Event::Input(_) => return Ok((Flow::Continue, false)),
-        Event::Detach => Flow::Quit,
+        _ => return Ok((Flow::Continue, false)),
     };
     Ok((flow, true))
 }

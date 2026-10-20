@@ -196,38 +196,50 @@ impl App {
             tab_first: 0,
             tab_shown: None,
         };
-        match dismissed::load(&app.state_dir) {
+        app.load_dismissed();
+        app.open_spaces()?;
+        Ok(app)
+    }
+
+    /// Read the dismissed rows; a file that cannot be read is set aside.
+    fn load_dismissed(&mut self) {
+        match dismissed::load(&self.state_dir) {
             Ok(list) => {
                 for d in list {
-                    app.sessions.dismiss(&d.pane, d.branch.as_deref(), d.at);
+                    self.sessions.dismiss(&d.pane, d.branch.as_deref(), d.at);
                 }
             }
-            Err(e) => app.notice = Some(set_aside(&app.state_dir, dismissed::FILE_NAME, &e)),
+            Err(e) => self.notice = Some(set_aside(&self.state_dir, dismissed::FILE_NAME, &e)),
         }
-        let sessions = app.server.sessions();
+    }
+
+    /// Attach every space on the hidden server and make the saved one
+    /// current, or start the first space.
+    fn open_spaces(&mut self) -> Result<()> {
+        let sessions = self.server.sessions();
         if !sessions.is_empty() {
             // A server from an older paddock lacks newer options.
-            app.report(|app| app.server.apply_config());
+            self.report(|app| app.server.apply_config());
         }
-        let saved = saved::load(&app.state_dir).unwrap_or_else(|e| {
-            app.notice = Some(set_aside(&app.state_dir, saved::FILE_NAME, &e));
+        let saved = saved::load(&self.state_dir).unwrap_or_else(|e| {
+            self.notice = Some(set_aside(&self.state_dir, saved::FILE_NAME, &e));
             None
         });
         for s in &sessions {
             // A space that cannot be attached (it just ended) keeps paddock
             // from opening no other.
-            app.report(|app| app.attach(&s.id));
+            self.report(|app| app.attach(&s.id));
         }
         let saved_space = saved.and_then(|s| s.space);
-        app.current = app
+        self.current = self
             .spaces
             .iter()
             .position(|i| Some(&i.id) == saved_space.as_ref())
             .unwrap_or(0);
-        if app.spaces.is_empty() {
-            app.new_space()?;
+        if self.spaces.is_empty() {
+            self.new_space()?;
         }
-        Ok(app)
+        Ok(())
     }
 
     /// Where the current tab's panes are drawn.
