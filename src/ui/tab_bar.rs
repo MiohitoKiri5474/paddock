@@ -15,6 +15,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
+use std::borrow::Cow;
 
 /// The bar's row, a little darker than a tab.
 const DEFAULT_BAR: Color = Color::Indexed(235);
@@ -196,7 +197,7 @@ pub struct TabBar<'a> {
     /// While renaming: what is renamed (`tab`, `space`) and the text so far.
     pub rename: Option<(&'a str, &'a str)>,
     /// Shown at the right: a message, or the prefix while it is armed.
-    pub status: Option<String>,
+    pub status: Option<Cow<'a, str>>,
 }
 
 impl TabBar<'_> {

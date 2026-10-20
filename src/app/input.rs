@@ -128,10 +128,7 @@ impl App {
             Command::NextAttention => self.next_attention(),
             Command::Dashboard => self.toggle_dashboard(),
         }
-        // The sidebar may have come or gone.
-        self.report(|app| app.relayout());
-        // Keep the saved state current, in case paddock does not get to detach.
-        self.report(|app| app.save());
+        self.relayout_and_save();
         Ok(Flow::Continue)
     }
 

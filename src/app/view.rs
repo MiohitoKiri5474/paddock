@@ -8,6 +8,7 @@ use crate::tmux::structure::Window;
 use crate::ui::sidebar::{tilde, AgentLine, SpaceLine};
 use crate::ui::tab_bar::{self, Tab, TabBar};
 use ratatui::layout::Rect;
+use std::borrow::Cow;
 
 /// What a tab running Claude is called while the user has not named it.
 const CLAUDE: &str = "claude";
@@ -116,7 +117,10 @@ impl App {
             )),
             _ => None,
         };
-        let armed = self.prefix.armed().then(|| self.prefix_name.clone());
+        let armed = self
+            .prefix
+            .armed()
+            .then_some(Cow::Borrowed(self.prefix_name.as_str()));
         TabBar {
             tabs: if ask.is_some() {
                 Vec::new()
@@ -130,7 +134,10 @@ impl App {
                 Mode::Rename { target, text } => Some((target.noun(), text.as_str())),
                 _ => None,
             },
-            status: ask.or_else(|| self.notice.clone()).or(armed),
+            status: ask
+                .map(Cow::Owned)
+                .or_else(|| self.notice.as_deref().map(Cow::Borrowed))
+                .or(armed),
         }
     }
 

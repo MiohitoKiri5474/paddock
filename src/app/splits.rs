@@ -62,6 +62,14 @@ impl App {
         result
     }
 
+    /// After a command or click: sizes follow (the sidebar may have come,
+    /// gone or changed width), and the state is saved, in case paddock does
+    /// not get to detach.
+    pub(super) fn relayout_and_save(&mut self) {
+        self.report(|app| app.relayout());
+        self.report(|app| app.save());
+    }
+
     /// Write the current space to the state directory.
     pub(super) fn save(&self) -> Result<()> {
         let saved = Saved {

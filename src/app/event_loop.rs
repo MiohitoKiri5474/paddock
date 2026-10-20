@@ -60,8 +60,8 @@ fn next_event(rx: &Receiver<Event>, dirty: bool, last_draw: Instant) -> Wait {
     }
 }
 
-/// What kind of event came, for what to do after handling it.
-struct Kind {
+/// What an event may have changed, for what to do after handling it.
+struct EventEffects {
     /// Hook events refresh git at once.
     hooks: bool,
     /// Pane output: the most frequent event, changing nothing but a screen.
@@ -71,7 +71,7 @@ struct Kind {
     rows_may_move: bool,
 }
 
-impl Kind {
+impl EventEffects {
     fn of(event: &Event) -> Self {
         Self {
             hooks: matches!(event, Event::Hooks(_)),
@@ -114,7 +114,7 @@ pub fn run(
             Wait::FrameDue => continue,
             Wait::Closed => break,
         };
-        let kind = Kind::of(&event);
+        let effects = EventEffects::of(&event);
         // A terminal can end with its exit still queued: a write to it fails
         // then. Say so, and go on rather than quit without saving.
         let (flow, changed) = handle(&mut app, event, screen).unwrap_or_else(|e| {
@@ -122,7 +122,7 @@ pub fn run(
             (Flow::Continue, true)
         });
         dirty |= changed;
-        after(&mut app, &mut git, &kind);
+        follow_up(&mut app, &mut git, &effects);
         if flow == Flow::Quit {
             break;
         }
@@ -130,26 +130,26 @@ pub fn run(
     app.detach_all()
 }
 
-/// Keep up with an event of `kind` just handled: turns seen, the tab bar
+/// Keep up with an event just handled (see `effects`): turns seen, the tab bar
 /// scrolled to the current tab, the dashboard's selection and git's tasks.
-fn after(app: &mut App, git: &mut GitFeed, kind: &Kind) {
+fn follow_up(app: &mut App, git: &mut GitFeed, effects: &EventEffects) {
     // Any event may show a tab or bring the window back.
     app.see_current();
     app.track_page();
-    if !kind.output {
+    if !effects.output {
         app.settle_tabs();
     }
-    if kind.rows_may_move {
+    if effects.rows_may_move {
         app.anchor_dashboard();
-        git.update(app, kind.hooks);
+        git.update(app, effects.hooks);
     }
 }
 
 /// Apply one event. Returns whether to go on and whether the screen may have changed.
 fn handle(app: &mut App, event: Event, screen: &mut Screen) -> Result<(Flow, bool)> {
     match event {
-        Event::Tmux { session, msg } => Ok(tmux(app, &session, msg)),
-        Event::Input(input) => self::input(app, input, screen),
+        Event::Tmux { session, msg } => Ok(handle_tmux(app, &session, msg)),
+        Event::Input(input) => handle_input(app, input, screen),
         Event::Detach => Ok((Flow::Quit, true)),
         Event::Hooks(records) => {
             app.hooks(&records);
@@ -181,7 +181,7 @@ fn handle(app: &mut App, event: Event, screen: &mut Screen) -> Result<(Flow, boo
 }
 
 /// A control message from space `session`'s client.
-fn tmux(app: &mut App, session: &str, msg: Message) -> (Flow, bool) {
+fn handle_tmux(app: &mut App, session: &str, msg: Message) -> (Flow, bool) {
     match msg {
         Message::Output { pane, data } => {
             if !app.terminals.contains_key(&pane) {
@@ -209,7 +209,7 @@ fn tmux(app: &mut App, session: &str, msg: Message) -> (Flow, bool) {
 }
 
 /// Input from the outer terminal.
-fn input(app: &mut App, event: ct::Event, screen: &mut Screen) -> Result<(Flow, bool)> {
+fn handle_input(app: &mut App, event: ct::Event, screen: &mut Screen) -> Result<(Flow, bool)> {
     let flow = match event {
         ct::Event::Key(key) if key.kind != KeyEventKind::Release => app.key(key)?,
         ct::Event::Paste(text) => {

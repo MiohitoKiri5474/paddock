@@ -166,8 +166,7 @@ impl App {
             KeyCode::Esc => Mode::Normal,
             _ => Mode::Sidebar(s),
         };
-        self.report(|app| app.relayout());
-        self.report(|app| app.save());
+        self.relayout_and_save();
     }
 
     /// Show what `pick` stands for: a space's tabs, or an agent's pane.

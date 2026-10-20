@@ -422,10 +422,13 @@ mod tests {
         assert_eq!(session_area((1, 0), 0), Rect::new(0, 0, 1, 0));
     }
 
+    /// A sidebar width for these tests.
+    const SIDEBAR: u16 = 24;
+
     #[test]
     fn the_sidebar_takes_columns_from_the_left() {
         assert_eq!(session_area((100, 30), 24), Rect::new(24, 1, 76, 29));
-        assert_eq!(session_area((10, 5), 24), Rect::new(10, 1, 0, 4));
+        assert_eq!(session_area((10, 5), SIDEBAR), Rect::new(10, 1, 0, 4));
     }
 
     #[test]

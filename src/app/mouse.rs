@@ -5,6 +5,7 @@
 
 use super::state::{App, Mode, TAB_BAR_ROWS};
 use crate::input::{route_mouse, MouseAction};
+use crate::terminal::emulator::Emulator;
 use crate::ui::sidebar;
 use crate::ui::tab_bar::{self, Part};
 use anyhow::{Context, Result};
@@ -159,17 +160,7 @@ impl App {
                     }
                 }
                 Some(Press::Select { dragged, .. }) => {
-                    if matches!(m.kind, MouseEventKind::Drag(_)) {
-                        *dragged = true;
-                        t.emulator_mut().select_to(row, col);
-                    }
-                    if released {
-                        if *dragged {
-                            t.emulator_mut().select_to(row, col);
-                        }
-                        copied = dragged.then(|| t.emulator().selected_text()).flatten();
-                        t.emulator_mut().clear_selection();
-                    }
+                    copied = select_held(t.emulator_mut(), dragged, &m, (row, col));
                 }
                 Some(Press::Border { .. }) | None => {}
             }
@@ -255,10 +246,33 @@ impl App {
     /// and sizes and the saved state are updated as after a command.
     fn settle(&mut self) -> bool {
         self.mode = Mode::Normal;
-        self.report(|app| app.relayout());
-        self.report(|app| app.save());
+        self.relayout_and_save();
         true
     }
+}
+
+/// A drag or release of a selection in `emu`, at `(row, col)` of the pane:
+/// the selection follows the pointer; on release it ends, and its text is
+/// returned if the pointer moved.
+fn select_held(
+    emu: &mut Emulator,
+    dragged: &mut bool,
+    m: &MouseEvent,
+    (row, col): (u16, u16),
+) -> Option<String> {
+    if matches!(m.kind, MouseEventKind::Drag(_)) {
+        *dragged = true;
+        emu.select_to(row, col);
+    }
+    if !matches!(m.kind, MouseEventKind::Up(_)) {
+        return None;
+    }
+    if *dragged {
+        emu.select_to(row, col);
+    }
+    let text = dragged.then(|| emu.selected_text()).flatten();
+    emu.clear_selection();
+    text
 }
 
 /// Put `text` on the clipboard with `pbcopy`, or with the program named by
