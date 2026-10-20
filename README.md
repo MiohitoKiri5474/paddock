@@ -79,12 +79,14 @@ tab = 237                 # a tab that is not current
 tab_current = 4           # the current tab (default: the terminal's blue)
 
 [sidebar]
-width = 32                # columns until you resize it; the last width is remembered
+width = 32                # columns until you resize it
 ```
+
+Once you resize the sidebar (`C-a {`, `C-a }` or dragging its border), paddock saves that width in `~/.local/state/paddock/layout.toml` (`sidebar = N`), and it overrides `[sidebar] width` from then on. Delete that line (with paddock closed) to go back to the configured width.
 
 ## Files
 
-- State: `~/.local/state/paddock/` (current space, event logs, dismissed rows, `hook-errors.log`); tabs and splits live in tmux
+- State: `~/.local/state/paddock/` (current space and sidebar width, event logs, dismissed rows, `hook-errors.log`); tabs and splits live in tmux
 - Hidden server: `tmux -L paddock ls`
 
 ## Uninstall

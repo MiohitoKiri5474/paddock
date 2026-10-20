@@ -34,8 +34,8 @@ pub enum Command {
     FocusSpaces,
     /// Move the current tab one place left (`-1`) or right (`1`).
     MoveTab(isize),
-    /// Make the sidebar wider (`true`) or narrower.
-    ResizeSidebar(bool),
+    /// Make the sidebar this many columns wider (narrower if negative).
+    ResizeSidebar(i16),
     /// Show the space and tab shown before the current ones.
     LastPage,
     ToggleSidebar,
@@ -62,6 +62,9 @@ pub enum KeyAction {
     /// Consumed by paddock (the prefix itself, or an unbound command key).
     None,
 }
+
+/// Columns `C-a {` and `C-a }` take away or add.
+pub const SIDEBAR_STEP: i16 = 2;
 
 /// Command keys, for both dispatch and the key help.
 pub const BINDINGS: &[(&str, &str)] = &[
@@ -126,8 +129,8 @@ fn command(key: &KeyEvent) -> Option<Command> {
         'w' => Command::FocusSpaces,
         '<' => Command::MoveTab(-1),
         '>' => Command::MoveTab(1),
-        '{' => Command::ResizeSidebar(false),
-        '}' => Command::ResizeSidebar(true),
+        '{' => Command::ResizeSidebar(-SIDEBAR_STEP),
+        '}' => Command::ResizeSidebar(SIDEBAR_STEP),
         'b' => Command::ToggleSidebar,
         'a' => Command::NextAttention,
         'o' => Command::Dashboard,
@@ -277,11 +280,11 @@ mod tests {
         );
         assert_eq!(
             after_prefix('{', KeyModifiers::SHIFT),
-            KeyAction::Command(Command::ResizeSidebar(false))
+            KeyAction::Command(Command::ResizeSidebar(-SIDEBAR_STEP))
         );
         assert_eq!(
             after_prefix('}', KeyModifiers::SHIFT),
-            KeyAction::Command(Command::ResizeSidebar(true))
+            KeyAction::Command(Command::ResizeSidebar(SIDEBAR_STEP))
         );
         assert_eq!(
             after_prefix('w', none),

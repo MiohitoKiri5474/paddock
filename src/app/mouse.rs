@@ -20,8 +20,9 @@ pub enum Press {
     Program(String),
     /// Selecting text in this pane; `dragged` once the pointer moved.
     Select { pane: String, dragged: bool },
-    /// Dragging the sidebar's border.
-    Border,
+    /// On the sidebar's border, at screen row `row`; `dragged` once the
+    /// pointer moved (until then, a release is a click on that row).
+    Border { row: u16, dragged: bool },
 }
 
 impl App {
@@ -50,7 +51,10 @@ impl App {
         let side = self.sidebar_width();
         if left && side > 0 && m.column == side - 1 {
             // The border: dragging it resizes the sidebar.
-            self.press = Some(Press::Border);
+            self.press = Some(Press::Border {
+                row: m.row,
+                dragged: false,
+            });
             return Ok(false);
         }
         if m.row < TAB_BAR_ROWS && m.column >= side {
@@ -132,7 +136,10 @@ impl App {
         let released = matches!(m.kind, MouseEventKind::Up(_));
         let pane = match &self.press {
             Some(Press::Program(p) | Press::Select { pane: p, .. }) => p.clone(),
-            Some(Press::Border) => return Ok(self.border_held(m.column, released)),
+            Some(Press::Border { row, dragged }) => {
+                let (row, dragged) = (*row, *dragged);
+                return Ok(self.border_held(m, row, dragged));
+            }
             None => return Ok(false),
         };
         let (Some(rect), true) = (self.rect_of(&pane), self.terminals.contains_key(&pane)) else {
@@ -164,7 +171,7 @@ impl App {
                         t.emulator_mut().clear_selection();
                     }
                 }
-                Some(Press::Border) | None => {}
+                Some(Press::Border { .. }) | None => {}
             }
         }
         if let Some(bytes) = report {
@@ -179,16 +186,23 @@ impl App {
         Ok(true)
     }
 
-    /// The sidebar's border dragged to column `col`, or let go there:
-    /// the sidebar follows live, and the width is saved on release.
-    fn border_held(&mut self, col: u16, released: bool) -> bool {
-        self.drag_border(col);
-        self.report(|app| app.relayout());
-        if released {
-            self.press = None;
-            self.report(|app| app.save());
+    /// The button held on the sidebar's border (pressed on screen row
+    /// `row`) moved or let go: dragging resizes the sidebar live and saves
+    /// the width on release; a release without a drag is a click on `row`.
+    fn border_held(&mut self, m: MouseEvent, row: u16, dragged: bool) -> bool {
+        let released = matches!(m.kind, MouseEventKind::Up(_));
+        if !released {
+            self.press = Some(Press::Border { row, dragged: true });
+            self.drag_border(m.column);
+            self.report(|app| app.relayout());
+            return true;
         }
-        true
+        self.press = None;
+        if dragged {
+            self.report(|app| app.save());
+            return true;
+        }
+        self.press_sidebar(row)
     }
 
     /// The wheel, and motion without a button: over the tab bar, the wheel

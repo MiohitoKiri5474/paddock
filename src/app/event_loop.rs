@@ -257,8 +257,11 @@ fn draw(screen: &mut Screen, app: &App) -> Result<()> {
             ..area
         };
         let bar_cursor = draw_tab_bar(app, &rows, bar_area, f.buffer_mut());
-        let term_cursor = draw_panes(app, f.buffer_mut());
-        let dash_cursor = draw_dashboard(app, &rows, f.buffer_mut());
+        // The frame may already have a new size the app has not seen yet
+        // (its resize event is still queued): never draw outside it.
+        let panes = app.area().intersection(full);
+        let term_cursor = draw_panes(app, panes, f.buffer_mut());
+        let dash_cursor = draw_dashboard(app, &rows, panes, f.buffer_mut());
         if let Mode::Help = app.mode {
             help::render(&app.prefix_name, full, f.buffer_mut());
         } else if app.dashboard().is_some() {
@@ -283,9 +286,13 @@ fn draw_tab_bar(app: &App, rows: &[Row], area: Rect, buf: &mut Buffer) -> Option
 
 /// The current tab's panes and the borders between them. Returns the
 /// focused pane's cursor.
-fn draw_panes(app: &App, buf: &mut Buffer) -> Option<Position> {
+fn draw_panes(app: &App, area: Rect, buf: &mut Buffer) -> Option<Position> {
     let focus = app.current_pane();
-    let panes = app.pane_rects();
+    let panes: Vec<(String, Rect)> = app
+        .pane_rects()
+        .into_iter()
+        .map(|(pane, r)| (pane, r.intersection(area)))
+        .collect();
     let mut cursor = None;
     for (pane, rect) in &panes {
         let Some(t) = app.terminals.get(pane) else {
@@ -297,13 +304,13 @@ fn draw_panes(app: &App, buf: &mut Buffer) -> Option<Position> {
         }
     }
     let rects: Vec<Rect> = panes.iter().map(|(_, r)| *r).collect();
-    session_view::borders(app.area(), &rects, buf);
+    session_view::borders(area, &rects, buf);
     cursor
 }
 
 /// The dashboard over the panes, if open. Returns the previewed pane's
 /// cursor while typing into it.
-fn draw_dashboard(app: &App, rows: &[Row], buf: &mut Buffer) -> Option<Position> {
+fn draw_dashboard(app: &App, rows: &[Row], area: Rect, buf: &mut Buffer) -> Option<Position> {
     let d = app.dashboard()?;
     let row = app.dashboard_row(d);
     let view = dashboard::View {
@@ -316,5 +323,5 @@ fn draw_dashboard(app: &App, rows: &[Row], buf: &mut Buffer) -> Option<Position>
         interactive: d.interactive,
         now: now_ms() / MS_PER_SEC,
     };
-    dashboard::render(&view, app.area(), buf)
+    dashboard::render(&view, area, buf)
 }

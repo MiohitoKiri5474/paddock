@@ -7,8 +7,8 @@ use crossterm::event::{KeyCode, KeyEvent};
 
 /// The narrowest the sidebar gets.
 pub const MIN_SIDEBAR: u16 = 16;
-/// Columns `C-a {` and `C-a }` take away or add.
-pub const SIDEBAR_STEP: i16 = 2;
+/// The widest width saved for the sidebar (screens cut it to half anyway).
+pub const MAX_SIDEBAR: u16 = 200;
 
 /// The sidebar's width for a wish of `wanted` columns on a screen
 /// `screen_cols` wide: at least [`MIN_SIDEBAR`], at most half the screen,
@@ -18,10 +18,12 @@ pub fn clamp_width(wanted: u16, screen_cols: u16) -> u16 {
     wanted.max(MIN_SIDEBAR).min(max)
 }
 
-/// The width the sidebar starts at: the one saved last time, else the
-/// configured one.
-pub fn starting_width(saved: Option<u16>, configured: u16) -> u16 {
-    saved.unwrap_or(configured)
+/// A width the user asked for, kept between [`MIN_SIDEBAR`] and
+/// [`MAX_SIDEBAR`] but not cut to this screen, so it comes back on a wider
+/// one.
+pub fn wish(width: i32) -> u16 {
+    let width = width.clamp(i32::from(MIN_SIDEBAR), i32::from(MAX_SIDEBAR));
+    u16::try_from(width).unwrap_or(MAX_SIDEBAR)
 }
 
 /// What a sidebar line stands for.
@@ -73,16 +75,20 @@ impl App {
     /// Make the sidebar `step` columns wider (narrower if negative), within
     /// [`clamp_width`], showing it if hidden.
     pub(super) fn resize_sidebar(&mut self, step: i16) {
-        let now = clamp_width(self.sidebar_cols, self.screen.0);
-        self.sidebar_cols = clamp_width(now.saturating_add_signed(step), self.screen.0);
-        self.sidebar_resized = Some(self.sidebar_cols);
+        let now = clamp_width(self.sidebar_wanted(), self.screen.0);
+        self.sidebar_wish = Some(wish(i32::from(now) + i32::from(step)));
         self.sidebar_hidden = false;
     }
 
     /// The sidebar's border dragged to screen column `col`.
     pub(super) fn drag_border(&mut self, col: u16) {
-        self.sidebar_cols = clamp_width(col.saturating_add(1), self.screen.0);
-        self.sidebar_resized = Some(self.sidebar_cols);
+        self.sidebar_wish = Some(wish(i32::from(col) + 1));
+    }
+
+    /// The width the sidebar should have: the one the user asked for, else
+    /// the configured one. [`clamp_width`] fits it to the screen.
+    pub(super) fn sidebar_wanted(&self) -> u16 {
+        self.sidebar_wish.unwrap_or(self.sidebar_default)
     }
 
     /// The sidebar's picks in line order: the spaces, then the agents.
@@ -239,9 +245,11 @@ mod tests {
     }
 
     #[test]
-    fn a_saved_width_wins_over_the_configured_one() {
-        assert_eq!(starting_width(Some(40), 32), 40);
-        assert_eq!(starting_width(None, 28), 28);
+    fn a_wished_width_is_kept_between_sixteen_and_a_sane_maximum() {
+        assert_eq!(wish(40), 40);
+        assert_eq!(wish(3), MIN_SIDEBAR);
+        assert_eq!(wish(-5), MIN_SIDEBAR);
+        assert_eq!(wish(5000), MAX_SIDEBAR);
     }
 
     #[test]

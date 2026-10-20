@@ -66,7 +66,7 @@ impl App {
     pub(super) fn save(&self) -> Result<()> {
         let saved = Saved {
             space: self.current_space().map(|i| i.id.clone()),
-            sidebar: self.sidebar_resized,
+            sidebar: self.sidebar_wish,
         };
         saved::save(&self.state_dir, &saved)
     }

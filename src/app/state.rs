@@ -9,8 +9,8 @@ use super::mouse::Press;
 use super::pages::Pages;
 use super::rows::{rows, Placed, Row, RowId, TaskDetails, TaskStatus};
 use super::saved;
+use super::sidebar::clamp_width;
 use super::sidebar::Selection;
-use super::sidebar::{clamp_width, starting_width};
 use super::space::Space;
 use super::watch::Place;
 use super::Event;
@@ -117,12 +117,13 @@ pub struct App {
     pub(super) places: HashMap<String, Place>,
     /// The user hid the sidebar (`C-a b`).
     pub(super) sidebar_hidden: bool,
-    /// The sidebar's width as wished, border included; see
+    /// The configured sidebar width, border included; see
     /// [`Self::sidebar_width`] for what it gets.
-    pub(super) sidebar_cols: u16,
-    /// The width the user resized the sidebar to, saved so that it comes
-    /// back; `None` while the configured width applies.
-    pub(super) sidebar_resized: Option<u16>,
+    pub(super) sidebar_default: u16,
+    /// The width the user resized the sidebar to (`C-a {`, `C-a }`,
+    /// dragging), saved so that it comes back; `None` while the configured
+    /// width applies.
+    pub(super) sidebar_wish: Option<u16>,
     /// The page shown now and the one before, for `C-a Tab`.
     pub(super) pages: Pages,
     /// Where the held mouse button went, until it is released.
@@ -197,8 +198,8 @@ impl App {
             task_details: TaskDetails::new(),
             places: HashMap::new(),
             sidebar_hidden: false,
-            sidebar_cols: config.sidebar_width,
-            sidebar_resized: None,
+            sidebar_default: config.sidebar_width,
+            sidebar_wish: None,
             pages: Pages::default(),
             press: None,
             attention: Attention::from_env(),
@@ -239,8 +240,7 @@ impl App {
             })
             .unwrap_or_default();
         // Before attaching, so the spaces start at their final size.
-        self.sidebar_cols = starting_width(saved.sidebar, self.sidebar_cols);
-        self.sidebar_resized = saved.sidebar;
+        self.sidebar_wish = saved.sidebar;
         for s in &sessions {
             // A space that cannot be attached (it just ended) keeps paddock
             // from opening no other.
@@ -314,7 +314,7 @@ impl App {
         if self.sidebar_hidden {
             0
         } else {
-            clamp_width(self.sidebar_cols, self.screen.0)
+            clamp_width(self.sidebar_wanted(), self.screen.0)
         }
     }
 

@@ -518,3 +518,39 @@ fn the_config_sets_the_starting_width() {
 
     wait_for_width(&sandbox, harness::COLS - 40);
 }
+
+#[test]
+fn a_click_on_the_border_without_a_drag_is_a_click_on_the_row() {
+    let sandbox = Sandbox::new();
+    let mut paddock = ready(&sandbox);
+    paddock.command(b"C");
+    paddock.wait_for_text(PROMPT);
+    paddock.type_line("echo in-two");
+    paddock.wait_for_text("in-two\n");
+
+    // The border is column 31; row 1 is space-1's line.
+    paddock.click_screen(31, 1);
+
+    paddock.wait_for("space-1 shown", |s| !s.contains("in-two"));
+    wait_for_width(&sandbox, harness::COLS - 32);
+    let layout =
+        std::fs::read_to_string(sandbox.path("state/paddock/layout.toml")).unwrap_or_default();
+    assert!(!layout.contains("sidebar"), "nothing resized: {layout}");
+}
+
+#[test]
+fn a_wide_sidebar_is_remembered_as_asked_even_on_a_narrow_screen() {
+    let sandbox = Sandbox::new();
+    let mut paddock = ready(&sandbox);
+    for _ in 0..4 {
+        paddock.command(b"}");
+    }
+    wait_for_width(&sandbox, harness::COLS - 40);
+    paddock.resize(60, 20);
+    wait_for_width(&sandbox, 30);
+    paddock.command(b"?"); // any command saves the state
+    paddock.wait_for("help", |_| paddock.full_screen().contains("paddock keys"));
+
+    let layout = std::fs::read_to_string(sandbox.path("state/paddock/layout.toml")).unwrap();
+    assert!(layout.contains("sidebar = 40"), "{layout}");
+}
