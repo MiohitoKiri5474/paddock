@@ -51,6 +51,18 @@ impl App {
         Ok(pane)
     }
 
+    /// [`Self::refresh`] after tmux reported a change, showing a failure as
+    /// a notice unless the space has just ended (its exit follows and takes
+    /// the space away).
+    pub(super) fn refresh_reported(&mut self, id: &str) {
+        if let Err(e) = self.refresh(id) {
+            let alive = self.server.sessions().iter().any(|s| s.id == id);
+            if let Some(message) = refresh_failure(&e, alive) {
+                self.notice = Some(message);
+            }
+        }
+    }
+
     /// Read space `id`'s windows and panes again from tmux: new panes get a
     /// terminal (they start empty, so there is nothing to seed), ended ones
     /// lose theirs, and every terminal takes its pane's size.
@@ -284,5 +296,27 @@ impl App {
         }
         self.report(|app| app.save());
         !self.spaces.is_empty()
+    }
+}
+
+/// What to tell the user when reading space structure failed with `e`:
+/// nothing if the space is gone (`alive` false), as its exit is on the way.
+fn refresh_failure(e: &anyhow::Error, alive: bool) -> Option<String> {
+    alive.then(|| format!("{e:#}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_failed_refresh_is_reported_unless_its_space_just_ended() {
+        let e = anyhow::anyhow!("tmux list-panes: no server");
+        assert_eq!(
+            refresh_failure(&e, true).as_deref(),
+            Some("tmux list-panes: no server")
+        );
+        // Its exit is on the way and takes the space away.
+        assert_eq!(refresh_failure(&e, false), None);
     }
 }

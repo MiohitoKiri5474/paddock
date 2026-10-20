@@ -130,8 +130,8 @@ fn handle(app: &mut App, event: Event, screen: &mut Screen) -> Result<(Flow, boo
         } => {
             if !app.terminals.contains_key(&pane) {
                 // A pane made since the last look, maybe through `tmux
-                // attach`. If the space has just ended, its exit follows.
-                let _ = app.refresh(&session);
+                // attach`.
+                app.refresh_reported(&session);
             }
             if let Some(t) = app.terminals.get_mut(&pane) {
                 t.output(&data);
@@ -154,8 +154,7 @@ fn handle(app: &mut App, event: Event, screen: &mut Screen) -> Result<(Flow, boo
             session,
             msg: Message::Notification(n),
         } if changes_structure(&n) => {
-            // If the space has just ended, its exit follows.
-            let _ = app.refresh(&session);
+            app.refresh_reported(&session);
             Flow::Continue
         }
         Event::Tmux { .. } => return Ok((Flow::Continue, false)),
