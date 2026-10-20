@@ -631,3 +631,28 @@ fn c_a_tab_goes_back_to_the_last_page_across_spaces() {
     let capture = sandbox.tmux(&["capture-pane", "-p", "-t", "space-1:1"]);
     assert!(capture.contains("where-2"), "{capture}");
 }
+
+#[test]
+fn c_a_tab_skips_a_closed_page_for_an_older_one() {
+    let sandbox = Sandbox::new();
+    let mut paddock = ready(&sandbox); // A1
+    paddock.command(b"C"); // space-2: B1
+    paddock.wait_for_text(PROMPT);
+    new_tab(&mut paddock, &["1:home", "2:home"]); // B2
+    paddock.command(b"1"); // back on B1
+    paddock.wait_for_current_tab("1:home");
+
+    // B1 closes; space-2 shows B2, the page before B1 is A1.
+    paddock.command(b"x");
+    paddock.wait_for_tabs(&["1:home"]);
+    paddock.command(b"\t");
+
+    // The current space's background is on space-1 again.
+    paddock.wait_for("space-1 current", |_| {
+        paddock.colors(1, 5).1 == vt100::Color::Idx(236)
+    });
+    paddock.type_line("echo back-in-a1");
+    paddock.wait_for_text("back-in-a1\n");
+    let capture = sandbox.tmux(&["capture-pane", "-p", "-t", "space-1:0"]);
+    assert!(capture.contains("back-in-a1"), "{capture}");
+}
