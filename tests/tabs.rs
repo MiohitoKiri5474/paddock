@@ -597,6 +597,7 @@ fn c_a_angle_brackets_move_the_tab_left_and_right() {
     paddock.wait_for_current_tab("2:c");
     assert_eq!(windows(&sandbox, "space-1"), ["a", "c", "b"]);
     paddock.command(b"<");
+    paddock.wait_for_tabs(&["1:c", "2:a", "3:b"]);
     paddock.command(b"<"); // already first: no wrap
     paddock.command(b">");
     paddock.wait_for_tabs(&["1:a", "2:c", "3:b"]);
