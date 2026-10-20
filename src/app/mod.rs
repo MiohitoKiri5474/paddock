@@ -103,5 +103,10 @@ pub fn run() -> Result<()> {
 
     let result = event_loop::run(&mut screen, app, &rx, git);
     drop(screen_guard);
+    // Shown at start too, but only until the first key: repeat them where
+    // they stay.
+    for warning in &config.warnings {
+        eprintln!("paddock: {warning}");
+    }
     result
 }

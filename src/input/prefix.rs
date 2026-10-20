@@ -1,7 +1,7 @@
 //! The prefix key (`C-a` unless configured): the key after it is a paddock
 //! command instead of input for the terminal.
 
-use super::keymap::Keys;
+use super::keymap::{Key, Keys};
 use crossterm::event::KeyEvent;
 
 /// What paddock does for a command key.
@@ -68,13 +68,13 @@ pub enum KeyAction {
 pub const SIDEBAR_STEP: i16 = 2;
 
 pub struct PrefixKeys {
-    prefix: KeyEvent,
+    prefix: Key,
     commands: Keys<Command>,
     armed: bool,
 }
 
 impl PrefixKeys {
-    pub fn new(prefix: KeyEvent, commands: Keys<Command>) -> Self {
+    pub fn new(prefix: Key, commands: Keys<Command>) -> Self {
         Self {
             prefix,
             commands,
@@ -88,7 +88,7 @@ impl PrefixKeys {
     }
 
     fn is_prefix(&self, k: &KeyEvent) -> bool {
-        k.code == self.prefix.code && k.modifiers == self.prefix.modifiers
+        Key::of(k) == self.prefix
     }
 
     pub fn handle(&mut self, key: KeyEvent) -> KeyAction {
@@ -104,16 +104,23 @@ impl PrefixKeys {
             // Pressing the prefix twice sends it literally.
             return KeyAction::Forward(key);
         }
-        self.commands
-            .get(&key)
-            .map_or(KeyAction::None, KeyAction::Command)
+        let Some((command, i)) = self.commands.get(&key) else {
+            return KeyAction::None;
+        };
+        // `go_to_tab`'s Nth key goes to tab N.
+        let command = if let Command::GoToTab(_) = command {
+            Command::GoToTab(i)
+        } else {
+            command
+        };
+        KeyAction::Command(command)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::input::keymap::COMMANDS;
+    use crate::input::keymap::COMMAND_KEYS;
     use crossterm::event::{KeyCode, KeyModifiers};
 
     fn k(c: char, m: KeyModifiers) -> KeyEvent {
@@ -121,7 +128,7 @@ mod tests {
     }
 
     fn ctrl_a() -> PrefixKeys {
-        PrefixKeys::new(k('a', KeyModifiers::CONTROL), Keys::defaults(COMMANDS))
+        PrefixKeys::new(Key::parse("C-a").unwrap(), Keys::defaults(&COMMAND_KEYS))
     }
 
     fn after_prefix(c: char, m: KeyModifiers) -> KeyAction {
@@ -267,6 +274,24 @@ mod tests {
     }
 
     #[test]
+    fn shift_arrows_after_the_prefix_move_focus_too() {
+        let mut p = ctrl_a();
+        p.handle(k('a', KeyModifiers::CONTROL));
+        assert_eq!(
+            p.handle(KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT)),
+            KeyAction::Command(Command::Focus(Direction::Right))
+        );
+    }
+
+    #[test]
+    fn the_prefix_matches_however_shift_is_reported() {
+        let mut p = ctrl_a();
+        let ctrl_shift_a = k('A', KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+        assert_eq!(p.handle(ctrl_shift_a), KeyAction::None);
+        assert!(p.armed());
+    }
+
+    #[test]
     fn unbound_and_modified_keys_are_swallowed() {
         assert_eq!(after_prefix('z', KeyModifiers::NONE), KeyAction::None);
         assert_eq!(after_prefix('0', KeyModifiers::NONE), KeyAction::None);
@@ -283,7 +308,7 @@ mod tests {
 
     #[test]
     fn any_prefix_key_works() {
-        let mut p = PrefixKeys::new(k('b', KeyModifiers::CONTROL), Keys::defaults(COMMANDS));
+        let mut p = PrefixKeys::new(Key::parse("C-b").unwrap(), Keys::defaults(&COMMAND_KEYS));
         assert_eq!(
             p.handle(k('a', KeyModifiers::CONTROL)),
             KeyAction::Forward(k('a', KeyModifiers::CONTROL))

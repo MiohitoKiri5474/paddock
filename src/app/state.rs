@@ -14,7 +14,7 @@ use super::sidebar::Selection;
 use super::space::Space;
 use super::watch::Place;
 use super::Event;
-use crate::config::{key_name, Config};
+use crate::config::Config;
 use crate::hooks::now_ms;
 use crate::input::keymap::Keymap;
 use crate::input::PrefixKeys;
@@ -190,7 +190,7 @@ impl App {
             current: 0,
             terminals: HashMap::new(),
             prefix: PrefixKeys::new(config.prefix, config.keys.commands.clone()),
-            prefix_name: key_name(&config.prefix),
+            prefix_name: config.prefix.name(),
             keymap: config.keys.clone(),
             mode: Mode::Normal,
             // Settings that work but may surprise.

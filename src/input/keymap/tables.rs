@@ -26,27 +26,20 @@ const fn bind<A>(
     }
 }
 
-/// What a bound key does.
-pub trait Action: Copy + PartialEq + std::fmt::Debug + 'static {
-    /// The action for the `i`th key of its binding: all the same, except
-    /// `go_to_tab`, whose `i`th key goes to tab `i + 1`.
-    fn nth(self, _i: usize) -> Self {
-        self
-    }
-}
-
-impl Action for Command {
-    fn nth(self, i: usize) -> Self {
-        match self {
-            Command::GoToTab(_) => Command::GoToTab(i),
-            other => other,
-        }
-    }
-}
-
-/// What a key does while the sidebar or the dashboard has the keyboard.
+/// What a key does while the sidebar has the keyboard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Panel {
+pub enum SidebarAction {
+    Down,
+    Up,
+    Open,
+    Close,
+    Fork,
+    Back,
+}
+
+/// What a key does while the dashboard is open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DashboardAction {
     Down,
     Up,
     Open,
@@ -57,9 +50,8 @@ pub enum Panel {
     Back,
 }
 
-impl Action for Panel {}
-
-/// Keys after the prefix (`[keys.commands]`).
+/// Keys after the prefix (`[keys.commands]`). `go_to_tab`'s Nth key goes to tab
+/// N: its action is completed with the key's index.
 pub const COMMANDS: &[Binding<Command>] = &[
     bind("new_tab", Command::NewTab, &["c"], "new tab in this space"),
     bind("new_space", Command::NewSpace, &["C"], "new space"),
@@ -169,61 +161,96 @@ pub const COMMANDS: &[Binding<Command>] = &[
         "next_attention",
         Command::NextAttention,
         &["a"],
-        "next session that needs you",
+        "next session needing you",
     ),
     bind("dashboard", Command::Dashboard, &["o"], "dashboard"),
     bind(
         "detach",
         Command::Detach,
         &["d"],
-        "detach: terminals keep running",
+        "detach (terminals go on)",
     ),
     bind("help", Command::Help, &["?"], "this help"),
 ];
 
 /// Keys while the sidebar has the keyboard (`[keys.sidebar]`).
-pub const SIDEBAR: &[Binding<Panel>] = &[
-    bind("down", Panel::Down, &["j", "Down"], "next space or agent"),
-    bind("up", Panel::Up, &["k", "Up"], "previous space or agent"),
+pub const SIDEBAR: &[Binding<SidebarAction>] = &[
+    bind(
+        "down",
+        SidebarAction::Down,
+        &["j", "Down"],
+        "next space or agent",
+    ),
+    bind(
+        "up",
+        SidebarAction::Up,
+        &["k", "Up"],
+        "previous space or agent",
+    ),
     bind(
         "open",
-        Panel::Open,
+        SidebarAction::Open,
         &["Enter"],
         "show the space's tabs, or jump to the agent's pane",
     ),
     bind(
         "close",
-        Panel::Close,
+        SidebarAction::Close,
         &["x"],
         "close the space, or the agent's pane",
     ),
     bind(
         "fork",
-        Panel::Fork,
+        SidebarAction::Fork,
         &["f"],
         "fork the agent (on a space, its agent that needs you most)",
     ),
-    bind("back", Panel::Back, &["Esc"], "give the keyboard back"),
+    bind(
+        "back",
+        SidebarAction::Back,
+        &["Esc"],
+        "give the keyboard back",
+    ),
 ];
 
 /// Keys while the dashboard is open (`[keys.dashboard]`).
-pub const DASHBOARD: &[Binding<Panel>] = &[
-    bind("down", Panel::Down, &["j", "Down"], "next row"),
-    bind("up", Panel::Up, &["k", "Up"], "previous row"),
+pub const DASHBOARD: &[Binding<DashboardAction>] = &[
+    bind("down", DashboardAction::Down, &["j", "Down"], "next row"),
+    bind("up", DashboardAction::Up, &["k", "Up"], "previous row"),
     bind(
         "open",
-        Panel::Open,
+        DashboardAction::Open,
         &["Enter"],
         "jump to the row's terminal",
     ),
-    bind("dismiss", Panel::Dismiss, &["D"], "dismiss the row"),
-    bind("close", Panel::Close, &["x"], "close the row's terminal"),
-    bind("fork", Panel::Fork, &["f"], "fork the row's Claude session"),
+    bind(
+        "dismiss",
+        DashboardAction::Dismiss,
+        &["D"],
+        "dismiss the row",
+    ),
+    bind(
+        "close",
+        DashboardAction::Close,
+        &["x"],
+        "close the row's terminal",
+    ),
+    bind(
+        "fork",
+        DashboardAction::Fork,
+        &["f"],
+        "fork the row's Claude session",
+    ),
     bind(
         "interact",
-        Panel::Interact,
+        DashboardAction::Interact,
         &["I"],
         "type into the previewed terminal (Esc leaves)",
     ),
-    bind("back", Panel::Back, &["Esc"], "close the dashboard"),
+    bind(
+        "back",
+        DashboardAction::Back,
+        &["Esc"],
+        "close the dashboard",
+    ),
 ];

@@ -322,7 +322,7 @@ fn draw_panes(app: &App, area: Rect, buf: &mut Buffer) -> Option<Position> {
 fn draw_dashboard(app: &App, rows: &[Row], area: Rect, buf: &mut Buffer) -> Option<Position> {
     let d = app.dashboard()?;
     let row = app.dashboard_row(d);
-    let keys = app.keymap.dashboard.hint();
+    let keys = app.keymap.dashboard.hints().join("  ");
     let view = dashboard::View {
         rows,
         keys: &keys,

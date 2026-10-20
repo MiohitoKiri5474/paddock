@@ -75,8 +75,32 @@ fn the_help_shows_remapped_keys_and_not_unbound_ones() {
     paddock.command(b"?");
     paddock.wait_for("help", |_| paddock.full_screen().contains("paddock keys"));
     let help = paddock.full_screen();
-    assert!(help.contains("t        new tab in this space"), "{help}");
+    assert!(help.contains("t      new tab in this space"), "{help}");
     assert!(!help.contains("detach"), "{help}");
+}
+
+#[test]
+fn an_alt_key_warning_is_printed_again_on_leaving() {
+    let sandbox = Sandbox::new();
+    sandbox.write_config("[keys.commands]\nnew_tab = \"M-t\"\n");
+    let mut paddock = ready(&sandbox);
+
+    paddock.detach_keys();
+    assert!(paddock.wait_exit(), "paddock should detach cleanly");
+    paddock.wait_for_text("paddock: [keys.commands] new_tab: \"M-t\" uses Alt");
+}
+
+#[test]
+fn ctrl_does_not_matter_for_sidebar_keys() {
+    let sandbox = Sandbox::new();
+    let mut paddock = ready(&sandbox);
+    paddock.command(b"C");
+    paddock.wait_for_text(PROMPT);
+
+    paddock.command(b"w");
+    paddock.wait_for("space-2 selected", |_| paddock.reversed(3, 5));
+    paddock.send(b"\x0b"); // C-k
+    paddock.wait_for("space-1 selected", |_| paddock.reversed(1, 5));
 }
 
 #[test]

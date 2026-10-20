@@ -59,9 +59,9 @@ Every key is an action with a name you can rebind (see [Configure](#configure));
 | `b` | show or hide sidebar | `toggle_sidebar` |
 | `{` | sidebar narrower | `sidebar_narrower` |
 | `}` | sidebar wider | `sidebar_wider` |
-| `a` | next session that needs you | `next_attention` |
+| `a` | next session needing you | `next_attention` |
 | `o` | dashboard | `dashboard` |
-| `d` | detach: terminals keep running | `detach` |
+| `d` | detach (terminals go on) | `detach` |
 | `?` | this help | `help` |
 
 `C-a` pressed twice sends a literal `C-a`. `go_to_tab`'s first key goes to tab 1, its second to tab 2, and so on. `close` closes the pane; the last one closes its tab, the last tab its space, and it asks first if Claude is busy. `{`/`}` can also be done by dragging the sidebar's border.
@@ -126,9 +126,18 @@ width = 32                # columns until you resize it
 
 Once you resize the sidebar (`C-a {`, `C-a }` or dragging its border), paddock saves that width in `~/.local/state/paddock/layout.toml` (`sidebar = N`), and it overrides `[sidebar] width` from then on. Delete that line (with paddock closed) to go back to the configured width.
 
-`paddock keys` prints every action with its default keys, ready to copy. Actions you leave out keep their defaults. Keys are written as a character (`c`, `|`, `$`, `{`), a name (`Tab`, `Enter`, `Esc`, `Space`, `Backspace`, `Delete`, `Insert`, `Home`, `End`, `PageUp`, `PageDown`, `Left`, `Down`, `Up`, `Right`, `F1`-`F12`), optionally after `C-` (Ctrl), `S-` (Shift) or `M-` (Alt; it works, with a warning, but not every terminal sends it, so paddock's own keys avoid it). The prefix must be a Ctrl key.
+`paddock keys` prints every action with its default keys, ready to copy. Actions you leave out keep their defaults. The prefix and the bindings share one key syntax:
 
-paddock refuses to start, naming the file and the setting, on an unknown action or section, a key it cannot read, a key bound to two actions in the same section (unbind one with `""`, even a default), or the prefix key inside a `[keys.…]` section.
+- a character (`c`, `|`, `$`, `{`) or a name (`Tab`, `Enter`, `Esc`, `Space`, `Backspace`, `Delete`, `Insert`, `Home`, `End`, `PageUp`, `PageDown`, `Left`, `Down`, `Up`, `Right`, `F1`-`F12`); names in any case
+- optionally after `C-` (Ctrl), `S-` (Shift) or `M-` (Alt), in any case (`c-n` is `C-n`)
+- `C-` with a letter is the same key in either case (`C-A` is `C-a`: terminals send them alike); `C-S-` with a character is refused for the same reason
+- `S-` goes with a letter (`S-a` is `A`) or a named key (`S-Tab`); for other characters write the shifted one itself (`!`, not `S-1`)
+- `M-` works, with a warning at start and again on leaving, but not every terminal sends it, so paddock's own keys avoid it
+- the prefix must be `C-` with a letter, `Space`, or one of `\ ] ^ _`
+
+After the prefix, Shift does not matter for a key bound without it (Shift+arrows move focus too); in the sidebar and the dashboard, neither do Ctrl and Shift. A key bound with the modifier wins.
+
+paddock refuses to start, naming the file and the setting, on an unknown action or section, a key it cannot read, a key listed twice for one action, a key bound to two actions in the same section (unbind one with `""`, even a default), or the prefix key inside a `[keys.…]` section.
 
 ## Files
 

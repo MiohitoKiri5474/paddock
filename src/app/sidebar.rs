@@ -3,7 +3,7 @@
 
 use super::space::MIN_SIZE;
 use super::state::{App, Mode};
-use crate::input::keymap::Panel;
+use crate::input::keymap::SidebarAction;
 use crossterm::event::KeyEvent;
 
 /// The narrowest the sidebar gets.
@@ -135,16 +135,16 @@ impl App {
     pub(super) fn sidebar_key(&mut self, s: Selection, key: KeyEvent) {
         let picks = self.sidebar_picks();
         let s = s.anchored(&picks);
-        self.mode = match self.keymap.sidebar.get(&key) {
-            Some(Panel::Down) => Mode::Sidebar(s.moved(&picks, 1)),
-            Some(Panel::Up) => Mode::Sidebar(s.moved(&picks, -1)),
-            Some(Panel::Open) => {
+        self.mode = match self.keymap.sidebar.action(&key) {
+            Some(SidebarAction::Down) => Mode::Sidebar(s.moved(&picks, 1)),
+            Some(SidebarAction::Up) => Mode::Sidebar(s.moved(&picks, -1)),
+            Some(SidebarAction::Open) => {
                 if let Some(p) = &s.pick {
                     self.open(p);
                 }
                 Mode::Normal
             }
-            Some(Panel::Close) => {
+            Some(SidebarAction::Close) => {
                 // Asking takes the keyboard; otherwise the sidebar keeps it.
                 self.mode = Mode::Sidebar(s.clone());
                 match &s.pick {
@@ -154,7 +154,7 @@ impl App {
                 }
                 return;
             }
-            Some(Panel::Fork) => match self.agent_of(s.pick.as_ref()) {
+            Some(SidebarAction::Fork) => match self.agent_of(s.pick.as_ref()) {
                 // The fork's tab gets the keyboard.
                 Some(pane) => {
                     self.report(|app| app.fork(&pane));
@@ -165,8 +165,8 @@ impl App {
                     Mode::Sidebar(s)
                 }
             },
-            Some(Panel::Back) => Mode::Normal,
-            _ => Mode::Sidebar(s),
+            Some(SidebarAction::Back) => Mode::Normal,
+            None => Mode::Sidebar(s),
         };
         self.relayout_and_save();
     }

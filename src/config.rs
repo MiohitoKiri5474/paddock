@@ -23,10 +23,9 @@
 //!
 //! `paddock keys` prints every action with its default keys.
 
-use crate::input::keymap::{Given, Key, Keymap};
+use crate::input::keymap::{Given, Key, Keymap, Warnings};
 use crate::ui::tab_bar::TabColors;
 use anyhow::{bail, Context, Result};
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::Color;
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -41,10 +40,10 @@ const DEFAULT_CURRENT_SPACE: Color = Color::Indexed(236);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
-    pub prefix: KeyEvent,
+    pub prefix: Key,
     pub keys: Keymap,
     /// Settings that work but may surprise, to show at start.
-    pub warnings: Vec<String>,
+    pub warnings: Warnings,
     /// Background of the current space.
     pub current_space: Color,
     pub tabs: TabColors,
@@ -102,11 +101,11 @@ enum RawColor {
 struct RawKeys {
     prefix: Option<String>,
     #[serde(default)]
-    commands: BTreeMap<String, RawKeyList>,
+    commands: RawSection,
     #[serde(default)]
-    sidebar: BTreeMap<String, RawKeyList>,
+    sidebar: RawSection,
     #[serde(default)]
-    dashboard: BTreeMap<String, RawKeyList>,
+    dashboard: RawSection,
 }
 
 /// An action's keys as written: one key, or a list of them.
@@ -117,8 +116,11 @@ enum RawKeyList {
     Many(Vec<String>),
 }
 
+/// A `[keys.<section>]` table as written.
+type RawSection = BTreeMap<String, RawKeyList>;
+
 /// A `[keys.<section>]` table as lists of keys by action.
-fn given(section: BTreeMap<String, RawKeyList>) -> Given {
+fn given(section: RawSection) -> Given {
     section
         .into_iter()
         .map(|(name, keys)| match keys {
@@ -142,10 +144,9 @@ impl Config {
 
     pub fn parse(text: &str) -> Result<Self> {
         let raw: RawConfig = toml::from_str(text)?;
-        let prefix = parse_key(raw.keys.prefix.as_deref().unwrap_or(DEFAULT_PREFIX))?;
+        let prefix = Key::parse_prefix(raw.keys.prefix.as_deref().unwrap_or(DEFAULT_PREFIX))?;
         let sections = [raw.keys.commands, raw.keys.sidebar, raw.keys.dashboard].map(given);
-        let mut warnings = Vec::new();
-        let keys = Keymap::configured(Key::of(&prefix), sections.each_ref(), &mut warnings)?;
+        let (keys, warnings) = Keymap::configured(prefix, sections.each_ref())?;
         let c = raw.colors;
         let tabs = TabColors::default();
         Ok(Self {
@@ -166,9 +167,9 @@ impl Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            prefix: KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
+            prefix: Key::parse_prefix(DEFAULT_PREFIX).expect("the default prefix parses"),
             keys: Keymap::default(),
-            warnings: Vec::new(),
+            warnings: Warnings::new(),
             current_space: DEFAULT_CURRENT_SPACE,
             tabs: TabColors::default(),
             sidebar_width: DEFAULT_SIDEBAR_WIDTH,
@@ -203,49 +204,15 @@ fn parse_colour(spec: &str) -> Result<Color> {
     Ok(Color::Rgb(byte(0), byte(2), byte(4)))
 }
 
-/// Parse a prefix key such as `C-a`, `C-b` or `C-Space`. Only Ctrl keys are
-/// allowed: plain keys would be unusable for typing, and paddock does not rely
-/// on Option/Alt (design: any terminal app).
-pub fn parse_key(spec: &str) -> Result<KeyEvent> {
-    let invalid = || {
-        format!("invalid prefix key {spec:?}: expected C- followed by a letter, Space, or one of \\ ] ^ _ (for example \"C-a\")")
-    };
-    let Some(key) = spec.strip_prefix("C-") else {
-        bail!(invalid())
-    };
-    let c = match key {
-        k if k.eq_ignore_ascii_case("space") => ' ',
-        k if k.chars().count() == 1 => k.chars().next().unwrap_or(' '),
-        _ => bail!(invalid()),
-    };
-    if !(c.is_ascii_lowercase() || matches!(c, ' ' | '\\' | ']' | '^' | '_')) {
-        bail!(invalid());
-    }
-    Ok(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL))
-}
-
-/// How a key is written in help text, e.g. `C-a`.
-pub fn key_name(key: &KeyEvent) -> String {
-    let base = match key.code {
-        KeyCode::Char(' ') => "Space".to_string(),
-        KeyCode::Char(c) => c.to_string(),
-        other => format!("{other:?}"),
-    };
-    if key.modifiers.contains(KeyModifiers::CONTROL) {
-        format!("C-{base}")
-    } else {
-        base
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::input::keymap::Panel;
+    use crate::input::keymap::SidebarAction;
     use crate::input::Command;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-    fn ctrl(c: char) -> KeyEvent {
-        KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+    fn ctrl(c: char) -> Key {
+        Key::parse(&format!("C-{c}")).unwrap()
     }
 
     #[test]
@@ -261,14 +228,19 @@ mod tests {
             Config::parse("[keys]\nprefix = \"C-b\"\n").unwrap().prefix,
             ctrl('b')
         );
-        assert_eq!(parse_key("C-Space").unwrap(), ctrl(' '));
-        assert_eq!(parse_key("C-]").unwrap(), ctrl(']'));
+        assert_eq!(
+            Config::parse("[keys]\nprefix = \"C-B\"\n").unwrap().prefix,
+            ctrl('b')
+        );
     }
 
     #[test]
     fn rejects_bad_keys_and_unknown_settings() {
-        for bad in ["a", "C-", "C-ab", "M-a", "C-A", "C-1", "ctrl-a"] {
-            let err = parse_key(bad).unwrap_err().to_string();
+        for bad in ["a", "C-", "C-ab", "M-a", "C-1", "ctrl-a"] {
+            let err = format!(
+                "{:#}",
+                Config::parse(&format!("[keys]\nprefix = {bad:?}\n")).unwrap_err()
+            );
             assert!(err.contains("invalid prefix key"), "{bad}: {err}");
         }
         assert!(Config::parse("[keys]\nprefx = \"C-b\"\n").is_err());
@@ -359,9 +331,9 @@ mod tests {
         )
         .unwrap();
         let key = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
-        assert_eq!(c.keys.commands.get(&key('t')), Some(Command::NewTab));
-        assert_eq!(c.keys.commands.get(&key('c')), None);
-        assert_eq!(c.keys.sidebar.get(&key('q')), Some(Panel::Back));
+        assert_eq!(c.keys.commands.action(&key('t')), Some(Command::NewTab));
+        assert_eq!(c.keys.commands.action(&key('c')), None);
+        assert_eq!(c.keys.sidebar.action(&key('q')), Some(SidebarAction::Back));
         assert!(c.warnings.is_empty());
         let alt = Config::parse("[keys.dashboard]\ninteract = \"M-i\"\n").unwrap();
         assert_eq!(alt.warnings.len(), 1);
@@ -397,11 +369,5 @@ mod tests {
         assert!(
             Config::parse("[keys]\nprefix = \"C-b\"\n[keys.commands]\nnew_tab = \"t\"\n").is_ok()
         );
-    }
-
-    #[test]
-    fn names_keys_for_help() {
-        assert_eq!(key_name(&ctrl('a')), "C-a");
-        assert_eq!(key_name(&ctrl(' ')), "C-Space");
     }
 }
