@@ -135,7 +135,8 @@ pub fn run(
 fn follow_up(app: &mut App, git: &mut GitFeed, effects: &EventEffects) {
     // Any event may show a tab or bring the window back.
     app.see_current();
-    // Pane output never changes the space or tab shown.
+    // Pane output changes the space or tab shown only through a refresh,
+    // which notes the page itself.
     if !effects.output {
         app.track_page();
         app.settle_tabs();
@@ -187,8 +188,10 @@ fn handle_tmux(app: &mut App, session: &str, msg: Message) -> (Flow, bool) {
         Message::Output { pane, data } => {
             if !app.terminals.contains_key(&pane) {
                 // A pane made since the last look, maybe through `tmux
-                // attach`.
+                // attach`. The refresh may change the tab shown, which
+                // `follow_up` skips for output: note the page here.
                 app.refresh_reported(session);
+                app.track_page();
             }
             if let Some(t) = app.terminals.get_mut(&pane) {
                 t.output(&data);

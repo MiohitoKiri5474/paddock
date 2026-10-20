@@ -54,7 +54,9 @@ fn wait_notifier(mut child: Child, timeout: Duration) -> Result<(), String> {
     }
     let mut said = String::new();
     if let Some(mut stderr) = child.stderr.take() {
-        let _ = stderr.read_to_string(&mut said);
+        if let Err(e) = stderr.read_to_string(&mut said) {
+            said = format!("{status}; cannot read its stderr: {e}");
+        }
     }
     Err(Some(said.trim().to_string())
         .filter(|s| !s.is_empty())

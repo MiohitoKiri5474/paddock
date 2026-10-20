@@ -54,8 +54,8 @@ impl Pages {
 }
 
 impl App {
-    /// Note the page shown now (called after every event, so every way of
-    /// switching counts), and keep the pages up with closed tabs and spaces.
+    /// Note the page shown now (called after every event but pane output, so
+    /// every way of switching counts), and keep the pages up with closed tabs and spaces.
     pub(super) fn track_page(&mut self) {
         let Some(page) = self.current_page() else {
             return;
