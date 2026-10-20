@@ -57,11 +57,11 @@ impl App {
         rows.into_iter().nth(found.unwrap_or(0))
     }
 
-    /// Whether the dashboard shows terminal `session` in its preview.
-    pub fn shows_in_preview(&self, session: &str) -> bool {
+    /// Whether the dashboard shows pane `pane` in its preview.
+    pub fn shows_in_preview(&self, pane: &str) -> bool {
         self.dashboard()
             .and_then(|d| self.dashboard_row(d))
-            .is_some_and(|r| !r.closed && r.terminal == session)
+            .is_some_and(|r| !r.closed && r.pane == pane)
     }
 
     /// `C-a o`: open the dashboard on its first line, or close it.
@@ -83,15 +83,19 @@ impl App {
     }
 
     /// Tasks to keep git fresh for: all of the dashboard's, with details,
-    /// while it is open; else the sidebar's.
+    /// while it is open; else the sidebar's. The spaces' directories and
+    /// branches are always read.
     pub fn watched_tasks(&self) -> Watched {
+        let spaces = self.spaces.iter().map(|i| i.id.clone()).collect();
         if self.dashboard().is_none() {
             return Watched {
                 tasks: self.visible_tasks(),
                 details: false,
+                spaces,
             };
         }
         Watched {
+            spaces,
             tasks: self
                 .rows()
                 .into_iter()
@@ -137,11 +141,15 @@ impl App {
         }
         let row = self.dashboard_row(&d).filter(|r| !r.closed);
         self.mode = Mode::Dashboard(d);
-        if let Some(t) = row.and_then(|r| self.terminals.get_mut(&r.terminal)) {
-            if let Some(bytes) = encode_key(&key, t.key_modes()) {
-                let sent = t.input(&bytes);
-                self.report(|_| sent);
-            }
+        let Some(pane) = row.map(|r| r.pane) else {
+            return;
+        };
+        let bytes = self
+            .terminals
+            .get(&pane)
+            .and_then(|t| encode_key(&key, t.key_modes()));
+        if let Some(bytes) = bytes {
+            self.report(|app| app.input(&pane, &bytes));
         }
     }
 
@@ -173,18 +181,18 @@ impl App {
         };
         match code {
             KeyCode::Enter => {
-                self.jump_to(row.tab, &row.terminal);
+                self.jump_to(&row.pane);
                 Mode::Normal
             }
             KeyCode::Char('x') => {
                 self.mode = Mode::Dashboard(d.clone());
-                self.report(|app| app.close(&row.terminal, Some(d)));
+                self.report(|app| app.close(&row.pane, Some(d)));
                 // Asking takes the keyboard, then comes back here.
                 std::mem::replace(&mut self.mode, Mode::Normal)
             }
             KeyCode::Char('f') => {
                 // The fork's tab gets the keyboard.
-                self.report(|app| app.fork(&row.terminal));
+                self.report(|app| app.fork(&row.pane));
                 Mode::Normal
             }
             KeyCode::Char('I') => Mode::Dashboard(Dashboard {
@@ -204,13 +212,11 @@ impl App {
         let Some(row) = self.dashboard_row(d).filter(|r| !r.closed) else {
             return Ok(());
         };
-        match self.terminals.get_mut(&row.terminal) {
-            Some(t) => {
-                let bytes = encode_paste(text, t.emulator().modes().bracketed_paste);
-                t.input(&bytes)
-            }
-            None => Ok(()),
-        }
+        let bracketed = self
+            .terminals
+            .get(&row.pane)
+            .is_some_and(|t| t.emulator().modes().bracketed_paste);
+        self.input(&row.pane, &encode_paste(text, bracketed))
     }
 }
 

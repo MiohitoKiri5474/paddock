@@ -1,49 +1,50 @@
-//! What the running app holds: the tabs, each with its terminals arranged as
-//! splits, and what the keyboard is doing (typing into the focused terminal,
-//! renaming, reading help).
-//!
-//! A tab's name is the tmux session name of its first terminal, so it
-//! survives reattaching; when that terminal ends, the next one names the tab.
+//! What the running app holds: the spaces (tmux sessions, ADR 0006),
+//! each with its tabs (windows) and splits (panes) as tmux has them, a
+//! terminal per pane, the Claude sessions in them, and what the keyboard is
+//! doing (typing into the focused pane, renaming, reading help).
 
 use super::attention::Attention;
 use super::dashboard::Dashboard;
-use super::layout::{terminal_size, Layout};
 use super::mouse::Press;
+use super::pages::Pages;
 use super::rows::{rows, Placed, Row, RowId, TaskDetails, TaskStatus};
 use super::saved;
-use super::tabs::Tabs;
+use super::sidebar::clamp_width;
+use super::sidebar::Selection;
+use super::space::Space;
+use super::watch::Place;
 use super::Event;
 use crate::config::{key_name, Config};
 use crate::hooks::now_ms;
 use crate::input::PrefixKeys;
 use crate::sessions::{dismissed, Session, Sessions, State};
 use crate::terminal::Terminal;
-use crate::tmux::server::quote;
 use crate::tmux::Server;
-use anyhow::{bail, Result};
+use crate::ui::tab_bar::TabColors;
+use anyhow::Result;
 use ratatui::layout::Rect;
+use ratatui::style::Color;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 
 /// Rows above the terminals taken by the tab bar.
 pub const TAB_BAR_ROWS: u16 = 1;
-/// Columns the sidebar takes, its border included, while it is shown.
-pub const SIDEBAR_COLS: u16 = 24;
-/// New terminals are named `terminal-N` until the user renames them.
-pub(super) const NAME_STEM: &str = "terminal-";
 
 pub enum Mode {
     Normal,
-    /// Renaming the current tab; holds the text typed so far.
-    Rename(String),
+    /// Renaming the current tab or space; holds the text typed so far.
+    Rename {
+        target: Renaming,
+        text: String,
+    },
     Help,
-    /// The sidebar has the keyboard; holds the selected row.
-    Sidebar(Option<RowId>),
-    /// Asking before closing terminal `terminal`, where Claude is `state`;
-    /// `back` is the dashboard asked from, to return to.
+    /// The sidebar has the keyboard; holds its selection.
+    Sidebar(Selection),
+    /// Asking before closing `target`, where Claude is `state`; `back` is
+    /// the dashboard asked from, to return to.
     ConfirmClose {
-        terminal: String,
+        target: CloseTarget,
         state: State,
         back: Option<Dashboard>,
     },
@@ -51,12 +52,52 @@ pub enum Mode {
     Dashboard(Dashboard),
 }
 
+/// What is being renamed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Renaming {
+    /// The current tab (tmux window).
+    Tab,
+    /// The current space (tmux session).
+    Space,
+}
+
+impl Renaming {
+    /// What is renamed, as the prompt names it.
+    pub fn noun(self) -> &'static str {
+        match self {
+            Renaming::Tab => "tab",
+            Renaming::Space => "space",
+        }
+    }
+}
+
+/// What a close question is about.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CloseTarget {
+    /// A pane (`%N`).
+    Pane(String),
+    /// A whole space (`$N`) with all its tabs.
+    Space(String),
+}
+
+impl CloseTarget {
+    /// What the close question asks to do.
+    pub fn verb(&self) -> &'static str {
+        match self {
+            CloseTarget::Pane(_) => "close",
+            CloseTarget::Space(_) => "close space",
+        }
+    }
+}
+
 pub struct App {
     pub(super) server: Server,
     pub(super) events: Sender<Event>,
-    /// Each tab's layout, over tmux session ids (`$N`).
-    pub(super) tabs: Tabs<Layout<String>>,
-    /// Every attached terminal, by tmux session id.
+    /// The spaces, oldest first.
+    pub(super) spaces: Vec<Space>,
+    /// Index of the current space: the one whose tabs are shown.
+    pub(super) current: usize,
+    /// Every attached pane's terminal, by pane id.
     pub(super) terminals: HashMap<String, Terminal>,
     pub(super) prefix: PrefixKeys,
     pub(super) prefix_name: String,
@@ -72,15 +113,33 @@ pub struct App {
     pub(super) sessions: Sessions,
     pub(super) task_status: TaskStatus,
     pub(super) task_details: TaskDetails,
+    /// Each space's directory and branch, by tmux session id, once read.
+    pub(super) places: HashMap<String, Place>,
     /// The user hid the sidebar (`C-a b`).
     pub(super) sidebar_hidden: bool,
+    /// The configured sidebar width, border included; see
+    /// [`Self::sidebar_width`] for what it gets.
+    pub(super) sidebar_default: u16,
+    /// The width the user resized the sidebar to (`C-a {`, `C-a }`,
+    /// dragging), saved so that it comes back; `None` while the configured
+    /// width applies.
+    pub(super) sidebar_wish: Option<u16>,
+    /// The pages shown lately, the current one last, for `C-a Tab`.
+    pub(super) pages: Pages,
     /// Where the held mouse button went, until it is released.
     pub(super) press: Option<Press>,
     pub(super) attention: Attention,
+    /// Background of the current space.
+    pub(super) current_space_bg: Color,
+    pub(super) tab_colors: TabColors,
+    /// The first tab the bar shows when the tabs do not all fit.
+    pub(super) tab_first: usize,
+    /// The space and tab the bar was last scrolled for.
+    pub(super) tab_shown: Option<(String, usize)>,
 }
 
 /// The part of a screen of `(cols, rows)` that shows the current tab's
-/// terminals, right of a sidebar `sidebar` columns wide.
+/// panes, right of a sidebar `sidebar` columns wide.
 pub fn session_area((cols, rows): (u16, u16), sidebar: u16) -> Rect {
     let sidebar = sidebar.min(cols);
     Rect {
@@ -102,17 +161,17 @@ fn set_aside(dir: &std::path::Path, name: &str, e: &anyhow::Error) -> String {
     }
 }
 
-/// The first `terminal-N` not already taken.
-pub fn next_name<'a>(taken: impl IntoIterator<Item = &'a str> + Clone) -> String {
+/// The first `<stem>N` not already taken.
+pub fn next_name<'a>(stem: &str, taken: impl IntoIterator<Item = &'a str> + Clone) -> String {
     (1..)
-        .map(|n| format!("{NAME_STEM}{n}"))
+        .map(|n| format!("{stem}{n}"))
         .find(|name| !taken.clone().into_iter().any(|t| t == name))
-        .unwrap_or_else(|| NAME_STEM.to_string())
+        .unwrap_or_else(|| stem.to_string())
 }
 
 impl App {
-    /// Show the terminals already on the hidden server in their saved layout
-    /// (any the layout does not know get a tab each), or start the first one.
+    /// Show the spaces already on the hidden server (one per tmux session),
+    /// the saved one current, or start the first one.
     pub fn start(
         server: Server,
         config: &Config,
@@ -124,7 +183,8 @@ impl App {
         let mut app = Self {
             server,
             events,
-            tabs: Tabs::default(),
+            spaces: Vec::new(),
+            current: 0,
             terminals: HashMap::new(),
             prefix: PrefixKeys::new(config.prefix),
             prefix_name: key_name(&config.prefix),
@@ -136,79 +196,99 @@ impl App {
             sessions: Sessions::default(),
             task_status: TaskStatus::new(),
             task_details: TaskDetails::new(),
+            places: HashMap::new(),
             sidebar_hidden: false,
+            sidebar_default: config.sidebar_width,
+            sidebar_wish: None,
+            pages: Pages::default(),
             press: None,
             attention: Attention::from_env(),
+            current_space_bg: config.current_space,
+            tab_colors: config.tabs,
+            tab_first: 0,
+            tab_shown: None,
         };
-        match dismissed::load(&app.state_dir) {
-            Ok(list) => {
-                for d in list {
-                    app.sessions.dismiss(&d.pane, d.branch.as_deref(), d.at);
-                }
-            }
-            Err(e) => app.notice = Some(set_aside(&app.state_dir, dismissed::FILE_NAME, &e)),
-        }
-        let sessions = app.server.sessions();
-        let saved = saved::load(&app.state_dir).unwrap_or_else(|e| {
-            app.notice = Some(set_aside(&app.state_dir, saved::FILE_NAME, &e));
-            None
-        });
-        let live: Vec<String> = sessions.iter().map(|s| s.id.clone()).collect();
-        let restored = saved::restore(saved, &live);
-        let area = app.area();
-        for mut layout in restored.tabs {
-            // Attach at the final size, so no shell sees a resize. A terminal
-            // that cannot be attached (it just ended) keeps paddock from
-            // opening no other.
-            let mut failed = Vec::new();
-            for (id, rect) in layout.rects(area).0 {
-                if let Err(e) = app.attach(&id, terminal_size(rect)) {
-                    app.notice = Some(format!("{e:#}"));
-                    failed.push(id);
-                }
-            }
-            if !failed.iter().all(|id| layout.remove(id)) {
-                continue;
-            }
-            let first = layout.leaves()[0];
-            let name = sessions
-                .iter()
-                .find(|s| s.id == *first)
-                .map(|s| s.name.clone())
-                .unwrap_or_default();
-            app.tabs.push(name, layout);
-        }
-        app.tabs.select(restored.current);
-        if app.tabs.is_empty() {
-            app.new_tab()?;
-        }
-        app.report(|app| app.relayout());
+        app.load_dismissed();
+        app.open_spaces()?;
         Ok(app)
     }
 
-    /// Where the current tab's terminals are drawn.
+    /// Read the dismissed rows; a file that cannot be read is set aside.
+    fn load_dismissed(&mut self) {
+        match dismissed::load(&self.state_dir) {
+            Ok(list) => {
+                for d in list {
+                    self.sessions.dismiss(&d.pane, d.branch.as_deref(), d.at);
+                }
+            }
+            Err(e) => self.notice = Some(set_aside(&self.state_dir, dismissed::FILE_NAME, &e)),
+        }
+    }
+
+    /// Attach every space on the hidden server and make the saved one
+    /// current, or start the first space.
+    fn open_spaces(&mut self) -> Result<()> {
+        let sessions = self.server.sessions();
+        if !sessions.is_empty() {
+            // A server from an older paddock lacks newer options.
+            self.report(|app| app.server.apply_config());
+        }
+        let saved = saved::load(&self.state_dir)
+            .unwrap_or_else(|e| {
+                self.notice = Some(set_aside(&self.state_dir, saved::FILE_NAME, &e));
+                None
+            })
+            .unwrap_or_default();
+        // Before attaching, so the spaces start at their final size.
+        self.sidebar_wish = saved.sidebar;
+        for s in &sessions {
+            // A space that cannot be attached (it just ended) keeps paddock
+            // from opening no other.
+            self.report(|app| app.attach(&s.id));
+        }
+        let saved_space = saved.space;
+        self.current = self
+            .spaces
+            .iter()
+            .position(|i| Some(&i.id) == saved_space.as_ref())
+            .unwrap_or(0);
+        if self.spaces.is_empty() {
+            self.new_space()?;
+        }
+        Ok(())
+    }
+
+    /// Where the current tab's panes are drawn.
     pub fn area(&self) -> Rect {
         session_area(self.screen, self.sidebar_width())
     }
 
-    /// The sidebar's session rows, in display order.
-    pub fn rows(&self) -> Vec<Row> {
-        let placed = self.tabs.iter().enumerate().flat_map(|(tab, t)| {
-            t.content.leaves().into_iter().filter_map(move |id| {
-                Some(Placed {
-                    tab,
-                    tab_name: &t.name,
-                    terminal: id,
-                    pane: self.terminals.get(id)?.pane(),
+    /// Every open pane with its place, for [`rows`].
+    fn placed(&self) -> impl Iterator<Item = Placed<'_>> {
+        self.spaces.iter().enumerate().flat_map(|(i, space)| {
+            space
+                .windows()
+                .iter()
+                .enumerate()
+                .flat_map(move |(w, win)| {
+                    win.panes.iter().map(move |p| Placed {
+                        space: &space.id,
+                        window: &win.id,
+                        order: (i, w),
+                        tab_name: (!win.auto_name).then_some(win.name.as_str()),
+                        pane: &p.id,
+                    })
                 })
-            })
-        });
-        rows(&self.sessions, &self.task_status, placed)
+        })
     }
 
-    /// Dismiss a sidebar row: it leaves the sidebar, and stays gone after
-    /// reopening, until Claude reports on it again. Git and terminals are
-    /// untouched.
+    /// The Claude session rows, in display order.
+    pub fn rows(&self) -> Vec<Row> {
+        rows(&self.sessions, &self.task_status, self.placed())
+    }
+
+    /// Dismiss a row: it leaves the rows, and stays gone after reopening,
+    /// until Claude reports on it again. Git and terminals are untouched.
     pub fn dismiss(&mut self, id: &RowId) -> Result<()> {
         self.sessions
             .dismiss(&id.pane, id.branch.as_deref(), now_ms());
@@ -223,47 +303,23 @@ impl App {
         dismissed::save(&self.state_dir, &self.sessions.dismissals())
     }
 
-    /// Tasks whose rows the sidebar shows now, as `(directory, branch)`:
-    /// their git status is kept fresh.
+    /// Tasks whose rows are on screen now, as `(directory, branch)`: their
+    /// git status is kept fresh. The sidebar shows no task rows (ADR 0006).
     pub fn visible_tasks(&self) -> Vec<(String, String)> {
-        if self.sidebar_width() == 0 {
-            return Vec::new();
-        }
-        // Below the sidebar's title, a line per session, then one per task.
-        let lines = usize::from(self.screen.1.saturating_sub(1));
-        self.rows()
-            .into_iter()
-            .flat_map(|r| std::iter::once(None).chain(r.tasks.into_iter().map(Some)))
-            .take(lines)
-            .flatten()
-            .map(|t| (t.cwd, t.branch))
-            .collect()
+        Vec::new()
     }
 
-    /// Columns the sidebar takes now: none while hidden or without rows.
+    /// Columns the sidebar takes now: none while hidden.
     pub fn sidebar_width(&self) -> u16 {
-        let focused = matches!(self.mode, Mode::Sidebar(_));
-        let shown = !self.sidebar_hidden && (focused || !self.rows().is_empty());
-        if shown {
-            SIDEBAR_COLS
-        } else {
+        if self.sidebar_hidden {
             0
+        } else {
+            clamp_width(self.sidebar_wanted(), self.screen.0)
         }
     }
 
-    /// Bring terminal `id` to the screen: its tab becomes current and it
-    /// gets the focus.
-    pub fn jump_to(&mut self, tab: usize, id: &str) {
-        self.tabs.select(tab);
-        if let Some(t) = self.tabs.current_mut() {
-            if t.content.contains(&id.to_string()) {
-                t.content.focus = id.to_string();
-            }
-        }
-    }
-
-    /// Attach the terminal in tmux session `id` at `size`.
-    fn attach(&mut self, id: &str, size: (u16, u16)) -> Result<()> {
+    /// Attach tmux session `id` as a new space at the end of the sidebar.
+    pub(super) fn attach(&mut self, id: &str) -> Result<()> {
         let events = self.events.clone();
         let session = id.to_string();
         let deliver = move |msg| {
@@ -274,184 +330,70 @@ impl App {
                 })
                 .is_ok()
         };
-        let terminal = Terminal::attach(&self.server, id, size, deliver)?;
-        self.terminals.insert(id.to_string(), terminal);
+        let size = (self.area().width, self.area().height);
+        let (space, terminals) = Space::attach(&self.server, id, size, deliver)?;
+        self.terminals.extend(terminals);
+        self.spaces.push(space);
         Ok(())
     }
 
-    /// Terminal `id`'s shell directory, if it still exists.
-    fn dir_of(&self, id: &str) -> Option<PathBuf> {
+    /// Pane `pane`'s shell directory, if it still exists.
+    pub(super) fn dir_of(&self, pane: &str) -> Option<PathBuf> {
         self.server
-            .display(id, "#{pane_current_path}")
+            .display(pane, "#{pane_current_path}")
             .ok()
             .map(PathBuf::from)
             .filter(|p| p.is_dir())
     }
 
-    /// The focused terminal's shell directory, if it still exists.
-    fn current_dir(&self) -> Option<PathBuf> {
-        self.dir_of(self.current()?.session())
+    /// Where a new shell starts: the focused pane's directory, else the
+    /// directory paddock started in.
+    pub(super) fn new_dir(&self) -> PathBuf {
+        self.current_pane()
+            .and_then(|p| self.dir_of(&p))
+            .unwrap_or_else(|| self.start_dir.clone())
     }
 
-    /// Start a shell named `terminal-N` at `size`, in the focused terminal's
-    /// directory, and attach it. Returns its session id.
-    pub(super) fn new_terminal(&mut self, size: (u16, u16)) -> Result<String> {
-        let dir = self.current_dir();
-        self.new_terminal_in(size, dir)
+    /// The Claude session in pane `pane`, if any.
+    pub(super) fn session_in(&self, pane: &str) -> Option<&Session> {
+        self.sessions.get(pane)
     }
 
-    /// Start a shell named `terminal-N` at `size` in `dir` (else the start
-    /// directory) and attach it. Returns its session id.
-    fn new_terminal_in(&mut self, size: (u16, u16), dir: Option<PathBuf>) -> Result<String> {
-        let sessions = self.server.sessions();
-        let name = next_name(sessions.iter().map(|s| s.name.as_str()));
-        let dir = dir.unwrap_or_else(|| self.start_dir.clone());
-        let session = self.server.new_session(&name, &dir, size)?;
-        if let Err(e) = self.attach(&session.id, size) {
-            // Best effort: never leave a shell running out of sight.
-            let _ = self.server.kill_session(&session.id);
-            return Err(e);
+    pub(super) fn current_space(&self) -> Option<&Space> {
+        self.spaces.get(self.current)
+    }
+
+    pub(super) fn current_space_mut(&mut self) -> Option<&mut Space> {
+        self.spaces.get_mut(self.current)
+    }
+
+    /// The space holding pane `pane`, by index.
+    pub(super) fn space_of(&self, pane: &str) -> Option<usize> {
+        self.spaces.iter().position(|i| i.window_of(pane).is_some())
+    }
+
+    /// The focused pane of the current tab.
+    pub fn current_pane(&self) -> Option<String> {
+        Some(self.current_space()?.current_window()?.active.clone())
+    }
+
+    /// Send bytes to pane `pane`'s program, returning its view to the live
+    /// screen.
+    pub(super) fn input(&mut self, pane: &str, bytes: &[u8]) -> Result<()> {
+        if let Some(t) = self.terminals.get_mut(pane) {
+            t.emulator_mut().scroll_to_bottom();
         }
-        Ok(session.id)
-    }
-
-    /// Start a shell in a new tab and make it current.
-    pub fn new_tab(&mut self) -> Result<()> {
-        let dir = self.current_dir();
-        self.open_tab(dir).map(drop)
-    }
-
-    /// Start a shell in `dir` in a new tab and make it current. Returns its
-    /// session id.
-    fn open_tab(&mut self, dir: Option<PathBuf>) -> Result<String> {
-        let id = self.new_terminal_in(terminal_size(self.area()), dir)?;
-        let name = self.server.display(&id, "#{session_name}")?;
-        self.tabs.push(name, Layout::new(id.clone()));
-        self.tabs.select_last();
-        Ok(id)
-    }
-
-    /// The Claude session in terminal `id`, if any.
-    fn session_in(&self, id: &str) -> Option<&Session> {
-        self.sessions.get(self.terminals.get(id)?.pane())
-    }
-
-    /// End terminal `id`, first asking if Claude there is running or
-    /// waiting. It leaves its tab when tmux reports that the session ended,
-    /// the same way as when its shell exits. Asking from the dashboard
-    /// `back` returns to it after.
-    pub fn close(&mut self, id: &str, back: Option<Dashboard>) -> Result<()> {
-        match self.session_in(id).map(|s| s.state) {
-            Some(state @ (State::Running | State::Waiting)) => {
-                self.mode = Mode::ConfirmClose {
-                    terminal: id.to_string(),
-                    state,
-                    back,
-                };
-                Ok(())
-            }
-            _ => self.server.kill_session(id),
-        }
-    }
-
-    /// Continue a copy of the Claude session in terminal `id` in a new tab,
-    /// in the session's directory: `claude --resume <id> --fork-session`,
-    /// typed into the new shell so the tab stays when Claude exits.
-    pub fn fork(&mut self, id: &str) -> Result<()> {
-        let Some((session_id, cwd)) = self
-            .session_in(id)
-            .and_then(|s| Some((s.session_id.clone()?, s.cwd.clone())))
-        else {
-            bail!("no Claude session here");
-        };
-        // The id comes from a hook payload and is typed into a shell, where a
-        // control character would end the line even inside quotes.
-        if !is_session_id(&session_id) {
-            bail!("unexpected Claude session id");
-        }
-        let dir = cwd
-            .map(PathBuf::from)
-            .filter(|p| p.is_dir())
-            .or_else(|| self.dir_of(id));
-        let new = self.open_tab(dir)?;
-        let command = format!("claude --resume {} --fork-session\r", quote(&session_id));
-        match self.terminals.get_mut(&new) {
-            Some(t) => t.input(command.as_bytes()),
+        match self.space_of(pane) {
+            Some(i) => self.spaces[i].input(pane, bytes),
             None => Ok(()),
         }
     }
 
-    /// Forget a terminal that ended; its tab goes with its last terminal.
-    /// Returns whether any tab is left.
-    pub fn terminal_ended(&mut self, session: &str) -> bool {
-        if let Some(t) = self.terminals.remove(session) {
-            t.detach();
-        }
-        let session = session.to_string();
-        let Some(index) = self.tabs.position(|l| l.contains(&session)) else {
-            return !self.tabs.is_empty();
-        };
-        let mut first = None;
-        match self.tabs.find_mut(|l| l.contains(&session)) {
-            Some(tab) if tab.content.leaves().len() > 1 => {
-                tab.content.remove(&session);
-                first = Some(tab.content.leaves()[0].clone());
-            }
-            _ => {
-                self.tabs.remove(index);
-            }
-        }
-        self.report(|app| {
-            // The tab is named after its first terminal, which may have changed.
-            if let Some(first) = first {
-                let name = app.server.display(&first, "#{session_name}")?;
-                if let Some(tab) = app.tabs.find_mut(|l| l.contains(&first)) {
-                    tab.name = name;
-                }
-            }
-            Ok(())
-        });
-        self.report(|app| app.relayout());
-        self.report(|app| app.save());
-        !self.tabs.is_empty()
-    }
-
-    /// Rename the current tab by renaming its first terminal's tmux session,
-    /// so the name survives reattaching. tmux may adjust the name (it
-    /// replaces `.` and `:`).
-    pub fn rename_current(&mut self, name: &str) -> Result<()> {
-        let name = name.trim();
-        let Some(session) = self.tabs.current().map(|t| t.content.leaves()[0].clone()) else {
-            return Ok(());
-        };
-        if name.is_empty() {
-            return Ok(());
-        }
-        self.server.rename_session(&session, name)?;
-        let actual = self.server.display(&session, "#{session_name}")?;
-        if let Some(tab) = self.tabs.current_mut() {
-            tab.name = actual;
-        }
-        Ok(())
-    }
-
-    /// The focused terminal of the current tab.
-    pub fn current(&self) -> Option<&Terminal> {
-        self.tabs
-            .current()
-            .and_then(|t| self.terminals.get(&t.content.focus))
-    }
-
-    pub fn current_mut(&mut self) -> Option<&mut Terminal> {
-        let id = &self.tabs.current()?.content.focus;
-        self.terminals.get_mut(id)
-    }
-
-    /// Whether terminal `session` is on screen (in the current tab).
-    pub fn shows(&self, session: &str) -> bool {
-        self.tabs
-            .current()
-            .is_some_and(|t| t.content.leaves().iter().any(|id| *id == session))
+    /// Whether pane `pane` is on screen (in the current tab).
+    pub fn shows(&self, pane: &str) -> bool {
+        self.current_space()
+            .and_then(Space::current_window)
+            .is_some_and(|w| w.contains(pane))
     }
 
     pub fn resize(&mut self, screen: (u16, u16)) -> Result<()> {
@@ -459,12 +401,12 @@ impl App {
         self.relayout()
     }
 
-    /// Detach every terminal; they keep running on the hidden server. The
-    /// layout is saved first.
+    /// Detach every space; they keep running on the hidden server. The
+    /// current space is saved first.
     pub fn detach_all(self) -> Result<()> {
         let saved = self.save();
-        for (_, t) in self.terminals {
-            t.detach();
+        for space in self.spaces {
+            space.detach();
         }
         saved
     }
@@ -480,25 +422,28 @@ mod tests {
         assert_eq!(session_area((1, 0), 0), Rect::new(0, 0, 1, 0));
     }
 
+    /// A sidebar width for these tests.
+    const SIDEBAR: u16 = 24;
+
     #[test]
     fn the_sidebar_takes_columns_from_the_left() {
         assert_eq!(
-            session_area((100, 30), SIDEBAR_COLS),
-            Rect::new(24, 1, 76, 29)
+            session_area((100, 30), SIDEBAR),
+            Rect::new(SIDEBAR, 1, 100 - SIDEBAR, 29)
         );
-        assert_eq!(session_area((10, 5), SIDEBAR_COLS), Rect::new(10, 1, 0, 4));
+        assert_eq!(session_area((10, 5), SIDEBAR), Rect::new(10, 1, 0, 4));
     }
 
     #[test]
     fn new_names_fill_the_first_gap() {
-        assert_eq!(next_name(Vec::<&str>::new()), "terminal-1");
-        assert_eq!(next_name(vec!["terminal-1", "terminal-3"]), "terminal-2");
-        assert_eq!(next_name(vec!["terminal-2", "logs"]), "terminal-1");
+        assert_eq!(next_name("w-", Vec::<&str>::new()), "w-1");
+        assert_eq!(next_name("w-", vec!["w-1", "w-3"]), "w-2");
+        assert_eq!(next_name("w-", vec!["w-2", "logs"]), "w-1");
     }
 }
 
 /// Whether `id` looks like a Claude session id (a UUID: hex digits and `-`).
-fn is_session_id(id: &str) -> bool {
+pub(super) fn is_session_id(id: &str) -> bool {
     !id.is_empty() && id.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
 }
 

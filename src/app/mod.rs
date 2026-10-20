@@ -1,18 +1,22 @@
-//! The running app: connect to the hidden server, show its terminals as tabs,
-//! and pass input to the current one until the user detaches.
+//! The running app: connect to the hidden server, show its sessions as
+//! spaces with their windows as tabs, and pass input to the focused
+//! pane until the user detaches.
 
 mod attention;
 mod dashboard;
 mod event_loop;
 mod input;
-mod layout;
 mod mouse;
+mod pages;
 mod rows;
 mod saved;
 mod screen;
+mod sidebar;
+mod space;
 mod splits;
 mod state;
 mod tabs;
+mod view;
 mod watch;
 
 pub use rows::{Row, RowId, TaskDetails, TaskRow};
@@ -30,7 +34,7 @@ use std::sync::mpsc;
 
 /// Everything the event loop waits on, from tmux and from the outer terminal.
 pub enum Event {
-    /// A control message about the terminal in tmux session `session` (`$N`).
+    /// A control message from the client of space (tmux session) `session` (`$N`).
     Tmux {
         session: String,
         msg: Message,
@@ -46,6 +50,10 @@ pub enum Event {
     Git(Vec<((String, String), Status)>),
     /// Dashboard details just read for tasks, by `(directory, branch)`.
     Details(Vec<((String, String), Details)>),
+    /// Each space's directory and branch just read, by tmux session id.
+    Spaces(Vec<(String, watch::Place)>),
+    /// Showing a notification failed, with what the notifier said.
+    NotifyFailed(String),
 }
 
 pub fn run() -> Result<()> {

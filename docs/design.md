@@ -4,36 +4,50 @@ Agreed on 2026-10-19 in a design interview. Vocabulary is defined in [CONTEXT.md
 
 ## Purpose
 
-paddock replaces herdr for one person on one Mac. It is a terminal workspace (workspaces, tabs, splits) whose terminals keep running when paddock closes, and it tracks Claude Code sessions and the branches they and their subagents work on, so you can see at a glance which ones need you.
+paddock replaces herdr for one person on one Mac. It is a terminal workspace (spaces, tabs, splits) whose terminals keep running when paddock closes, and it tracks Claude Code sessions and the branches they and their subagents work on, so you can see at a glance which ones need you.
 
 Not in scope for now: agents other than Claude Code, Linux, remote machines, a scripting API, and creating or deleting git worktrees.
 
 ## Architecture
 
 - **One binary, no daemon** ([ADR 0003](adr/0003-no-daemon-single-instance.md)). `paddock` opens the app. While it is closed, only two things run: the hidden tmux server and Claude Code hooks.
-- **Hidden tmux server** ([ADR 0001](adr/0001-tmux-as-hidden-backend.md)). `tmux -L paddock`, one tmux session per terminal, started with paddock's own minimal config (`escape-time 0`, `extended-keys on`, no status line, no prefix) and a clean environment (`SUPACODE_*`, `TERM_PROGRAM` and similar variables removed). The user's own tmux is never touched.
-- **Own renderer** ([ADR 0002](adr/0002-own-renderer-via-control-mode.md)). paddock is a tmux control-mode client. Each tmux pane's raw output feeds its own terminal-emulator instance; paddock draws everything with ratatui and keeps scrollback, selection and search itself. Spike 0a picks the emulator crate. Written in Rust.
+- **Hidden tmux server** ([ADR 0001](adr/0001-tmux-as-hidden-backend.md)). `tmux -L paddock`, started with paddock's own minimal config (`escape-time 0`, `extended-keys on`, no status line, no prefix) and a clean environment (`SUPACODE_*`, `TERM_PROGRAM` and similar variables removed). The user's own tmux is never touched. Each space is a tmux session, its tabs the session's windows and its splits their panes ([ADR 0006](adr/0006-sidebar-items-are-tmux-sessions.md)), so `tmux -L paddock attach` shows the same structure.
+- **Own renderer** ([ADR 0002](adr/0002-own-renderer-via-control-mode.md)). paddock is a tmux control-mode client, one per space. Each tmux pane's raw output feeds its own terminal-emulator instance; paddock draws everything with ratatui and keeps scrollback, selection and search itself. Spike 0a picks the emulator crate. Written in Rust.
 - **One instance at a time.** A second launch offers to take over from the first.
-- **State** lives in `~/.local/state/paddock/`: layout, task rows, hook events and logs. **Config** lives in `~/.config/paddock/config.toml`: prefix, keys, colours and notification switches.
+- **State** lives in `~/.local/state/paddock/`: the current item (tmux holds tabs, splits, sizes and focus), dismissed rows, hook events and logs. **Config** lives in `~/.config/paddock/config.toml`: prefix, keys, colours and notification switches.
 - **Hooks.** `paddock hooks install` and `paddock hooks uninstall` edit `~/.claude/settings.json`. Supacode's hooks stay; the old tmux-claude-session-manager hooks are removed. Every hook calls `paddock hook <event>`, which finds its terminal through `$TMUX_PANE` and appends the event to the state directory, so tasks created while paddock is closed still appear. `claude agents --json` is used to discover sessions and reconcile state.
 - **Commands.** `paddock`, `paddock hooks install|uninstall`, and the internal `paddock hook <event>`.
 - **Any terminal app.** Only standard VT features; truecolor with a 256-colour fallback; the UI uses the terminal's 16 ANSI colours so it follows the user's theme; copying goes through `pbcopy` and notifications through `osascript`; no key depends on Option/Alt. paddock makes no network calls.
-- **Refresh.** Git info refreshes on hook events and every few seconds for rows on screen.
+- **Refresh.** Git info refreshes on hook events and every few seconds for the dashboard's rows while it is open.
 
 ## Interface
 
 ### Layout
 
-- Left: the **sidebar**, a closable workspace panel above the task tree.
-- Right: the **session view**, the current workspace's tab bar and the current tab's terminals (tabs and splits).
-- The **dashboard** opens as an overlay (`C-a o`).
-- Workspaces are created and named by the user, each with an optional root directory. With the panel closed, everything lives in one default workspace.
-- A new terminal (`C-a c`) is a blank shell; paddock notices when Claude starts in it.
+- Left: the closable, resizable **sidebar** (32 columns, or `[sidebar] width`; `C-a {` / `C-a }` or dragging its border change it by 2 columns between 16 and half the screen, and the last width is kept in the state directory), in two sections (after herdr):
+
+  ```text
+   SPACES
+   ● api-server
+     ~/project/api  main
+     paddock
+     ~/project/paddock  feat/x
+
+   AGENTS
+   ● api-server  waiting
+     api-server · claude
+  ```
+
+  SPACES has two lines per space: a dot in the most urgent state of its agents (none without agents) and its name (the tmux session name), then, dim, its directory (that of its first tab's first pane, home as `~`) and the branch checked out there (the short commit if detached, nothing outside a repository). A path too long loses its start (`…`) first, then the branch its end. Directories and branches are read on the git thread, at start, on hook events and every few seconds; the second line stays empty until the first read. The current space (the one whose tabs are shown) has its own background over both lines (`[colors] current_space`, a 256-colour index or `#rrggbb`, default 236). AGENTS lists every main Claude session in an open pane, in any space, sorted by state: a dot, its label and state, then, dimmed, its space and tab, with a blank line between agents. Subagents and task rows stay in the dashboard. While the sidebar has the keyboard, the selected space or agent is reversed.
+- Right: the **session view**, the current item's tab bar and the current tab's terminals (splits).
+- The tab bar follows herdr's look: a darker row (`[colors] tab_bar`, default 235) with each tab a filled block, its name centred, at least 8 cells wide, one blank column apart; the current tab has the accent colour (`tab_current`, default the terminal's blue) with dark text, the others a dark grey (`tab`, default 237) with dim text, and a name the user gave is bold. A `+` after the last tab opens a new one. When the tabs do not fit, `<` and `>` scroll by one and `…` marks hidden tabs; switching tabs scrolls the current one into sight, about in the middle. The wheel over the bar switches tabs; `C-a <` and `C-a >` move the current tab (no wrap). A tab is named after what runs in its focused pane (`claude` while Claude runs there, else the command, or the directory for a shell) until the user renames it. A tab holding a waiting, done or idle Claude gets a `●` in that state's colour before its name.
+- The **dashboard** opens as an overlay (`C-a o`) and holds the task tree.
+- A new space (`C-a C`) and a new tab (`C-a c`) start a blank shell in the focused terminal's directory; paddock notices when Claude starts in it.
 
 ### Task tree
 
-- Levels: workspace → session → task. The workspace level disappears when the panel is closed.
-- A session row is a terminal where Claude runs or ran. Its label is the Claude session name if set, else the tab name, else the directory name.
+- Shown in the dashboard. Levels: session → task.
+- A session row is a terminal where Claude runs or ran. Its label is the Claude session name if set, else the tab name if the user gave one, else the directory name.
 - Task rows are the main agent's branch plus each subagent's branch, labelled with the subagent's task description.
 - Plain shells and the default branch get no row.
 - Rows stay until dismissed (`D`).
@@ -43,19 +57,20 @@ Not in scope for now: agents other than Claude Code, Linux, remote machines, a s
 
 | Where | Fields |
 |---|---|
-| Sidebar row | state and highlight, branch, ahead/behind upstream, line changes (`+30 −144`, uncommitted) |
-| Dashboard | everything in the sidebar, plus base diff, number of changed files, last commit age, merged badge; PR number and state after v1 |
+| Sidebar space | name, dot in the most urgent state of its agents, directory, branch |
+| Sidebar agent | label, state and highlight, space and tab |
+| Dashboard | state and highlight, branch, ahead/behind upstream, line changes (`+30 −144`, uncommitted), base diff, number of changed files, last commit age, merged badge; PR number and state after v1 |
 
 ### States
 
-- Session: running, waiting, idle, stopped, or unknown.
+- Session: running, waiting, done, idle, stopped, or unknown. A main agent that finishes a turn (`Stop`) is done while you are not looking at its tab (the current space's current tab, outer window focused), and turns idle once you do. Done is not saved: it is per running paddock.
 - Subagent task: running, waiting, done, or stopped.
-- Compacting counts as running. Sort order: waiting, idle, running, stopped.
-- Task rows within a session sort waiting, running, done, stopped, ties in tree order; the main agent's task row has its session's state (idle counts as done).
+- Compacting counts as running. Sort order: waiting, done, idle, running, stopped.
+- Task rows within a session sort waiting, running, done, stopped, ties in tree order; the main agent's task row has its session's state (done and idle count as done).
 
 ### Attention
 
-- Waiting rows get a strong highlight; idle and done rows a soft one. Tabs holding such sessions are highlighted too.
+- Waiting rows and agents get a strong highlight; done (bold) and idle ones a soft one. Tabs holding such sessions are highlighted and marked `●` too.
 - macOS notifications fire when a session starts waiting and when a main agent goes idle, but not when that terminal is already focused.
 
 ### Preview
@@ -65,13 +80,13 @@ Not in scope for now: agents other than Claude Code, Linux, remote machines, a s
 
 ### Actions
 
-- **Close** (`x`, session rows): kills the terminal's tmux session; asks first if Claude is running or waiting.
-- **Fork** (`f`, session rows): runs `claude --resume <id> --fork-session` in a new tab in the same directory. Moving the fork into its own worktree is Claude's job (its `EnterWorktree` tool).
+- **Close** (`x`): closes the focused pane, or in the dashboard the row's pane; its tab goes with its last pane and its space with its last tab. In the sidebar, `x` closes the selected space, or the selected agent's pane. Asks first if Claude is running or waiting there.
+- **Fork** (`f`): runs `claude --resume <id> --fork-session` in a new tab of the same space, in the session's directory. Moving the fork into its own worktree is Claude's job (its `EnterWorktree` tool).
 - A single subagent can only be stopped from inside its session.
 
 ### Mouse
 
-- Click: focus a terminal, jump to a row, switch tabs.
+- Click: focus a terminal, open a space or jump to an agent, switch tabs.
 - Wheel: scroll a terminal's history.
 - Drag: select text; releasing copies it.
 - Programs that ask for the mouse (vim, htop) receive it; hold Shift to select anyway.
@@ -83,27 +98,32 @@ Prefix `C-a`, configurable; pressing it twice sends a literal `C-a`.
 
 | Key | Action |
 |---|---|
-| `c` | new shell tab |
+| `c` | new tab in the current space |
+| `C` | new space |
 | `\|` / `-` | split side by side / top and bottom |
 | `x` | close terminal (asks if Claude is running or waiting) |
 | `f` | fork Claude into a new tab |
 | `h` `j` `k` `l` / arrows | move focus |
 | `1`–`9` | go to tab |
 | `n` / `p` | next / previous tab |
+| `Tab` | last page: the space and tab shown before, across spaces (not kept across reopening) |
 | `a` | next session that needs you |
-| `=` | equalise split sizes |
+| `=` | even out the focused split and its neighbours |
 | `o` | dashboard |
-| `s` | focus sidebar |
+| `s` | focus sidebar (on the first agent) |
+| `w` | focus sidebar on the current space |
 | `b` | show or hide sidebar |
-| `w` | workspace panel (v1.2) |
+| `{` / `}` | sidebar narrower / wider |
 | `?` | key help |
 | `d` | detach: leave paddock, terminals keep running |
 | `,` | rename tab |
+| `$` | rename space |
+| `<` / `>` | move the current tab left / right |
 | `[` | keyboard copy mode (v1.2) |
 | `/` | search scrollback (v1.2) |
 | `C-a` | literal `C-a` |
 
-In the sidebar and dashboard: `j`/`k` move, `Enter` jumps, `D` dismisses, `x` closes, `f` forks, `Esc` goes back. Dashboard only: `I` for interactive preview.
+In the sidebar: `j`/`k` move over spaces then agents, `Enter` shows a space's tabs or jumps to an agent's pane, `x` closes the space or the agent's pane, `f` forks the agent (on a space, its most urgent one), `Esc` goes back. In the dashboard: `j`/`k` move, `Enter` jumps, `D` dismisses, `x` closes, `f` forks, `I` for interactive preview, `Esc` goes back.
 
 ## Tasks and worktrees
 
@@ -111,8 +131,8 @@ A task is a branch ([ADR 0004](adr/0004-task-is-a-branch.md)). paddock reads `gi
 
 ## Scope
 
-- **v1**: hidden tmux server, control-mode rendering with own scrollback, single instance, layout restored on reopen; one default workspace, tabs, minimal splits (split, close, move focus, equalise), prefix keys, mouse (click, wheel, drag to copy); hooks, states, sidebar task tree including subagents, sidebar git fields, highlights, notifications, dismiss; close and fork; dashboard (details, live preview, interactive preview).
-- **v1.2**: workspaces and the workspace panel, scrollback search, keyboard copy mode, external sessions group.
+- **v1**: hidden tmux server, control-mode rendering with own scrollback, single instance, layout kept in tmux; spaces (tmux sessions) and agents in the sidebar, tabs, minimal splits (split, close, move focus, even out), prefix keys, mouse (click, wheel, drag to copy); hooks, states, highlights, notifications; dashboard with the task tree including subagents, git fields, dismiss, live and interactive preview; close and fork.
+- **v1.2**: a root directory per space, scrollback search, keyboard copy mode, external sessions group.
 - **Later**: restore after reboot (`claude --resume` per terminal), PR column, resizing splits, other agents, Linux.
 
 ## Build order

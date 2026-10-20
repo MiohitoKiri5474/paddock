@@ -57,7 +57,7 @@ mod tests {
     fn lists_every_binding_with_the_prefix() {
         let l = lines("C-b");
         assert_eq!(l[0], "Press C-b, then:");
-        assert!(l.iter().any(|x| x.contains("new shell tab")));
+        assert!(l.iter().any(|x| x.contains("new tab in this space")));
         assert!(l.iter().any(|x| x.contains("send C-b to the terminal")));
         assert_eq!(l.len(), BINDINGS.len() + 5);
     }
@@ -71,7 +71,9 @@ mod tests {
             .map(|y| (0..80).map(|x| buf[(x, y)].symbol()).collect())
             .collect();
         assert!(rows.iter().any(|r| r.contains("paddock keys")));
-        assert!(rows.iter().any(|r| r.contains("c      new shell tab")));
+        assert!(rows
+            .iter()
+            .any(|r| r.contains("c      new tab in this space")));
         let small = Rect::new(0, 0, 10, 3);
         render("C-a", small, &mut Buffer::empty(small));
     }

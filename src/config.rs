@@ -1,21 +1,41 @@
-//! `config.toml` in the config directory. Only the prefix key so far:
+//! `config.toml` in the config directory:
 //!
 //! ```toml
 //! [keys]
 //! prefix = "C-b"
+//!
+//! [colors]
+//! current_space = 236        # or "#303030": the current space's background
+//! tab_bar = 235              # the tab bar's row
+//! tab = 237                  # a tab that is not current
+//! tab_current = 4            # the current tab (default: the terminal's blue)
+//!
+//! [sidebar]
+//! width = 32                 # columns, until resized (then remembered)
 //! ```
 
+use crate::ui::tab_bar::TabColors;
 use anyhow::{bail, Context, Result};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::style::Color;
 use serde::Deserialize;
 use std::path::Path;
 
 pub const FILE_NAME: &str = "config.toml";
 const DEFAULT_PREFIX: &str = "C-a";
+/// Columns the sidebar takes, border included, until resized.
+const DEFAULT_SIDEBAR_WIDTH: u16 = 32;
+/// A dark grey, a little darker than most dark themes' background.
+const DEFAULT_CURRENT_SPACE: Color = Color::Indexed(236);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
     pub prefix: KeyEvent,
+    /// Background of the current space.
+    pub current_space: Color,
+    pub tabs: TabColors,
+    /// The sidebar's starting width, while none was saved.
+    pub sidebar_width: u16,
 }
 
 #[derive(Deserialize, Default)]
@@ -23,6 +43,44 @@ pub struct Config {
 struct RawConfig {
     #[serde(default)]
     keys: RawKeys,
+    #[serde(default)]
+    colors: RawColors,
+    #[serde(default)]
+    sidebar: RawSidebar,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct RawSidebar {
+    width: Option<u16>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct RawColors {
+    /// Written `current_item` before spaces were called spaces.
+    #[serde(alias = "current_item")]
+    current_space: Option<RawColor>,
+    tab_bar: Option<RawColor>,
+    tab: Option<RawColor>,
+    tab_current: Option<RawColor>,
+}
+
+/// `raw` as a colour, else `default`.
+fn colour(raw: Option<RawColor>, default: Color) -> Result<Color> {
+    match raw {
+        None => Ok(default),
+        Some(RawColor::Index(i)) => Ok(Color::Indexed(i)),
+        Some(RawColor::Text(text)) => parse_colour(&text),
+    }
+}
+
+/// A colour as written: a 256-colour index (bare or quoted) or `"#rrggbb"`.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum RawColor {
+    Index(u8),
+    Text(String),
 }
 
 #[derive(Deserialize, Default)]
@@ -46,8 +104,17 @@ impl Config {
     pub fn parse(text: &str) -> Result<Self> {
         let raw: RawConfig = toml::from_str(text)?;
         let prefix = raw.keys.prefix.as_deref().unwrap_or(DEFAULT_PREFIX);
+        let c = raw.colors;
+        let tabs = TabColors::default();
         Ok(Self {
             prefix: parse_key(prefix)?,
+            current_space: colour(c.current_space, DEFAULT_CURRENT_SPACE)?,
+            tabs: TabColors {
+                bar: colour(c.tab_bar, tabs.bar)?,
+                tab: colour(c.tab, tabs.tab)?,
+                current: colour(c.tab_current, tabs.current)?,
+            },
+            sidebar_width: raw.sidebar.width.unwrap_or(DEFAULT_SIDEBAR_WIDTH),
         })
     }
 }
@@ -56,8 +123,26 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             prefix: KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
+            current_space: DEFAULT_CURRENT_SPACE,
+            tabs: TabColors::default(),
+            sidebar_width: DEFAULT_SIDEBAR_WIDTH,
         }
     }
+}
+
+/// Parse a colour written `236` (a 256-colour index) or `#rrggbb`.
+fn parse_colour(spec: &str) -> Result<Color> {
+    if let Ok(i) = spec.parse::<u8>() {
+        return Ok(Color::Indexed(i));
+    }
+    let digits = spec
+        .strip_prefix('#')
+        .filter(|d| d.len() == 6 && d.bytes().all(|b| b.is_ascii_hexdigit()));
+    let Some(d) = digits else {
+        bail!("invalid colour {spec:?}: expected a 256-colour index (0-255) or \"#rrggbb\"");
+    };
+    let byte = |i: usize| u8::from_str_radix(&d[i..i + 2], 16).unwrap_or(0);
+    Ok(Color::Rgb(byte(0), byte(2), byte(4)))
 }
 
 /// Parse a prefix key such as `C-a`, `C-b` or `C-Space`. Only Ctrl keys are
@@ -128,6 +213,62 @@ mod tests {
         }
         assert!(Config::parse("[keys]\nprefx = \"C-b\"\n").is_err());
         assert!(Config::parse("[keys]\nprefix = 1\n").is_err());
+    }
+
+    #[test]
+    fn the_current_space_colour_is_an_index_or_hex_and_dark_grey_by_default() {
+        assert_eq!(Config::default().current_space, Color::Indexed(236));
+        let parse = |t: &str| Config::parse(&format!("[colors]\ncurrent_space = {t}\n"));
+        assert_eq!(parse("238").unwrap().current_space, Color::Indexed(238));
+        assert_eq!(
+            parse("\"#1a2B3c\"").unwrap().current_space,
+            Color::Rgb(0x1a, 0x2b, 0x3c)
+        );
+        assert_eq!(parse("\"236\"").unwrap().current_space, Color::Indexed(236));
+        for bad in ["256", "-1", "\"256\"", "\"#12345\"", "\"red\""] {
+            assert!(parse(bad).is_err(), "{bad}");
+        }
+        assert!(Config::parse("[colors]\ncurrent = 1\n").is_err());
+    }
+
+    #[test]
+    fn the_old_current_item_key_still_sets_the_current_space_colour() {
+        let c = Config::parse("[colors]\ncurrent_item = 238\n").unwrap();
+        assert_eq!(c.current_space, Color::Indexed(238));
+    }
+
+    #[test]
+    fn tab_bar_colours_default_to_herdrs_and_can_be_set() {
+        let tabs = Config::default().tabs;
+        assert_eq!(
+            (tabs.bar, tabs.tab, tabs.current),
+            (Color::Indexed(235), Color::Indexed(237), Color::Blue)
+        );
+        let c = Config::parse("[colors]\ntab_bar = 233\ntab = \"#202020\"\ntab_current = 33\n")
+            .unwrap();
+        assert_eq!(
+            (c.tabs.bar, c.tabs.tab, c.tabs.current),
+            (
+                Color::Indexed(233),
+                Color::Rgb(32, 32, 32),
+                Color::Indexed(33)
+            )
+        );
+        assert!(Config::parse("[colors]\ntabs = 1\n").is_err());
+        assert!(Config::parse("[colors]\ntab = \"blue\"\n").is_err());
+    }
+
+    #[test]
+    fn the_sidebar_width_defaults_to_32_and_can_be_set() {
+        assert_eq!(Config::default().sidebar_width, 32);
+        assert_eq!(
+            Config::parse("[sidebar]\nwidth = 40\n")
+                .unwrap()
+                .sidebar_width,
+            40
+        );
+        assert!(Config::parse("[sidebar]\nwide = 40\n").is_err());
+        assert!(Config::parse("[sidebar]\nwidth = -1\n").is_err());
     }
 
     #[test]

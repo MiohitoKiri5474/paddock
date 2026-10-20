@@ -6,15 +6,20 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 /// What paddock does for a command key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {
+    /// A new tab (tmux window) in the current space.
     NewTab,
+    /// A new space (tmux session).
+    NewSpace,
     NextTab,
     PreviousTab,
     /// Go to tab N (0-based).
     GoToTab(usize),
     RenameTab,
-    /// End the focused terminal; its tab goes with its last terminal.
+    RenameSpace,
+    /// End the focused pane; its tab goes with its last pane, its space with
+    /// its last tab.
     Close,
-    /// Continue a copy of the focused session in a new tab.
+    /// Continue a copy of the focused session in a new tab of its space.
     Fork,
     /// Split the focused terminal side by side.
     SplitColumns,
@@ -25,6 +30,14 @@ pub enum Command {
     Help,
     Detach,
     FocusSidebar,
+    /// Focus the sidebar on the current space.
+    FocusSpaces,
+    /// Move the current tab one place left (`-1`) or right (`1`).
+    MoveTab(isize),
+    /// Make the sidebar this many columns wider (narrower if negative).
+    ResizeSidebar(i16),
+    /// Show the space and tab shown before the current ones.
+    LastPage,
     ToggleSidebar,
     /// Jump to the next session that is waiting or idle.
     NextAttention,
@@ -50,20 +63,29 @@ pub enum KeyAction {
     None,
 }
 
+/// Columns `C-a {` and `C-a }` take away or add.
+pub const SIDEBAR_STEP: i16 = 2;
+
 /// Command keys, for both dispatch and the key help.
 pub const BINDINGS: &[(&str, &str)] = &[
-    ("c", "new shell tab"),
+    ("c", "new tab in this space"),
+    ("C", "new space"),
     ("n / p", "next / previous tab"),
+    ("Tab", "last page: the space and tab before"),
     ("1-9", "go to tab"),
     (",", "rename tab"),
+    ("$", "rename space"),
+    ("< / >", "move the tab left / right"),
     ("|", "split side by side"),
     ("-", "split top and bottom"),
     ("hjkl", "move focus (also arrows)"),
-    ("=", "equalise split sizes"),
-    ("x", "close terminal (asks if Claude is busy)"),
+    ("=", "even out the focused split"),
+    ("x", "close pane (asks if Claude is busy)"),
     ("f", "fork Claude into a new tab"),
-    ("s", "focus sidebar (j/k, Enter jumps, Esc back)"),
+    ("s", "focus sidebar: spaces, agents (j/k Enter x f Esc)"),
+    ("w", "focus sidebar on the current space"),
     ("b", "show or hide sidebar"),
+    ("{ / }", "sidebar narrower / wider"),
     ("a", "next session that needs you"),
     ("o", "dashboard (j/k, Enter, D, x, f, I types, Esc back)"),
     ("d", "detach: quit, terminals keep running"),
@@ -76,6 +98,7 @@ fn command(key: &KeyEvent) -> Option<Command> {
         return None;
     }
     let c = match key.code {
+        KeyCode::Tab => return Some(Command::LastPage),
         KeyCode::Char(c) => c,
         KeyCode::Left => 'h',
         KeyCode::Down => 'j',
@@ -85,6 +108,8 @@ fn command(key: &KeyEvent) -> Option<Command> {
     };
     Some(match c {
         'c' => Command::NewTab,
+        'C' => Command::NewSpace,
+        '$' => Command::RenameSpace,
         'n' => Command::NextTab,
         'p' => Command::PreviousTab,
         '1'..='9' => Command::GoToTab(c as usize - '1' as usize),
@@ -101,6 +126,11 @@ fn command(key: &KeyEvent) -> Option<Command> {
         '?' => Command::Help,
         'd' => Command::Detach,
         's' => Command::FocusSidebar,
+        'w' => Command::FocusSpaces,
+        '<' => Command::MoveTab(-1),
+        '>' => Command::MoveTab(1),
+        '{' => Command::ResizeSidebar(-SIDEBAR_STEP),
+        '}' => Command::ResizeSidebar(SIDEBAR_STEP),
         'b' => Command::ToggleSidebar,
         'a' => Command::NextAttention,
         'o' => Command::Dashboard,
@@ -182,6 +212,14 @@ mod tests {
         let none = KeyModifiers::NONE;
         assert_eq!(after_prefix('c', none), KeyAction::Command(Command::NewTab));
         assert_eq!(
+            after_prefix('C', KeyModifiers::SHIFT),
+            KeyAction::Command(Command::NewSpace)
+        );
+        assert_eq!(
+            after_prefix('$', KeyModifiers::SHIFT),
+            KeyAction::Command(Command::RenameSpace)
+        );
+        assert_eq!(
             after_prefix('n', none),
             KeyAction::Command(Command::NextTab)
         );
@@ -233,6 +271,26 @@ mod tests {
             KeyAction::Command(Command::FocusSidebar)
         );
         assert_eq!(
+            after_prefix('<', KeyModifiers::SHIFT),
+            KeyAction::Command(Command::MoveTab(-1))
+        );
+        assert_eq!(
+            after_prefix('>', KeyModifiers::SHIFT),
+            KeyAction::Command(Command::MoveTab(1))
+        );
+        assert_eq!(
+            after_prefix('{', KeyModifiers::SHIFT),
+            KeyAction::Command(Command::ResizeSidebar(-SIDEBAR_STEP))
+        );
+        assert_eq!(
+            after_prefix('}', KeyModifiers::SHIFT),
+            KeyAction::Command(Command::ResizeSidebar(SIDEBAR_STEP))
+        );
+        assert_eq!(
+            after_prefix('w', none),
+            KeyAction::Command(Command::FocusSpaces)
+        );
+        assert_eq!(
             after_prefix('b', none),
             KeyAction::Command(Command::ToggleSidebar)
         );
@@ -243,6 +301,16 @@ mod tests {
         assert_eq!(
             after_prefix('o', none),
             KeyAction::Command(Command::Dashboard)
+        );
+    }
+
+    #[test]
+    fn tab_after_the_prefix_shows_the_last_page() {
+        let mut p = ctrl_a();
+        p.handle(k('a', KeyModifiers::CONTROL));
+        assert_eq!(
+            p.handle(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
+            KeyAction::Command(Command::LastPage)
         );
     }
 

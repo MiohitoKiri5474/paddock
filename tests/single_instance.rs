@@ -30,7 +30,7 @@ fn accepting_take_over_closes_the_first_and_keeps_its_terminals() {
     let sandbox = Sandbox::new();
     let mut first = ready(&sandbox);
     first.command(b"c");
-    first.wait_for_tabs(&["1:terminal-1", "2:terminal-2"]);
+    first.wait_for_tabs(&["1:home", "2:home"]);
     first.wait_for_text(PROMPT);
     first.type_line("echo marker-before-take-over");
     first.wait_for_text("marker-before-take-over\n");
@@ -41,7 +41,7 @@ fn accepting_take_over_closes_the_first_and_keeps_its_terminals() {
     second.type_line("y");
 
     assert!(first.wait_exit(), "the first paddock detaches cleanly");
-    second.wait_for_tabs(&["1:terminal-1", "2:terminal-2"]);
+    second.wait_for_tabs(&["1:home", "2:home"]);
     assert_eq!(panes(&sandbox), before, "the same shells are still running");
     second.command(b"2");
     second.wait_for_text("marker-before-take-over\n");
@@ -61,7 +61,7 @@ fn declining_take_over_leaves_the_first_running() {
     assert!(second.wait_exit(), "declining is not an error");
     first.type_line("echo still-here");
     first.wait_for_text("still-here\n");
-    first.wait_for_tabs(&["1:terminal-1"]);
+    first.wait_for_tabs(&["1:home"]);
 }
 
 #[test]
@@ -74,6 +74,6 @@ fn a_lock_left_by_a_dead_paddock_is_ignored() {
     std::fs::write(dir.join("paddock.pid"), format!("{}\n", gone.id())).expect("lock");
 
     let paddock = ready(&sandbox);
-    paddock.wait_for_tabs(&["1:terminal-1"]);
+    paddock.wait_for_tabs(&["1:home"]);
     assert!(!paddock.screen().contains(TAKE_OVER));
 }

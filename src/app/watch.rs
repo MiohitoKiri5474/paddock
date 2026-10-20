@@ -1,7 +1,7 @@
 //! Background threads that feed session information into the event loop:
 //! new lines of the hook event log, `claude agents --json` snapshots, and the
 //! git status of task rows on screen (and their details while the dashboard
-//! is open).
+//! is open), and each space's directory and branch.
 
 use super::Event;
 use crate::git;
@@ -23,11 +23,46 @@ const GIT_POLL: Duration = Duration::from_secs(3);
 /// Tasks to keep the git status of, as `(directory, branch)`.
 pub type Tasks = Vec<(String, String)>;
 
-/// The tasks on screen, and whether the dashboard's details are wanted too.
+/// The tasks on screen, whether the dashboard's details are wanted too,
+/// and the spaces (tmux session ids) whose directory and branch to read.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Watched {
     pub tasks: Tasks,
     pub details: bool,
+    pub spaces: Vec<String>,
+}
+
+/// A space's directory and the branch checked out there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Place {
+    pub path: String,
+    /// `None` outside a git repository.
+    pub branch: Option<String>,
+}
+
+/// Space `id`'s directory: that of its first tab's first pane, else the
+/// session's start directory.
+fn space_dir(server: &Server, id: &str) -> Option<String> {
+    let first = format!("{id}:^");
+    let pane = server
+        .run(&["list-panes", "-t", &first, "-F", "#{pane_current_path}"])
+        .ok()
+        .and_then(|out| out.lines().next().map(str::to_string))
+        .filter(|p| !p.is_empty());
+    pane.or_else(|| server.display(id, "#{session_path}").ok())
+        .filter(|p| !p.is_empty())
+}
+
+/// Read each of `spaces`' directory and branch.
+fn places(server: &Server, spaces: &[String]) -> Vec<(String, Place)> {
+    spaces
+        .iter()
+        .filter_map(|id| {
+            let path = space_dir(server, id)?;
+            let branch = git::head(&path);
+            Some((id.clone(), Place { path, branch }))
+        })
+        .collect()
 }
 
 /// Start the threads. They end when the event loop goes away. Returns where
@@ -49,11 +84,11 @@ pub fn start(server: &Server, state_dir: &Path, tx: &Sender<Event>) -> Result<Se
         std::thread::sleep(LOG_POLL);
     });
 
-    let server = server.clone();
+    let agents_server = server.clone();
     let events = tx.clone();
     std::thread::spawn(move || loop {
         let taken = now_ms();
-        if let Some(list) = agents::fetch(&server) {
+        if let Some(list) = agents::fetch(&agents_server) {
             if events.send(Event::Agents(taken, list)).is_err() {
                 break;
             }
@@ -63,6 +98,7 @@ pub fn start(server: &Server, state_dir: &Path, tx: &Sender<Event>) -> Result<Se
 
     let (tasks_tx, tasks_rx) = mpsc::channel::<Watched>();
     let events = tx.clone();
+    let server = server.clone();
     std::thread::spawn(move || {
         let mut watched = Watched::default();
         loop {
@@ -72,28 +108,38 @@ pub fn start(server: &Server, state_dir: &Path, tx: &Sender<Event>) -> Result<Se
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => break,
             }
-            let tasks = &watched.tasks;
-            if tasks.is_empty() {
-                continue;
-            }
-            let read = tasks
-                .iter()
-                .map(|(dir, branch)| ((dir.clone(), branch.clone()), git::status(dir, branch)))
-                .collect();
-            if events.send(Event::Git(read)).is_err() {
-                break;
-            }
-            if !watched.details {
-                continue;
-            }
-            let read = tasks
-                .iter()
-                .map(|(dir, branch)| ((dir.clone(), branch.clone()), git::details(dir, branch)))
-                .collect();
-            if events.send(Event::Details(read)).is_err() {
+            if !read_watched(&server, &watched, &events) {
                 break;
             }
         }
     });
     Ok(tasks_tx)
+}
+
+/// Read what `watched` asks for (spaces' places, tasks' git status, and
+/// their details if wanted) and send it. Returns false once nobody listens.
+fn read_watched(server: &Server, watched: &Watched, events: &Sender<Event>) -> bool {
+    let read = places(server, &watched.spaces);
+    if !read.is_empty() && events.send(Event::Spaces(read)).is_err() {
+        return false;
+    }
+    let tasks = &watched.tasks;
+    if tasks.is_empty() {
+        return true;
+    }
+    let read = tasks
+        .iter()
+        .map(|(dir, branch)| ((dir.clone(), branch.clone()), git::status(dir, branch)))
+        .collect();
+    if events.send(Event::Git(read)).is_err() {
+        return false;
+    }
+    if !watched.details {
+        return true;
+    }
+    let read = tasks
+        .iter()
+        .map(|(dir, branch)| ((dir.clone(), branch.clone()), git::details(dir, branch)))
+        .collect();
+    events.send(Event::Details(read)).is_ok()
 }

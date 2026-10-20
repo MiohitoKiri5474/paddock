@@ -36,6 +36,9 @@ pub struct View<'a> {
 fn style(state: State) -> Style {
     match state {
         State::Waiting => Style::default().fg(Color::Black).bg(Color::Yellow),
+        State::Done => Style::default()
+            .fg(Color::Green)
+            .add_modifier(Modifier::BOLD),
         State::Idle => Style::default().fg(Color::Green),
         State::Running | State::Stopped | State::Unknown => Style::default(),
     }
@@ -296,8 +299,8 @@ mod tests {
     fn row(label: &str, state: State, tasks: Vec<TaskRow>) -> Row {
         Row {
             pane: format!("%{label}"),
-            terminal: format!("${label}"),
-            tab: 0,
+            space: "$1".into(),
+            window: "@1".into(),
             label: label.into(),
             state,
             tasks,

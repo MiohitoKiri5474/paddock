@@ -27,7 +27,28 @@ fn launching_shows_a_working_shell() {
 
     paddock.wait_for("command output", |s| s.lines().any(|l| l.trim() == "42"));
     let sessions = sandbox.tmux(&["list-sessions", "-F", "#{session_name}"]);
-    assert_eq!(sessions.trim(), "terminal-1");
+    assert_eq!(sessions.trim(), "space-1");
+}
+
+#[test]
+fn screen_title_escapes_are_not_drawn() {
+    let sandbox = Sandbox::new();
+    let mut paddock = sandbox.launch();
+    paddock.wait_for_text(PROMPT);
+
+    // oh-my-zsh sets the title like this inside tmux; it must not land on screen.
+    paddock.type_line("printf '\\033k%s\\033\\\\' cla''ude; echo done");
+
+    paddock.wait_for("command output", |s| {
+        s.lines()
+            .any(|l| l.trim_end().ends_with("done") && !l.contains("echo"))
+    });
+    let rows = paddock.rows();
+    assert!(
+        rows.iter().any(|l| l == "done") && !rows.iter().any(|l| l.contains("claude")),
+        "title drawn on screen:\n{}",
+        paddock.screen()
+    );
 }
 
 #[test]
@@ -130,13 +151,7 @@ fn mouse_wheel_scrolls_the_terminal_history() {
     // tmux itself did not scroll: paddock keeps its own scrollback.
     assert_eq!(
         sandbox
-            .tmux(&[
-                "display-message",
-                "-p",
-                "-t",
-                "terminal-1",
-                "#{pane_in_mode}"
-            ])
+            .tmux(&["display-message", "-p", "-t", "space-1", "#{pane_in_mode}"])
             .trim(),
         "0"
     );
@@ -203,7 +218,7 @@ fn detaching_keeps_the_shell_and_relaunching_restores_history() {
         sandbox
             .tmux(&["list-sessions", "-F", "#{session_name}"])
             .trim(),
-        "terminal-1"
+        "space-1"
     );
 
     // Scroll back to the very first line of the restored history.
@@ -263,18 +278,18 @@ fn resizing_the_outer_terminal_resizes_the_terminal() {
             "display-message",
             "-p",
             "-t",
-            "terminal-1",
+            "space-1",
             "#{pane_width}x#{pane_height}",
         ])
     };
     let start = std::time::Instant::now();
-    while size().trim() != "80x19" {
+    while size().trim() != "48x19" {
         assert!(start.elapsed() < harness::TIMEOUT, "pane is {}", size());
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     paddock.type_line("stty size");
 
-    paddock.wait_for_text("19 80"); // one row is the tab bar
+    paddock.wait_for_text("19 48"); // the tab bar takes a row, the sidebar 32 columns
 }
 
 #[test]

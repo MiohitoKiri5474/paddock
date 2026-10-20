@@ -27,7 +27,7 @@ paddock hooks install               # adds paddock's hooks to ~/.claude/settings
 paddock          # open (a second launch offers to take over)
 ```
 
-Open a terminal with `C-a c` and run `claude` in it; the session appears in the sidebar with its state (running, waiting, idle, stopped) and the branches it works on. You get a macOS notification when a session starts waiting or a main agent finishes a turn.
+The sidebar has two sections. SPACES lists your spaces, each with its directory and git branch on a dim second line: each space is a tmux session on paddock's hidden server, its tabs are the session's windows and its splits their panes, so `tmux -L paddock attach` shows the same thing. AGENTS lists every main Claude session in any space, with its state (waiting, done, idle, running, stopped) and the space and tab it runs in. Open a tab with `C-a c` and run `claude` in it; the dashboard (`C-a o`) shows the branches it and its subagents work on. A turn that ends while you look elsewhere is `done` until you look at its tab, then `idle`. You get a macOS notification when a session starts waiting or a main agent finishes a turn.
 
 ### Keys
 
@@ -35,28 +35,34 @@ Prefix `C-a`, then:
 
 | Key | Action |
 |---|---|
-| `c` | new shell tab |
+| `c` | new tab in the current space |
+| `C` | new space |
 | `n` / `p` | next / previous tab |
+| `Tab` | last page: back to the space and tab shown before (again: return) |
 | `1`–`9` | go to tab |
 | `,` | rename tab |
+| `$` | rename space |
+| `<` / `>` | move the current tab left / right |
 | `\|` / `-` | split side by side / top and bottom |
 | `h` `j` `k` `l` / arrows | move focus |
-| `=` | equalise split sizes |
-| `x` | close terminal (asks if Claude is busy) |
-| `f` | fork Claude into a new tab |
-| `s` | focus sidebar |
+| `=` | even out the focused split and its neighbours |
+| `x` | close pane; the last one closes its tab, the last tab its space (asks if Claude is busy) |
+| `f` | fork Claude into a new tab of the same space |
+| `s` | focus sidebar (on the first agent) |
+| `w` | focus sidebar on the current space |
 | `b` | show or hide sidebar |
+| `{` / `}` | sidebar narrower / wider (also: drag its border) |
 | `a` | next session that needs you |
 | `o` | dashboard: every session and task with details and a live preview |
 | `d` | detach: paddock quits, terminals keep running |
 | `?` | key help |
 | `C-a` | literal `C-a` |
 
-In the sidebar: `j`/`k` move, `Enter` jumps, `D` dismisses a row, `x` closes, `f` forks, `Esc` goes back.
+In the sidebar: `j`/`k` move over spaces and agents; `Enter` on a space shows its tabs, on an agent jumps to its pane (space, tab and split); `x` closes the space, or the agent's pane; `f` forks the agent (on a space, its agent that needs you most); `Esc` goes back.
 
 In the dashboard: `j`/`k` move, `Enter` jumps, `D` dismisses, `x` closes, `f` forks, `I` types into the previewed terminal (`Esc` leaves and is never passed on), `Esc` closes it. Task rows show line changes, ahead/behind, the diff and changed files against the base branch (`origin/HEAD`, else `main`/`master`), the last commit's age, and `merged` once the branch is in its base.
 
-Mouse: click to focus a split, switch tabs or jump to a row; wheel scrolls history; drag selects and copies (hold Shift over programs that use the mouse).
+Mouse: click to focus a split, switch tabs (`+` after the tabs opens one, `<`/`>` scroll a full bar), or open a space or agent; the wheel over the tab bar switches tabs; wheel scrolls history; drag selects and copies (hold Shift over programs that use the mouse).
 
 ## Configure
 
@@ -65,11 +71,22 @@ Mouse: click to focus a split, switch tabs or jump to a row; wheel scrolls histo
 ```toml
 [keys]
 prefix = "C-a"
+
+[colors]
+current_space = 236       # the current space's background: 256-colour index or "#rrggbb" (also read as current_item)
+tab_bar = 235             # the tab bar's row
+tab = 237                 # a tab that is not current
+tab_current = 4           # the current tab (default: the terminal's blue)
+
+[sidebar]
+width = 32                # columns until you resize it
 ```
+
+Once you resize the sidebar (`C-a {`, `C-a }` or dragging its border), paddock saves that width in `~/.local/state/paddock/layout.toml` (`sidebar = N`), and it overrides `[sidebar] width` from then on. Delete that line (with paddock closed) to go back to the configured width.
 
 ## Files
 
-- State: `~/.local/state/paddock/` (layout, event logs, dismissed rows, `hook-errors.log`)
+- State: `~/.local/state/paddock/` (current space and sidebar width, event logs, dismissed rows, `hook-errors.log`); tabs and splits live in tmux
 - Hidden server: `tmux -L paddock ls`
 
 ## Uninstall

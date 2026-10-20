@@ -1,15 +1,14 @@
 //! The main loop: feed terminal output, route input, redraw at most once a frame.
 
-use super::attention::tab_states;
 use super::input::Flow;
-use super::layout::Split;
 use super::rows::Row;
 use super::screen::Screen;
-use super::state::{session_area, App, Mode, TAB_BAR_ROWS};
+use super::space::changes_structure;
+use super::state::{App, Mode, TAB_BAR_ROWS};
 use super::{watch, Event};
 use crate::hooks::now_ms;
 use crate::tmux::Message;
-use crate::ui::{dashboard, help, session_view, sidebar, tab_bar::TabBar};
+use crate::ui::{dashboard, help, session_view, sidebar};
 use anyhow::Result;
 use crossterm::event::{self as ct, KeyEventKind};
 use ratatui::buffer::Buffer;
@@ -61,6 +60,33 @@ fn next_event(rx: &Receiver<Event>, dirty: bool, last_draw: Instant) -> Wait {
     }
 }
 
+/// What an event may have changed, for what to do after handling it.
+struct EventEffects {
+    /// Hook events refresh git at once.
+    hooks: bool,
+    /// Pane output: the most frequent event, changing nothing but a screen.
+    output: bool,
+    /// Anything but tmux and the readers' results may change which rows are
+    /// on screen.
+    rows_may_move: bool,
+}
+
+impl EventEffects {
+    fn of(event: &Event) -> Self {
+        Self {
+            hooks: matches!(event, Event::Hooks(_)),
+            output: matches!(
+                event,
+                Event::Tmux {
+                    msg: Message::Output { .. },
+                    ..
+                }
+            ),
+            rows_may_move: !matches!(event, Event::Tmux { .. } | Event::Git(_) | Event::Spaces(_)),
+        }
+    }
+}
+
 pub fn run(
     screen: &mut Screen,
     mut app: App,
@@ -71,6 +97,8 @@ pub fn run(
         tx: git,
         sent: watch::Watched::default(),
     };
+    // The spaces' directories and branches are read at once.
+    git.update(&app, true);
     let mut dirty = true;
     let mut last_draw = Instant::now()
         .checked_sub(FRAME)
@@ -86,10 +114,7 @@ pub fn run(
             Wait::FrameDue => continue,
             Wait::Closed => break,
         };
-        // Hook events refresh git; anything else but terminal output and git
-        // itself may change which task rows are on screen.
-        let hooks = matches!(event, Event::Hooks(_));
-        let rows_may_move = !matches!(event, Event::Tmux { .. } | Event::Git(_));
+        let effects = EventEffects::of(&event);
         // A terminal can end with its exit still queued: a write to it fails
         // then. Say so, and go on rather than quit without saving.
         let (flow, changed) = handle(&mut app, event, screen).unwrap_or_else(|e| {
@@ -97,10 +122,7 @@ pub fn run(
             (Flow::Continue, true)
         });
         dirty |= changed;
-        if rows_may_move {
-            app.anchor_dashboard();
-            git.update(&app, hooks);
-        }
+        follow_up(&mut app, &mut git, &effects);
         if flow == Flow::Quit {
             break;
         }
@@ -108,70 +130,107 @@ pub fn run(
     app.detach_all()
 }
 
+/// Keep up with an event just handled (see `effects`): turns seen, the tab bar
+/// scrolled to the current tab, the dashboard's selection and git's tasks.
+fn follow_up(app: &mut App, git: &mut GitFeed, effects: &EventEffects) {
+    // Any event may show a tab or bring the window back.
+    app.see_current();
+    // Pane output changes the space or tab shown only through a refresh,
+    // which notes the page itself.
+    if !effects.output {
+        app.track_page();
+        app.settle_tabs();
+    }
+    if effects.rows_may_move {
+        app.anchor_dashboard();
+        git.update(app, effects.hooks);
+    }
+}
+
 /// Apply one event. Returns whether to go on and whether the screen may have changed.
 fn handle(app: &mut App, event: Event, screen: &mut Screen) -> Result<(Flow, bool)> {
-    let flow = match event {
-        Event::Tmux {
-            session,
-            msg: Message::Output { data, .. },
-        } => {
-            if let Some(t) = app.terminals.get_mut(&session) {
-                t.output(&data);
-            }
-            let seen = app.shows(&session) || app.shows_in_preview(&session);
-            return Ok((Flow::Continue, seen));
-        }
-        // That terminal's tmux session ended: its shell exited or it was closed.
-        Event::Tmux {
-            session,
-            msg: Message::Exit,
-        } => {
-            if app.terminal_ended(&session) {
-                Flow::Continue
-            } else {
-                Flow::Quit
-            }
-        }
-        Event::Tmux { .. } => return Ok((Flow::Continue, false)),
+    match event {
+        Event::Tmux { session, msg } => Ok(handle_tmux(app, &session, msg)),
+        Event::Input(input) => handle_input(app, input, screen),
+        Event::Detach => Ok((Flow::Quit, true)),
         Event::Hooks(records) => {
             app.hooks(&records);
-            app.relayout()?;
-            Flow::Continue
+            Ok((Flow::Continue, true))
         }
         Event::Agents(taken, agents) => {
             app.sessions.reconcile(taken, &agents);
-            app.relayout()?;
-            Flow::Continue
+            Ok((Flow::Continue, true))
         }
         Event::Git(read) => {
             app.task_status.extend(read);
-            Flow::Continue
+            Ok((Flow::Continue, true))
         }
         Event::Details(read) => {
             app.task_details.extend(read);
-            Flow::Continue
+            Ok((Flow::Continue, true))
         }
-        Event::Input(ct::Event::Key(key)) if key.kind != KeyEventKind::Release => app.key(key)?,
-        Event::Input(ct::Event::Paste(text)) => {
+        Event::Spaces(read) => {
+            app.places.extend(read);
+            Ok((Flow::Continue, true))
+        }
+        Event::NotifyFailed(error) => {
+            if let Some(notice) = app.attention.notify_failed(&error) {
+                app.notice = Some(notice);
+            }
+            Ok((Flow::Continue, true))
+        }
+    }
+}
+
+/// A control message from space `session`'s client.
+fn handle_tmux(app: &mut App, session: &str, msg: Message) -> (Flow, bool) {
+    match msg {
+        Message::Output { pane, data } => {
+            if !app.terminals.contains_key(&pane) {
+                // A pane made since the last look, maybe through `tmux
+                // attach`. The refresh may change the tab shown, which
+                // `follow_up` skips for output: note the page here.
+                app.refresh_reported(session);
+                app.track_page();
+            }
+            if let Some(t) = app.terminals.get_mut(&pane) {
+                t.output(&data);
+            }
+            (
+                Flow::Continue,
+                app.shows(&pane) || app.shows_in_preview(&pane),
+            )
+        }
+        // The space's tmux session ended: its last pane exited or was closed.
+        Message::Exit if app.space_ended(session) => (Flow::Continue, true),
+        Message::Exit => (Flow::Quit, true),
+        Message::Notification(n) if changes_structure(&n) => {
+            app.refresh_reported(session);
+            (Flow::Continue, true)
+        }
+        Message::Notification(_) | Message::Reply { .. } => (Flow::Continue, false),
+    }
+}
+
+/// Input from the outer terminal.
+fn handle_input(app: &mut App, event: ct::Event, screen: &mut Screen) -> Result<(Flow, bool)> {
+    let flow = match event {
+        ct::Event::Key(key) if key.kind != KeyEventKind::Release => app.key(key)?,
+        ct::Event::Paste(text) => {
             app.paste(&text)?;
             Flow::Continue
         }
-        Event::Input(ct::Event::Mouse(m)) => return Ok((Flow::Continue, app.mouse(m)?)),
-        Event::Input(ct::Event::Resize(cols, rows)) => {
+        ct::Event::Mouse(m) => return Ok((Flow::Continue, app.mouse(m)?)),
+        ct::Event::Resize(cols, rows) => {
             app.resize((cols, rows))?;
             screen.autoresize()?;
             Flow::Continue
         }
-        Event::Input(ct::Event::FocusGained) => {
-            app.attention.window_focused = true;
+        ct::Event::FocusGained | ct::Event::FocusLost => {
+            app.attention.window_focused = matches!(event, ct::Event::FocusGained);
             return Ok((Flow::Continue, false));
         }
-        Event::Input(ct::Event::FocusLost) => {
-            app.attention.window_focused = false;
-            return Ok((Flow::Continue, false));
-        }
-        Event::Input(_) => return Ok((Flow::Continue, false)),
-        Event::Detach => Flow::Quit,
+        _ => return Ok((Flow::Continue, false)),
     };
     Ok((flow, true))
 }
@@ -182,15 +241,15 @@ fn draw(screen: &mut Screen, app: &App) -> Result<()> {
         let rows = app.rows();
         let side = app.sidebar_width().min(full.width);
         if side > 0 {
-            let selected = match &app.mode {
-                Mode::Sidebar(selected) => selected.as_ref(),
-                _ => None,
-            };
+            let selected = app.sidebar_selection();
             let side_area = Rect {
                 width: side,
                 ..full
             };
-            sidebar::render(&rows, selected, side_area, f.buffer_mut());
+            let spaces = app.sidebar_spaces(&rows);
+            let agents = app.sidebar_agents(&rows);
+            let bg = app.current_space_bg;
+            sidebar::render(&spaces, &agents, selected, bg, side_area, f.buffer_mut());
         }
         let area = Rect {
             x: full.x + side,
@@ -202,9 +261,16 @@ fn draw(screen: &mut Screen, app: &App) -> Result<()> {
             ..area
         };
         let bar_cursor = draw_tab_bar(app, &rows, bar_area, f.buffer_mut());
-        let term_area = session_area((full.width, full.height), side);
-        let term_cursor = draw_terminals(app, term_area, f.buffer_mut());
-        let dash_cursor = draw_dashboard(app, &rows, term_area, f.buffer_mut());
+        // The frame may already have a new size the app has not seen yet
+        // (its resize event is still queued): never draw outside it.
+        // When the sizes agree, the panes fit: clipping hides only the lag.
+        debug_assert!(
+            app.screen != (full.width, full.height) || full.intersection(app.area()) == app.area(),
+            "panes outside the frame"
+        );
+        let panes = app.area().intersection(full);
+        let term_cursor = draw_panes(app, panes, f.buffer_mut());
+        let dash_cursor = draw_dashboard(app, &rows, panes, f.buffer_mut());
         if let Mode::Help = app.mode {
             help::render(&app.prefix_name, full, f.buffer_mut());
         } else if app.dashboard().is_some() {
@@ -224,53 +290,35 @@ fn draw(screen: &mut Screen, app: &App) -> Result<()> {
 /// The tab bar, or the question before a close. Returns the cursor while
 /// renaming.
 fn draw_tab_bar(app: &App, rows: &[Row], area: Rect, buf: &mut Buffer) -> Option<Position> {
-    let armed = app.prefix.armed().then_some(app.prefix_name.as_str());
-    let ask = match &app.mode {
-        Mode::ConfirmClose { state, .. } => {
-            Some(format!("Claude is {}: close? y/n", state.label()))
-        }
-        _ => None,
-    };
-    let bar = TabBar {
-        // The question takes the whole bar, so it always fits.
-        names: match ask {
-            Some(_) => Vec::new(),
-            None => app.tabs.iter().map(|t| t.name.as_str()).collect(),
-        },
-        current: app.tabs.current_index(),
-        rename: match &app.mode {
-            Mode::Rename(text) => Some(text.as_str()),
-            _ => None,
-        },
-        status: ask.as_deref().or(app.notice.as_deref()).or(armed),
-        states: tab_states(rows, app.tabs.iter().count()),
-    };
-    bar.render(area, buf)
+    app.tab_bar_view(rows).render(area, buf)
 }
 
-/// The current tab's terminals and the borders between them. Returns the
-/// focused terminal's cursor.
-fn draw_terminals(app: &App, area: Rect, buf: &mut Buffer) -> Option<Position> {
-    let tab = app.tabs.current()?;
-    let (panes, borders) = tab.content.rects(area);
+/// The current tab's panes and the borders between them. Returns the
+/// focused pane's cursor.
+fn draw_panes(app: &App, area: Rect, buf: &mut Buffer) -> Option<Position> {
+    let focus = app.current_pane();
+    let panes: Vec<(String, Rect)> = app
+        .pane_rects()
+        .into_iter()
+        .map(|(pane, r)| (pane, r.intersection(area)))
+        .collect();
     let mut cursor = None;
-    for (id, rect) in panes {
-        let Some(t) = app.terminals.get(&id) else {
+    for (pane, rect) in &panes {
+        let Some(t) = app.terminals.get(pane) else {
             continue;
         };
-        let at = session_view::render(t.emulator(), rect, buf);
-        if id == tab.content.focus {
+        let at = session_view::render(t.emulator(), *rect, buf);
+        if Some(pane) == focus.as_ref() {
             cursor = at;
         }
     }
-    for b in borders {
-        session_view::border(b.area, b.split == Split::Columns, buf);
-    }
+    let rects: Vec<Rect> = panes.iter().map(|(_, r)| *r).collect();
+    session_view::borders(area, &rects, buf);
     cursor
 }
 
-/// The dashboard over the terminals, if open. Returns the previewed
-/// terminal's cursor while typing into it.
+/// The dashboard over the panes, if open. Returns the previewed pane's
+/// cursor while typing into it.
 fn draw_dashboard(app: &App, rows: &[Row], area: Rect, buf: &mut Buffer) -> Option<Position> {
     let d = app.dashboard()?;
     let row = app.dashboard_row(d);
@@ -279,7 +327,7 @@ fn draw_dashboard(app: &App, rows: &[Row], area: Rect, buf: &mut Buffer) -> Opti
         details: &app.task_details,
         selected: d.selected.as_ref(),
         preview: row
-            .and_then(|r| app.terminals.get(&r.terminal))
+            .and_then(|r| app.terminals.get(&r.pane))
             .map(|t| t.emulator()),
         interactive: d.interactive,
         now: now_ms() / MS_PER_SEC,

@@ -21,6 +21,14 @@ pub const ROWS: u16 = 30;
 pub const TIMEOUT: Duration = Duration::from_secs(10);
 /// The prompt of the test shell, as drawn (the `.zshrc` adds a trailing space).
 pub const PROMPT: &str = "test$";
+/// Columns the sidebar takes while shown, its border included.
+pub const SIDEBAR: u16 = 32;
+/// Backgrounds of a tab and of the current tab in the tab bar (paddock's
+/// defaults).
+const TAB: vt100::Color = vt100::Color::Idx(237);
+const CURRENT_TAB: vt100::Color = vt100::Color::Idx(4);
+/// The sidebar's title, in its first row.
+const SIDEBAR_TITLE: &str = " SPACES";
 const SOCKET: &str = "paddock-test";
 const CURSOR_QUERY: &[u8] = b"\x1b[6n";
 
@@ -364,15 +372,38 @@ impl Paddock {
         self.send(b"\r");
     }
 
-    /// A wheel notch at (col, row), 0-based, as an SGR mouse report.
+    /// A wheel notch at (col, row), 0-based, as an SGR mouse report. Like
+    /// every mouse event here, `col` counts from the right of the sidebar,
+    /// as [`Self::rows`] does.
     pub fn wheel(&mut self, up: bool, col: u16, row: u16) {
         let button = if up { 64 } else { 65 };
+        let col = col + self.left();
         self.send(format!("\x1b[<{button};{};{}M", col + 1, row + 1).as_bytes());
     }
 
     /// A left-button mouse event at (col, row), 0-based, as an SGR report:
     /// `code` 0 is a press, 32 a drag; `release` ends the press. Shift adds 4.
     pub fn mouse(&mut self, code: u16, col: u16, row: u16, release: bool) {
+        let col = col + self.left();
+        self.send_mouse(code, col, row, release);
+    }
+
+    /// A left click at screen column `col` (counting from the screen's left
+    /// edge, so it can hit the sidebar) and row `row`, 0-based.
+    pub fn click_screen(&mut self, col: u16, row: u16) {
+        self.send_mouse(0, col, row, false);
+        self.send_mouse(0, col, row, true);
+    }
+
+    /// Press at screen column `from` of `row`, drag to column `to` and
+    /// release there, counting from the screen's left edge.
+    pub fn drag_screen(&mut self, row: u16, from: u16, to: u16) {
+        self.send_mouse(0, from, row, false);
+        self.send_mouse(32, to, row, false);
+        self.send_mouse(0, to, row, true);
+    }
+
+    fn send_mouse(&mut self, code: u16, col: u16, row: u16, release: bool) {
         let fin = if release { 'm' } else { 'M' };
         self.send(format!("\x1b[<{code};{};{}{fin}", col + 1, row + 1).as_bytes());
     }
@@ -391,7 +422,7 @@ impl Paddock {
         self.mouse(mods, to.0, to.1, true);
     }
 
-    /// Where `text` is first drawn, as (col, row) 0-based.
+    /// Where `text` is first drawn, as (col, row) 0-based, right of the sidebar.
     pub fn find(&self, text: &str) -> Option<(u16, u16)> {
         self.rows().iter().enumerate().find_map(|(y, r)| {
             let x = r.find(text)?;
@@ -400,6 +431,31 @@ impl Paddock {
                 u16::try_from(y).ok()?,
             ))
         })
+    }
+
+    /// The first screen column right of the sidebar (0 while it is hidden).
+    pub fn left(&self) -> u16 {
+        let first = self.full_rows().into_iter().next().unwrap_or_default();
+        let border = first.chars().nth(usize::from(SIDEBAR - 1));
+        if first.starts_with(SIDEBAR_TITLE) && border == Some('│') {
+            SIDEBAR
+        } else {
+            0
+        }
+    }
+
+    /// The sidebar's rows, without its border, trimmed at the end; empty
+    /// while it is hidden.
+    pub fn sidebar(&self) -> Vec<String> {
+        if self.left() == 0 {
+            return Vec::new();
+        }
+        let parser = self.screen.lock().expect("screen lock");
+        parser
+            .screen()
+            .rows(0, SIDEBAR - 1)
+            .map(|r| r.trim_end().to_string())
+            .collect()
     }
 
     /// Resize the outer terminal (sends SIGWINCH to paddock).
@@ -429,28 +485,66 @@ impl Paddock {
         self.rows().into_iter().next().unwrap_or_default()
     }
 
-    /// Text of the highlighted (current) tab in the tab bar, trimmed.
-    pub fn current_tab(&self) -> String {
+    /// The tabs in the tab bar, numbered as the keys `1`-`9` reach them
+    /// (`1:home`), and which one is current. Tabs are the filled blocks of
+    /// the bar: cells with a background of their own (the default tab and
+    /// current tab colours).
+    pub fn tabs(&self) -> (Vec<String>, Option<usize>) {
+        let left = self.left();
         let parser = self.screen.lock().expect("screen lock");
         let screen = parser.screen();
-        (0..COLS)
-            .filter_map(|x| screen.cell(0, x))
-            .filter(|c| c.inverse())
-            .map(|c| c.contents().to_string())
-            .collect::<String>()
-            .trim()
-            .to_string()
+        let width = screen.size().1.get();
+        let mut tabs: Vec<(String, bool)> = Vec::new();
+        let mut open = false;
+        for x in left..width {
+            let Some(cell) = screen.cell(0, x) else { break };
+            let bg = cell.bgcolor();
+            let current = bg == CURRENT_TAB;
+            if bg != TAB && !current {
+                open = false;
+                continue;
+            }
+            if !open {
+                tabs.push((String::new(), current));
+                open = true;
+            }
+            if let Some(tab) = tabs.last_mut() {
+                tab.0.push_str(if cell.contents().is_empty() {
+                    " "
+                } else {
+                    cell.contents()
+                });
+            }
+        }
+        let current = tabs.iter().position(|(_, c)| *c);
+        let labels = tabs
+            .iter()
+            .enumerate()
+            .map(|(i, (text, _))| format!("{}:{}", i + 1, text.trim()))
+            .collect();
+        (labels, current)
     }
 
-    /// Wait until the tab bar shows exactly these labels (e.g. `1:terminal-1`).
+    /// The current tab's label (e.g. `2:home`), or empty.
+    pub fn current_tab(&self) -> String {
+        let (labels, current) = self.tabs();
+        current.map(|i| labels[i].clone()).unwrap_or_default()
+    }
+
+    /// Wait until the tab bar shows exactly these tabs (e.g. `1:home`).
     pub fn wait_for_tabs(&self, labels: &[&str]) {
-        let expected = labels.iter().map(|l| format!(" {l} ")).collect::<String>();
-        let expected = expected.trim_end().to_string();
-        // Right of the sidebar's border, if a sidebar is shown.
-        self.wait_for(&format!("tabs {labels:?}"), |s| {
-            let first = s.lines().next().unwrap_or("");
-            first.rsplit('│').next().unwrap_or("").trim_end() == expected
-        });
+        let start = Instant::now();
+        while start.elapsed() < TIMEOUT {
+            if self.tabs().0 == labels {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        panic!(
+            "tabs are {:?}, not {labels:?}; screen:\n{}",
+            self.tabs().0,
+            self.full_screen()
+        );
     }
 
     pub fn wait_for_current_tab(&self, label: &str) {
@@ -473,8 +567,20 @@ impl Paddock {
         self.send(b"\x01d");
     }
 
+    /// What is drawn right of the sidebar: the tab bar, then the panes.
     pub fn screen(&self) -> String {
+        self.rows().join("\n")
+    }
+
+    /// The whole screen, sidebar included.
+    pub fn full_screen(&self) -> String {
         self.screen.lock().expect("screen lock").screen().contents()
+    }
+
+    /// Whether the cell at screen (row, col), 0-based, is drawn reversed.
+    pub fn reversed(&self, row: u16, col: u16) -> bool {
+        let parser = self.screen.lock().expect("screen lock");
+        parser.screen().cell(row, col).is_some_and(|c| c.inverse())
     }
 
     /// Foreground and background colour of the cell at (row, col), 0-based.
@@ -484,11 +590,26 @@ impl Paddock {
         (cell.fgcolor(), cell.bgcolor())
     }
 
+    /// Rows right of the sidebar (column 0 is the session area's left
+    /// edge), trimmed at the end.
     pub fn rows(&self) -> Vec<String> {
+        let left = self.left();
         let parser = self.screen.lock().expect("screen lock");
+        let width = parser.screen().size().1.get();
         parser
             .screen()
-            .rows(0, COLS)
+            .rows(left, width.saturating_sub(left))
+            .map(|r| r.trim_end().to_string())
+            .collect()
+    }
+
+    /// Whole rows, sidebar included, trimmed at the end.
+    pub fn full_rows(&self) -> Vec<String> {
+        let parser = self.screen.lock().expect("screen lock");
+        let width = parser.screen().size().1.get();
+        parser
+            .screen()
+            .rows(0, width)
             .map(|r| r.trim_end().to_string())
             .collect()
     }
@@ -502,7 +623,10 @@ impl Paddock {
             }
             std::thread::sleep(Duration::from_millis(20));
         }
-        panic!("timed out waiting for {what}; screen:\n{}", self.screen());
+        panic!(
+            "timed out waiting for {what}; screen:\n{}",
+            self.full_screen()
+        );
     }
 
     pub fn wait_for_text(&self, text: &str) {

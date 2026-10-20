@@ -7,10 +7,61 @@
 
 use super::rows::Row;
 use super::state::{App, Mode};
+use super::Event;
 use crate::hooks::now_ms;
 use crate::sessions::{self, state_after, HookRecord, State};
 use std::collections::HashMap;
-use std::process::{Command, Stdio};
+use std::io::Read;
+use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
+
+/// The AppleScript that shows a notification; its message is the script's
+/// first argument, so it needs no AppleScript quoting.
+const NOTIFY_SCRIPT: [&str; 3] = [
+    "on run argv",
+    "display notification (item 1 of argv) with title \"paddock\"",
+    "end run",
+];
+
+/// How long a notification may take before it counts as failed.
+const NOTIFY_TIMEOUT: Duration = Duration::from_secs(10);
+/// How often to look whether the notifier finished.
+const NOTIFY_POLL: Duration = Duration::from_millis(50);
+
+/// Wait up to `timeout` for the notifier `child` (stderr piped) to finish.
+/// Returns what it said on stderr if it failed; one that hangs is killed,
+/// so waiting threads never pile up.
+fn wait_notifier(mut child: Child, timeout: Duration) -> Result<(), String> {
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(NOTIFY_POLL),
+            Ok(None) => {
+                // Best effort: it may have ended just now.
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "the notifier did not finish in {}s",
+                    timeout.as_secs()
+                ));
+            }
+            Err(e) => return Err(e.to_string()),
+        }
+    };
+    if status.success() {
+        return Ok(());
+    }
+    let mut said = String::new();
+    if let Some(mut stderr) = child.stderr.take() {
+        if let Err(e) = stderr.read_to_string(&mut said) {
+            said = format!("{status}; cannot read its stderr: {e}");
+        }
+    }
+    Err(Some(said.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| status.to_string()))
+}
 
 /// Overrides the command that shows notifications (tests use a stub).
 const OSASCRIPT_VAR: &str = "PADDOCK_OSASCRIPT";
@@ -76,6 +127,9 @@ pub struct Attention {
     /// focus changes (CSI ?1004); assumed until it says otherwise.
     pub window_focused: bool,
     osascript: String,
+    /// A failure to notify was shown; later ones are not, to avoid a notice
+    /// on every notification.
+    notify_failure_shown: bool,
 }
 
 impl Attention {
@@ -88,35 +142,28 @@ impl Attention {
                 .ok()
                 .filter(|v| !v.is_empty())
                 .unwrap_or_else(|| "osascript".into()),
+            notify_failure_shown: false,
         }
+    }
+
+    /// The notice for a notification that failed with `error`: the first
+    /// time only.
+    pub fn notify_failed(&mut self, error: &str) -> Option<String> {
+        if self.notify_failure_shown {
+            return None;
+        }
+        self.notify_failure_shown = true;
+        Some(format!("cannot notify: {error}"))
     }
 }
 
 /// The row after the focused terminal's among those waiting or idle, in
 /// sidebar order and wrapping around; the first one if it is not among them.
 pub fn next_needing<'a>(rows: &'a [Row], focused: Option<&str>) -> Option<&'a Row> {
-    let needy: Vec<&Row> = rows
-        .iter()
-        .filter(|r| matches!(r.state, State::Waiting | State::Idle))
-        .collect();
-    let at = needy
-        .iter()
-        .position(|r| Some(r.terminal.as_str()) == focused);
+    let needy: Vec<&Row> = rows.iter().filter(|r| r.state.needs_you()).collect();
+    let at = needy.iter().position(|r| Some(r.pane.as_str()) == focused);
     let next = at.map_or(0, |i| (i + 1) % needy.len());
     needy.get(next).copied()
-}
-
-/// The most urgent session state in each of `tabs` tabs.
-pub fn tab_states(rows: &[Row], tabs: usize) -> Vec<State> {
-    let mut states = vec![State::Unknown; tabs];
-    for r in rows.iter().filter(|r| !r.closed) {
-        if let Some(s) = states.get_mut(r.tab) {
-            if r.state.rank() < s.rank() {
-                *s = r.state;
-            }
-        }
-    }
-    states
 }
 
 impl App {
@@ -137,19 +184,34 @@ impl App {
     /// `C-a a`: jump to the next session that needs you.
     pub(super) fn next_attention(&mut self) {
         let rows = self.rows();
-        let focused = self.tabs.current().map(|t| t.content.focus.as_str());
-        match next_needing(&rows, focused) {
+        let focused = self.current_pane();
+        match next_needing(&rows, focused.as_deref()) {
             Some(row) => {
-                self.jump_to(row.tab, &row.terminal);
+                self.jump_to(&row.pane);
                 self.mode = Mode::Normal;
             }
             None => self.notice = Some("no session needs you".into()),
         }
     }
 
+    /// Turns done in the tab you are looking at (the current space's
+    /// current tab, with the outer window focused) become idle.
+    pub(super) fn see_current(&mut self) {
+        if !self.attention.window_focused {
+            return;
+        }
+        let Some(window) = self.current_space().and_then(|i| i.current_window()) else {
+            return;
+        };
+        let panes: Vec<String> = window.panes.iter().map(|p| p.id.clone()).collect();
+        for pane in panes {
+            self.sessions.see(&pane);
+        }
+    }
+
     /// Whether you are looking at the terminal with pane `pane`.
     fn focused_on(&self, pane: &str) -> bool {
-        self.attention.window_focused && self.current().is_some_and(|t| t.pane() == pane)
+        self.attention.window_focused && self.current_pane().is_some_and(|p| p == pane)
     }
 
     fn notify(&mut self, pane: &str, alert: Alert) {
@@ -165,24 +227,33 @@ impl App {
             Alert::Idle => "idle",
         };
         let message = format!("{label} is {what}");
-        // The message goes in as an argument: no AppleScript quoting needed.
-        let child = Command::new(&self.attention.osascript)
-            .args(["-e", "on run argv"])
-            .args([
-                "-e",
-                "display notification (item 1 of argv) with title \"paddock\"",
-            ])
-            .args(["-e", "end run", &message])
+        let mut command = Command::new(&self.attention.osascript);
+        for line in NOTIFY_SCRIPT {
+            command.args(["-e", line]);
+        }
+        let child = command
+            .arg(&message)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .spawn();
         match child {
-            // Reap it without holding up the event loop.
-            Ok(mut child) => {
-                std::thread::spawn(move || child.wait());
+            // Wait for it without holding up the event loop; a failure comes
+            // back as an event.
+            Ok(child) => {
+                let events = self.events.clone();
+                std::thread::spawn(move || {
+                    if let Err(error) = wait_notifier(child, NOTIFY_TIMEOUT) {
+                        // Nobody listens once paddock quits.
+                        let _ = events.send(Event::NotifyFailed(error));
+                    }
+                });
             }
-            Err(e) => self.notice = Some(format!("cannot notify: {e}")),
+            Err(e) => {
+                if let Some(notice) = self.attention.notify_failed(&e.to_string()) {
+                    self.notice = Some(notice);
+                }
+            }
         }
     }
 }
@@ -210,6 +281,71 @@ mod tests {
             notification_type: Some(kind.into()),
             ..rec("Notification", "s")
         }
+    }
+
+    #[test]
+    fn the_notification_script_compiles() {
+        // `osacompile` checks the AppleScript without running it; skip
+        // where there is none (not macOS).
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        let out = dir.path().join("notify.scpt");
+        let mut cmd = Command::new("osacompile");
+        for line in NOTIFY_SCRIPT {
+            cmd.args(["-e", line]);
+        }
+        let Ok(result) = cmd.arg("-o").arg(&out).output() else {
+            return;
+        };
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+
+    fn sh(script: &str) -> std::process::Child {
+        Command::new("/bin/sh")
+            .args(["-c", script])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap()
+    }
+
+    #[test]
+    fn a_notifier_that_succeeds_is_fine() {
+        assert_eq!(wait_notifier(sh("true"), Duration::from_secs(5)), Ok(()));
+    }
+
+    #[test]
+    fn a_notifier_that_fails_gives_what_it_said() {
+        let got = wait_notifier(
+            sh("echo 'syntax error' >&2; exit 1"),
+            Duration::from_secs(5),
+        );
+        assert_eq!(got, Err("syntax error".to_string()));
+    }
+
+    #[test]
+    fn a_notifier_that_hangs_is_killed_and_counts_as_failed() {
+        let started = std::time::Instant::now();
+        let got = wait_notifier(sh("sleep 30"), Duration::from_millis(200));
+        assert!(started.elapsed() < Duration::from_secs(5), "it was killed");
+        assert!(got.unwrap_err().contains("did not finish"));
+    }
+
+    #[test]
+    fn a_failing_notifier_is_reported_once() {
+        let mut a = Attention::from_env();
+        let first = a.notify_failed("osascript: syntax error");
+        assert_eq!(
+            first.as_deref(),
+            Some("cannot notify: osascript: syntax error")
+        );
+        assert_eq!(a.notify_failed("again"), None);
     }
 
     #[test]
@@ -296,12 +432,12 @@ mod tests {
         assert_eq!(got, [Some(Alert::Idle), None, Some(Alert::Idle)]);
     }
 
-    fn row(terminal: &str, tab: usize, state: State) -> Row {
+    fn row(pane: &str, state: State) -> Row {
         Row {
-            pane: format!("%{terminal}"),
-            terminal: terminal.into(),
-            tab,
-            label: terminal.into(),
+            pane: pane.into(),
+            space: "$1".into(),
+            window: "@1".into(),
+            label: pane.into(),
             state,
             tasks: Vec::new(),
             closed: false,
@@ -311,34 +447,16 @@ mod tests {
     #[test]
     fn next_needing_cycles_waiting_and_idle_rows() {
         let rows = [
-            row("w", 2, State::Waiting),
-            row("i", 0, State::Idle),
-            row("r", 1, State::Running),
+            row("w", State::Waiting),
+            row("i", State::Idle),
+            row("r", State::Running),
         ];
-        let next = |focused| next_needing(&rows, focused).map(|r| r.terminal.as_str());
+        let next = |focused| next_needing(&rows, focused).map(|r| r.pane.as_str());
         assert_eq!(next(Some("w")), Some("i"));
         assert_eq!(next(Some("i")), Some("w"));
         assert_eq!(next(Some("r")), Some("w"));
         assert_eq!(next(None), Some("w"));
-        let running = [row("r", 0, State::Running)];
+        let running = [row("r", State::Running)];
         assert!(next_needing(&running, None).is_none());
-    }
-
-    #[test]
-    fn a_tab_takes_its_most_urgent_state() {
-        let rows = [
-            row("a", 1, State::Waiting),
-            row("b", 0, State::Idle),
-            row("c", 1, State::Idle),
-            row("d", 0, State::Running),
-            Row {
-                closed: true,
-                ..row("", 2, State::Stopped)
-            },
-        ];
-        assert_eq!(
-            tab_states(&rows, 3),
-            [State::Idle, State::Waiting, State::Unknown]
-        );
     }
 }

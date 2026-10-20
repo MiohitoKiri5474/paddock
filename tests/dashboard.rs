@@ -34,7 +34,8 @@ fn payload(name: &str, session: &str, cwd: &str) -> String {
         .replace("\"/tmp/repo\"", &format!("\"{cwd}\""))
 }
 
-/// Report `event` for a Claude session in `terminal`, working in `cwd`.
+/// Report `event` for a Claude session in the pane tmux target `terminal`
+/// names, working in `cwd`.
 fn claude(sandbox: &Sandbox, terminal: &str, event: &str, session: &str, cwd: &str) {
     sandbox.hook(terminal, event, &payload(event, session, cwd));
 }
@@ -49,9 +50,23 @@ fn ready(sandbox: &Sandbox) -> Paddock {
 fn two_tabs(sandbox: &Sandbox) -> Paddock {
     let mut paddock = ready(sandbox);
     paddock.command(b"c");
-    paddock.wait_for_current_tab("2:terminal-2");
+    paddock.wait_for_current_tab("2:home");
     paddock.wait_for_text(PROMPT);
     paddock
+}
+
+/// Wait until `text` shows anywhere, sidebar included (item states show
+/// only there).
+fn wait_anywhere(paddock: &Paddock, text: &str) {
+    paddock.wait_for(text, |_| paddock.full_screen().contains(text));
+}
+
+/// Tab count of space-1.
+fn tabs(sandbox: &Sandbox) -> usize {
+    sandbox
+        .tmux(&["list-windows", "-t", "space-1"])
+        .lines()
+        .count()
 }
 
 fn open(paddock: &mut Paddock) {
@@ -101,8 +116,8 @@ fn o_opens_the_dashboard_and_esc_closes_it() {
     paddock.send(b"\x1b");
     paddock.wait_for("the empty dashboard closed", |s| !s.contains(OPEN));
 
-    claude(&sandbox, "terminal-1", "Stop", "s1", "/w/repo");
-    paddock.wait_for_text("idle");
+    claude(&sandbox, "space-1:0", "Stop", "s1", "/w/repo");
+    wait_anywhere(&paddock, "idle");
     open(&mut paddock);
     paddock.wait_for_text("preview: repo");
 
@@ -122,16 +137,9 @@ fn j_and_k_move_and_enter_jumps_to_the_rows_terminal() {
     let sandbox = Sandbox::new();
     let mut paddock = two_tabs(&sandbox);
     // Waiting sorts before idle.
-    claude(
-        &sandbox,
-        "terminal-1",
-        "PermissionRequest",
-        "s1",
-        "/w/alpha",
-    );
-    claude(&sandbox, "terminal-2", "Stop", "s2", "/w/bravo");
-    paddock.wait_for_text("waiting");
-    paddock.wait_for_text("idle");
+    claude(&sandbox, "space-1:0", "PermissionRequest", "s1", "/w/alpha");
+    claude(&sandbox, "space-1:1", "Stop", "s2", "/w/bravo");
+    paddock.wait_for_tabs(&["1:● claude", "2:● claude"]);
 
     open(&mut paddock);
     paddock.wait_for_text("preview: alpha");
@@ -141,7 +149,7 @@ fn j_and_k_move_and_enter_jumps_to_the_rows_terminal() {
     paddock.wait_for_text("preview: alpha");
 
     paddock.send(b"\r");
-    paddock.wait_for_current_tab("1:terminal-1");
+    paddock.wait_for_current_tab("1:● claude");
     paddock.wait_for("the dashboard closed", |s| !s.contains(OPEN));
 }
 
@@ -149,31 +157,22 @@ fn j_and_k_move_and_enter_jumps_to_the_rows_terminal() {
 fn d_dismisses_a_row_and_it_stays_gone_after_reopening() {
     let sandbox = Sandbox::new();
     let mut paddock = two_tabs(&sandbox);
-    claude(
-        &sandbox,
-        "terminal-1",
-        "PermissionRequest",
-        "s1",
-        "/w/alpha",
-    );
-    claude(&sandbox, "terminal-2", "Stop", "s2", "/w/bravo");
-    paddock.wait_for_text("alpha");
-    paddock.wait_for_text("bravo");
+    claude(&sandbox, "space-1:0", "PermissionRequest", "s1", "/w/alpha");
+    claude(&sandbox, "space-1:1", "Stop", "s2", "/w/bravo");
+    paddock.wait_for_tabs(&["1:● claude", "2:● claude"]);
 
     open(&mut paddock);
+    paddock.wait_for_text("alpha");
+    paddock.wait_for_text("bravo");
     paddock.send(b"D");
     paddock.wait_for("alpha dismissed", |s| !s.contains("alpha"));
     paddock.wait_for_text("preview: bravo");
-    assert_eq!(
-        sandbox.session_names(),
-        ["terminal-1", "terminal-2"],
-        "terminals kept"
-    );
+    assert_eq!(tabs(&sandbox), 2, "panes kept");
 
     paddock.detach_keys();
     assert!(paddock.wait_exit());
     let mut again = ready(&sandbox);
-    again.wait_for_text("bravo");
+    wait_anywhere(&again, "idle");
     open(&mut again);
     again.wait_for_text("preview: bravo");
     std::thread::sleep(Duration::from_millis(300));
@@ -186,21 +185,21 @@ fn the_preview_shows_the_selected_terminal_live() {
     // No `claude agents` snapshots, whose polls redraw the screen anyway.
     sandbox.set_agents("not json");
     let mut paddock = two_tabs(&sandbox);
-    claude(&sandbox, "terminal-1", "Stop", "s1", "/w/repo");
-    paddock.wait_for_text("idle");
+    claude(&sandbox, "space-1:0", "Stop", "s1", "/w/repo");
+    wait_anywhere(&paddock, "done");
     open(&mut paddock);
     paddock.wait_for_text("preview: repo");
 
-    // terminal-1 is not in the current tab: only the preview can show it.
+    // The first tab is not current: only the preview can show its pane.
     sandbox.tmux(&[
         "send-keys",
         "-t",
-        "terminal-1",
+        "space-1:0",
         "echo live-$((6*7))",
         "Enter",
     ]);
     paddock.wait_for_text("live-42");
-    assert_eq!(paddock.current_tab(), "2:terminal-2");
+    assert_eq!(paddock.current_tab(), "2:home");
 }
 
 /// Wait until `path` holds exactly `want`.
@@ -219,12 +218,12 @@ fn wait_for_file(path: &Path, want: &str) {
 fn i_types_into_the_previewed_terminal_and_esc_is_never_sent() {
     let sandbox = Sandbox::new();
     let mut paddock = two_tabs(&sandbox);
-    claude(&sandbox, "terminal-1", "Stop", "s1", "/w/repo");
-    paddock.wait_for_text("idle");
-    // terminal-1 writes every byte it reads to a file, ESC shown as `^[`.
+    claude(&sandbox, "space-1:0", "Stop", "s1", "/w/repo");
+    wait_anywhere(&paddock, "done");
+    // The first tab's pane writes every byte it reads to a file, ESC shown as `^[`.
     let out = sandbox.path("typed.txt");
     let cat = format!("cat -v > {}", out.display());
-    sandbox.tmux(&["send-keys", "-t", "terminal-1", &cat, "Enter"]);
+    sandbox.tmux(&["send-keys", "-t", "space-1:0", &cat, "Enter"]);
 
     open(&mut paddock);
     paddock.send(b"I");
@@ -241,18 +240,18 @@ fn i_types_into_the_previewed_terminal_and_esc_is_never_sent() {
     paddock.send(b"\x04");
     wait_for_file(&out, "qzwv\n");
     assert!(!paddock.screen().contains("^["), "{}", paddock.screen());
-    assert_eq!(paddock.current_tab(), "2:terminal-2", "no jump");
+    assert_eq!(paddock.current_tab(), "2:home", "no jump");
 }
 
 #[test]
 fn esc_and_a_key_in_one_read_leave_interactive_preview_unsent() {
     let sandbox = Sandbox::new();
     let mut paddock = two_tabs(&sandbox);
-    claude(&sandbox, "terminal-1", "Stop", "s1", "/w/repo");
-    paddock.wait_for_text("idle");
+    claude(&sandbox, "space-1:0", "Stop", "s1", "/w/repo");
+    wait_anywhere(&paddock, "done");
     let out = sandbox.path("typed.txt");
     let cat = format!("cat -v > {}", out.display());
-    sandbox.tmux(&["send-keys", "-t", "terminal-1", &cat, "Enter"]);
+    sandbox.tmux(&["send-keys", "-t", "space-1:0", &cat, "Enter"]);
 
     open(&mut paddock);
     paddock.send(b"I");
@@ -274,16 +273,14 @@ fn esc_and_a_key_in_one_read_leave_interactive_preview_unsent() {
 fn x_asks_while_claude_runs_then_returns_to_the_dashboard() {
     let sandbox = Sandbox::new();
     let mut paddock = two_tabs(&sandbox);
-    claude(&sandbox, "terminal-1", "UserPromptSubmit", "s1", "/w/repo");
-    paddock.wait_for_text("running");
+    claude(&sandbox, "space-1:0", "UserPromptSubmit", "s1", "/w/repo");
+    wait_anywhere(&paddock, "running");
 
     open(&mut paddock);
     paddock.send(b"x");
     paddock.wait_for_text(ASK);
     paddock.send(b"y");
-    paddock.wait_for("terminal-1 closed", |_| {
-        sandbox.session_names() == ["terminal-2"]
-    });
+    paddock.wait_for("its pane closed", |_| tabs(&sandbox) == 1);
     paddock.wait_for_text("repo: no terminal");
     paddock.wait_for_text(OPEN);
 }
@@ -296,12 +293,12 @@ fn f_forks_the_selected_session() {
     std::fs::create_dir_all(&dir).unwrap();
     let dir = dir.canonicalize().unwrap();
     let id = "0000cccc-0000-4000-8000-00000000000c";
-    claude(&sandbox, "terminal-1", "Stop", id, dir.to_str().unwrap());
-    paddock.wait_for_text("idle");
+    claude(&sandbox, "space-1:0", "Stop", id, dir.to_str().unwrap());
+    wait_anywhere(&paddock, "done");
 
     open(&mut paddock);
     paddock.send(b"f");
-    paddock.wait_for_current_tab("3:terminal-3");
+    paddock.wait_for_current_tab("3:repo");
     assert_eq!(
         sandbox.claude_calls(),
         [format!("{} --resume {id} --fork-session", dir.display())]
@@ -318,14 +315,15 @@ fn task_rows_show_base_diff_files_age_and_merged() {
     let mut paddock = ready(&sandbox);
     claude(
         &sandbox,
-        "terminal-1",
+        "space-1:0",
         "UserPromptSubmit",
         SESSION,
         dir.to_str().unwrap(),
     );
-    paddock.wait_for_text("feat/x");
+    wait_anywhere(&paddock, "running");
 
     open(&mut paddock);
+    paddock.wait_for_text("feat/x");
     paddock.wait_for_text("base +1 −0  1 file  now");
     assert!(!paddock.screen().contains("merged"));
 

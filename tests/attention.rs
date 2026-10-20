@@ -57,20 +57,22 @@ fn new_tab(paddock: &mut Paddock, label: &str) {
 /// order, so once the help it opens is up, the earlier ones are done.
 fn settle(paddock: &mut Paddock) {
     paddock.command(b"?");
-    paddock.wait_for_text("paddock keys");
+    paddock.wait_for("help", |_| paddock.full_screen().contains("paddock keys"));
     paddock.send(b"\x1b");
-    paddock.wait_for("help closed", |s| !s.contains("paddock keys"));
+    paddock.wait_for("help closed", |_| {
+        !paddock.full_screen().contains("paddock keys")
+    });
 }
 
 #[test]
 fn waiting_and_finished_turns_notify_once_each() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
-    new_tab(&mut paddock, "2:terminal-2"); // look away from terminal-1
+    new_tab(&mut paddock, "2:home"); // look away from the first tab
 
     hooks(
         &sandbox,
-        "terminal-1",
+        "space-1:0",
         &[
             "SessionStart",
             "UserPromptSubmit",
@@ -97,31 +99,31 @@ fn the_terminal_you_look_at_never_notifies() {
     let mut paddock = ready(&sandbox);
     hooks(
         &sandbox,
-        "terminal-1",
+        "space-1:0",
         &["UserPromptSubmit", "PermissionRequest", "Stop"],
     );
-    paddock.wait_for_text("idle");
+    paddock.wait_for("idle", |_| paddock.full_screen().contains("idle"));
 
     // With the outer window in the background, even this terminal notifies.
     paddock.send(b"\x1b[O");
     settle(&mut paddock);
     hooks(
         &sandbox,
-        "terminal-1",
+        "space-1:0",
         &["UserPromptSubmit", "PermissionRequest"],
     );
     assert_eq!(sandbox.wait_for_notifications(1), [WAITING]);
 
     paddock.send(b"\x1b[I");
     settle(&mut paddock);
-    hooks(&sandbox, "terminal-1", &["Stop"]);
-    paddock.wait_for_text("idle");
+    hooks(&sandbox, "space-1:0", &["Stop"]);
+    paddock.wait_for("idle", |_| paddock.full_screen().contains("idle"));
 
-    // The sentinel, once terminal-1 is out of sight.
-    new_tab(&mut paddock, "2:terminal-2");
+    // The sentinel, once the first tab is out of sight.
+    new_tab(&mut paddock, "2:home");
     hooks(
         &sandbox,
-        "terminal-1",
+        "space-1:0",
         &["UserPromptSubmit", "PermissionRequest"],
     );
     assert_eq!(sandbox.wait_for_notifications(2), [WAITING, WAITING]);
@@ -131,20 +133,20 @@ fn the_terminal_you_look_at_never_notifies() {
 fn events_while_paddock_is_closed_never_notify() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
-    new_tab(&mut paddock, "2:terminal-2"); // reopens on terminal-2
+    new_tab(&mut paddock, "2:home"); // reopens on the second tab
     paddock.detach_keys();
     assert!(paddock.wait_exit());
 
     hooks(
         &sandbox,
-        "terminal-1",
+        "space-1:0",
         &["UserPromptSubmit", "PermissionRequest"],
     );
     let again = ready(&sandbox);
-    again.wait_for_text("waiting");
+    again.wait_for("waiting", |_| again.full_screen().contains("waiting"));
     hooks(
         &sandbox,
-        "terminal-1",
+        "space-1:0",
         &[
             // The reminder of the wait that began while closed.
             "Notification-permission_prompt",
@@ -163,36 +165,114 @@ fn c_a_a_cycles_through_sessions_that_need_you() {
     paddock.command(b"a");
     paddock.wait_for_text("no session needs you");
 
-    new_tab(&mut paddock, "2:terminal-2");
-    new_tab(&mut paddock, "3:terminal-3");
+    new_tab(&mut paddock, "2:home");
+    paddock.command(b"C"); // a second space, current
+    paddock.wait_for_tabs(&["1:home"]);
+    paddock.wait_for_text(PROMPT);
     let hook = |t: &str, s: &str, dir: &str, event: &str| {
         sandbox.hook(t, event, &payload_for(event, s, dir));
     };
-    hook("terminal-1", "s1", "/w/idle", "Stop");
-    hook("terminal-2", "s2", "/w/running", "UserPromptSubmit");
-    hook("terminal-3", "s3", "/w/waiting", "PermissionRequest");
-    paddock.wait_for_text(" waiting"); // the last hook: all three applied
+    hook("space-1:0", "s1", "/w/idle", "Stop");
+    hook("space-1:1", "s2", "/w/running", "UserPromptSubmit");
+    hook("space-2:0", "s3", "/w/waiting", "PermissionRequest");
+    // The last hook: all three applied.
+    paddock.wait_for_tabs(&["1:● claude"]);
 
     paddock.command(b"a");
-    paddock.wait_for_current_tab("1:terminal-1");
+    paddock.wait_for_tabs(&["1:● claude", "2:claude"]);
+    paddock.wait_for_current_tab("1:● claude");
     paddock.command(b"a");
-    paddock.wait_for_current_tab("3:terminal-3");
+    paddock.wait_for_tabs(&["1:● claude"]);
+    paddock.command(b"w");
+    paddock.send(b"k\r");
     paddock.command(b"2");
-    paddock.wait_for_current_tab("2:terminal-2");
+    paddock.wait_for_current_tab("2:claude");
     paddock.command(b"a");
-    paddock.wait_for_current_tab("3:terminal-3");
+    paddock.wait_for_tabs(&["1:● claude"]);
 
-    // Highlights, in the terminal's own colours: the waiting row and the
-    // tab holding the idle session.
+    // Highlights, in the terminal's own colours: the waiting agent's state
+    // and the tab holding the idle session.
     let (black, yellow, green) = (
         vt100::Color::Idx(0),
         vt100::Color::Idx(3),
         vt100::Color::Idx(2),
     );
-    assert!(paddock.rows()[1].starts_with(" waiting"));
-    assert_eq!(paddock.colors(1, 1), (black, yellow));
-    let bar = paddock.tab_bar();
-    let at = bar.find("1:terminal-1").expect("tab 1");
-    let tab1 = bar[..at].chars().count() as u16;
-    assert_eq!(paddock.colors(0, tab1).0, green);
+    // Rows: 0 SPACES, 1-4 two spaces, 5 blank, 6 AGENTS, 7 the waiting agent.
+    assert_eq!(paddock.sidebar()[7], " ● waiting             waiting");
+    assert_eq!(paddock.colors(7, 23), (black, yellow));
+    paddock.command(b"w");
+    paddock.send(b"k\r");
+    paddock.wait_for_tabs(&["1:● claude", "2:claude"]);
+    let left = harness::SIDEBAR;
+    assert_eq!(paddock.colors(0, left + 2).0, green, "the idle marker");
+}
+
+#[test]
+fn c_a_a_focuses_the_split_running_the_session() {
+    let sandbox = Sandbox::new();
+    let mut paddock = ready(&sandbox);
+    paddock.command(b"|");
+    paddock.wait_for("two prompts", |s| s.matches(PROMPT).count() == 2);
+    sandbox.hook("space-1:0.1", "Stop", &payload("Stop"));
+    paddock.wait_for_tabs(&["1:● claude"]); // the focused pane runs Claude
+    paddock.command(b"h"); // focus the left pane
+
+    paddock.command(b"a");
+    paddock.type_line("echo typed-into-the-split");
+
+    let capture = || sandbox.tmux(&["capture-pane", "-p", "-t", "space-1:0.1"]);
+    let start = std::time::Instant::now();
+    while !capture().contains("typed-into-the-split\n") {
+        assert!(
+            start.elapsed() < harness::TIMEOUT,
+            "split got:\n{}",
+            capture()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn a_turn_finished_out_of_sight_is_done_until_you_look_at_it() {
+    let sandbox = Sandbox::new();
+    let mut paddock = ready(&sandbox);
+    new_tab(&mut paddock, "2:home");
+
+    hooks(&sandbox, "space-1:0", &["UserPromptSubmit", "Stop"]);
+    paddock.wait_for("done", |_| paddock.full_screen().contains("done"));
+
+    // Looking at it, with the outer window focused, makes it idle.
+    paddock.command(b"1");
+    paddock.wait_for("idle", |_| {
+        let s = paddock.full_screen();
+        s.contains("idle") && !s.contains("done")
+    });
+}
+
+#[test]
+fn a_turn_finished_in_view_is_idle_at_once() {
+    let sandbox = Sandbox::new();
+    let paddock = ready(&sandbox);
+
+    hooks(&sandbox, "space-1:0", &["UserPromptSubmit", "Stop"]);
+
+    paddock.wait_for("idle", |_| paddock.full_screen().contains("idle"));
+    assert!(!paddock.full_screen().contains("done"));
+}
+
+#[test]
+fn a_notifier_that_fails_says_so_in_a_notice() {
+    let sandbox = Sandbox::new();
+    let stub = sandbox.path("bin/osascript");
+    std::fs::write(&stub, "#!/bin/sh\necho 'syntax error' >&2\nexit 1\n").unwrap();
+    let mut paddock = ready(&sandbox);
+    new_tab(&mut paddock, "2:home"); // look away from the first tab
+
+    hooks(
+        &sandbox,
+        "space-1:0",
+        &["UserPromptSubmit", "PermissionRequest"],
+    );
+
+    paddock.wait_for_text("cannot notify: syntax error");
 }

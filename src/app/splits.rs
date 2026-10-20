@@ -1,72 +1,80 @@
-//! Splitting a tab into several terminals, moving focus between them, and
-//! keeping each terminal's size and the saved layout in step.
+//! Splitting a tab into several panes and moving focus between them, through
+//! tmux, which keeps the layout (ADR 0006); and keeping each space's size and
+//! the saved state in step.
 
-use super::layout::{terminal_size, Direction, Split};
 use super::saved::{self, Saved};
+use super::space::clamp;
 use super::state::App;
+use crate::input::Direction;
 use anyhow::Result;
 
 impl App {
-    /// Split the focused terminal; a new shell takes the second half and focus.
-    pub fn split(&mut self, split: Split) -> Result<()> {
-        let area = self.area();
-        let Some(tab) = self.tabs.current() else {
+    /// Split the focused pane: side by side if `columns`, else top and
+    /// bottom. A new shell takes the second half and the focus.
+    pub fn split(&mut self, columns: bool) -> Result<()> {
+        let (Some(pane), Some(id)) = (
+            self.current_pane(),
+            self.current_space().map(|i| i.id.clone()),
+        ) else {
             return Ok(());
         };
-        // Where the new terminal will be, so it starts at its final size.
-        let mut probe = tab.content.clone();
-        probe.split(split, String::new());
-        let rect = probe
-            .rects(area)
-            .0
-            .into_iter()
-            .find(|(id, _)| id.is_empty());
-        let size = terminal_size(rect.map_or(area, |(_, r)| r));
-        let id = self.new_terminal(size)?;
-        if let Some(tab) = self.tabs.current_mut() {
-            tab.content.split(split, id);
-        }
-        self.relayout()
+        let dir = self.new_dir();
+        self.server.split(&pane, columns, &dir)?;
+        self.refresh(&id)
     }
 
-    pub fn move_focus(&mut self, dir: Direction) {
-        let area = self.area();
-        if let Some(tab) = self.tabs.current_mut() {
-            tab.content.move_focus(dir, area);
-        }
+    /// Focus the pane next to the focused one in `dir`, if there is one.
+    pub fn move_focus(&mut self, dir: Direction) -> Result<()> {
+        let (Some(pane), Some(id)) = (
+            self.current_pane(),
+            self.current_space().map(|i| i.id.clone()),
+        ) else {
+            return Ok(());
+        };
+        let flag = match dir {
+            Direction::Left => "-L",
+            Direction::Down => "-D",
+            Direction::Up => "-U",
+            Direction::Right => "-R",
+        };
+        self.server.select_towards(&pane, flag)?;
+        self.refresh(&id)
     }
 
+    /// Give the focused pane and the panes beside it the same size.
     pub fn equalise(&mut self) -> Result<()> {
-        if let Some(tab) = self.tabs.current_mut() {
-            tab.content.equalise();
+        match self.current_pane() {
+            Some(pane) => self.server.spread(&pane),
+            None => Ok(()),
         }
-        self.relayout()
     }
 
-    /// Give every terminal, in every tab, the size its layout gives it.
+    /// Show every space at the size of the session area; tmux resizes its
+    /// windows and reports the new layout.
     pub(super) fn relayout(&mut self) -> Result<()> {
         let area = self.area();
-        // One terminal that cannot be resized (it just ended) stops no other.
+        let size = clamp((area.width, area.height));
+        // One space that cannot be resized (it just ended) stops no other.
         let mut result = Ok(());
-        for tab in self.tabs.iter() {
-            for (id, rect) in tab.content.rects(area).0 {
-                let (cols, rows) = terminal_size(rect);
-                match self.terminals.get_mut(&id) {
-                    Some(t) if t.emulator().size() != (cols, rows) => {
-                        result = result.and(t.resize(cols, rows));
-                    }
-                    _ => {}
-                }
-            }
+        for space in &mut self.spaces {
+            result = result.and(space.resize(size));
         }
         result
     }
 
-    /// Write the tabs and their layouts to the state directory.
+    /// After a command or click: sizes follow (the sidebar may have come,
+    /// gone or changed width), and the state is saved, in case paddock does
+    /// not get to detach.
+    pub(super) fn relayout_and_save(&mut self) {
+        self.report(|app| app.relayout());
+        self.report(|app| app.save());
+    }
+
+    /// Write the current space to the state directory.
     pub(super) fn save(&self) -> Result<()> {
         let saved = Saved {
-            current: self.tabs.current_index(),
-            tabs: self.tabs.iter().map(|t| t.content.clone()).collect(),
+            space: self.current_space().map(|i| i.id.clone()),
+            sidebar: self.sidebar_wish,
         };
         saved::save(&self.state_dir, &saved)
     }
