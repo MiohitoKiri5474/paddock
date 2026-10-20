@@ -11,7 +11,9 @@ use super::Event;
 use crate::hooks::now_ms;
 use crate::sessions::{self, state_after, HookRecord, State};
 use std::collections::HashMap;
-use std::process::{Command, Stdio};
+use std::io::Read;
+use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
 
 /// The AppleScript that shows a notification; its message is the script's
 /// first argument, so it needs no AppleScript quoting.
@@ -20,6 +22,44 @@ const NOTIFY_SCRIPT: [&str; 3] = [
     "display notification (item 1 of argv) with title \"paddock\"",
     "end run",
 ];
+
+/// How long a notification may take before it counts as failed.
+const NOTIFY_TIMEOUT: Duration = Duration::from_secs(10);
+/// How often to look whether the notifier finished.
+const NOTIFY_POLL: Duration = Duration::from_millis(50);
+
+/// Wait up to `timeout` for the notifier `child` (stderr piped) to finish.
+/// Returns what it said on stderr if it failed; one that hangs is killed,
+/// so waiting threads never pile up.
+fn wait_notifier(mut child: Child, timeout: Duration) -> Result<(), String> {
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(NOTIFY_POLL),
+            Ok(None) => {
+                // Best effort: it may have ended just now.
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "the notifier did not finish in {}s",
+                    timeout.as_secs()
+                ));
+            }
+            Err(e) => return Err(e.to_string()),
+        }
+    };
+    if status.success() {
+        return Ok(());
+    }
+    let mut said = String::new();
+    if let Some(mut stderr) = child.stderr.take() {
+        let _ = stderr.read_to_string(&mut said);
+    }
+    Err(Some(said.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| status.to_string()))
+}
 
 /// Overrides the command that shows notifications (tests use a stub).
 const OSASCRIPT_VAR: &str = "PADDOCK_OSASCRIPT";
@@ -201,11 +241,8 @@ impl App {
             Ok(child) => {
                 let events = self.events.clone();
                 std::thread::spawn(move || {
-                    let Ok(out) = child.wait_with_output() else {
-                        return;
-                    };
-                    if !out.status.success() {
-                        let error = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                    if let Err(error) = wait_notifier(child, NOTIFY_TIMEOUT) {
+                        // Nobody listens once paddock quits.
                         let _ = events.send(Event::NotifyFailed(error));
                     }
                 });
@@ -264,6 +301,38 @@ mod tests {
             "{}",
             String::from_utf8_lossy(&result.stderr)
         );
+    }
+
+    fn sh(script: &str) -> std::process::Child {
+        Command::new("/bin/sh")
+            .args(["-c", script])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap()
+    }
+
+    #[test]
+    fn a_notifier_that_succeeds_is_fine() {
+        assert_eq!(wait_notifier(sh("true"), Duration::from_secs(5)), Ok(()));
+    }
+
+    #[test]
+    fn a_notifier_that_fails_gives_what_it_said() {
+        let got = wait_notifier(
+            sh("echo 'syntax error' >&2; exit 1"),
+            Duration::from_secs(5),
+        );
+        assert_eq!(got, Err("syntax error".to_string()));
+    }
+
+    #[test]
+    fn a_notifier_that_hangs_is_killed_and_counts_as_failed() {
+        let started = std::time::Instant::now();
+        let got = wait_notifier(sh("sleep 30"), Duration::from_millis(200));
+        assert!(started.elapsed() < Duration::from_secs(5), "it was killed");
+        assert!(got.unwrap_err().contains("did not finish"));
     }
 
     #[test]
