@@ -1,11 +1,10 @@
 //! The main loop: feed terminal output, route input, redraw at most once a frame.
 
-use super::attention::tab_states;
 use super::input::Flow;
-use super::layout::Split;
+use super::item::changes_structure;
 use super::rows::Row;
 use super::screen::Screen;
-use super::state::{session_area, App, Mode, TAB_BAR_ROWS};
+use super::state::{App, CloseTarget, Mode, Renaming, TAB_BAR_ROWS};
 use super::{watch, Event};
 use crate::hooks::now_ms;
 use crate::tmux::Message;
@@ -113,34 +112,45 @@ fn handle(app: &mut App, event: Event, screen: &mut Screen) -> Result<(Flow, boo
     let flow = match event {
         Event::Tmux {
             session,
-            msg: Message::Output { data, .. },
+            msg: Message::Output { pane, data },
         } => {
-            if let Some(t) = app.terminals.get_mut(&session) {
+            if !app.terminals.contains_key(&pane) {
+                // A pane made since the last look, maybe through `tmux
+                // attach`. If the item has just ended, its exit follows.
+                let _ = app.refresh(&session);
+            }
+            if let Some(t) = app.terminals.get_mut(&pane) {
                 t.output(&data);
             }
-            let seen = app.shows(&session) || app.shows_in_preview(&session);
+            let seen = app.shows(&pane) || app.shows_in_preview(&pane);
             return Ok((Flow::Continue, seen));
         }
-        // That terminal's tmux session ended: its shell exited or it was closed.
+        // That item's tmux session ended: its last pane exited or was closed.
         Event::Tmux {
             session,
             msg: Message::Exit,
         } => {
-            if app.terminal_ended(&session) {
+            if app.item_ended(&session) {
                 Flow::Continue
             } else {
                 Flow::Quit
             }
         }
+        Event::Tmux {
+            session,
+            msg: Message::Notification(n),
+        } if changes_structure(&n) => {
+            // If the item has just ended, its exit follows.
+            let _ = app.refresh(&session);
+            Flow::Continue
+        }
         Event::Tmux { .. } => return Ok((Flow::Continue, false)),
         Event::Hooks(records) => {
             app.hooks(&records);
-            app.relayout()?;
             Flow::Continue
         }
         Event::Agents(taken, agents) => {
             app.sessions.reconcile(taken, &agents);
-            app.relayout()?;
             Flow::Continue
         }
         Event::Git(read) => {
@@ -183,14 +193,16 @@ fn draw(screen: &mut Screen, app: &App) -> Result<()> {
         let side = app.sidebar_width().min(full.width);
         if side > 0 {
             let selected = match &app.mode {
-                Mode::Sidebar(selected) => selected.as_ref(),
+                Mode::Sidebar(Some(id)) => app.items.iter().position(|i| i.id == *id),
                 _ => None,
             };
             let side_area = Rect {
                 width: side,
                 ..full
             };
-            sidebar::render(&rows, selected, side_area, f.buffer_mut());
+            let items = app.sidebar_items(&rows);
+            let bg = app.current_item_bg;
+            sidebar::render(&items, selected, bg, side_area, f.buffer_mut());
         }
         let area = Rect {
             x: full.x + side,
@@ -202,9 +214,8 @@ fn draw(screen: &mut Screen, app: &App) -> Result<()> {
             ..area
         };
         let bar_cursor = draw_tab_bar(app, &rows, bar_area, f.buffer_mut());
-        let term_area = session_area((full.width, full.height), side);
-        let term_cursor = draw_terminals(app, term_area, f.buffer_mut());
-        let dash_cursor = draw_dashboard(app, &rows, term_area, f.buffer_mut());
+        let term_cursor = draw_panes(app, f.buffer_mut());
+        let dash_cursor = draw_dashboard(app, &rows, f.buffer_mut());
         if let Mode::Help = app.mode {
             help::render(&app.prefix_name, full, f.buffer_mut());
         } else if app.dashboard().is_some() {
@@ -226,52 +237,60 @@ fn draw(screen: &mut Screen, app: &App) -> Result<()> {
 fn draw_tab_bar(app: &App, rows: &[Row], area: Rect, buf: &mut Buffer) -> Option<Position> {
     let armed = app.prefix.armed().then_some(app.prefix_name.as_str());
     let ask = match &app.mode {
-        Mode::ConfirmClose { state, .. } => {
-            Some(format!("Claude is {}: close? y/n", state.label()))
+        Mode::ConfirmClose { state, target, .. } => {
+            let what = match target {
+                CloseTarget::Pane(_) => "close",
+                CloseTarget::Item(_) => "close workspace",
+            };
+            Some(format!("Claude is {}: {what}? y/n", state.label()))
         }
         _ => None,
     };
     let bar = TabBar {
         // The question takes the whole bar, so it always fits.
-        names: match ask {
+        tabs: match ask {
             Some(_) => Vec::new(),
-            None => app.tabs.iter().map(|t| t.name.as_str()).collect(),
+            None => app.tabs(rows),
         },
-        current: app.tabs.current_index(),
+        current: app.current_item().map_or(0, |i| i.structure.current),
         rename: match &app.mode {
-            Mode::Rename(text) => Some(text.as_str()),
+            Mode::Rename { target, text } => {
+                let what = match target {
+                    Renaming::Tab => "tab",
+                    Renaming::Item => "workspace",
+                };
+                Some((what, text.as_str()))
+            }
             _ => None,
         },
         status: ask.as_deref().or(app.notice.as_deref()).or(armed),
-        states: tab_states(rows, app.tabs.iter().count()),
     };
     bar.render(area, buf)
 }
 
-/// The current tab's terminals and the borders between them. Returns the
-/// focused terminal's cursor.
-fn draw_terminals(app: &App, area: Rect, buf: &mut Buffer) -> Option<Position> {
-    let tab = app.tabs.current()?;
-    let (panes, borders) = tab.content.rects(area);
+/// The current tab's panes and the borders between them. Returns the
+/// focused pane's cursor.
+fn draw_panes(app: &App, buf: &mut Buffer) -> Option<Position> {
+    let focus = app.current_pane();
+    let panes = app.pane_rects();
     let mut cursor = None;
-    for (id, rect) in panes {
-        let Some(t) = app.terminals.get(&id) else {
+    for (pane, rect) in &panes {
+        let Some(t) = app.terminals.get(pane) else {
             continue;
         };
-        let at = session_view::render(t.emulator(), rect, buf);
-        if id == tab.content.focus {
+        let at = session_view::render(t.emulator(), *rect, buf);
+        if Some(pane) == focus.as_ref() {
             cursor = at;
         }
     }
-    for b in borders {
-        session_view::border(b.area, b.split == Split::Columns, buf);
-    }
+    let rects: Vec<Rect> = panes.iter().map(|(_, r)| *r).collect();
+    session_view::borders(app.area(), &rects, buf);
     cursor
 }
 
-/// The dashboard over the terminals, if open. Returns the previewed
-/// terminal's cursor while typing into it.
-fn draw_dashboard(app: &App, rows: &[Row], area: Rect, buf: &mut Buffer) -> Option<Position> {
+/// The dashboard over the panes, if open. Returns the previewed pane's
+/// cursor while typing into it.
+fn draw_dashboard(app: &App, rows: &[Row], buf: &mut Buffer) -> Option<Position> {
     let d = app.dashboard()?;
     let row = app.dashboard_row(d);
     let view = dashboard::View {
@@ -279,10 +298,10 @@ fn draw_dashboard(app: &App, rows: &[Row], area: Rect, buf: &mut Buffer) -> Opti
         details: &app.task_details,
         selected: d.selected.as_ref(),
         preview: row
-            .and_then(|r| app.terminals.get(&r.terminal))
+            .and_then(|r| app.terminals.get(&r.pane))
             .map(|t| t.emulator()),
         interactive: d.interactive,
         now: now_ms() / MS_PER_SEC,
     };
-    dashboard::render(&view, area, buf)
+    dashboard::render(&view, app.area(), buf)
 }

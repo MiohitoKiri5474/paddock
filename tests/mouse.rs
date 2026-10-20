@@ -1,20 +1,19 @@
-//! Ticket 12: the mouse. Clicks focus terminals, jump to sidebar rows and
-//! switch tabs; dragging copies text; programs that ask for the mouse get it
-//! in their own coordinates unless Shift is held.
+//! Ticket 12: the mouse. Clicks focus panes, pick sidebar items and switch
+//! tabs; dragging copies text; programs that ask for the mouse get it in
+//! their own coordinates unless Shift is held.
 //!
-//! The screen is 100x30. After one side-by-side split the left terminal is
-//! columns 0-49, the border column 50, the right terminal columns 51-99.
+//! The screen is 100x30 and the sidebar takes 24 columns; columns here count
+//! from its right, as the harness does. After one side-by-side split the left
+//! pane is columns 0-37, the border column 38, the right pane columns 39-75.
 
 mod harness;
 
 use harness::{Paddock, Sandbox, PROMPT, TIMEOUT};
 use std::time::{Duration, Instant};
 
-const RIGHT: u16 = 51;
-const SPIKE: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/spikes/02-subagent-worktree/fixtures"
-);
+const RIGHT: u16 = 39;
+/// Right edge of the session area.
+const END: usize = 76;
 
 fn ready(sandbox: &Sandbox) -> Paddock {
     let paddock = sandbox.launch();
@@ -64,11 +63,11 @@ fn clicking_a_split_focuses_it() {
 
     p.click(10, 10);
     p.type_line("echo left-$((1+1))");
-    wait_in_columns(&p, "left-2", 0, 50);
+    wait_in_columns(&p, "left-2", 0, 38);
 
-    p.click(70, 10);
+    p.click(50, 10);
     p.type_line("echo right-$((2+2))");
-    wait_in_columns(&p, "right-4", 51, 100);
+    wait_in_columns(&p, "right-4", 39, END);
 }
 
 #[test]
@@ -76,29 +75,28 @@ fn clicking_a_tab_label_switches_tabs() {
     let sandbox = Sandbox::new();
     let mut p = ready(&sandbox);
     p.command(b"c");
-    p.wait_for_tabs(&["1:terminal-1", "2:terminal-2"]);
-    p.wait_for_current_tab("2:terminal-2");
+    p.wait_for_tabs(&["1:home", "2:home"]);
+    p.wait_for_current_tab("2:home");
 
-    // " 1:terminal-1 " takes columns 0-13, " 2:terminal-2 " 14-27.
+    // " 1:home │" takes columns 0-8, " 2:home │" 9-17.
     p.click(3, 0);
-    p.wait_for_current_tab("1:terminal-1");
-    p.click(20, 0);
-    p.wait_for_current_tab("2:terminal-2");
+    p.wait_for_current_tab("1:home");
+    p.click(12, 0);
+    p.wait_for_current_tab("2:home");
 }
 
 #[test]
-fn clicking_a_sidebar_row_jumps_to_its_terminal() {
+fn clicking_a_sidebar_item_shows_its_tabs() {
     let sandbox = Sandbox::new();
     let mut p = ready(&sandbox);
-    let start = std::fs::read_to_string(format!("{SPIKE}/SessionStart.json")).expect("payload");
-    sandbox.hook("terminal-1", "SessionStart", &start);
-    p.wait_for_text("sessions");
     p.command(b"c");
-    p.wait_for_current_tab("2:terminal-2");
+    p.wait_for_tabs(&["1:home", "2:home"]);
+    p.command(b"C");
+    p.wait_for_tabs(&["1:home"]);
 
-    // Row 0 is the sidebar's title, row 1 its first session.
-    p.click(3, 1);
-    p.wait_for_current_tab("1:terminal-1");
+    // Row 0 is the sidebar's title, rows 1-2 the first item.
+    p.click_screen(3, 2);
+    p.wait_for_tabs(&["1:home", "2:home"]);
 }
 
 #[test]
@@ -110,7 +108,7 @@ fn wheel_scrolls_the_split_under_the_pointer() {
     split_side_by_side(&mut p);
 
     p.wheel(true, 10, 10);
-    wait_in_columns(&p, "[3/", 0, 50);
+    wait_in_columns(&p, "[3/", 0, 38);
 }
 
 #[test]
@@ -148,9 +146,9 @@ fn programs_that_ask_for_the_mouse_get_it_in_their_own_coordinates() {
     assert!(col >= RIGHT, "marker in the right terminal");
     p.command(b"h"); // the left terminal has the focus, not the one clicked
 
-    // Column 60, row 5 of the screen is column 9, row 4 of the right terminal.
-    p.click(60, 5);
-    wait_in_columns(&p, "^[[<0;10;5M^[[<0;10;5m", 51, 100);
+    // Column 48, row 5 is column 9, row 4 of the right pane.
+    p.click(48, 5);
+    wait_in_columns(&p, "^[[<0;10;5M^[[<0;10;5m", 39, END);
 
     // Shift keeps the mouse in paddock: dragging copies.
     p.drag((col, row), (col + 5, row), true);

@@ -1,4 +1,7 @@
-//! The tab bar: one row above the terminals.
+//! The tab bar: one row above the panes, listing the current item's tabs.
+//! Tabs are numbered and set apart by thin lines; the current one is drawn
+//! reversed and bold, and a tab holding a Claude that waits or is idle gets
+//! its colour and a `●`.
 
 use super::sidebar::highlight;
 use crate::sessions::State;
@@ -7,32 +10,49 @@ use ratatui::layout::{Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
 
+/// Drawn between two tabs.
+const SEPARATOR: &str = "│";
+/// Marks a tab holding a Claude that needs you.
+pub const MARKER: &str = "●";
+
+/// One tab as the bar shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Tab {
+    pub name: String,
+    /// The most urgent Claude state in the tab.
+    pub state: State,
+}
+
 pub struct TabBar<'a> {
-    pub names: Vec<&'a str>,
+    pub tabs: Vec<Tab>,
     pub current: usize,
-    /// Text being typed while renaming the current tab.
-    pub rename: Option<&'a str>,
+    /// While renaming: what is renamed (`tab`, `workspace`) and the text so far.
+    pub rename: Option<(&'a str, &'a str)>,
     /// Shown at the right: a message, or the prefix while it is armed.
     pub status: Option<&'a str>,
-    /// The most urgent session state in each tab, for highlights.
-    pub states: Vec<State>,
 }
 
-/// Label of tab `index` (0-based) as drawn: `1:name`.
-pub fn label(index: usize, name: &str) -> String {
-    format!("{}:{name}", index + 1)
+/// Whether a tab in `state` gets the marker.
+fn needs_you(state: State) -> bool {
+    matches!(state, State::Waiting | State::Idle)
 }
 
-/// Tab `index` as drawn in the bar, with a space on either side.
-fn cell(index: usize, name: &str) -> String {
-    format!(" {} ", label(index, name))
+/// Tab `index` as drawn in the bar: ` 1:name ` (` 1:name ● ` if it needs you).
+fn cell(index: usize, tab: &Tab) -> String {
+    let marker = if needs_you(tab.state) {
+        format!(" {MARKER}")
+    } else {
+        String::new()
+    };
+    format!(" {}:{}{marker} ", index + 1, tab.name)
 }
 
-/// The tab drawn at column `x` of the bar (0 = its left edge), if any.
-pub fn tab_at(names: &[&str], x: u16) -> Option<usize> {
+/// The tab drawn at column `x` of the bar (0 = its left edge), if any. A
+/// separator counts as the tab to its left.
+pub fn tab_at(tabs: &[Tab], x: u16) -> Option<usize> {
     let mut right = 0;
-    names.iter().enumerate().find_map(|(i, name)| {
-        right += Span::raw(cell(i, name)).width();
+    tabs.iter().enumerate().find_map(|(i, tab)| {
+        right += Span::raw(cell(i, tab)).width() + Span::raw(SEPARATOR).width();
         (usize::from(x) < right).then_some(i)
     })
 }
@@ -47,8 +67,8 @@ impl TabBar<'_> {
         buf.set_style(row, Style::default());
         let mut cursor = None;
         match self.rename {
-            Some(text) => {
-                let prompt = format!(" rename tab: {text}");
+            Some((what, text)) => {
+                let prompt = format!(" rename {what}: {text}");
                 let (x, _) = buf.set_stringn(
                     row.x,
                     row.y,
@@ -74,17 +94,19 @@ impl TabBar<'_> {
 
     fn render_tabs(&self, row: Rect, buf: &mut Buffer) {
         let mut x = row.x;
-        for (i, name) in self.names.iter().enumerate() {
-            let text = cell(i, name);
-            let mut style = highlight(self.states.get(i).copied().unwrap_or(State::Unknown));
+        let dim = Style::default().add_modifier(Modifier::DIM);
+        for (i, tab) in self.tabs.iter().enumerate() {
+            let mut style = highlight(tab.state);
             if i == self.current {
                 style = style.add_modifier(Modifier::REVERSED | Modifier::BOLD);
             }
-            let left = usize::from(row.right().saturating_sub(x));
-            if left == 0 {
-                break;
+            for (text, style) in [(cell(i, tab), style), (SEPARATOR.to_string(), dim)] {
+                let left = usize::from(row.right().saturating_sub(x));
+                if left == 0 {
+                    return;
+                }
+                (x, _) = buf.set_stringn(x, row.y, &text, left, style);
             }
-            (x, _) = buf.set_stringn(x, row.y, &text, left, style);
         }
     }
 }
@@ -109,24 +131,38 @@ mod tests {
             .to_string()
     }
 
-    fn bar<'a>(names: Vec<&'a str>, current: usize) -> TabBar<'a> {
+    fn tabs(names: &[&str]) -> Vec<Tab> {
+        names
+            .iter()
+            .map(|n| Tab {
+                name: n.to_string(),
+                state: State::Unknown,
+            })
+            .collect()
+    }
+
+    fn bar(names: &[&str], current: usize) -> TabBar<'static> {
         TabBar {
-            names,
+            tabs: tabs(names),
             current,
             rename: None,
             status: None,
-            states: vec![],
         }
     }
 
     #[test]
-    fn tabs_holding_sessions_that_need_you_stand_out() {
-        let b = TabBar {
-            states: vec![State::Waiting, State::Idle, State::Running],
-            ..bar(vec!["w", "i", "r"], 1)
-        };
-        let (buf, _) = draw(&b, 30);
-        let (waiting, idle, running) = (&buf[(1, 0)], &buf[(6, 0)], &buf[(11, 0)]);
+    fn tabs_holding_sessions_that_need_you_stand_out_with_a_marker() {
+        let mut b = bar(&["w", "i", "r"], 1);
+        for (tab, state) in b
+            .tabs
+            .iter_mut()
+            .zip([State::Waiting, State::Idle, State::Running])
+        {
+            tab.state = state;
+        }
+        let (buf, _) = draw(&b, 40);
+        assert_eq!(text(&buf), " 1:w ● │ 2:i ● │ 3:r │");
+        let (waiting, idle, running) = (&buf[(1, 0)], &buf[(9, 0)], &buf[(17, 0)]);
         assert_eq!((waiting.fg, waiting.bg), (Color::Black, Color::Yellow));
         assert_eq!(idle.fg, Color::Green);
         assert!(idle.modifier.contains(Modifier::REVERSED), "still current");
@@ -134,38 +170,40 @@ mod tests {
     }
 
     #[test]
-    fn numbers_tabs_and_highlights_the_current_one() {
-        let (buf, cursor) = draw(&bar(vec!["shell", "logs"], 1), 30);
-        assert_eq!(text(&buf), " 1:shell  2:logs");
+    fn numbers_tabs_separates_them_and_highlights_the_current_one() {
+        let (buf, cursor) = draw(&bar(&["shell", "logs"], 1), 30);
+        assert_eq!(text(&buf), " 1:shell │ 2:logs │");
         assert!(!buf[(1, 0)].modifier.contains(Modifier::REVERSED));
-        assert!(buf[(9, 0)].modifier.contains(Modifier::REVERSED));
+        assert!(buf[(10, 0)].modifier.contains(Modifier::REVERSED));
+        assert!(buf[(10, 0)].modifier.contains(Modifier::BOLD));
+        assert!(buf[(9, 0)].modifier.contains(Modifier::DIM), "separator");
         assert_eq!(cursor, None);
     }
 
     #[test]
     fn rename_prompt_replaces_the_tabs_and_places_the_cursor() {
         let b = TabBar {
-            rename: Some("new"),
-            ..bar(vec!["shell"], 0)
+            rename: Some(("workspace", "new")),
+            ..bar(&["shell"], 0)
         };
         let (buf, cursor) = draw(&b, 30);
-        assert_eq!(text(&buf), " rename tab: new");
-        assert_eq!(cursor, Some(Position::new(16, 0)));
+        assert_eq!(text(&buf), " rename workspace: new");
+        assert_eq!(cursor, Some(Position::new(22, 0)));
     }
 
     #[test]
     fn status_sits_at_the_right_and_long_bars_are_cut() {
         let b = TabBar {
             status: Some("C-a"),
-            ..bar(vec!["a", "b"], 0)
+            ..bar(&["a", "b"], 0)
         };
         let (buf, _) = draw(&b, 20);
-        assert_eq!(text(&buf), " 1:a  2:b       C-a");
-        let (buf, _) = draw(&bar(vec!["a-very-long-tab-name"], 0), 10);
+        assert_eq!(text(&buf), " 1:a │ 2:b │    C-a");
+        let (buf, _) = draw(&bar(&["a-very-long-tab-name"], 0), 10);
         assert_eq!(text(&buf), " 1:a-very-");
         let b = TabBar {
             status: Some("cannot read /a/long/path"),
-            ..bar(vec!["a", "b"], 0)
+            ..bar(&["a", "b"], 0)
         };
         let (buf, _) = draw(&b, 20);
         assert_eq!(text(&buf), " cannot read /a/long");
@@ -173,12 +211,12 @@ mod tests {
 
     #[test]
     fn clicks_find_the_tab_drawn_under_them() {
-        let names = ["shell", "漢字"];
-        // " 1:shell " is columns 0-8, " 2:漢字 " 9-16.
-        assert_eq!(tab_at(&names, 0), Some(0));
-        assert_eq!(tab_at(&names, 8), Some(0));
-        assert_eq!(tab_at(&names, 9), Some(1));
-        assert_eq!(tab_at(&names, 16), Some(1));
-        assert_eq!(tab_at(&names, 17), None);
+        let tabs = tabs(&["shell", "漢字"]);
+        // " 1:shell │" is columns 0-9, " 2:漢字 │" 10-18.
+        assert_eq!(tab_at(&tabs, 0), Some(0));
+        assert_eq!(tab_at(&tabs, 9), Some(0));
+        assert_eq!(tab_at(&tabs, 10), Some(1));
+        assert_eq!(tab_at(&tabs, 18), Some(1));
+        assert_eq!(tab_at(&tabs, 19), None);
     }
 }

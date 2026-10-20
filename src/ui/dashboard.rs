@@ -296,8 +296,8 @@ mod tests {
     fn row(label: &str, state: State, tasks: Vec<TaskRow>) -> Row {
         Row {
             pane: format!("%{label}"),
-            terminal: format!("${label}"),
-            tab: 0,
+            item: "$1".into(),
+            window: "@1".into(),
             label: label.into(),
             state,
             tasks,

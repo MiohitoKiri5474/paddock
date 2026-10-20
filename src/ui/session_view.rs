@@ -66,12 +66,20 @@ pub fn cells(emu: &Emulator, first: u16, area: Rect, buf: &mut Buffer) {
     }
 }
 
-/// Draw the border between two split terminals over `area`: a vertical line
-/// between side-by-side terminals, else a horizontal one.
-pub fn border(area: Rect, vertical: bool, buf: &mut Buffer) {
-    let symbol = if vertical { "│" } else { "─" };
-    for y in area.top()..area.bottom() {
-        for x in area.left()..area.right() {
+/// Draw the borders between the split panes placed at `panes` inside
+/// `area`: tmux leaves one cell between two panes (ADR 0006). A gap beside a
+/// pane is a vertical line, any other a horizontal one.
+pub fn borders(area: Rect, panes: &[Rect], buf: &mut Buffer) {
+    let right = panes.iter().map(|r| r.right()).max().unwrap_or(0);
+    let bottom = panes.iter().map(|r| r.bottom()).max().unwrap_or(0);
+    let covered = |x: u16, y: u16| panes.iter().any(|r| r.contains(Position::new(x, y)));
+    for y in area.top()..bottom.min(area.bottom()) {
+        for x in area.left()..right.min(area.right()) {
+            if covered(x, y) {
+                continue;
+            }
+            let beside = (x > area.left() && covered(x - 1, y)) || covered(x + 1, y);
+            let symbol = if beside { "│" } else { "─" };
             buf[(x, y)].set_symbol(symbol).set_style(Style::reset());
         }
     }
@@ -82,14 +90,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn borders_are_lines_across_their_area() {
-        let mut buf = Buffer::empty(Rect::new(0, 0, 3, 2));
-        border(Rect::new(1, 0, 1, 2), true, &mut buf);
-        border(Rect::new(0, 1, 1, 1), false, &mut buf);
-        assert_eq!(buf[(1, 0)].symbol(), "│");
-        assert_eq!(buf[(1, 1)].symbol(), "│");
-        assert_eq!(buf[(0, 1)].symbol(), "─");
-        assert_eq!(buf[(0, 0)].symbol(), " ");
+    fn borders_fill_the_gaps_between_panes() {
+        // 3 | (1 over 1), 3x3: column 1 and the cell at (2, 1) are gaps.
+        let area = Rect::new(0, 0, 4, 3);
+        let mut buf = Buffer::empty(area);
+        let panes = [
+            Rect::new(0, 0, 1, 3),
+            Rect::new(2, 0, 1, 1),
+            Rect::new(2, 2, 1, 1),
+        ];
+        borders(area, &panes, &mut buf);
+        let row = |y: u16| (0..4).map(|x| buf[(x, y)].symbol()).collect::<String>();
+        assert_eq!(row(0), " │  ");
+        assert_eq!(row(1), " │─ ");
+        assert_eq!(row(2), " │  ");
     }
 
     /// Render into a fresh buffer, as a frame would.

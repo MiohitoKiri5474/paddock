@@ -1,4 +1,6 @@
-//! Ticket 04: tabs and prefix keys.
+//! Tickets 04 and 14: sidebar items (tmux sessions), their tabs (windows)
+//! and prefix keys. Shell tabs are named after their directory: the test
+//! shells start in the sandbox's `home`.
 
 mod harness;
 
@@ -19,25 +21,147 @@ fn new_tab(paddock: &mut Paddock, labels: &[&str]) {
     paddock.wait_for_text(PROMPT);
 }
 
-#[test]
-fn the_tab_bar_shows_the_first_terminal() {
-    let sandbox = Sandbox::new();
-    let paddock = ready(&sandbox);
+/// Window names of tmux session `session`, in order.
+fn windows(sandbox: &Sandbox, session: &str) -> Vec<String> {
+    sandbox
+        .tmux(&["list-windows", "-t", session, "-F", "#{window_name}"])
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
 
-    paddock.wait_for_tabs(&["1:terminal-1"]);
-    assert_eq!(paddock.current_tab(), "1:terminal-1");
+/// Wait until the sidebar shows exactly these lines (blank ones dropped).
+fn wait_for_sidebar(paddock: &Paddock, want: &[&str]) {
+    let lines = || -> Vec<String> {
+        paddock
+            .sidebar()
+            .into_iter()
+            .filter(|l| !l.is_empty())
+            .collect()
+    };
+    let start = std::time::Instant::now();
+    while start.elapsed() < harness::TIMEOUT {
+        if lines() == want {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    panic!(
+        "sidebar is {:?}, not {want:?}; screen:\n{}",
+        lines(),
+        paddock.full_screen()
+    );
 }
 
 #[test]
-fn c_opens_a_new_shell_tab_on_the_hidden_server() {
+fn the_sidebar_shows_the_first_item_and_the_tab_bar_its_tab() {
+    let sandbox = Sandbox::new();
+    let paddock = ready(&sandbox);
+
+    paddock.wait_for_tabs(&["1:home"]);
+    assert_eq!(paddock.current_tab(), "1:home");
+    wait_for_sidebar(&paddock, &[" workspaces", " workspace-1", "   1 tab"]);
+    assert_eq!(sandbox.session_names(), ["workspace-1"]);
+}
+
+#[test]
+fn c_opens_a_new_tab_as_a_window_of_the_current_item() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
 
-    new_tab(&mut paddock, &["1:terminal-1", "2:terminal-2"]);
+    new_tab(&mut paddock, &["1:home", "2:home"]);
 
-    assert_eq!(sandbox.session_names(), ["terminal-1", "terminal-2"]);
+    assert_eq!(sandbox.session_names(), ["workspace-1"]);
+    assert_eq!(windows(&sandbox, "workspace-1"), ["home", "home"]);
+    wait_for_sidebar(&paddock, &[" workspaces", " workspace-1", "   2 tabs"]);
     paddock.type_line("echo in-second-tab");
     paddock.wait_for_text("in-second-tab\n");
+    let active = sandbox.display("workspace-1", "#{window_index}");
+    assert_eq!(active, "1", "tmux shows the same current tab");
+}
+
+#[test]
+fn capital_c_opens_a_new_item_with_its_own_tabs() {
+    let sandbox = Sandbox::new();
+    let mut paddock = ready(&sandbox);
+    new_tab(&mut paddock, &["1:home", "2:home"]);
+
+    paddock.command(b"C");
+
+    paddock.wait_for_tabs(&["1:home"]);
+    wait_for_sidebar(
+        &paddock,
+        &[
+            " workspaces",
+            " workspace-1",
+            "   2 tabs",
+            " workspace-2",
+            "   1 tab",
+        ],
+    );
+    assert_eq!(sandbox.session_names(), ["workspace-1", "workspace-2"]);
+    paddock.wait_for_text(PROMPT);
+    paddock.type_line("echo in-the-new-item");
+    paddock.wait_for_text("in-the-new-item\n");
+}
+
+#[test]
+fn picking_an_item_shows_its_tabs() {
+    let sandbox = Sandbox::new();
+    let mut paddock = ready(&sandbox);
+    paddock.type_line("echo first-item-marker");
+    paddock.wait_for_text("first-item-marker\n");
+    new_tab(&mut paddock, &["1:home", "2:home"]);
+    paddock.command(b"C");
+    paddock.wait_for_tabs(&["1:home"]);
+    paddock.wait_for_text(PROMPT);
+
+    // The sidebar: k moves up to workspace-1, Enter shows its tabs.
+    paddock.command(b"s");
+    paddock.send(b"k\r");
+    paddock.wait_for_tabs(&["1:home", "2:home"]);
+    paddock.wait_for_current_tab("2:home");
+    paddock.command(b"1");
+    paddock.wait_for_text("first-item-marker\n");
+
+    // A click on the second item's title (screen row 4) goes back.
+    paddock.click_screen(3, 4);
+    paddock.wait_for_tabs(&["1:home"]);
+    paddock.type_line("echo keys-reach-the-item");
+    paddock.wait_for_text("keys-reach-the-item\n");
+}
+
+#[test]
+fn the_current_item_has_its_own_background() {
+    let sandbox = Sandbox::new();
+    let mut paddock = ready(&sandbox);
+    paddock.command(b"C");
+    wait_for_sidebar(
+        &paddock,
+        &[
+            " workspaces",
+            " workspace-1",
+            "   1 tab",
+            " workspace-2",
+            "   1 tab",
+        ],
+    );
+
+    let grey = vt100::Color::Idx(236);
+    assert_eq!(paddock.colors(4, 5).1, grey, "current: workspace-2");
+    assert_eq!(paddock.colors(5, 20).1, grey, "both of its lines");
+    assert_eq!(paddock.colors(1, 5).1, vt100::Color::Default);
+}
+
+#[test]
+fn the_current_item_background_comes_from_the_config() {
+    let sandbox = Sandbox::new();
+    sandbox.write_config("[colors]\ncurrent_item = \"#102030\"\n");
+    let paddock = ready(&sandbox);
+
+    paddock.wait_for("current item colour", |_| {
+        paddock.colors(1, 5).1 == vt100::Color::Rgb(0x10, 0x20, 0x30)
+    });
 }
 
 #[test]
@@ -46,26 +170,36 @@ fn n_p_and_numbers_switch_tabs_and_each_keeps_its_screen() {
     let mut paddock = ready(&sandbox);
     paddock.type_line("echo first-tab-marker");
     paddock.wait_for_text("first-tab-marker\n");
-    new_tab(&mut paddock, &["1:terminal-1", "2:terminal-2"]);
-    new_tab(
-        &mut paddock,
-        &["1:terminal-1", "2:terminal-2", "3:terminal-3"],
-    );
+    new_tab(&mut paddock, &["1:home", "2:home"]);
+    new_tab(&mut paddock, &["1:home", "2:home", "3:home"]);
 
     paddock.command(b"n");
-    paddock.wait_for_current_tab("1:terminal-1");
+    paddock.wait_for_current_tab("1:home");
     paddock.wait_for_text("first-tab-marker");
 
     paddock.command(b"p");
-    paddock.wait_for_current_tab("3:terminal-3");
+    paddock.wait_for_current_tab("3:home");
     assert!(!paddock.screen().contains("first-tab-marker"));
 
     paddock.command(b"2");
-    paddock.wait_for_current_tab("2:terminal-2");
+    paddock.wait_for_current_tab("2:home");
 
     paddock.command(b"9"); // no tab 9: nothing changes
     paddock.command(b"1");
-    paddock.wait_for_current_tab("1:terminal-1");
+    paddock.wait_for_current_tab("1:home");
+}
+
+#[test]
+fn tabs_are_named_after_what_runs_in_them() {
+    let sandbox = Sandbox::new();
+    let mut paddock = ready(&sandbox);
+    new_tab(&mut paddock, &["1:home", "2:home"]);
+
+    paddock.type_line("sleep 30");
+    paddock.wait_for_tabs(&["1:home", "2:sleep"]);
+    paddock.send(b"\x03");
+    paddock.type_line("cd /");
+    paddock.wait_for_tabs(&["1:home", "2:/"]);
 }
 
 #[test]
@@ -73,7 +207,7 @@ fn background_tabs_keep_receiving_output() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     paddock.type_line("sleep 1; echo done-while-hidden");
-    new_tab(&mut paddock, &["1:terminal-1", "2:terminal-2"]);
+    new_tab(&mut paddock, &["1:home", "2:home"]);
     std::thread::sleep(std::time::Duration::from_millis(1500));
 
     paddock.command(b"1");
@@ -85,18 +219,53 @@ fn background_tabs_keep_receiving_output() {
 fn comma_renames_the_tab_and_the_name_survives_reattach() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
+    paddock.wait_for_tabs(&["1:home"]); // named by tmux by now
 
     paddock.command(b",");
-    paddock.wait_for_text("rename tab: terminal-1");
+    paddock.wait_for_text("rename tab: home");
     paddock.send(b"\x15build logs\r"); // C-u clears the old name
 
     paddock.wait_for_tabs(&["1:build logs"]);
-    assert_eq!(sandbox.session_names(), ["build logs"]);
+    assert_eq!(windows(&sandbox, "workspace-1"), ["build logs"]);
+    // A renamed tab keeps its name whatever runs in it.
+    paddock.type_line("cd /");
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    paddock.wait_for_tabs(&["1:build logs"]);
     paddock.detach_keys();
     assert!(paddock.wait_exit());
 
     let again = ready(&sandbox);
     again.wait_for_tabs(&["1:build logs"]);
+}
+
+#[test]
+fn dollar_renames_the_item() {
+    let sandbox = Sandbox::new();
+    let mut paddock = ready(&sandbox);
+
+    paddock.command(b"$");
+    paddock.wait_for_text("rename workspace: workspace-1");
+    paddock.send(b"\x15api-server\r");
+
+    wait_for_sidebar(&paddock, &[" workspaces", " api-server", "   1 tab"]);
+    assert_eq!(sandbox.session_names(), ["api-server"]);
+}
+
+#[test]
+fn renaming_an_item_to_a_taken_name_shows_an_error_and_keeps_the_old_name() {
+    let sandbox = Sandbox::new();
+    let mut paddock = ready(&sandbox);
+    paddock.command(b"C");
+    paddock.wait_for_text(PROMPT);
+
+    paddock.command(b"$");
+    paddock.wait_for_text("rename workspace: workspace-2");
+    paddock.send(b"\x15workspace-1\r");
+
+    paddock.wait_for("error notice", |s| {
+        s.lines().next().unwrap_or("").contains("duplicate session")
+    });
+    assert_eq!(sandbox.session_names(), ["workspace-1", "workspace-2"]);
 }
 
 #[test]
@@ -108,27 +277,52 @@ fn renaming_can_be_cancelled_and_does_not_reach_the_shell() {
     paddock.wait_for_text("rename tab:");
     paddock.send(b"zzz\x1b");
 
-    paddock.wait_for_tabs(&["1:terminal-1"]);
+    paddock.wait_for_tabs(&["1:home"]);
     paddock.type_line("echo ok-after-cancel");
     paddock.wait_for_text("ok-after-cancel\n");
     assert!(!paddock.screen().contains("zzz"));
 }
 
 #[test]
-fn x_closes_the_tab_and_ends_its_terminal() {
+fn x_closes_the_tab_with_its_last_pane() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
-    new_tab(&mut paddock, &["1:terminal-1", "2:terminal-2"]);
+    new_tab(&mut paddock, &["1:home", "2:home"]);
 
     paddock.command(b"x");
 
-    paddock.wait_for_tabs(&["1:terminal-1"]);
-    paddock.wait_for_current_tab("1:terminal-1");
-    assert_eq!(sandbox.session_names(), ["terminal-1"]);
+    paddock.wait_for_tabs(&["1:home"]);
+    paddock.wait_for_current_tab("1:home");
+    assert_eq!(windows(&sandbox, "workspace-1"), ["home"]);
 }
 
 #[test]
-fn closing_the_last_tab_quits_paddock() {
+fn closing_an_items_last_tab_closes_the_item() {
+    let sandbox = Sandbox::new();
+    let mut paddock = ready(&sandbox);
+    paddock.command(b"C");
+    paddock.wait_for_text(PROMPT);
+    wait_for_sidebar(
+        &paddock,
+        &[
+            " workspaces",
+            " workspace-1",
+            "   1 tab",
+            " workspace-2",
+            "   1 tab",
+        ],
+    );
+
+    paddock.command(b"x");
+
+    wait_for_sidebar(&paddock, &[" workspaces", " workspace-1", "   1 tab"]);
+    assert_eq!(sandbox.session_names(), ["workspace-1"]);
+    paddock.type_line("echo back-in-the-first");
+    paddock.wait_for_text("back-in-the-first\n");
+}
+
+#[test]
+fn closing_the_last_pane_quits_paddock() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
 
@@ -142,11 +336,11 @@ fn closing_the_last_tab_quits_paddock() {
 fn a_shell_exiting_closes_only_its_tab() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
-    new_tab(&mut paddock, &["1:terminal-1", "2:terminal-2"]);
+    new_tab(&mut paddock, &["1:home", "2:home"]);
 
     paddock.type_line("exit");
 
-    paddock.wait_for_tabs(&["1:terminal-1"]);
+    paddock.wait_for_tabs(&["1:home"]);
     paddock.type_line("echo still-here");
     paddock.wait_for_text("still-here\n");
 }
@@ -158,21 +352,25 @@ fn question_mark_shows_key_help_and_any_key_closes_it() {
 
     paddock.command(b"?");
 
-    paddock.wait_for_text("paddock keys");
+    paddock.wait_for("help", |_| paddock.full_screen().contains("paddock keys"));
     for line in [
-        "new shell tab",
+        "new tab in this workspace",
+        "new workspace",
         "next / previous tab",
         "rename tab",
+        "rename workspace",
         "send C-a to the terminal",
     ] {
         assert!(
-            paddock.screen().contains(line),
+            paddock.full_screen().contains(line),
             "help lacks {line:?}:\n{}",
-            paddock.screen()
+            paddock.full_screen()
         );
     }
     paddock.send(b"q");
-    paddock.wait_for("help closed", |s| !s.contains("paddock keys"));
+    paddock.wait_for("help closed", |_| {
+        !paddock.full_screen().contains("paddock keys")
+    });
     paddock.type_line("echo typed-after-help");
     paddock.wait_for_text("typed-after-help\n");
     assert!(
@@ -194,23 +392,51 @@ fn prefix_twice_sends_a_literal_prefix() {
 }
 
 #[test]
-fn reattaching_shows_every_terminal_as_a_tab() {
+fn reattaching_shows_every_item_and_tab_as_tmux_has_them() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
-    new_tab(&mut paddock, &["1:terminal-1", "2:terminal-2"]);
-    new_tab(
-        &mut paddock,
-        &["1:terminal-1", "2:terminal-2", "3:terminal-3"],
-    );
+    new_tab(&mut paddock, &["1:home", "2:home"]);
+    new_tab(&mut paddock, &["1:home", "2:home", "3:home"]);
     paddock.type_line("echo third-tab-marker");
     paddock.wait_for_text("third-tab-marker\n");
+    paddock.command(b"C");
+    paddock.wait_for_tabs(&["1:home"]);
     paddock.detach_keys();
     assert!(paddock.wait_exit());
 
     let mut again = ready(&sandbox);
-    again.wait_for_tabs(&["1:terminal-1", "2:terminal-2", "3:terminal-3"]);
-    again.command(b"3");
+    // The item that was current comes back current.
+    again.wait_for_tabs(&["1:home"]);
+    again.command(b"s");
+    again.send(b"k\r");
+    again.wait_for_tabs(&["1:home", "2:home", "3:home"]);
+    again.wait_for_current_tab("3:home");
     again.wait_for_text("third-tab-marker\n");
+}
+
+#[test]
+fn sessions_of_an_older_paddock_open_as_one_item_each() {
+    let sandbox = Sandbox::new();
+    // As v1 left the server: one session per terminal, and none of the
+    // options paddock added since.
+    for name in ["terminal-1", "api"] {
+        sandbox.tmux(&["new-session", "-d", "-s", name, "-c", "/"]);
+    }
+    std::fs::create_dir_all(sandbox.path("state/paddock")).unwrap();
+    std::fs::write(
+        sandbox.path("state/paddock/layout.toml"),
+        "current = 1\n[[tabs]]\nfocus = \"$0\"\nroot = { leaf = \"$0\" }\n",
+    )
+    .unwrap();
+
+    let paddock = sandbox.launch();
+
+    wait_for_sidebar(
+        &paddock,
+        &[" workspaces", " terminal-1", "   1 tab", " api", "   1 tab"],
+    );
+    paddock.wait_for_tabs(&["1:/"]);
+    assert!(!paddock.full_screen().contains("invalid layout"));
 }
 
 #[test]
@@ -220,7 +446,7 @@ fn the_prefix_comes_from_the_config_file() {
     let mut paddock = ready(&sandbox);
 
     paddock.send(b"\x02c"); // C-b c
-    paddock.wait_for_tabs(&["1:terminal-1", "2:terminal-2"]);
+    paddock.wait_for_tabs(&["1:home", "2:home"]);
     paddock.wait_for_text(PROMPT);
 
     // C-a is now ordinary input.
@@ -229,7 +455,9 @@ fn the_prefix_comes_from_the_config_file() {
     paddock.send(b"\x01\r");
     paddock.wait_for("C-a passed through", |s| s.lines().any(|l| l == "^A"));
     paddock.send(b"\x02?");
-    paddock.wait_for_text("send C-b to the terminal");
+    paddock.wait_for("help", |_| {
+        paddock.full_screen().contains("send C-b to the terminal")
+    });
 }
 
 #[test]
@@ -247,71 +475,99 @@ fn an_invalid_prefix_stops_paddock_with_a_clear_message() {
     );
 }
 
-#[test]
-fn opening_a_tab_while_another_streams_output_loses_nothing() {
-    let sandbox = Sandbox::new();
-    let mut paddock = ready(&sandbox);
-    // About two seconds of output, well inside the history limit.
-    paddock.type_line("for i in {1..4000}; do echo stream-$i; (( i % 100 )) || sleep 0.05; done; echo stream-done");
-    paddock.wait_for_text("stream-1");
-
-    // Attach the second terminal while the first is still printing.
-    new_tab(&mut paddock, &["1:terminal-1", "2:terminal-2"]);
-    let capture = || sandbox.tmux(&["capture-pane", "-p", "-t", "terminal-1"]);
+/// Run `seq`-like output in pane `target` for about two seconds, then
+/// reattach paddock while it still streams, and check nothing was lost.
+fn reattach_while_streaming(sandbox: &Sandbox, paddock: Paddock, target: &str) -> Paddock {
+    sandbox.tmux(&[
+        "send-keys",
+        "-t",
+        target,
+        "for i in {1..4000}; do echo stream-$i; (( i % 100 )) || sleep 0.05; done; echo stream-done",
+        "Enter",
+    ]);
+    let capture = || sandbox.tmux(&["capture-pane", "-p", "-t", target]);
+    let start = std::time::Instant::now();
+    while !capture().contains("stream-1") {
+        assert!(start.elapsed() < harness::TIMEOUT, "never started");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let mut paddock = paddock;
+    paddock.detach_keys();
+    assert!(paddock.wait_exit());
+    let again = ready(sandbox);
     assert!(
         !capture().contains("stream-done"),
         "precondition: still streaming after the attach"
     );
+    again
+}
 
-    paddock.command(b"1");
-    paddock.wait_for_current_tab("1:terminal-1");
+#[test]
+fn reattaching_while_a_background_tab_streams_loses_nothing() {
+    let sandbox = Sandbox::new();
+    let mut paddock = ready(&sandbox);
+    new_tab(&mut paddock, &["1:home", "2:home"]);
+    paddock.command(b"2");
+    paddock.wait_for_current_tab("2:home");
+
+    let mut again = reattach_while_streaming(&sandbox, paddock, "workspace-1:0");
+
+    again.command(b"1");
+    again.wait_for_current_tab("1:home");
+    check_stream(&sandbox, &mut again, "workspace-1:0", 0);
+}
+
+#[test]
+fn reattaching_a_split_tab_while_one_pane_streams_loses_nothing() {
+    let sandbox = Sandbox::new();
+    let mut paddock = ready(&sandbox);
+    paddock.command(b"-");
+    paddock.wait_for("two prompts", |s| s.matches(PROMPT).count() == 2);
+    let top = sandbox.tmux(&[
+        "display-message",
+        "-p",
+        "-t",
+        "workspace-1:0.0",
+        "#{pane_id}",
+    ]);
+
+    let mut again = reattach_while_streaming(&sandbox, paddock, top.trim());
+
+    check_stream(&sandbox, &mut again, top.trim(), 0);
+}
+
+/// Wait for the stream in pane `target` (drawn from row 1, column `col`) to
+/// end, then compare what paddock drew and its history with tmux's.
+fn check_stream(sandbox: &Sandbox, paddock: &mut Paddock, target: &str, col: u16) {
     paddock.wait_for("stream-done and the prompt", |s| {
         let lines: Vec<&str> = s.lines().map(str::trim_end).collect();
         lines
             .windows(2)
             .any(|w| w[0] == "stream-done" && w[1].starts_with(PROMPT))
     });
-
-    let tmux_rows: Vec<String> = capture()
+    let height: usize = sandbox
+        .display(target, "#{pane_height}")
+        .parse()
+        .expect("height");
+    let tmux_rows: Vec<String> = sandbox
+        .tmux(&["capture-pane", "-p", "-t", target])
         .lines()
         .map(|l| l.trim_end().to_string())
         .collect();
-    let ours: Vec<String> = paddock.rows().into_iter().skip(1).collect();
+    let ours: Vec<String> = paddock
+        .rows()
+        .into_iter()
+        .skip(1)
+        .take(height)
+        .map(|r| r.trim_end().to_string())
+        .collect();
     assert_eq!(
-        ours,
-        tmux_rows[..ours.len()],
-        "drawn terminal differs from tmux"
+        ours[..tmux_rows.len().min(height)],
+        tmux_rows[..tmux_rows.len().min(height)],
+        "drawn pane differs from tmux"
     );
     // Lost output would show up as missing history: compare history sizes.
-    let tmux_history = sandbox.tmux(&[
-        "display-message",
-        "-p",
-        "-t",
-        "terminal-1",
-        "#{history_size}",
-    ]);
-    paddock.wheel(true, 10, 10);
-    let indicator = format!("[3/{}]", tmux_history.trim());
-    paddock.wait_for_text(&indicator);
-}
-
-#[test]
-fn renaming_to_a_taken_name_shows_an_error_and_keeps_the_old_name() {
-    let sandbox = Sandbox::new();
-    let mut paddock = ready(&sandbox);
-    new_tab(&mut paddock, &["1:terminal-1", "2:terminal-2"]);
-
-    paddock.command(b",");
-    paddock.wait_for_text("rename tab: terminal-2");
-    paddock.send(b"\x15terminal-1\r");
-
-    paddock.wait_for("error notice", |s| {
-        s.lines().next().unwrap_or("").contains("duplicate session")
-    });
-    assert!(
-        paddock.tab_bar().starts_with(" 1:terminal-1  2:terminal-2"),
-        "{}",
-        paddock.tab_bar()
-    );
-    assert_eq!(sandbox.session_names(), ["terminal-1", "terminal-2"]);
+    let history = sandbox.display(target, "#{history_size}");
+    paddock.wheel(true, col + 2, 2);
+    paddock.wait_for_text(&format!("[3/{history}]"));
 }

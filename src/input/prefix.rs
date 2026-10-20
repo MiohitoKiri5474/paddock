@@ -6,15 +6,20 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 /// What paddock does for a command key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {
+    /// A new tab (tmux window) in the current item.
     NewTab,
+    /// A new sidebar item (tmux session).
+    NewItem,
     NextTab,
     PreviousTab,
     /// Go to tab N (0-based).
     GoToTab(usize),
     RenameTab,
-    /// End the focused terminal; its tab goes with its last terminal.
+    RenameItem,
+    /// End the focused pane; its tab goes with its last pane, its item with
+    /// its last tab.
     Close,
-    /// Continue a copy of the focused session in a new tab.
+    /// Continue a copy of the focused session in a new tab of its item.
     Fork,
     /// Split the focused terminal side by side.
     SplitColumns,
@@ -52,17 +57,19 @@ pub enum KeyAction {
 
 /// Command keys, for both dispatch and the key help.
 pub const BINDINGS: &[(&str, &str)] = &[
-    ("c", "new shell tab"),
+    ("c", "new tab in this workspace"),
+    ("C", "new workspace (sidebar item)"),
     ("n / p", "next / previous tab"),
     ("1-9", "go to tab"),
     (",", "rename tab"),
+    ("$", "rename workspace"),
     ("|", "split side by side"),
     ("-", "split top and bottom"),
     ("hjkl", "move focus (also arrows)"),
-    ("=", "equalise split sizes"),
-    ("x", "close terminal (asks if Claude is busy)"),
+    ("=", "even out the focused split"),
+    ("x", "close pane (asks if Claude is busy)"),
     ("f", "fork Claude into a new tab"),
-    ("s", "focus sidebar (j/k, Enter jumps, Esc back)"),
+    ("s", "focus sidebar (j/k, Enter opens, x, f, Esc)"),
     ("b", "show or hide sidebar"),
     ("a", "next session that needs you"),
     ("o", "dashboard (j/k, Enter, D, x, f, I types, Esc back)"),
@@ -85,6 +92,8 @@ fn command(key: &KeyEvent) -> Option<Command> {
     };
     Some(match c {
         'c' => Command::NewTab,
+        'C' => Command::NewItem,
+        '$' => Command::RenameItem,
         'n' => Command::NextTab,
         'p' => Command::PreviousTab,
         '1'..='9' => Command::GoToTab(c as usize - '1' as usize),
@@ -181,6 +190,14 @@ mod tests {
     fn command_keys_after_the_prefix() {
         let none = KeyModifiers::NONE;
         assert_eq!(after_prefix('c', none), KeyAction::Command(Command::NewTab));
+        assert_eq!(
+            after_prefix('C', KeyModifiers::SHIFT),
+            KeyAction::Command(Command::NewItem)
+        );
+        assert_eq!(
+            after_prefix('$', KeyModifiers::SHIFT),
+            KeyAction::Command(Command::RenameItem)
+        );
         assert_eq!(
             after_prefix('n', none),
             KeyAction::Command(Command::NextTab)

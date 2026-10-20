@@ -1,21 +1,29 @@
-//! `config.toml` in the config directory. Only the prefix key so far:
+//! `config.toml` in the config directory:
 //!
 //! ```toml
 //! [keys]
 //! prefix = "C-b"
+//!
+//! [colors]
+//! current_item = 236        # or "#303030": the current sidebar item's background
 //! ```
 
 use anyhow::{bail, Context, Result};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::style::Color;
 use serde::Deserialize;
 use std::path::Path;
 
 pub const FILE_NAME: &str = "config.toml";
 const DEFAULT_PREFIX: &str = "C-a";
+/// A dark grey, a little darker than most dark themes' background.
+const DEFAULT_CURRENT_ITEM: Color = Color::Indexed(236);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
     pub prefix: KeyEvent,
+    /// Background of the current sidebar item.
+    pub current_item: Color,
 }
 
 #[derive(Deserialize, Default)]
@@ -23,6 +31,22 @@ pub struct Config {
 struct RawConfig {
     #[serde(default)]
     keys: RawKeys,
+    #[serde(default)]
+    colors: RawColors,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct RawColors {
+    current_item: Option<RawColor>,
+}
+
+/// A colour as written: a 256-colour index or `"#rrggbb"`.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum RawColor {
+    Index(u8),
+    Hex(String),
 }
 
 #[derive(Deserialize, Default)]
@@ -46,8 +70,14 @@ impl Config {
     pub fn parse(text: &str) -> Result<Self> {
         let raw: RawConfig = toml::from_str(text)?;
         let prefix = raw.keys.prefix.as_deref().unwrap_or(DEFAULT_PREFIX);
+        let current_item = match raw.colors.current_item {
+            None => DEFAULT_CURRENT_ITEM,
+            Some(RawColor::Index(i)) => Color::Indexed(i),
+            Some(RawColor::Hex(hex)) => parse_hex(&hex)?,
+        };
         Ok(Self {
             prefix: parse_key(prefix)?,
+            current_item,
         })
     }
 }
@@ -56,8 +86,21 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             prefix: KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
+            current_item: DEFAULT_CURRENT_ITEM,
         }
     }
+}
+
+/// Parse a colour written `#rrggbb`.
+fn parse_hex(spec: &str) -> Result<Color> {
+    let digits = spec
+        .strip_prefix('#')
+        .filter(|d| d.len() == 6 && d.bytes().all(|b| b.is_ascii_hexdigit()));
+    let Some(d) = digits else {
+        bail!("invalid colour {spec:?}: expected a 256-colour index (0-255) or \"#rrggbb\"");
+    };
+    let byte = |i: usize| u8::from_str_radix(&d[i..i + 2], 16).unwrap_or(0);
+    Ok(Color::Rgb(byte(0), byte(2), byte(4)))
 }
 
 /// Parse a prefix key such as `C-a`, `C-b` or `C-Space`. Only Ctrl keys are
@@ -128,6 +171,21 @@ mod tests {
         }
         assert!(Config::parse("[keys]\nprefx = \"C-b\"\n").is_err());
         assert!(Config::parse("[keys]\nprefix = 1\n").is_err());
+    }
+
+    #[test]
+    fn the_current_item_colour_is_an_index_or_hex_and_dark_grey_by_default() {
+        assert_eq!(Config::default().current_item, Color::Indexed(236));
+        let parse = |t: &str| Config::parse(&format!("[colors]\ncurrent_item = {t}\n"));
+        assert_eq!(parse("238").unwrap().current_item, Color::Indexed(238));
+        assert_eq!(
+            parse("\"#1a2B3c\"").unwrap().current_item,
+            Color::Rgb(0x1a, 0x2b, 0x3c)
+        );
+        for bad in ["256", "-1", "\"236\"", "\"#12345\"", "\"red\""] {
+            assert!(parse(bad).is_err(), "{bad}");
+        }
+        assert!(Config::parse("[colors]\ncurrent = 1\n").is_err());
     }
 
     #[test]

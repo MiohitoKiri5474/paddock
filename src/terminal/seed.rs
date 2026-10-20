@@ -26,25 +26,44 @@ pub struct Seed {
     pub visible: Vec<Vec<u8>>,
 }
 
-/// Ask tmux for everything needed to rebuild `pane`. Pane output that arrives
-/// before the replies is discarded; output after them stays queued on `rx`.
-pub fn fetch(control: &mut ControlClient, rx: &Receiver<Message>, pane: &str) -> Result<Seed> {
-    control.send(&format!(
+/// The commands that capture `pane`, for one control line.
+fn commands(pane: &str) -> String {
+    format!(
         "display-message -p -t {pane} '{STATE_FORMAT}' ; \
          capture-pane -p -e -S - -E -1 -t {pane} ; \
          capture-pane -p -e -a -q -t {pane} ; \
          capture-pane -p -e -t {pane}"
-    ))?;
-    let state = wait_reply(rx)?;
-    Ok(Seed {
-        state: state
-            .first()
-            .map(|l| String::from_utf8_lossy(l).into_owned())
-            .unwrap_or_default(),
-        history: wait_reply(rx)?,
-        saved_screen: wait_reply(rx)?,
-        visible: wait_reply(rx)?,
-    })
+    )
+}
+
+/// Ask tmux for everything needed to rebuild each of `panes`, all on one
+/// control line (ADR 0006). Pane output that arrives before the replies is
+/// discarded; output after them stays queued on `rx`.
+pub fn fetch(
+    control: &mut ControlClient,
+    rx: &Receiver<Message>,
+    panes: &[&str],
+) -> Result<Vec<Seed>> {
+    if panes.is_empty() {
+        return Ok(Vec::new());
+    }
+    let line: Vec<String> = panes.iter().map(|p| commands(p)).collect();
+    control.send(&line.join(" ; "))?;
+    panes
+        .iter()
+        .map(|_| {
+            let state = wait_reply(rx)?;
+            Ok(Seed {
+                state: state
+                    .first()
+                    .map(|l| String::from_utf8_lossy(l).into_owned())
+                    .unwrap_or_default(),
+                history: wait_reply(rx)?,
+                saved_screen: wait_reply(rx)?,
+                visible: wait_reply(rx)?,
+            })
+        })
+        .collect()
 }
 
 /// Lines of `capture-pane -e` output as a byte stream that redraws them.

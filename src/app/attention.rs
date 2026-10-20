@@ -99,24 +99,9 @@ pub fn next_needing<'a>(rows: &'a [Row], focused: Option<&str>) -> Option<&'a Ro
         .iter()
         .filter(|r| matches!(r.state, State::Waiting | State::Idle))
         .collect();
-    let at = needy
-        .iter()
-        .position(|r| Some(r.terminal.as_str()) == focused);
+    let at = needy.iter().position(|r| Some(r.pane.as_str()) == focused);
     let next = at.map_or(0, |i| (i + 1) % needy.len());
     needy.get(next).copied()
-}
-
-/// The most urgent session state in each of `tabs` tabs.
-pub fn tab_states(rows: &[Row], tabs: usize) -> Vec<State> {
-    let mut states = vec![State::Unknown; tabs];
-    for r in rows.iter().filter(|r| !r.closed) {
-        if let Some(s) = states.get_mut(r.tab) {
-            if r.state.rank() < s.rank() {
-                *s = r.state;
-            }
-        }
-    }
-    states
 }
 
 impl App {
@@ -137,10 +122,10 @@ impl App {
     /// `C-a a`: jump to the next session that needs you.
     pub(super) fn next_attention(&mut self) {
         let rows = self.rows();
-        let focused = self.tabs.current().map(|t| t.content.focus.as_str());
-        match next_needing(&rows, focused) {
+        let focused = self.current_pane();
+        match next_needing(&rows, focused.as_deref()) {
             Some(row) => {
-                self.jump_to(row.tab, &row.terminal);
+                self.jump_to(&row.pane);
                 self.mode = Mode::Normal;
             }
             None => self.notice = Some("no session needs you".into()),
@@ -149,7 +134,7 @@ impl App {
 
     /// Whether you are looking at the terminal with pane `pane`.
     fn focused_on(&self, pane: &str) -> bool {
-        self.attention.window_focused && self.current().is_some_and(|t| t.pane() == pane)
+        self.attention.window_focused && self.current_pane().is_some_and(|p| p == pane)
     }
 
     fn notify(&mut self, pane: &str, alert: Alert) {
@@ -296,12 +281,12 @@ mod tests {
         assert_eq!(got, [Some(Alert::Idle), None, Some(Alert::Idle)]);
     }
 
-    fn row(terminal: &str, tab: usize, state: State) -> Row {
+    fn row(pane: &str, state: State) -> Row {
         Row {
-            pane: format!("%{terminal}"),
-            terminal: terminal.into(),
-            tab,
-            label: terminal.into(),
+            pane: pane.into(),
+            item: "$1".into(),
+            window: "@1".into(),
+            label: pane.into(),
             state,
             tasks: Vec::new(),
             closed: false,
@@ -311,34 +296,16 @@ mod tests {
     #[test]
     fn next_needing_cycles_waiting_and_idle_rows() {
         let rows = [
-            row("w", 2, State::Waiting),
-            row("i", 0, State::Idle),
-            row("r", 1, State::Running),
+            row("w", State::Waiting),
+            row("i", State::Idle),
+            row("r", State::Running),
         ];
-        let next = |focused| next_needing(&rows, focused).map(|r| r.terminal.as_str());
+        let next = |focused| next_needing(&rows, focused).map(|r| r.pane.as_str());
         assert_eq!(next(Some("w")), Some("i"));
         assert_eq!(next(Some("i")), Some("w"));
         assert_eq!(next(Some("r")), Some("w"));
         assert_eq!(next(None), Some("w"));
-        let running = [row("r", 0, State::Running)];
+        let running = [row("r", State::Running)];
         assert!(next_needing(&running, None).is_none());
-    }
-
-    #[test]
-    fn a_tab_takes_its_most_urgent_state() {
-        let rows = [
-            row("a", 1, State::Waiting),
-            row("b", 0, State::Idle),
-            row("c", 1, State::Idle),
-            row("d", 0, State::Running),
-            Row {
-                closed: true,
-                ..row("", 2, State::Stopped)
-            },
-        ];
-        assert_eq!(
-            tab_states(&rows, 3),
-            [State::Idle, State::Waiting, State::Unknown]
-        );
     }
 }

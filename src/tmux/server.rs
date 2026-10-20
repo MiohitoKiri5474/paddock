@@ -2,6 +2,7 @@
 //! config, and a clean environment. Every tmux process paddock starts goes
 //! through [`Server::command`], so the user's own tmux server is never used.
 
+use super::structure::{self, Structure};
 use crate::paths::Paths;
 use anyhow::{bail, Context, Result};
 use std::path::Path;
@@ -26,6 +27,9 @@ const KEPT_VARS: &[&str] = &[
 /// `TERM` tmux itself sees (the panes get `default-terminal`).
 const SERVER_TERM: &str = "xterm-256color";
 const HISTORY_LIMIT: u32 = 50_000;
+/// How tmux names a window the user has not renamed.
+const AUTO_NAME: &str =
+    "#{?#{m:*sh,#{pane_current_command}},#{b:pane_current_path},#{pane_current_command}}";
 
 /// The environment tmux runs with: an allowlist of the given variables.
 pub fn clean_env(vars: impl IntoIterator<Item = (String, String)>) -> Vec<(String, String)> {
@@ -59,6 +63,11 @@ pub fn config(shell: &str) -> String {
         "set -g window-size latest".into(),
         "set -g update-environment ''".into(),
         "set-environment -g COLORTERM truecolor".into(),
+        // Tabs are windows: a shell names its tab after its directory,
+        // anything else after its command, until the user renames it.
+        "set -g automatic-rename on".into(),
+        format!("set -g automatic-rename-format {}", quote(AUTO_NAME)),
+        "set -g allow-rename off".into(),
     ]
     .join("\n")
         + "\n"
@@ -126,8 +135,7 @@ impl Server {
 
     /// Start a session running the user's shell, starting the server if needed.
     pub fn new_session(&self, name: &str, cwd: &Path, (cols, rows): (u16, u16)) -> Result<Session> {
-        // tmux expands formats in `-c`: `##` is a literal `#`.
-        let cwd = cwd.to_string_lossy().replace('#', "##");
+        let cwd = start_dir(cwd);
         let (x, y) = (cols.to_string(), rows.to_string());
         let args = [
             "new-session",
@@ -151,6 +159,88 @@ impl Server {
         })
     }
 
+    /// Apply the generated config to a server that already runs: tmux reads
+    /// its config only when it starts, so options added since would be missing.
+    pub fn apply_config(&self) -> Result<()> {
+        let conf = self.paths.tmux_conf();
+        self.run(&["source-file", &conf.to_string_lossy()])
+            .map(drop)
+    }
+
+    /// Session `id`'s windows and panes; see [`structure`].
+    pub fn structure(&self, id: &str) -> Result<Structure> {
+        self.run(&["list-panes", "-s", "-t", id, "-F", structure::FORMAT])
+            .map(|out| structure::parse(&out))
+    }
+
+    /// Open a new window (tab) running the user's shell in `cwd` at the end
+    /// of session `id`, and make it current. Returns its pane id.
+    pub fn new_window(&self, id: &str, cwd: &Path) -> Result<String> {
+        let target = format!("{id}:");
+        let cwd = start_dir(cwd);
+        let args = [
+            "new-window",
+            "-P",
+            "-F",
+            "#{pane_id}",
+            "-t",
+            &target,
+            "-c",
+            &cwd,
+        ];
+        Ok(self.run(&args)?.trim().to_string())
+    }
+
+    /// Split pane `pane`: side by side if `columns`, else top and bottom. The
+    /// new shell starts in `cwd` and takes the second half and the focus.
+    /// Returns its pane id.
+    pub fn split(&self, pane: &str, columns: bool, cwd: &Path) -> Result<String> {
+        let cwd = start_dir(cwd);
+        let way = if columns { "-h" } else { "-v" };
+        let args = [
+            "split-window",
+            way,
+            "-P",
+            "-F",
+            "#{pane_id}",
+            "-t",
+            pane,
+            "-c",
+            &cwd,
+        ];
+        Ok(self.run(&args)?.trim().to_string())
+    }
+
+    /// End a pane; its window goes with its last pane, and the session
+    /// with its last window.
+    pub fn kill_pane(&self, pane: &str) -> Result<()> {
+        self.run(&["kill-pane", "-t", pane]).map(drop)
+    }
+
+    /// Rename a window; tmux then stops naming it after its command.
+    pub fn rename_window(&self, window: &str, name: &str) -> Result<()> {
+        self.run(&["rename-window", "-t", window, name]).map(drop)
+    }
+
+    /// Make a window its session's current one and focus pane `pane` in it.
+    pub fn select(&self, window: &str, pane: Option<&str>) -> Result<()> {
+        let mut args = vec!["select-window", "-t", window];
+        if let Some(pane) = pane {
+            args.extend([";", "select-pane", "-t", pane]);
+        }
+        self.run(&args).map(drop)
+    }
+
+    /// Focus the pane next to `pane` in direction `flag` (`-L`, `-R`, `-U`, `-D`).
+    pub fn select_towards(&self, pane: &str, flag: &str) -> Result<()> {
+        self.run(&["select-pane", flag, "-t", pane]).map(drop)
+    }
+
+    /// Give `pane` and the panes beside it the same size.
+    pub fn spread(&self, pane: &str) -> Result<()> {
+        self.run(&["select-layout", "-E", "-t", pane]).map(drop)
+    }
+
     pub fn rename_session(&self, id: &str, name: &str) -> Result<()> {
         self.run(&["rename-session", "-t", id, name]).map(drop)
     }
@@ -167,6 +257,11 @@ impl Server {
             .trim()
             .to_string())
     }
+}
+
+/// `dir` for `-c`: tmux expands formats there, and `##` is a literal `#`.
+fn start_dir(dir: &Path) -> String {
+    dir.to_string_lossy().replace('#', "##")
 }
 
 /// One tmux session: its stable id (`$N`) and its current name.
@@ -241,6 +336,8 @@ mod tests {
             "set -g status off",
             "set -g prefix None",
             "set -g default-shell '/bin/zsh'",
+            "set -g automatic-rename on",
+            "set -g allow-rename off",
         ] {
             assert!(c.lines().any(|l| l == line), "missing {line:?}");
         }
