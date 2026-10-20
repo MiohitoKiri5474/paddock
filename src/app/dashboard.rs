@@ -9,7 +9,7 @@ use super::state::{App, Mode};
 use super::watch::Watched;
 use crate::input::{encode_key, encode_paste};
 use anyhow::Result;
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 /// The open dashboard: the selected line, and whether keys go to its
 /// terminal.
@@ -101,9 +101,11 @@ impl App {
     }
 
     /// Interactive: every key but `Esc` goes to the previewed terminal, and
-    /// `Esc` only leaves.
+    /// `Esc` only leaves. `Esc` and a key read together arrive as that key
+    /// with Alt: no paddock key uses Alt, so any such key leaves too, and
+    /// `Esc` never reaches the terminal.
     fn interactive_key(&mut self, d: Dashboard, key: KeyEvent) {
-        if key.code == KeyCode::Esc {
+        if key.code == KeyCode::Esc || key.modifiers.contains(KeyModifiers::ALT) {
             self.mode = Mode::Dashboard(Dashboard {
                 interactive: false,
                 ..d

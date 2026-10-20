@@ -60,7 +60,7 @@ Not in scope for now: agents other than Claude Code, Linux, remote machines, a s
 ### Preview
 
 - The dashboard shows a live preview of the selected row. A subagent's task row shows its session's screen.
-- `I` enters interactive preview and types into that session; `Esc` leaves and is never sent to Claude. To interrupt Claude, jump to the session.
+- `I` enters interactive preview and types into that session; `Esc` leaves and is never sent to Claude; so does any Alt key, since `Esc` and a key read together arrive as one. To interrupt Claude, jump to the session.
 
 ### Actions
 

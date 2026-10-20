@@ -242,6 +242,32 @@ fn i_types_into_the_previewed_terminal_and_esc_is_never_sent() {
 }
 
 #[test]
+fn esc_and_a_key_in_one_read_leave_interactive_preview_unsent() {
+    let sandbox = Sandbox::new();
+    let mut paddock = two_tabs(&sandbox);
+    claude(&sandbox, "terminal-1", "Stop", "s1", "/w/repo");
+    paddock.wait_for_text("idle");
+    let out = sandbox.path("typed.txt");
+    let cat = format!("cat -v > {}", out.display());
+    sandbox.tmux(&["send-keys", "-t", "terminal-1", &cat, "Enter"]);
+
+    open(&mut paddock);
+    paddock.send(b"I");
+    paddock.wait_for_text(TYPING);
+    // One write: crossterm reads it as Alt+q, not Esc then q.
+    paddock.send(b"\x1bq");
+    paddock.wait_for("interactive preview left", |s| !s.contains(TYPING));
+    paddock.wait_for_text(OPEN);
+
+    paddock.send(b"I");
+    paddock.wait_for_text(TYPING);
+    paddock.send(b"ok\r");
+    paddock.send(b"\x04");
+    // A leak would read `^[qok`.
+    wait_for_file(&out, "ok\n");
+}
+
+#[test]
 fn x_asks_while_claude_runs_then_returns_to_the_dashboard() {
     let sandbox = Sandbox::new();
     let mut paddock = two_tabs(&sandbox);
