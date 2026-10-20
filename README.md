@@ -50,6 +50,7 @@ Prefix `C-a`, then:
 | `s` | focus sidebar (on the first agent) |
 | `w` | focus sidebar on the current space |
 | `b` | show or hide sidebar |
+| `{` / `}` | sidebar narrower / wider (also: drag its border) |
 | `a` | next session that needs you |
 | `o` | dashboard: every session and task with details and a live preview |
 | `d` | detach: paddock quits, terminals keep running |
@@ -75,6 +76,9 @@ current_space = 236       # the current space's background: 256-colour index or 
 tab_bar = 235             # the tab bar's row
 tab = 237                 # a tab that is not current
 tab_current = 4           # the current tab (default: the terminal's blue)
+
+[sidebar]
+width = 32                # columns until you resize it; the last width is remembered
 ```
 
 ## Files

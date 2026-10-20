@@ -1,8 +1,28 @@
 //! The sidebar with the keyboard (`C-a s`, `C-a w`) or the mouse: moving
 //! over its spaces and agents, and acting on the one picked.
 
+use super::space::MIN_SIZE;
 use super::state::{App, Mode};
 use crossterm::event::{KeyCode, KeyEvent};
+
+/// The narrowest the sidebar gets.
+pub const MIN_SIDEBAR: u16 = 16;
+/// Columns `C-a {` and `C-a }` take away or add.
+pub const SIDEBAR_STEP: i16 = 2;
+
+/// The sidebar's width for a wish of `wanted` columns on a screen
+/// `screen_cols` wide: at least [`MIN_SIDEBAR`], at most half the screen,
+/// and always leaving the panes their minimum width.
+pub fn clamp_width(wanted: u16, screen_cols: u16) -> u16 {
+    let max = (screen_cols / 2).min(screen_cols.saturating_sub(MIN_SIZE.0));
+    wanted.max(MIN_SIDEBAR).min(max)
+}
+
+/// The width the sidebar starts at: the one saved last time, else the
+/// configured one.
+pub fn starting_width(saved: Option<u16>, configured: u16) -> u16 {
+    saved.unwrap_or(configured)
+}
 
 /// What a sidebar line stands for.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,6 +70,21 @@ impl Selection {
 }
 
 impl App {
+    /// Make the sidebar `step` columns wider (narrower if negative), within
+    /// [`clamp_width`], showing it if hidden.
+    pub(super) fn resize_sidebar(&mut self, step: i16) {
+        let now = clamp_width(self.sidebar_cols, self.screen.0);
+        self.sidebar_cols = clamp_width(now.saturating_add_signed(step), self.screen.0);
+        self.sidebar_resized = Some(self.sidebar_cols);
+        self.sidebar_hidden = false;
+    }
+
+    /// The sidebar's border dragged to screen column `col`.
+    pub(super) fn drag_border(&mut self, col: u16) {
+        self.sidebar_cols = clamp_width(col.saturating_add(1), self.screen.0);
+        self.sidebar_resized = Some(self.sidebar_cols);
+    }
+
     /// The sidebar's picks in line order: the spaces, then the agents.
     pub(super) fn sidebar_picks(&self) -> Vec<Pick> {
         let rows = self.rows();
@@ -190,6 +225,23 @@ mod tests {
         };
         assert_eq!(past_the_end.anchored(&picks()).index, 2);
         assert_eq!(past_the_end.anchored(&[]).pick, None);
+    }
+
+    #[test]
+    fn the_sidebar_width_stays_between_sixteen_and_half_the_screen() {
+        assert_eq!(clamp_width(32, 100), 32);
+        assert_eq!(clamp_width(4, 100), MIN_SIDEBAR);
+        assert_eq!(clamp_width(80, 100), 50);
+        // A narrow screen: half of it, the panes keep their minimum.
+        assert_eq!(clamp_width(32, 20), 10);
+        assert_eq!(clamp_width(32, 3), 1);
+        assert_eq!(clamp_width(32, 0), 0);
+    }
+
+    #[test]
+    fn a_saved_width_wins_over_the_configured_one() {
+        assert_eq!(starting_width(Some(40), 32), 40);
+        assert_eq!(starting_width(None, 28), 28);
     }
 
     #[test]

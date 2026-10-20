@@ -1,9 +1,9 @@
 //! Tickets 11 and 14: splits are tmux panes, and their layout lives in tmux.
 //!
-//! The screen is 100x30; the sidebar takes 24 columns and the tab bar a row,
-//! so panes get 76x29. Rows and mouse columns in these tests count from the
+//! The screen is 100x30; the sidebar takes 32 columns and the tab bar a row,
+//! so panes get 68x29. Rows and mouse columns in these tests count from the
 //! right of the sidebar. A side-by-side split leaves one column for the
-//! border (38 + 1 + 37), a top and bottom split one row (14 + 1 + 14).
+//! border (34 + 1 + 33), a top and bottom split one row (14 + 1 + 14).
 
 mod harness;
 
@@ -11,11 +11,11 @@ use harness::{Paddock, Sandbox, PROMPT, TIMEOUT};
 use std::time::{Duration, Instant};
 
 /// Column of the border after one side-by-side split.
-const V_BORDER: usize = 38;
+const V_BORDER: usize = 34;
 /// Row of the border after a top and bottom split of the whole height.
 const H_BORDER: usize = 15;
 /// Width of the session area.
-const WIDTH: usize = 76;
+const WIDTH: usize = 68;
 
 fn ready(sandbox: &Sandbox) -> Paddock {
     let paddock = sandbox.launch();
@@ -97,7 +97,7 @@ fn pipe_splits_side_by_side_into_a_new_pane() {
 
     split_side_by_side(&mut p);
 
-    wait_for_sizes(&sandbox, &["0.0 38x29", "0.1 37x29"]);
+    wait_for_sizes(&sandbox, &["0.0 34x29", "0.1 33x29"]);
     p.wait_for_tabs(&["1:home"]);
     p.wait_for("vertical border", |_| {
         cols(&p.rows()[1], V_BORDER, V_BORDER + 1) == "│"
@@ -115,7 +115,7 @@ fn minus_splits_top_and_bottom() {
 
     p.command(b"-");
 
-    wait_for_sizes(&sandbox, &["0.0 76x14", "0.1 76x14"]);
+    wait_for_sizes(&sandbox, &["0.0 68x14", "0.1 68x14"]);
     p.wait_for("horizontal border", |_| {
         p.rows()[H_BORDER].starts_with("────")
     });
@@ -140,7 +140,7 @@ fn hjkl_and_arrows_move_focus() {
 
     // Split the right one top and bottom, then move up and down in it.
     p.command(b"-");
-    wait_for_sizes(&sandbox, &["0.0 38x29", "0.1 37x14", "0.2 37x14"]);
+    wait_for_sizes(&sandbox, &["0.0 34x29", "0.1 33x14", "0.2 33x14"]);
     p.command(b"k");
     p.type_line("echo went-up");
     wait_in_region(&p, "went-up", (1, H_BORDER), RIGHT);
@@ -167,11 +167,11 @@ fn x_closes_only_the_focused_split_and_its_neighbour_takes_the_space() {
     let sandbox = Sandbox::new();
     let mut p = ready(&sandbox);
     split_side_by_side(&mut p);
-    wait_for_sizes(&sandbox, &["0.0 38x29", "0.1 37x29"]);
+    wait_for_sizes(&sandbox, &["0.0 34x29", "0.1 33x29"]);
 
     p.command(b"x");
 
-    wait_for_sizes(&sandbox, &["0.0 76x29"]);
+    wait_for_sizes(&sandbox, &["0.0 68x29"]);
     p.wait_for_tabs(&["1:home"]);
     p.type_line("echo focus-moved-back");
     wait_for_line(&p, "focus-moved-back");
@@ -185,7 +185,7 @@ fn a_shell_exiting_closes_only_its_split() {
 
     p.type_line("exit");
 
-    wait_for_sizes(&sandbox, &["0.0 76x29"]);
+    wait_for_sizes(&sandbox, &["0.0 68x29"]);
     p.type_line("echo still-here");
     wait_for_line(&p, "still-here");
 }
@@ -197,11 +197,11 @@ fn equals_gives_the_focused_split_and_its_neighbours_the_same_size() {
     split_side_by_side(&mut p);
     // Splitting the right one again halves it.
     p.command(b"|");
-    wait_for_sizes(&sandbox, &["0.0 38x29", "0.1 18x29", "0.2 18x29"]);
+    wait_for_sizes(&sandbox, &["0.0 34x29", "0.1 16x29", "0.2 16x29"]);
 
     p.command(b"=");
 
-    wait_for_sizes(&sandbox, &["0.0 25x29", "0.1 25x29", "0.2 24x29"]);
+    wait_for_sizes(&sandbox, &["0.0 22x29", "0.1 22x29", "0.2 22x29"]);
 }
 
 #[test]
@@ -211,7 +211,7 @@ fn splits_and_focus_come_back_after_detach_and_relaunch() {
     // Tab 1: left | (top over bottom). Tab 2: one pane.
     split_side_by_side(&mut p);
     p.command(b"-");
-    wait_for_sizes(&sandbox, &["0.0 38x29", "0.1 37x14", "0.2 37x14"]);
+    wait_for_sizes(&sandbox, &["0.0 34x29", "0.1 33x14", "0.2 33x14"]);
     p.command(b"c");
     p.wait_for_tabs(&["1:home", "2:home"]);
     p.command(b"1");
@@ -246,7 +246,7 @@ fn the_layout_lives_in_tmux_not_in_the_state_file() {
     let again = ready(&sandbox);
 
     again.wait_for_tabs(&["1:home"]);
-    wait_for_sizes(&sandbox, &["0.0 38x29", "0.1 37x29"]);
+    wait_for_sizes(&sandbox, &["0.0 34x29", "0.1 33x29"]);
     wait_in_region(&again, PROMPT, ALL_ROWS, RIGHT);
 }
 

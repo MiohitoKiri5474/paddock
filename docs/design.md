@@ -24,7 +24,7 @@ Not in scope for now: agents other than Claude Code, Linux, remote machines, a s
 
 ### Layout
 
-- Left: the closable **sidebar**, in two sections (after herdr):
+- Left: the closable, resizable **sidebar** (32 columns, or `[sidebar] width`; `C-a {` / `C-a }` or dragging its border change it by 2 columns between 16 and half the screen, and the last width is kept in the state directory), in two sections (after herdr):
 
   ```text
    SPACES
@@ -112,6 +112,7 @@ Prefix `C-a`, configurable; pressing it twice sends a literal `C-a`.
 | `s` | focus sidebar (on the first agent) |
 | `w` | focus sidebar on the current space |
 | `b` | show or hide sidebar |
+| `{` / `}` | sidebar narrower / wider |
 | `?` | key help |
 | `d` | detach: leave paddock, terminals keep running |
 | `,` | rename tab |

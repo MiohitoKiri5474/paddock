@@ -9,6 +9,9 @@
 //! tab_bar = 235              # the tab bar's row
 //! tab = 237                  # a tab that is not current
 //! tab_current = 4            # the current tab (default: the terminal's blue)
+//!
+//! [sidebar]
+//! width = 32                 # columns, until resized (then remembered)
 //! ```
 
 use crate::ui::tab_bar::TabColors;
@@ -20,6 +23,8 @@ use std::path::Path;
 
 pub const FILE_NAME: &str = "config.toml";
 const DEFAULT_PREFIX: &str = "C-a";
+/// Columns the sidebar takes, border included, until resized.
+const DEFAULT_SIDEBAR_WIDTH: u16 = 32;
 /// A dark grey, a little darker than most dark themes' background.
 const DEFAULT_CURRENT_SPACE: Color = Color::Indexed(236);
 
@@ -29,6 +34,8 @@ pub struct Config {
     /// Background of the current space.
     pub current_space: Color,
     pub tabs: TabColors,
+    /// The sidebar's starting width, while none was saved.
+    pub sidebar_width: u16,
 }
 
 #[derive(Deserialize, Default)]
@@ -38,6 +45,14 @@ struct RawConfig {
     keys: RawKeys,
     #[serde(default)]
     colors: RawColors,
+    #[serde(default)]
+    sidebar: RawSidebar,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct RawSidebar {
+    width: Option<u16>,
 }
 
 #[derive(Deserialize, Default)]
@@ -99,6 +114,7 @@ impl Config {
                 tab: colour(c.tab, tabs.tab)?,
                 current: colour(c.tab_current, tabs.current)?,
             },
+            sidebar_width: raw.sidebar.width.unwrap_or(DEFAULT_SIDEBAR_WIDTH),
         })
     }
 }
@@ -109,6 +125,7 @@ impl Default for Config {
             prefix: KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
             current_space: DEFAULT_CURRENT_SPACE,
             tabs: TabColors::default(),
+            sidebar_width: DEFAULT_SIDEBAR_WIDTH,
         }
     }
 }
@@ -239,6 +256,19 @@ mod tests {
         );
         assert!(Config::parse("[colors]\ntabs = 1\n").is_err());
         assert!(Config::parse("[colors]\ntab = \"blue\"\n").is_err());
+    }
+
+    #[test]
+    fn the_sidebar_width_defaults_to_32_and_can_be_set() {
+        assert_eq!(Config::default().sidebar_width, 32);
+        assert_eq!(
+            Config::parse("[sidebar]\nwidth = 40\n")
+                .unwrap()
+                .sidebar_width,
+            40
+        );
+        assert!(Config::parse("[sidebar]\nwide = 40\n").is_err());
+        assert!(Config::parse("[sidebar]\nwidth = -1\n").is_err());
     }
 
     #[test]

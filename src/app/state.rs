@@ -9,6 +9,7 @@ use super::mouse::Press;
 use super::rows::{rows, Placed, Row, RowId, TaskDetails, TaskStatus};
 use super::saved;
 use super::sidebar::Selection;
+use super::sidebar::{clamp_width, starting_width};
 use super::space::Space;
 use super::watch::Place;
 use super::Event;
@@ -28,8 +29,6 @@ use std::sync::mpsc::Sender;
 
 /// Rows above the terminals taken by the tab bar.
 pub const TAB_BAR_ROWS: u16 = 1;
-/// Columns the sidebar takes, its border included, while it is shown.
-pub const SIDEBAR_COLS: u16 = 24;
 
 pub enum Mode {
     Normal,
@@ -117,6 +116,12 @@ pub struct App {
     pub(super) places: HashMap<String, Place>,
     /// The user hid the sidebar (`C-a b`).
     pub(super) sidebar_hidden: bool,
+    /// The sidebar's width as wished, border included; see
+    /// [`Self::sidebar_width`] for what it gets.
+    pub(super) sidebar_cols: u16,
+    /// The width the user resized the sidebar to, saved so that it comes
+    /// back; `None` while the configured width applies.
+    pub(super) sidebar_resized: Option<u16>,
     /// Where the held mouse button went, until it is released.
     pub(super) press: Option<Press>,
     pub(super) attention: Attention,
@@ -189,6 +194,8 @@ impl App {
             task_details: TaskDetails::new(),
             places: HashMap::new(),
             sidebar_hidden: false,
+            sidebar_cols: config.sidebar_width,
+            sidebar_resized: None,
             press: None,
             attention: Attention::from_env(),
             current_space_bg: config.current_space,
@@ -221,16 +228,21 @@ impl App {
             // A server from an older paddock lacks newer options.
             self.report(|app| app.server.apply_config());
         }
-        let saved = saved::load(&self.state_dir).unwrap_or_else(|e| {
-            self.notice = Some(set_aside(&self.state_dir, saved::FILE_NAME, &e));
-            None
-        });
+        let saved = saved::load(&self.state_dir)
+            .unwrap_or_else(|e| {
+                self.notice = Some(set_aside(&self.state_dir, saved::FILE_NAME, &e));
+                None
+            })
+            .unwrap_or_default();
+        // Before attaching, so the spaces start at their final size.
+        self.sidebar_cols = starting_width(saved.sidebar, self.sidebar_cols);
+        self.sidebar_resized = saved.sidebar;
         for s in &sessions {
             // A space that cannot be attached (it just ended) keeps paddock
             // from opening no other.
             self.report(|app| app.attach(&s.id));
         }
-        let saved_space = saved.and_then(|s| s.space);
+        let saved_space = saved.space;
         self.current = self
             .spaces
             .iter()
@@ -298,7 +310,7 @@ impl App {
         if self.sidebar_hidden {
             0
         } else {
-            SIDEBAR_COLS
+            clamp_width(self.sidebar_cols, self.screen.0)
         }
     }
 
@@ -408,11 +420,8 @@ mod tests {
 
     #[test]
     fn the_sidebar_takes_columns_from_the_left() {
-        assert_eq!(
-            session_area((100, 30), SIDEBAR_COLS),
-            Rect::new(24, 1, 76, 29)
-        );
-        assert_eq!(session_area((10, 5), SIDEBAR_COLS), Rect::new(10, 1, 0, 4));
+        assert_eq!(session_area((100, 30), 24), Rect::new(24, 1, 76, 29));
+        assert_eq!(session_area((10, 5), 24), Rect::new(10, 1, 0, 4));
     }
 
     #[test]

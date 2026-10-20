@@ -78,7 +78,7 @@ fn at_home() -> String {
 
 /// An agent's first line: dot, label, and its state at the right.
 fn agent(label: &str, state: &str) -> String {
-    let width = 22 - 3 - state.len();
+    let width = 30 - 3 - state.len();
     format!(" ● {label:<width$}{state}")
 }
 
@@ -458,4 +458,63 @@ fn hooks_install_keeps_other_hooks_and_uninstall_removes_only_paddocks() {
         .status
         .success());
     assert_eq!(std::fs::read_to_string(&settings).unwrap(), original);
+}
+
+#[test]
+fn braces_resize_the_sidebar_and_the_width_is_kept_on_reopen() {
+    let sandbox = Sandbox::new();
+    let mut paddock = ready(&sandbox);
+    let cols = |sidebar: u16| harness::COLS - sidebar;
+    wait_for_width(&sandbox, cols(32));
+
+    paddock.command(b"}");
+    wait_for_width(&sandbox, cols(34));
+    paddock.command(b"{");
+    paddock.command(b"{");
+    wait_for_width(&sandbox, cols(30));
+    paddock.detach_keys();
+    assert!(paddock.wait_exit());
+
+    let _again = ready(&sandbox);
+    wait_for_width(&sandbox, cols(30));
+}
+
+#[test]
+fn the_sidebar_never_gets_narrower_than_sixteen_or_wider_than_half() {
+    let sandbox = Sandbox::new();
+    let mut paddock = ready(&sandbox);
+    for _ in 0..12 {
+        paddock.command(b"{");
+    }
+    wait_for_width(&sandbox, harness::COLS - 16);
+    for _ in 0..30 {
+        paddock.command(b"}");
+    }
+    wait_for_width(&sandbox, harness::COLS / 2);
+}
+
+#[test]
+fn dragging_the_border_resizes_the_sidebar() {
+    let sandbox = Sandbox::new();
+    let mut paddock = ready(&sandbox);
+    paddock.command(b"C"); // a second space, so a stray click would switch
+    paddock.wait_for_text(PROMPT);
+    wait_for_width(&sandbox, harness::COLS - 32);
+
+    // The border is column 31; on row 3 the sidebar shows space-2.
+    paddock.drag_screen(3, 31, 39);
+
+    wait_for_width(&sandbox, harness::COLS - 40);
+    paddock.type_line("echo still-in-two");
+    paddock.wait_for_text("still-in-two\n");
+    assert_eq!(sandbox.display("space-2", "#{pane_width}"), "60");
+}
+
+#[test]
+fn the_config_sets_the_starting_width() {
+    let sandbox = Sandbox::new();
+    sandbox.write_config("[sidebar]\nwidth = 40\n");
+    let _paddock = ready(&sandbox);
+
+    wait_for_width(&sandbox, harness::COLS - 40);
 }

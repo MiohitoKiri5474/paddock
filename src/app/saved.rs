@@ -15,6 +15,9 @@ pub struct Saved {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[serde(alias = "item")]
     pub space: Option<String>,
+    /// The sidebar's width when last changed (`C-a {`, `C-a }`, dragging).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sidebar: Option<u16>,
 }
 
 /// Read the saved state; `None` if there is none yet.
@@ -67,6 +70,7 @@ mod tests {
         assert_eq!(load(&dir).unwrap(), None);
         let saved = Saved {
             space: Some("$3".into()),
+            sidebar: Some(40),
         };
         save(&dir, &saved).unwrap();
         assert_eq!(load(&dir).unwrap(), Some(saved));

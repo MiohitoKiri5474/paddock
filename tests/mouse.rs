@@ -2,18 +2,18 @@
 //! tabs; dragging copies text; programs that ask for the mouse get it in
 //! their own coordinates unless Shift is held.
 //!
-//! The screen is 100x30 and the sidebar takes 24 columns; columns here count
+//! The screen is 100x30 and the sidebar takes 32 columns; columns here count
 //! from its right, as the harness does. After one side-by-side split the left
-//! pane is columns 0-37, the border column 38, the right pane columns 39-75.
+//! pane is columns 0-33, the border column 34, the right pane columns 35-67.
 
 mod harness;
 
 use harness::{Paddock, Sandbox, PROMPT, TIMEOUT};
 use std::time::{Duration, Instant};
 
-const RIGHT: u16 = 39;
+const RIGHT: u16 = 35;
 /// Right edge of the session area.
-const END: usize = 76;
+const END: usize = 68;
 
 fn ready(sandbox: &Sandbox) -> Paddock {
     let paddock = sandbox.launch();
@@ -63,11 +63,11 @@ fn clicking_a_split_focuses_it() {
 
     p.click(10, 10);
     p.type_line("echo left-$((1+1))");
-    wait_in_columns(&p, "left-2", 0, 38);
+    wait_in_columns(&p, "left-2", 0, 34);
 
     p.click(50, 10);
     p.type_line("echo right-$((2+2))");
-    wait_in_columns(&p, "right-4", 39, END);
+    wait_in_columns(&p, "right-4", 35, END);
 }
 
 #[test]
@@ -108,7 +108,7 @@ fn wheel_scrolls_the_split_under_the_pointer() {
     split_side_by_side(&mut p);
 
     p.wheel(true, 10, 10);
-    wait_in_columns(&p, "[3/", 0, 38);
+    wait_in_columns(&p, "[3/", 0, 34);
 }
 
 #[test]
@@ -146,9 +146,9 @@ fn programs_that_ask_for_the_mouse_get_it_in_their_own_coordinates() {
     assert!(col >= RIGHT, "marker in the right terminal");
     p.command(b"h"); // the left terminal has the focus, not the one clicked
 
-    // Column 48, row 5 is column 9, row 4 of the right pane.
-    p.click(48, 5);
-    wait_in_columns(&p, "^[[<0;10;5M^[[<0;10;5m", 39, END);
+    // Column 44, row 5 is column 9, row 4 of the right pane.
+    p.click(44, 5);
+    wait_in_columns(&p, "^[[<0;10;5M^[[<0;10;5m", 35, END);
 
     // Shift keeps the mouse in paddock: dragging copies.
     p.drag((col, row), (col + 5, row), true);

@@ -283,13 +283,13 @@ fn resizing_the_outer_terminal_resizes_the_terminal() {
         ])
     };
     let start = std::time::Instant::now();
-    while size().trim() != "56x19" {
+    while size().trim() != "48x19" {
         assert!(start.elapsed() < harness::TIMEOUT, "pane is {}", size());
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     paddock.type_line("stty size");
 
-    paddock.wait_for_text("19 56"); // the tab bar takes a row, the sidebar 24 columns
+    paddock.wait_for_text("19 48"); // the tab bar takes a row, the sidebar 32 columns
 }
 
 #[test]

@@ -1,5 +1,6 @@
 //! Applying outer-terminal input to the app, depending on its mode.
 
+use super::sidebar::SIDEBAR_STEP;
 use super::state::{App, Mode, Renaming};
 use crate::input::{encode_key, encode_paste, Command, KeyAction};
 use anyhow::Result;
@@ -117,6 +118,9 @@ impl App {
             Command::FocusSidebar => self.focus_sidebar(false),
             Command::FocusSpaces => self.focus_sidebar(true),
             Command::MoveTab(step) => self.report(|app| app.move_tab(step)),
+            Command::ResizeSidebar(wider) => {
+                self.resize_sidebar(if wider { SIDEBAR_STEP } else { -SIDEBAR_STEP });
+            }
             Command::ToggleSidebar => {
                 self.sidebar_hidden = !self.sidebar_hidden;
                 if self.sidebar_hidden && matches!(self.mode, Mode::Sidebar(_)) {

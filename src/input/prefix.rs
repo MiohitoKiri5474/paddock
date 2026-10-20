@@ -34,6 +34,8 @@ pub enum Command {
     FocusSpaces,
     /// Move the current tab one place left (`-1`) or right (`1`).
     MoveTab(isize),
+    /// Make the sidebar wider (`true`) or narrower.
+    ResizeSidebar(bool),
     ToggleSidebar,
     /// Jump to the next session that is waiting or idle.
     NextAttention,
@@ -77,6 +79,7 @@ pub const BINDINGS: &[(&str, &str)] = &[
     ("s", "focus sidebar: spaces, agents (j/k Enter x f Esc)"),
     ("w", "focus sidebar on the current space"),
     ("b", "show or hide sidebar"),
+    ("{ / }", "sidebar narrower / wider"),
     ("a", "next session that needs you"),
     ("o", "dashboard (j/k, Enter, D, x, f, I types, Esc back)"),
     ("d", "detach: quit, terminals keep running"),
@@ -119,6 +122,8 @@ fn command(key: &KeyEvent) -> Option<Command> {
         'w' => Command::FocusSpaces,
         '<' => Command::MoveTab(-1),
         '>' => Command::MoveTab(1),
+        '{' => Command::ResizeSidebar(false),
+        '}' => Command::ResizeSidebar(true),
         'b' => Command::ToggleSidebar,
         'a' => Command::NextAttention,
         'o' => Command::Dashboard,
@@ -265,6 +270,14 @@ mod tests {
         assert_eq!(
             after_prefix('>', KeyModifiers::SHIFT),
             KeyAction::Command(Command::MoveTab(1))
+        );
+        assert_eq!(
+            after_prefix('{', KeyModifiers::SHIFT),
+            KeyAction::Command(Command::ResizeSidebar(false))
+        );
+        assert_eq!(
+            after_prefix('}', KeyModifiers::SHIFT),
+            KeyAction::Command(Command::ResizeSidebar(true))
         );
         assert_eq!(
             after_prefix('w', none),

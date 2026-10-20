@@ -22,7 +22,7 @@ pub const TIMEOUT: Duration = Duration::from_secs(10);
 /// The prompt of the test shell, as drawn (the `.zshrc` adds a trailing space).
 pub const PROMPT: &str = "test$";
 /// Columns the sidebar takes while shown, its border included.
-pub const SIDEBAR: u16 = 24;
+pub const SIDEBAR: u16 = 32;
 /// Backgrounds of a tab and of the current tab in the tab bar (paddock's
 /// defaults).
 const TAB: vt100::Color = vt100::Color::Idx(237);
@@ -393,6 +393,14 @@ impl Paddock {
     pub fn click_screen(&mut self, col: u16, row: u16) {
         self.send_mouse(0, col, row, false);
         self.send_mouse(0, col, row, true);
+    }
+
+    /// Press at screen column `from` of `row`, drag to column `to` and
+    /// release there, counting from the screen's left edge.
+    pub fn drag_screen(&mut self, row: u16, from: u16, to: u16) {
+        self.send_mouse(0, from, row, false);
+        self.send_mouse(32, to, row, false);
+        self.send_mouse(0, to, row, true);
     }
 
     fn send_mouse(&mut self, code: u16, col: u16, row: u16, release: bool) {
