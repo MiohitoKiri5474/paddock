@@ -135,8 +135,9 @@ pub fn run(
 fn follow_up(app: &mut App, git: &mut GitFeed, effects: &EventEffects) {
     // Any event may show a tab or bring the window back.
     app.see_current();
-    app.track_page();
+    // Pane output never changes the space or tab shown.
     if !effects.output {
+        app.track_page();
         app.settle_tabs();
     }
     if effects.rows_may_move {
@@ -259,6 +260,11 @@ fn draw(screen: &mut Screen, app: &App) -> Result<()> {
         let bar_cursor = draw_tab_bar(app, &rows, bar_area, f.buffer_mut());
         // The frame may already have a new size the app has not seen yet
         // (its resize event is still queued): never draw outside it.
+        // When the sizes agree, the panes fit: clipping hides only the lag.
+        debug_assert!(
+            app.screen != (full.width, full.height) || full.intersection(app.area()) == app.area(),
+            "panes outside the frame"
+        );
         let panes = app.area().intersection(full);
         let term_cursor = draw_panes(app, panes, f.buffer_mut());
         let dash_cursor = draw_dashboard(app, &rows, panes, f.buffer_mut());

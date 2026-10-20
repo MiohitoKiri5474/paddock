@@ -124,7 +124,7 @@ pub struct App {
     /// dragging), saved so that it comes back; `None` while the configured
     /// width applies.
     pub(super) sidebar_wish: Option<u16>,
-    /// The page shown now and the one before, for `C-a Tab`.
+    /// The pages shown lately, the current one last, for `C-a Tab`.
     pub(super) pages: Pages,
     /// Where the held mouse button went, until it is released.
     pub(super) press: Option<Press>,
@@ -427,7 +427,10 @@ mod tests {
 
     #[test]
     fn the_sidebar_takes_columns_from_the_left() {
-        assert_eq!(session_area((100, 30), 24), Rect::new(24, 1, 76, 29));
+        assert_eq!(
+            session_area((100, 30), SIDEBAR),
+            Rect::new(SIDEBAR, 1, 100 - SIDEBAR, 29)
+        );
         assert_eq!(session_area((10, 5), SIDEBAR), Rect::new(10, 1, 0, 4));
     }
 

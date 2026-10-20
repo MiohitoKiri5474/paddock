@@ -82,6 +82,12 @@ impl Space {
         self.structure.windows.get_mut(self.structure.current)
     }
 
+    /// The index of window `window`, else (it closed) of the current one.
+    pub fn tab_or_current(&self, window: &str) -> Option<usize> {
+        let tab = self.structure.windows.iter().position(|w| w.id == window);
+        tab.or_else(|| self.current_window().map(|_| self.structure.current))
+    }
+
     /// The index of the window holding pane `pane`.
     pub fn window_of(&self, pane: &str) -> Option<usize> {
         self.structure.windows.iter().position(|w| w.contains(pane))

@@ -1,5 +1,7 @@
 //! The last page (`C-a Tab`): the space and tab shown before the current
-//! one, across spaces, like tmux's `last-window`. Kept while paddock runs.
+//! one, across spaces, like tmux's `last-window`. paddock keeps the last
+//! 32 pages shown, while it runs, so that when the page you came from
+//! closes, `C-a Tab` falls back to its space's current tab or an older page.
 
 use super::state::App;
 
@@ -62,13 +64,10 @@ impl App {
         let spaces = &self.spaces;
         self.pages.retain(|p| {
             let space = spaces.iter().find(|s| s.id == p.space)?;
-            let window = match space.windows().iter().find(|w| w.id == p.window) {
-                Some(w) => w,
-                None => space.current_window()?,
-            };
+            let tab = space.tab_or_current(&p.window)?;
             Some(Page {
                 space: space.id.clone(),
-                window: window.id.clone(),
+                window: space.windows()[tab].id.clone(),
             })
         });
     }
@@ -85,13 +84,9 @@ impl App {
     /// `C-a Tab`: show the last page that still exists and is not the
     /// current one, else say there is none.
     pub(super) fn last_page(&mut self) {
-        let target = self.pages.last().cloned().and_then(|page| {
+        let target = self.pages.last().and_then(|page| {
             let i = self.spaces.iter().position(|s| s.id == page.space)?;
-            let tab = self.spaces[i]
-                .windows()
-                .iter()
-                .position(|w| w.id == page.window)?;
-            Some((i, tab))
+            Some((i, self.spaces[i].tab_or_current(&page.window)?))
         });
         let Some((space, tab)) = target else {
             self.notice = Some(NO_LAST_PAGE.into());
@@ -116,25 +111,44 @@ mod tests {
         }
     }
 
+    /// `@2` closed and space `$2` shows `@3` now: what each page is now.
+    fn after_closing_at_2(q: &Page) -> Option<Page> {
+        match q.window.as_str() {
+            "@2" => Some(page("$2", "@3")),
+            _ => Some(q.clone()),
+        }
+    }
+
     #[test]
-    fn a_closed_page_falls_back_to_its_space_and_never_to_the_current_page() {
+    fn a_closed_page_becomes_its_spaces_current_tab() {
+        let mut p = Pages::default();
+        p.visit(page("$1", "@1"));
+        p.visit(page("$2", "@2"));
+        p.visit(page("$1", "@1"));
+        p.retain(after_closing_at_2);
+        assert_eq!(p.last(), Some(&page("$2", "@3")));
+    }
+
+    #[test]
+    fn the_last_page_is_never_the_current_one() {
         let mut p = Pages::default();
         for (s, w) in [("$1", "@1"), ("$2", "@2"), ("$2", "@3"), ("$2", "@2")] {
             p.visit(page(s, w));
         }
-        // @2 closed: space $2 shows @3 now.
         p.visit(page("$2", "@3"));
-        let exists = |q: &Page| (q.window != "@2").then(|| q.clone());
-        let fallback = |q: &Page| exists(q).or_else(|| (q.space == "$2").then(|| page("$2", "@3")));
-        p.retain(fallback);
-        assert_eq!(p.last(), Some(&page("$1", "@1")), "not @3, shown now");
-        // Nothing older: no last page.
-        let mut q = Pages::default();
-        q.visit(page("$1", "@1"));
-        q.visit(page("$2", "@2"));
-        q.visit(page("$1", "@1"));
-        q.retain(|q: &Page| (q.space == "$1").then(|| q.clone()));
-        assert_eq!(q.last(), None);
+        p.retain(after_closing_at_2);
+        // @2 now reads as @3, shown now: the page before it is older.
+        assert_eq!(p.last(), Some(&page("$1", "@1")));
+    }
+
+    #[test]
+    fn a_closed_spaces_pages_are_dropped() {
+        let mut p = Pages::default();
+        p.visit(page("$1", "@1"));
+        p.visit(page("$2", "@2"));
+        p.visit(page("$1", "@1"));
+        p.retain(|q: &Page| (q.space == "$1").then(|| q.clone()));
+        assert_eq!(p.last(), None);
     }
 
     #[test]
