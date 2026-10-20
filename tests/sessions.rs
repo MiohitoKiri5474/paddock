@@ -135,9 +135,9 @@ fn hook_events_drive_the_agent_row() {
         let out = sandbox.hook("space-1", event, &payload(name));
         assert!(out.stdout.is_empty() && out.stderr.is_empty(), "{out:?}");
         let tab = if state == "stopped" {
-            "1:home"
+            "home"
         } else {
-            "1:claude"
+            "claude"
         };
         wait_for_lines(&paddock, &one_agent("repo", state, tab));
     }
@@ -207,13 +207,13 @@ fn agents_of_every_space_are_listed_with_their_space_and_tab() {
             at_home(),
             " AGENTS".into(),
             agent("waiting", "waiting"),
-            place("space-1", "4:claude"),
+            place("space-1", "claude"),
             agent("idle", "done"),
-            place("space-1", "3:claude"),
+            place("space-1", "claude"),
             agent("running", "running"),
-            place("space-1", "2:claude"),
+            place("space-1", "claude"),
             agent("stopped", "stopped"),
-            place("space-1", "1:home"),
+            place("space-1", "home"),
         ],
     );
     // The space's tabs show theirs; tabs running Claude are called so.
@@ -237,7 +237,7 @@ fn events_recorded_while_paddock_is_closed_appear_on_reopen() {
     );
 
     let again = ready(&sandbox);
-    wait_for_lines(&again, &one_agent("repo", "waiting", "1:claude"));
+    wait_for_lines(&again, &one_agent("repo", "waiting", "claude"));
 }
 
 #[test]
@@ -245,7 +245,7 @@ fn claude_agents_corrects_missed_events() {
     let sandbox = Sandbox::new();
     let paddock = ready(&sandbox);
     sandbox.hook("space-1", "UserPromptSubmit", &payload("UserPromptSubmit"));
-    wait_for_lines(&paddock, &one_agent("repo", "running", "1:claude"));
+    wait_for_lines(&paddock, &one_agent("repo", "running", "claude"));
 
     // Esc fires no Stop; claude still reports the session as idle.
     sandbox.set_agents(
@@ -253,7 +253,7 @@ fn claude_agents_corrects_missed_events() {
             .to_string(),
     );
 
-    wait_for_lines(&paddock, &one_agent("fix-login", "idle", "1:claude"));
+    wait_for_lines(&paddock, &one_agent("fix-login", "idle", "claude"));
 }
 
 #[test]
@@ -270,7 +270,7 @@ fn claude_agents_finds_sessions_no_hook_reported() {
             .to_string(),
     );
 
-    wait_for_lines(&paddock, &one_agent("older", "waiting", "1:claude"));
+    wait_for_lines(&paddock, &one_agent("older", "waiting", "claude"));
 }
 
 #[test]

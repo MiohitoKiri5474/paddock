@@ -35,7 +35,7 @@ Not in scope for now: agents other than Claude Code, Linux, remote machines, a s
 
    AGENTS
    ● api-server  waiting
-     api-server · 2:claude
+     api-server · claude
   ```
 
   SPACES has two lines per space: a dot in the most urgent state of its agents (none without agents) and its name (the tmux session name), then, dim, its directory (that of its first tab's first pane, home as `~`) and the branch checked out there (the short commit if detached, nothing outside a repository). A path too long loses its start (`…`) first, then the branch its end. Directories and branches are read on the git thread, on hook events and every few seconds. The current space (the one whose tabs are shown) has its own background over both lines (`[colors] current_space`, a 256-colour index or `#rrggbb`, default 236). AGENTS lists every main Claude session in an open pane, in any space, sorted by state: a dot, its label and state, then, dimmed, its space and tab, with a blank line between agents. Subagents and task rows stay in the dashboard. While the sidebar has the keyboard, the selected space or agent is reversed.

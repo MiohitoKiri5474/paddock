@@ -11,7 +11,7 @@
 //!
 //!  AGENTS
 //!  ● api-server  waiting
-//!    api-server · 2:claude
+//!    api-server · claude
 //! ```
 //!
 //! A space's dot shows the most urgent state of the agents in it (none
@@ -300,8 +300,8 @@ mod tests {
             space("paddock", None, false),
         ];
         let agents = [
-            agent("api", State::Waiting, "api-server · 2:claude"),
-            agent("a-very-long-label", State::Running, "api-server · 1:x"),
+            agent("api", State::Waiting, "api-server · claude"),
+            agent("a-very-long-label", State::Running, "api-server · x"),
         ];
         let buf = draw(&spaces, &agents, None);
         let want = [
@@ -313,10 +313,10 @@ mod tests {
             "                       │",
             " AGENTS                │",
             " ● api         waiting │",
-            "   api-server · 2:claud│",
+            "   api-server · claude │",
             "                       │",
             " ● a-very-long running │",
-            "   api-server · 1:x    │",
+            "   api-server · x      │",
         ];
         for (y, line) in want.iter().enumerate() {
             assert_eq!(text(&buf, y as u16), *line, "row {y}");
@@ -331,7 +331,7 @@ mod tests {
             space("cur", Some(State::Idle), true),
             space("other", Some(State::Done), false),
         ];
-        let agents = [agent("w", State::Waiting, "cur · 1:a")];
+        let agents = [agent("w", State::Waiting, "cur · a")];
         let buf = draw(&spaces, &agents, None);
         for (x, y) in [(0, 1), (22, 1), (0, 2), (22, 2)] {
             assert_eq!(buf[(x, y)].bg, GREY, "({x}, {y}): both lines");
@@ -348,7 +348,7 @@ mod tests {
     #[test]
     fn the_selected_space_or_agent_is_reversed() {
         let spaces = [space("a", None, false), space("b", None, false)];
-        let agents = [agent("x", State::Idle, "a · 1:x")];
+        let agents = [agent("x", State::Idle, "a · x")];
         let reversed = |buf: &Buffer, y| buf[(5, y)].modifier.contains(Modifier::REVERSED);
         let buf = draw(&spaces, &agents, Some(1));
         assert!(reversed(&buf, 3) && reversed(&buf, 4));

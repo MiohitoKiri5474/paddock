@@ -64,15 +64,11 @@ impl App {
             .collect()
     }
 
-    /// Where row `r` runs, as `space · N:tab`.
+    /// Where row `r` runs, as `space · tab`.
     fn place_of(&self, r: &Row) -> Option<String> {
         let space = self.spaces.iter().find(|i| i.id == r.space)?;
-        let (n, w) = space
-            .windows()
-            .iter()
-            .enumerate()
-            .find(|(_, w)| w.id == r.window)?;
-        Some(format!("{} · {}:{}", space.name(), n + 1, self.tab_name(w)))
+        let w = space.windows().iter().find(|w| w.id == r.window)?;
+        Some(format!("{} · {}", space.name(), self.tab_name(w)))
     }
 
     /// A tab's name as shown: tmux's, except that a tab tmux names (not
