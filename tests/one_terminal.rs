@@ -295,3 +295,16 @@ fn kitty_encoded_prefix_detaches_too() {
     let again = sandbox.launch();
     again.wait_for_text("kitty-marker\n");
 }
+
+#[test]
+fn terminals_know_paddocks_socket_and_state_dir_for_hooks() {
+    let sandbox = Sandbox::new();
+    let mut paddock = sandbox.launch();
+    paddock.wait_for_text(PROMPT);
+
+    paddock.type_line("echo \"pane-$PADDOCK_TMUX_SOCKET\" \"$XDG_STATE_HOME\"");
+
+    let state = sandbox.path("state").to_string_lossy().into_owned();
+    let want = format!("pane-paddock-test {state}");
+    paddock.wait_for("the variables", |s| s.lines().any(|l| l.trim() == want));
+}

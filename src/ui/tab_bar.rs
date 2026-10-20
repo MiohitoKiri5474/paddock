@@ -46,7 +46,7 @@ impl TabBar<'_> {
         let row = Rect { height: 1, ..area };
         buf.set_style(row, Style::default());
         let mut cursor = None;
-        let used = match self.rename {
+        match self.rename {
             Some(text) => {
                 let prompt = format!(" rename tab: {text}");
                 let (x, _) = buf.set_stringn(
@@ -57,22 +57,22 @@ impl TabBar<'_> {
                     Style::default(),
                 );
                 cursor = Some(Position::new(x.min(row.right().saturating_sub(1)), row.y));
-                x
             }
             None => self.render_tabs(row, buf),
-        };
+        }
         if let Some(status) = self.status {
             let text = format!(" {status} ");
             let width = u16::try_from(Span::raw(text.as_str()).width()).unwrap_or(u16::MAX);
-            if used + width <= row.right() {
-                let style = Style::default().add_modifier(Modifier::REVERSED);
-                buf.set_string(row.right() - width, row.y, &text, style);
-            }
+            // A message too long for the space left covers the tabs, cut at
+            // the right edge: an error must never go unseen.
+            let x = row.right().saturating_sub(width).max(row.x);
+            let style = Style::default().add_modifier(Modifier::REVERSED);
+            buf.set_stringn(x, row.y, &text, usize::from(row.right() - x), style);
         }
         cursor
     }
 
-    fn render_tabs(&self, row: Rect, buf: &mut Buffer) -> u16 {
+    fn render_tabs(&self, row: Rect, buf: &mut Buffer) {
         let mut x = row.x;
         for (i, name) in self.names.iter().enumerate() {
             let text = cell(i, name);
@@ -86,7 +86,6 @@ impl TabBar<'_> {
             }
             (x, _) = buf.set_stringn(x, row.y, &text, left, style);
         }
-        x
     }
 }
 
@@ -164,6 +163,12 @@ mod tests {
         assert_eq!(text(&buf), " 1:a  2:b       C-a");
         let (buf, _) = draw(&bar(vec!["a-very-long-tab-name"], 0), 10);
         assert_eq!(text(&buf), " 1:a-very-");
+        let b = TabBar {
+            status: Some("cannot read /a/long/path"),
+            ..bar(vec!["a", "b"], 0)
+        };
+        let (buf, _) = draw(&b, 20);
+        assert_eq!(text(&buf), " cannot read /a/long");
     }
 
     #[test]

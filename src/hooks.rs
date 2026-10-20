@@ -6,7 +6,8 @@ use crate::paths::Paths;
 use crate::sessions::{self, log};
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Map, Value};
-use std::io::Read;
+use std::io::{Read, Write};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 /// The events paddock listens to.
@@ -139,8 +140,16 @@ pub fn edit_file(path: &Path, f: impl FnOnce(Value) -> Result<Value>) -> Result<
     // Replace what a symlink points to (a dotfiles repo), not the link.
     let path = &std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let tmp = path.with_extension("json.paddock-tmp");
-    std::fs::write(&tmp, out).with_context(|| format!("cannot write {}", tmp.display()))?;
-    // The settings may hold tokens: keep a private file private.
+    // The settings may hold tokens: the new file is private until it gets
+    // the old one's permissions. A leftover from a crash is replaced.
+    let _ = std::fs::remove_file(&tmp);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&tmp)
+        .and_then(|mut f| f.write_all(out.as_bytes()))
+        .with_context(|| format!("cannot write {}", tmp.display()))?;
     if let Ok(meta) = std::fs::metadata(path) {
         std::fs::set_permissions(&tmp, meta.permissions())
             .with_context(|| format!("cannot set permissions on {}", tmp.display()))?;

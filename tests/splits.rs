@@ -277,6 +277,7 @@ fn an_unreadable_layout_is_kept_aside_not_overwritten() {
     std::fs::write(&layout, "not a layout").unwrap();
 
     let mut again = ready(&sandbox);
+    again.wait_for_text("invalid layout");
     again.command(b"c");
     again.wait_for_tabs(&["1:terminal-1", "2:terminal-2"]);
 
