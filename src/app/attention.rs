@@ -5,7 +5,8 @@
 //! before the hook that reports the same change, and must neither swallow
 //! nor repeat its notification.
 
-use super::state::{App, Mode, Row};
+use super::rows::Row;
+use super::state::{App, Mode};
 use crate::hooks::now_ms;
 use crate::sessions::{self, state_after, HookRecord, State};
 use std::collections::HashMap;

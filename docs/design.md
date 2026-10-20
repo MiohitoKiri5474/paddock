@@ -51,6 +51,7 @@ Not in scope for now: agents other than Claude Code, Linux, remote machines, a s
 - Session: running, waiting, idle, stopped, or unknown.
 - Subagent task: running, waiting, done, or stopped.
 - Compacting counts as running. Sort order: waiting, idle, running, stopped.
+- Task rows within a session sort waiting, running, done, stopped, ties in tree order; the main agent's task row has its session's state (idle counts as done).
 
 ### Attention
 
@@ -60,7 +61,7 @@ Not in scope for now: agents other than Claude Code, Linux, remote machines, a s
 ### Preview
 
 - The dashboard shows a live preview of the selected row. A subagent's task row shows its session's screen.
-- `I` enters interactive preview and types into that session; `Esc` leaves and is never sent to Claude. To interrupt Claude, jump to the session.
+- `I` enters interactive preview and types into that session; `Esc` leaves and is never sent to Claude; so does any Alt key, since `Esc` and a key read together arrive as one. To interrupt Claude, jump to the session.
 
 ### Actions
 
@@ -91,7 +92,7 @@ Prefix `C-a`, configurable; pressing it twice sends a literal `C-a`.
 | `n` / `p` | next / previous tab |
 | `a` | next session that needs you |
 | `=` | equalise split sizes |
-| `o` | dashboard (v1.1) |
+| `o` | dashboard |
 | `s` | focus sidebar |
 | `b` | show or hide sidebar |
 | `w` | workspace panel (v1.2) |
@@ -110,8 +111,7 @@ A task is a branch ([ADR 0004](adr/0004-task-is-a-branch.md)). paddock reads `gi
 
 ## Scope
 
-- **v1**: hidden tmux server, control-mode rendering with own scrollback, single instance, layout restored on reopen; one default workspace, tabs, minimal splits (split, close, move focus, equalise), prefix keys, mouse (click, wheel, drag to copy); hooks, states, sidebar task tree including subagents, sidebar git fields, highlights, notifications, dismiss; close and fork.
-- **v1.1**: dashboard (details, live preview, interactive preview).
+- **v1**: hidden tmux server, control-mode rendering with own scrollback, single instance, layout restored on reopen; one default workspace, tabs, minimal splits (split, close, move focus, equalise), prefix keys, mouse (click, wheel, drag to copy); hooks, states, sidebar task tree including subagents, sidebar git fields, highlights, notifications, dismiss; close and fork; dashboard (details, live preview, interactive preview).
 - **v1.2**: workspaces and the workspace panel, scrollback search, keyboard copy mode, external sessions group.
 - **Later**: restore after reboot (`claude --resume` per terminal), PR column, resizing splits, other agents, Linux.
 
@@ -127,7 +127,8 @@ Each step leaves something usable.
 3. Agents: hooks, states, sidebar session rows, highlights, notifications. Daily use starts here.
 4. Tasks: branch tracking including subagents and worktrees, the tree, git fields, dismiss.
 5. Splits, mouse, full layout restore.
-6. Close and fork. v1 is complete.
+6. Close and fork.
+7. Dashboard: details, live preview, interactive preview. v1 is complete.
 
 ## Testing
 

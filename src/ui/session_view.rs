@@ -15,31 +15,7 @@ fn colour(c: Colour) -> Color {
 
 /// Draw the terminal into `area`. Returns where the cursor should be, if visible.
 pub fn render(emu: &Emulator, area: Rect, buf: &mut Buffer) -> Option<Position> {
-    let (cols, rows) = emu.size();
-    let selected = emu.selection();
-    for y in 0..rows.min(area.height) {
-        for x in 0..cols.min(area.width) {
-            let c = emu.cell(y, x);
-            if c.spacer {
-                // Covered by the wide character to its left; ratatui skips it.
-                continue;
-            }
-            let mut m = Modifier::empty();
-            m.set(Modifier::BOLD, c.bold);
-            m.set(Modifier::DIM, c.dim);
-            m.set(Modifier::ITALIC, c.italic);
-            m.set(Modifier::UNDERLINED, c.underline);
-            let highlight = selected.as_ref().is_some_and(|s| s.contains(y, x));
-            m.set(Modifier::REVERSED, c.inverse != highlight);
-            let style = Style::default()
-                .fg(colour(c.fg))
-                .bg(colour(c.bg))
-                .add_modifier(m);
-            let cell = &mut buf[(area.x + x, area.y + y)];
-            cell.set_symbol(if c.text.is_empty() { " " } else { &c.text });
-            cell.set_style(style);
-        }
-    }
+    cells(emu, 0, area, buf);
     let offset = emu.scroll_offset();
     if offset > 0 {
         let label = format!("[{offset}/{}]", emu.history_len());
@@ -58,6 +34,36 @@ pub fn render(emu: &Emulator, area: Rect, buf: &mut Buffer) -> Option<Position> 
     let (row, col) = emu.cursor();
     let visible = emu.modes().show_cursor && row < area.height && col < area.width;
     visible.then(|| Position::new(area.x + col, area.y + row))
+}
+
+/// Draw the terminal's rows from `first` on into `area`, cut to fit.
+pub fn cells(emu: &Emulator, first: u16, area: Rect, buf: &mut Buffer) {
+    let (cols, rows) = emu.size();
+    let selected = emu.selection();
+    for (y, row) in (first..rows).take(usize::from(area.height)).enumerate() {
+        let y = u16::try_from(y).unwrap_or(u16::MAX);
+        for x in 0..cols.min(area.width) {
+            let c = emu.cell(row, x);
+            if c.spacer {
+                // Covered by the wide character to its left; ratatui skips it.
+                continue;
+            }
+            let mut m = Modifier::empty();
+            m.set(Modifier::BOLD, c.bold);
+            m.set(Modifier::DIM, c.dim);
+            m.set(Modifier::ITALIC, c.italic);
+            m.set(Modifier::UNDERLINED, c.underline);
+            let highlight = selected.as_ref().is_some_and(|s| s.contains(row, x));
+            m.set(Modifier::REVERSED, c.inverse != highlight);
+            let style = Style::default()
+                .fg(colour(c.fg))
+                .bg(colour(c.bg))
+                .add_modifier(m);
+            let cell = &mut buf[(area.x + x, area.y + y)];
+            cell.set_symbol(if c.text.is_empty() { " " } else { &c.text });
+            cell.set_style(style);
+        }
+    }
 }
 
 /// Draw the border between two split terminals over `area`: a vertical line

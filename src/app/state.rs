@@ -6,16 +6,17 @@
 //! survives reattaching; when that terminal ends, the next one names the tab.
 
 use super::attention::Attention;
+use super::dashboard::Dashboard;
 use super::layout::{terminal_size, Layout};
 use super::mouse::Press;
+use super::rows::{rows, Placed, Row, RowId, TaskDetails, TaskStatus};
 use super::saved;
 use super::tabs::Tabs;
 use super::Event;
 use crate::config::{key_name, Config};
-use crate::git::Status;
 use crate::hooks::now_ms;
 use crate::input::PrefixKeys;
-use crate::sessions::{self, dismissed, Session, Sessions, State, SubagentTask, Task, TaskState};
+use crate::sessions::{dismissed, Session, Sessions, State};
 use crate::terminal::Terminal;
 use crate::tmux::server::quote;
 use crate::tmux::Server;
@@ -30,7 +31,7 @@ pub const TAB_BAR_ROWS: u16 = 1;
 /// Columns the sidebar takes, its border included, while it is shown.
 pub const SIDEBAR_COLS: u16 = 24;
 /// New terminals are named `terminal-N` until the user renames them.
-const NAME_STEM: &str = "terminal-";
+pub(super) const NAME_STEM: &str = "terminal-";
 
 pub enum Mode {
     Normal,
@@ -39,62 +40,16 @@ pub enum Mode {
     Help,
     /// The sidebar has the keyboard; holds the selected row.
     Sidebar(Option<RowId>),
-    /// Asking before closing terminal `terminal`, where Claude is `state`.
+    /// Asking before closing terminal `terminal`, where Claude is `state`;
+    /// `back` is the dashboard asked from, to return to.
     ConfirmClose {
         terminal: String,
         state: State,
+        back: Option<Dashboard>,
     },
+    /// The dashboard is open.
+    Dashboard(Dashboard),
 }
-
-/// One session row of the sidebar.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Row {
-    pub pane: String,
-    /// The terminal's tmux session id.
-    pub terminal: String,
-    /// Index of the tab holding the terminal.
-    pub tab: usize,
-    pub label: String,
-    pub state: State,
-    pub tasks: Vec<TaskRow>,
-    /// The terminal was closed: `terminal` is empty and `tab` means nothing.
-    pub closed: bool,
-}
-
-/// A sidebar line: pane `pane`'s session row, or its task row on `branch`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RowId {
-    pub pane: String,
-    pub branch: Option<String>,
-}
-
-/// Every sidebar line of `rows`, in display order.
-pub fn row_ids(rows: &[Row]) -> Vec<RowId> {
-    rows.iter()
-        .flat_map(|r| {
-            let id = |branch| RowId {
-                pane: r.pane.clone(),
-                branch,
-            };
-            std::iter::once(id(None)).chain(r.tasks.iter().map(move |t| id(Some(t.branch.clone()))))
-        })
-        .collect()
-}
-
-/// One task row, under its session row.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TaskRow {
-    pub branch: String,
-    /// The directory git status is read in.
-    pub cwd: String,
-    /// `None` until git has been read.
-    pub status: Option<Status>,
-    /// Set for a subagent task: its label and state.
-    pub subagent: Option<SubagentTask>,
-}
-
-/// Last known git status of each task, by `(directory, branch)`.
-pub type TaskStatus = HashMap<(String, String), Status>;
 
 pub struct App {
     pub(super) server: Server,
@@ -116,6 +71,7 @@ pub struct App {
     pub(super) state_dir: PathBuf,
     pub(super) sessions: Sessions,
     pub(super) task_status: TaskStatus,
+    pub(super) task_details: TaskDetails,
     /// The user hid the sidebar (`C-a b`).
     pub(super) sidebar_hidden: bool,
     /// Where the held mouse button went, until it is released.
@@ -133,85 +89,6 @@ pub fn session_area((cols, rows): (u16, u16), sidebar: u16) -> Rect {
         width: cols - sidebar,
         height: rows.saturating_sub(TAB_BAR_ROWS),
     }
-}
-
-/// Whether a tab still has the name paddock gave it (so it says nothing).
-fn is_default_name(name: &str) -> bool {
-    name.strip_prefix(NAME_STEM)
-        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
-}
-
-/// A terminal as the sidebar sees it: its tab's index and name, its tmux
-/// session id and its pane id.
-pub struct Placed<'a> {
-    pub tab: usize,
-    pub tab_name: &'a str,
-    pub terminal: &'a str,
-    pub pane: &'a str,
-}
-
-/// Session rows not dismissed, of the given terminals and of closed ones,
-/// sorted by state, then by tab (closed terminals last), each with its task
-/// rows.
-pub fn rows<'a>(
-    sessions: &Sessions,
-    status: &TaskStatus,
-    terminals: impl IntoIterator<Item = Placed<'a>>,
-) -> Vec<Row> {
-    // In a closed terminal, no subagent works on.
-    let task_rows = |tasks: Vec<&Task>, closed: bool| -> Vec<TaskRow> {
-        tasks
-            .into_iter()
-            .map(|task| TaskRow {
-                branch: task.branch.clone(),
-                cwd: task.cwd.clone(),
-                status: status
-                    .get(&(task.cwd.clone(), task.branch.clone()))
-                    .copied(),
-                subagent: task.subagent.clone().map(|mut sub| {
-                    if closed && matches!(sub.state, TaskState::Running | TaskState::Waiting) {
-                        sub.state = TaskState::Stopped;
-                    }
-                    sub
-                }),
-            })
-            .collect()
-    };
-    let mut placed = Vec::new();
-    let mut rows: Vec<Row> = terminals
-        .into_iter()
-        .filter_map(|t| {
-            placed.push(t.pane);
-            let (s, tasks) = sessions.shown(t.pane)?;
-            let tab_name = (!is_default_name(t.tab_name)).then_some(t.tab_name);
-            Some(Row {
-                pane: t.pane.to_string(),
-                terminal: t.terminal.to_string(),
-                tab: t.tab,
-                label: sessions::label(s, tab_name),
-                state: s.state,
-                tasks: task_rows(tasks, false),
-                closed: false,
-            })
-        })
-        .collect();
-    let mut closed: Vec<&str> = sessions.panes().filter(|p| !placed.contains(p)).collect();
-    closed.sort_by_key(|p| p.trim_start_matches('%').parse::<u32>().unwrap_or(u32::MAX));
-    rows.extend(closed.into_iter().filter_map(|pane| {
-        let (s, tasks) = sessions.shown(pane)?;
-        Some(Row {
-            pane: pane.to_string(),
-            terminal: String::new(),
-            tab: 0,
-            label: sessions::label(s, None),
-            // Claude no longer runs there.
-            state: State::Stopped,
-            tasks: task_rows(tasks, true),
-            closed: true,
-        })
-    }));
-    rows.sort_by_key(|r| (r.state.rank(), r.closed, r.tab));
-    rows
 }
 
 /// A state file that cannot be read is moved to `<name>.bad`, so the next
@@ -258,6 +135,7 @@ impl App {
             state_dir,
             sessions: Sessions::default(),
             task_status: TaskStatus::new(),
+            task_details: TaskDetails::new(),
             sidebar_hidden: false,
             press: None,
             attention: Attention::from_env(),
@@ -341,6 +219,7 @@ impl App {
             .map(|t| (t.cwd, t.branch))
             .collect();
         self.task_status.retain(|task, _| shown.contains(task));
+        self.task_details.retain(|task, _| shown.contains(task));
         dismissed::save(&self.state_dir, &self.sessions.dismissals())
     }
 
@@ -459,13 +338,15 @@ impl App {
 
     /// End terminal `id`, first asking if Claude there is running or
     /// waiting. It leaves its tab when tmux reports that the session ended,
-    /// the same way as when its shell exits.
-    pub fn close(&mut self, id: &str) -> Result<()> {
+    /// the same way as when its shell exits. Asking from the dashboard
+    /// `back` returns to it after.
+    pub fn close(&mut self, id: &str, back: Option<Dashboard>) -> Result<()> {
         match self.session_in(id).map(|s| s.state) {
             Some(state @ (State::Running | State::Waiting)) => {
                 self.mode = Mode::ConfirmClose {
                     terminal: id.to_string(),
                     state,
+                    back,
                 };
                 Ok(())
             }
@@ -606,170 +487,6 @@ mod tests {
             Rect::new(24, 1, 76, 29)
         );
         assert_eq!(session_area((10, 5), SIDEBAR_COLS), Rect::new(10, 1, 0, 4));
-    }
-
-    #[test]
-    fn rows_cover_sessions_sorted_by_state_then_tab_closed_terminals_last() {
-        use crate::sessions::HookRecord;
-        let mut s = Sessions::default();
-        for (pane, event, cwd) in [
-            ("%1", "SessionEnd", "/w/a"),
-            ("%2", "Stop", "/w/b"),
-            ("%3", "PermissionRequest", "/w/c"),
-            ("%4", "Stop", "/w/d"),
-            ("%10", "Stop", "/w/ten"),
-            ("%9", "PermissionRequest", "/w/gone"),
-            ("%6", "Stop", "/w/dismissed"),
-            ("%7", "Stop", "/w/closed-dismissed"),
-        ] {
-            s.apply(&HookRecord {
-                event: event.into(),
-                pane: pane.into(),
-                session_id: Some(pane.into()),
-                cwd: Some(cwd.into()),
-                ts: 1,
-                ..Default::default()
-            });
-        }
-        s.dismiss("%6", None, 2);
-        s.dismiss("%7", None, 2);
-        // Tab 3 is split: both of its terminals run Claude.
-        let terminals = [
-            (0, "terminal-1", "$1", "%1"),
-            (1, "api", "$2", "%2"),
-            (2, "terminal-3", "$3", "%3"),
-            (2, "terminal-3", "$4", "%4"),
-            (3, "shell", "$5", "%5"),
-            (4, "terminal-6", "$6", "%6"),
-        ];
-        let placed = terminals
-            .iter()
-            .map(|&(tab, tab_name, terminal, pane)| Placed {
-                tab,
-                tab_name,
-                terminal,
-                pane,
-            });
-        let got: Vec<(String, String, State, bool)> = rows(&s, &TaskStatus::new(), placed)
-            .into_iter()
-            .map(|r| (r.label, r.terminal, r.state, r.closed))
-            .collect();
-        // Claude no longer runs in a closed terminal: its row is stopped.
-        let want = [
-            ("c", "$3", State::Waiting, false),
-            ("api", "$2", State::Idle, false),
-            ("d", "$4", State::Idle, false),
-            ("a", "$1", State::Stopped, false),
-            ("gone", "", State::Stopped, true),
-            ("ten", "", State::Stopped, true),
-        ];
-        let want: Vec<(String, String, State, bool)> = want
-            .iter()
-            .map(|&(l, t, s, c)| (l.to_string(), t.to_string(), s, c))
-            .collect();
-        assert_eq!(got, want);
-    }
-
-    #[test]
-    fn task_rows_carry_the_status_read_for_their_directory() {
-        use crate::sessions::HookRecord;
-        let mut s = Sessions::default();
-        for (branch, cwd) in [("feat/a", "/r"), ("feat/b", "/r/wt")] {
-            s.apply(&HookRecord {
-                event: "PostToolUse".into(),
-                pane: "%1".into(),
-                cwd: Some(cwd.into()),
-                branch: Some(branch.into()),
-                ..Default::default()
-            });
-        }
-        let read = Status {
-            ahead_behind: Some((1, 0)),
-            changes: Some((3, 2)),
-        };
-        let status = TaskStatus::from([
-            (("/r".to_string(), "feat/a".to_string()), read),
-            (("/r".to_string(), "feat/b".to_string()), Status::default()),
-        ]);
-        let placed = [Placed {
-            tab: 0,
-            tab_name: "terminal-1",
-            terminal: "$1",
-            pane: "%1",
-        }];
-        let got = &rows(&s, &status, placed)[0].tasks;
-        let want = [
-            TaskRow {
-                branch: "feat/a".into(),
-                cwd: "/r".into(),
-                status: Some(read),
-                subagent: None,
-            },
-            TaskRow {
-                branch: "feat/b".into(),
-                cwd: "/r/wt".into(),
-                status: None,
-                subagent: None,
-            },
-        ];
-        assert_eq!(got, &want);
-    }
-
-    #[test]
-    fn a_closed_terminals_subagent_tasks_are_stopped() {
-        use crate::sessions::{HookRecord, TaskState};
-        let mut s = Sessions::default();
-        s.apply(&HookRecord {
-            event: "PermissionRequest".into(),
-            pane: "%1".into(),
-            agent_id: Some("a1".into()),
-            cwd: Some("/r/wt".into()),
-            branch: Some("fix/a".into()),
-            ..Default::default()
-        });
-        let got = &rows(&s, &TaskStatus::new(), [])[0].tasks[0];
-        assert_eq!(got.subagent.as_ref().unwrap().state, TaskState::Stopped);
-    }
-
-    #[test]
-    fn row_ids_follow_the_sidebar_lines() {
-        let task = |branch: &str| TaskRow {
-            branch: branch.into(),
-            cwd: "/r".into(),
-            status: None,
-            subagent: None,
-        };
-        let row = |pane: &str, tasks| Row {
-            pane: pane.into(),
-            terminal: String::new(),
-            tab: 0,
-            label: String::new(),
-            state: State::Idle,
-            tasks,
-            closed: false,
-        };
-        let rows = [row("%1", vec![task("a"), task("b")]), row("%2", vec![])];
-        let id = |pane: &str, branch: Option<&str>| RowId {
-            pane: pane.into(),
-            branch: branch.map(str::to_string),
-        };
-        assert_eq!(
-            row_ids(&rows),
-            [
-                id("%1", None),
-                id("%1", Some("a")),
-                id("%1", Some("b")),
-                id("%2", None)
-            ]
-        );
-    }
-
-    #[test]
-    fn only_paddocks_own_names_count_as_default() {
-        assert!(is_default_name("terminal-12"));
-        assert!(!is_default_name("terminal-"));
-        assert!(!is_default_name("terminal-x"));
-        assert!(!is_default_name("api"));
     }
 
     #[test]

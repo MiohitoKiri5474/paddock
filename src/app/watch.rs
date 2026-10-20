@@ -1,6 +1,7 @@
 //! Background threads that feed session information into the event loop:
 //! new lines of the hook event log, `claude agents --json` snapshots, and the
-//! git status of task rows on screen.
+//! git status of task rows on screen (and their details while the dashboard
+//! is open).
 
 use super::Event;
 use crate::git;
@@ -22,10 +23,17 @@ const GIT_POLL: Duration = Duration::from_secs(3);
 /// Tasks to keep the git status of, as `(directory, branch)`.
 pub type Tasks = Vec<(String, String)>;
 
+/// The tasks on screen, and whether the dashboard's details are wanted too.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Watched {
+    pub tasks: Tasks,
+    pub details: bool,
+}
+
 /// Start the threads. They end when the event loop goes away. Returns where
 /// to send the tasks on screen: each list is read at once, then every
 /// [`GIT_POLL`] until the next one.
-pub fn start(server: &Server, state_dir: &Path, tx: &Sender<Event>) -> Result<Sender<Tasks>> {
+pub fn start(server: &Server, state_dir: &Path, tx: &Sender<Event>) -> Result<Sender<Watched>> {
     let pid: u32 = server
         .run(&["display-message", "-p", "#{pid}"])?
         .trim()
@@ -53,17 +61,18 @@ pub fn start(server: &Server, state_dir: &Path, tx: &Sender<Event>) -> Result<Se
         std::thread::sleep(AGENTS_POLL);
     });
 
-    let (tasks_tx, tasks_rx) = mpsc::channel::<Tasks>();
+    let (tasks_tx, tasks_rx) = mpsc::channel::<Watched>();
     let events = tx.clone();
     std::thread::spawn(move || {
-        let mut tasks = Tasks::new();
+        let mut watched = Watched::default();
         loop {
             match tasks_rx.recv_timeout(GIT_POLL) {
                 // Only the latest list matters.
-                Ok(list) => tasks = tasks_rx.try_iter().last().unwrap_or(list),
+                Ok(list) => watched = tasks_rx.try_iter().last().unwrap_or(list),
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => break,
             }
+            let tasks = &watched.tasks;
             if tasks.is_empty() {
                 continue;
             }
@@ -72,6 +81,16 @@ pub fn start(server: &Server, state_dir: &Path, tx: &Sender<Event>) -> Result<Se
                 .map(|(dir, branch)| ((dir.clone(), branch.clone()), git::status(dir, branch)))
                 .collect();
             if events.send(Event::Git(read)).is_err() {
+                break;
+            }
+            if !watched.details {
+                continue;
+            }
+            let read = tasks
+                .iter()
+                .map(|(dir, branch)| ((dir.clone(), branch.clone()), git::details(dir, branch)))
+                .collect();
+            if events.send(Event::Details(read)).is_err() {
                 break;
             }
         }

@@ -25,7 +25,7 @@ impl App {
     pub fn mouse(&mut self, m: MouseEvent) -> Result<bool> {
         if matches!(
             self.mode,
-            Mode::Help | Mode::Rename(_) | Mode::ConfirmClose { .. }
+            Mode::Help | Mode::Rename(_) | Mode::ConfirmClose { .. } | Mode::Dashboard(_)
         ) {
             return Ok(false);
         }

@@ -3,30 +3,35 @@
 use super::attention::tab_states;
 use super::input::Flow;
 use super::layout::Split;
+use super::rows::Row;
 use super::screen::Screen;
 use super::state::{session_area, App, Mode, TAB_BAR_ROWS};
 use super::{watch, Event};
+use crate::hooks::now_ms;
 use crate::tmux::Message;
-use crate::ui::{help, session_view, sidebar, tab_bar::TabBar};
+use crate::ui::{dashboard, help, session_view, sidebar, tab_bar::TabBar};
 use anyhow::Result;
 use crossterm::event::{self as ct, KeyEventKind};
-use ratatui::layout::Rect;
+use ratatui::buffer::Buffer;
+use ratatui::layout::{Position, Rect};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
 /// Minimum time between two draws (about 60 frames a second).
 const FRAME: Duration = Duration::from_millis(16);
+/// Milliseconds in a second.
+const MS_PER_SEC: u64 = 1000;
 
 /// Tells the git thread which task rows are on screen.
 struct GitFeed {
-    tx: Sender<watch::Tasks>,
-    sent: watch::Tasks,
+    tx: Sender<watch::Watched>,
+    sent: watch::Watched,
 }
 
 impl GitFeed {
     /// Send the tasks on screen if they changed, or always if `now`.
     fn update(&mut self, app: &App, now: bool) {
-        let tasks = app.visible_tasks();
+        let tasks = app.watched_tasks();
         if now || tasks != self.sent {
             // The thread only ends with the app.
             let _ = self.tx.send(tasks.clone());
@@ -35,15 +40,36 @@ impl GitFeed {
     }
 }
 
+/// What waiting for the next event gave.
+enum Wait {
+    Event(Event),
+    /// Nothing yet, and the next frame is due.
+    FrameDue,
+    /// No more events will come.
+    Closed,
+}
+
+/// Idle: block until something happens. Dirty: wake up for the next frame.
+fn next_event(rx: &Receiver<Event>, dirty: bool, last_draw: Instant) -> Wait {
+    if !dirty {
+        return rx.recv().map_or(Wait::Closed, Wait::Event);
+    }
+    match rx.recv_timeout(FRAME.saturating_sub(last_draw.elapsed())) {
+        Ok(e) => Wait::Event(e),
+        Err(RecvTimeoutError::Timeout) => Wait::FrameDue,
+        Err(RecvTimeoutError::Disconnected) => Wait::Closed,
+    }
+}
+
 pub fn run(
     screen: &mut Screen,
     mut app: App,
     rx: &Receiver<Event>,
-    git: Sender<watch::Tasks>,
+    git: Sender<watch::Watched>,
 ) -> Result<()> {
     let mut git = GitFeed {
         tx: git,
-        sent: Vec::new(),
+        sent: watch::Watched::default(),
     };
     let mut dirty = true;
     let mut last_draw = Instant::now()
@@ -55,18 +81,10 @@ pub fn run(
             last_draw = Instant::now();
             dirty = false;
         }
-        // Idle: block until something happens. Dirty: wake up for the next frame.
-        let event = if dirty {
-            match rx.recv_timeout(FRAME.saturating_sub(last_draw.elapsed())) {
-                Ok(e) => e,
-                Err(RecvTimeoutError::Timeout) => continue,
-                Err(RecvTimeoutError::Disconnected) => break,
-            }
-        } else {
-            match rx.recv() {
-                Ok(e) => e,
-                Err(_) => break,
-            }
+        let event = match next_event(rx, dirty, last_draw) {
+            Wait::Event(e) => e,
+            Wait::FrameDue => continue,
+            Wait::Closed => break,
         };
         // Hook events refresh git; anything else but terminal output and git
         // itself may change which task rows are on screen.
@@ -80,6 +98,7 @@ pub fn run(
         });
         dirty |= changed;
         if rows_may_move {
+            app.anchor_dashboard();
             git.update(&app, hooks);
         }
         if flow == Flow::Quit {
@@ -99,7 +118,8 @@ fn handle(app: &mut App, event: Event, screen: &mut Screen) -> Result<(Flow, boo
             if let Some(t) = app.terminals.get_mut(&session) {
                 t.output(&data);
             }
-            return Ok((Flow::Continue, app.shows(&session)));
+            let seen = app.shows(&session) || app.shows_in_preview(&session);
+            return Ok((Flow::Continue, seen));
         }
         // That terminal's tmux session ended: its shell exited or it was closed.
         Event::Tmux {
@@ -125,6 +145,10 @@ fn handle(app: &mut App, event: Event, screen: &mut Screen) -> Result<(Flow, boo
         }
         Event::Git(read) => {
             app.task_status.extend(read);
+            Flow::Continue
+        }
+        Event::Details(read) => {
+            app.task_details.extend(read);
             Flow::Continue
         }
         Event::Input(ct::Event::Key(key)) if key.kind != KeyEventKind::Release => app.key(key)?,
@@ -173,52 +197,21 @@ fn draw(screen: &mut Screen, app: &App) -> Result<()> {
             width: full.width - side,
             ..full
         };
-        let bar_height = TAB_BAR_ROWS.min(area.height);
         let bar_area = Rect {
-            height: bar_height,
+            height: TAB_BAR_ROWS.min(area.height),
             ..area
         };
+        let bar_cursor = draw_tab_bar(app, &rows, bar_area, f.buffer_mut());
         let term_area = session_area((full.width, full.height), side);
-        let armed = app.prefix.armed().then_some(app.prefix_name.as_str());
-        let ask = match &app.mode {
-            Mode::ConfirmClose { state, .. } => {
-                Some(format!("Claude is {}: close? y/n", state.label()))
-            }
-            _ => None,
-        };
-        let bar = TabBar {
-            // The question takes the whole bar, so it always fits.
-            names: match ask {
-                Some(_) => Vec::new(),
-                None => app.tabs.iter().map(|t| t.name.as_str()).collect(),
-            },
-            current: app.tabs.current_index(),
-            rename: match &app.mode {
-                Mode::Rename(text) => Some(text.as_str()),
-                _ => None,
-            },
-            status: ask.as_deref().or(app.notice.as_deref()).or(armed),
-            states: tab_states(&rows, app.tabs.iter().count()),
-        };
-        let bar_cursor = bar.render(bar_area, f.buffer_mut());
-        let mut term_cursor = None;
-        if let Some(tab) = app.tabs.current() {
-            let (panes, borders) = tab.content.rects(term_area);
-            for (id, rect) in panes {
-                let Some(t) = app.terminals.get(&id) else {
-                    continue;
-                };
-                let cursor = session_view::render(t.emulator(), rect, f.buffer_mut());
-                if id == tab.content.focus {
-                    term_cursor = cursor;
-                }
-            }
-            for b in borders {
-                session_view::border(b.area, b.split == Split::Columns, f.buffer_mut());
-            }
-        }
+        let term_cursor = draw_terminals(app, term_area, f.buffer_mut());
+        let dash_cursor = draw_dashboard(app, &rows, term_area, f.buffer_mut());
         if let Mode::Help = app.mode {
             help::render(&app.prefix_name, full, f.buffer_mut());
+        } else if app.dashboard().is_some() {
+            // Only typing into the preview shows a cursor.
+            if let Some(cursor) = dash_cursor {
+                f.set_cursor_position(cursor);
+            }
         } else if let Mode::Sidebar(_) = app.mode {
             // The sidebar has the keyboard: no terminal cursor.
         } else if let Some(cursor) = bar_cursor.or(term_cursor) {
@@ -226,4 +219,70 @@ fn draw(screen: &mut Screen, app: &App) -> Result<()> {
         }
     })?;
     Ok(())
+}
+
+/// The tab bar, or the question before a close. Returns the cursor while
+/// renaming.
+fn draw_tab_bar(app: &App, rows: &[Row], area: Rect, buf: &mut Buffer) -> Option<Position> {
+    let armed = app.prefix.armed().then_some(app.prefix_name.as_str());
+    let ask = match &app.mode {
+        Mode::ConfirmClose { state, .. } => {
+            Some(format!("Claude is {}: close? y/n", state.label()))
+        }
+        _ => None,
+    };
+    let bar = TabBar {
+        // The question takes the whole bar, so it always fits.
+        names: match ask {
+            Some(_) => Vec::new(),
+            None => app.tabs.iter().map(|t| t.name.as_str()).collect(),
+        },
+        current: app.tabs.current_index(),
+        rename: match &app.mode {
+            Mode::Rename(text) => Some(text.as_str()),
+            _ => None,
+        },
+        status: ask.as_deref().or(app.notice.as_deref()).or(armed),
+        states: tab_states(rows, app.tabs.iter().count()),
+    };
+    bar.render(area, buf)
+}
+
+/// The current tab's terminals and the borders between them. Returns the
+/// focused terminal's cursor.
+fn draw_terminals(app: &App, area: Rect, buf: &mut Buffer) -> Option<Position> {
+    let tab = app.tabs.current()?;
+    let (panes, borders) = tab.content.rects(area);
+    let mut cursor = None;
+    for (id, rect) in panes {
+        let Some(t) = app.terminals.get(&id) else {
+            continue;
+        };
+        let at = session_view::render(t.emulator(), rect, buf);
+        if id == tab.content.focus {
+            cursor = at;
+        }
+    }
+    for b in borders {
+        session_view::border(b.area, b.split == Split::Columns, buf);
+    }
+    cursor
+}
+
+/// The dashboard over the terminals, if open. Returns the previewed
+/// terminal's cursor while typing into it.
+fn draw_dashboard(app: &App, rows: &[Row], area: Rect, buf: &mut Buffer) -> Option<Position> {
+    let d = app.dashboard()?;
+    let row = app.dashboard_row(d);
+    let view = dashboard::View {
+        rows,
+        details: &app.task_details,
+        selected: d.selected.as_ref(),
+        preview: row
+            .and_then(|r| app.terminals.get(&r.terminal))
+            .map(|t| t.emulator()),
+        interactive: d.interactive,
+        now: now_ms() / MS_PER_SEC,
+    };
+    dashboard::render(&view, area, buf)
 }
