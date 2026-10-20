@@ -85,6 +85,7 @@ pub fn run(
         });
         dirty |= changed;
         if rows_may_move {
+            app.anchor_dashboard();
             git.update(&app, hooks);
         }
         if flow == Flow::Quit {

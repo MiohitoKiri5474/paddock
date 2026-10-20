@@ -16,7 +16,27 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Dashboard {
     pub selected: Option<RowId>,
+    /// Where the selected line was last seen, for when it goes away.
+    pub index: usize,
     pub interactive: bool,
+}
+
+impl Dashboard {
+    /// The same dashboard with a line of `ids` selected: the selected one
+    /// wherever it moved, else (it went away, or none was) the one now at
+    /// `index`, else the last; nothing without lines.
+    pub fn anchored(&self, ids: &[RowId]) -> Self {
+        let found = self
+            .selected
+            .as_ref()
+            .and_then(|s| ids.iter().position(|id| id == s));
+        let index = found.unwrap_or(self.index.min(ids.len().saturating_sub(1)));
+        Self {
+            selected: ids.get(index).cloned(),
+            index,
+            interactive: self.interactive,
+        }
+    }
 }
 
 impl App {
@@ -50,10 +70,16 @@ impl App {
             self.mode = Mode::Normal;
             return;
         }
-        self.mode = Mode::Dashboard(Dashboard {
-            selected: row_ids(&self.rows()).into_iter().next(),
-            interactive: false,
-        });
+        self.mode = Mode::Dashboard(Dashboard::default().anchored(&row_ids(&self.rows())));
+    }
+
+    /// Keep the dashboard's selection on a line that exists, so the line
+    /// highlighted is the one keys act on.
+    pub fn anchor_dashboard(&mut self) {
+        let ids = row_ids(&self.rows());
+        if let Mode::Dashboard(d) | Mode::ConfirmClose { back: Some(d), .. } = &mut self.mode {
+            *d = d.anchored(&ids);
+        }
     }
 
     /// Tasks to keep git fresh for: all of the dashboard's, with details,
@@ -82,6 +108,8 @@ impl App {
     /// types into it, `Esc` closes the dashboard. A closed terminal's row can
     /// only be dismissed.
     pub(super) fn dashboard_key(&mut self, d: Dashboard, key: KeyEvent) {
+        // Act on the line highlighted, even if rows changed since the draw.
+        let d = d.anchored(&row_ids(&self.rows()));
         if d.interactive {
             return self.interactive_key(d, key);
         }
@@ -120,40 +148,21 @@ impl App {
     /// The line `step` lines away from the selected one; at either end, the
     /// selected one.
     fn dashboard_move(&self, d: Dashboard, step: isize) -> Mode {
-        let ids = row_ids(&self.rows());
-        let at = ids
-            .iter()
-            .position(|id| Some(id) == d.selected.as_ref())
-            .unwrap_or(0);
-        let selected = at
-            .checked_add_signed(step)
-            .and_then(|i| ids.get(i).cloned())
-            .or(d.selected);
-        Mode::Dashboard(Dashboard {
-            selected,
-            interactive: false,
-        })
+        let moved = Dashboard {
+            selected: None,
+            index: d.index.saturating_add_signed(step),
+            ..d
+        };
+        Mode::Dashboard(moved.anchored(&row_ids(&self.rows())))
     }
 
     /// Dismiss the selected line, then select the line that took its place,
     /// else the one above.
     fn dashboard_dismiss(&mut self, d: Dashboard) -> Mode {
-        let ids = row_ids(&self.rows());
-        let at = ids
-            .iter()
-            .position(|id| Some(id) == d.selected.as_ref())
-            .unwrap_or(0);
-        if let Some(id) = ids.get(at) {
+        if let Some(id) = &d.selected {
             self.report(|app| app.dismiss(id));
         }
-        let ids = row_ids(&self.rows());
-        match ids.get(at.min(ids.len().saturating_sub(1))) {
-            Some(next) => Mode::Dashboard(Dashboard {
-                selected: Some(next.clone()),
-                interactive: false,
-            }),
-            None => Mode::Normal,
-        }
+        Mode::Dashboard(d.anchored(&row_ids(&self.rows())))
     }
 
     /// `Enter`, `x`, `f` and `I` on the selected row's terminal, unless it
@@ -202,5 +211,49 @@ impl App {
             }
             None => Ok(()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn id(pane: &str, branch: Option<&str>) -> RowId {
+        RowId {
+            pane: pane.into(),
+            branch: branch.map(str::to_string),
+        }
+    }
+
+    fn at(selected: Option<RowId>, index: usize) -> Dashboard {
+        Dashboard {
+            selected,
+            index,
+            interactive: true,
+        }
+    }
+
+    #[test]
+    fn a_selection_whose_line_went_away_moves_to_the_nearest_line() {
+        let ids = [id("%1", None), id("%1", Some("a")), id("%2", None)];
+        let gone = id("%9", None);
+        let anchored = |d: Dashboard| d.anchored(&ids);
+        assert_eq!(
+            anchored(at(Some(ids[2].clone()), 0)),
+            at(Some(ids[2].clone()), 2),
+            "still there: followed where it moved"
+        );
+        assert_eq!(
+            anchored(at(Some(gone.clone()), 1)),
+            at(Some(ids[1].clone()), 1),
+            "gone: the line now in its place"
+        );
+        assert_eq!(
+            anchored(at(Some(gone.clone()), 7)),
+            at(Some(ids[2].clone()), 2),
+            "gone from the end: the last line"
+        );
+        assert_eq!(anchored(at(None, 0)), at(Some(ids[0].clone()), 0));
+        assert_eq!(at(Some(gone), 1).anchored(&[]), at(None, 0), "no lines");
     }
 }
