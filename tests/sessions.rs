@@ -554,3 +554,18 @@ fn a_wide_sidebar_is_remembered_as_asked_even_on_a_narrow_screen() {
     let layout = std::fs::read_to_string(sandbox.path("state/paddock/layout.toml")).unwrap();
     assert!(layout.contains("sidebar = 40"), "{layout}");
 }
+
+#[test]
+fn a_drag_on_the_border_that_does_not_move_it_saves_nothing() {
+    let sandbox = Sandbox::new();
+    let mut paddock = ready(&sandbox);
+    wait_for_width(&sandbox, harness::COLS - 32);
+
+    // Press, drag and release on the border column itself (31).
+    paddock.drag_screen(10, 31, 31);
+    paddock.command(b"?"); // a command saves the state
+    paddock.wait_for("help", |_| paddock.full_screen().contains("paddock keys"));
+
+    let layout = std::fs::read_to_string(sandbox.path("state/paddock/layout.toml")).unwrap();
+    assert!(!layout.contains("sidebar"), "{layout}");
+}

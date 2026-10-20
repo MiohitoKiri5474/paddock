@@ -21,8 +21,9 @@ pub enum Press {
     Program(String),
     /// Selecting text in this pane; `dragged` once the pointer moved.
     Select { pane: String, dragged: bool },
-    /// On the sidebar's border, at screen row `row`; `dragged` once the
-    /// pointer moved (until then, a release is a click on that row).
+    /// On the sidebar's border, pressed at screen row `row`; `dragged`
+    /// once the pointer left the border's column (until then, a release is
+    /// a click on that row).
     Border { row: u16, dragged: bool },
 }
 
@@ -147,8 +148,10 @@ impl App {
             self.press = None;
             return Ok(false);
         };
-        let col = m.column.clamp(rect.x, rect.right() - 1) - rect.x;
-        let row = m.row.clamp(rect.y, rect.bottom() - 1) - rect.y;
+        let Some((col, row)) = clamp_into(rect, m.column, m.row) else {
+            self.press = None;
+            return Ok(false);
+        };
         let (mut copied, mut report) = (None, None);
         if let Some(t) = self.terminals.get_mut(&pane) {
             match &mut self.press {
@@ -182,10 +185,15 @@ impl App {
     /// the width on release; a release without a drag is a click on `row`.
     fn border_held(&mut self, m: MouseEvent, row: u16, dragged: bool) -> bool {
         let released = matches!(m.kind, MouseEventKind::Up(_));
-        if !released {
-            self.press = Some(Press::Border { row, dragged: true });
+        let border = self.sidebar_width().saturating_sub(1);
+        // Motion along the border itself resizes nothing.
+        let dragged = dragged || m.column != border;
+        if m.column != border {
             self.drag_border(m.column);
             self.report(|app| app.relayout());
+        }
+        if !released {
+            self.press = Some(Press::Border { row, dragged });
             return true;
         }
         self.press = None;
@@ -251,6 +259,17 @@ impl App {
     }
 }
 
+/// Screen position `(col, row)` clamped into `rect`, as a position inside
+/// it; `None` if `rect` is empty (a pane clipped away).
+fn clamp_into(rect: Rect, col: u16, row: u16) -> Option<(u16, u16)> {
+    if rect.is_empty() {
+        return None;
+    }
+    let col = col.clamp(rect.x, rect.right() - 1) - rect.x;
+    let row = row.clamp(rect.y, rect.bottom() - 1) - rect.y;
+    Some((col, row))
+}
+
 /// A drag or release of a selection in `emu`, at `(row, col)` of the pane:
 /// the selection follows the pointer; on release it ends, and its text is
 /// returned if the pointer moved.
@@ -295,4 +314,19 @@ fn copy(text: &str) -> Result<()> {
     written.with_context(|| format!("cannot copy: writing to {name} failed"))?;
     anyhow::ensure!(status.success(), "cannot copy: {name} failed");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn positions_are_clamped_into_a_pane_and_an_empty_one_has_none() {
+        let rect = Rect::new(10, 2, 5, 3);
+        assert_eq!(clamp_into(rect, 0, 0), Some((0, 0)));
+        assert_eq!(clamp_into(rect, 12, 3), Some((2, 1)));
+        assert_eq!(clamp_into(rect, 99, 99), Some((4, 2)));
+        assert_eq!(clamp_into(Rect::new(10, 2, 0, 3), 12, 3), None);
+        assert_eq!(clamp_into(Rect::new(10, 2, 5, 0), 12, 3), None);
+    }
 }
