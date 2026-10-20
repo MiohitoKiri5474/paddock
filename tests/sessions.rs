@@ -1,5 +1,5 @@
 //! Ticket 06: Claude sessions, driven by recorded hook payloads, as the
-//! sidebar item and tab holding them show them (ADR 0006).
+//! sidebar's spaces and agents and the tabs holding them show them.
 //!
 //! Payloads come from spike 02's recorded fixtures. The waiting payloads in
 //! `tests/fixtures/hooks/` were not recorded (spike 02 ran with
@@ -40,7 +40,7 @@ fn ready(sandbox: &Sandbox) -> Paddock {
     paddock
 }
 
-/// Sidebar lines below its title, blank ones dropped.
+/// Sidebar lines below its SPACES header, blank ones dropped.
 fn sidebar(paddock: &Paddock) -> Vec<String> {
     paddock
         .sidebar()
@@ -65,12 +65,41 @@ fn wait_for_sidebar(paddock: &Paddock, want: &[&str]) {
     );
 }
 
-/// An item's second line: its Claude state, if any, and its tabs.
-fn status(state: Option<&str>, tabs: &str) -> String {
-    match state {
-        Some(s) => format!("   ● {s} · {tabs}"),
-        None => format!("   {tabs}"),
-    }
+/// A space's line: a dot if agents run in it, then its name.
+fn space(name: &str, agents: bool) -> String {
+    let dot = if agents { "●" } else { " " };
+    format!(" {dot} {name}")
+}
+
+/// An agent's first line: dot, label, and its state at the right.
+fn agent(label: &str, state: &str) -> String {
+    let width = 22 - 3 - state.len();
+    format!(" ● {label:<width$}{state}")
+}
+
+/// An agent's second line: its space and tab.
+fn place(space: &str, tab: &str) -> String {
+    format!("   {space} · {tab}")
+}
+
+/// The sidebar with space-1 and one agent in its first tab.
+fn one_agent(label: &str, state: &str, tab: &str) -> Vec<String> {
+    vec![
+        space("space-1", true),
+        " AGENTS".into(),
+        agent(label, state),
+        place("space-1", tab),
+    ]
+}
+
+/// The sidebar with only space-1 and no agents.
+fn no_agents() -> Vec<String> {
+    vec![space("space-1", false), " AGENTS".into()]
+}
+
+fn wait_for_lines(paddock: &Paddock, want: &[String]) {
+    let want: Vec<&str> = want.iter().map(String::as_str).collect();
+    wait_for_sidebar(paddock, &want);
 }
 
 fn new_tab(paddock: &mut Paddock, label: &str) {
@@ -80,11 +109,12 @@ fn new_tab(paddock: &mut Paddock, label: &str) {
 }
 
 #[test]
-fn hook_events_drive_the_items_state() {
+fn hook_events_drive_the_agent_row() {
     let sandbox = Sandbox::new();
     let paddock = ready(&sandbox);
-    wait_for_sidebar(&paddock, &[" workspace-1", &status(None, "1 tab")]);
+    wait_for_lines(&paddock, &no_agents());
 
+    // The tab is looked at, so a finished turn is idle, not done.
     let steps = [
         ("SessionStart", "idle"),
         ("UserPromptSubmit", "running"),
@@ -96,9 +126,14 @@ fn hook_events_drive_the_items_state() {
     ];
     for (name, state) in steps {
         let event = name.split('-').next().unwrap();
-        let out = sandbox.hook("workspace-1", event, &payload(name));
+        let out = sandbox.hook("space-1", event, &payload(name));
         assert!(out.stdout.is_empty() && out.stderr.is_empty(), "{out:?}");
-        wait_for_sidebar(&paddock, &[" workspace-1", &status(Some(state), "1 tab")]);
+        let tab = if state == "stopped" {
+            "1:home"
+        } else {
+            "1:claude"
+        };
+        wait_for_lines(&paddock, &one_agent("repo", state, tab));
     }
 }
 
@@ -109,9 +144,9 @@ type Case<'a> = (&'a str, &'a [(&'a str, &'a str)], &'a str);
 fn hooks_outside_paddock_record_nothing_and_say_nothing() {
     let sandbox = Sandbox::new();
     let _paddock = ready(&sandbox);
-    let pid = sandbox.display("workspace-1", "#{pid}");
+    let pid = sandbox.display("space-1", "#{pid}");
     let foreign = format!("/tmp/tmux-501/default,{pid},0");
-    let ours = sandbox.display("workspace-1", "#{socket_path},#{pid},0");
+    let ours = sandbox.display("space-1", "#{socket_path},#{pid},0");
     let foreign_env = [("TMUX", foreign.as_str()), ("TMUX_PANE", "%0")];
     let no_pane = [("TMUX", ours.as_str())];
     let cases: [Case; 4] = [
@@ -134,12 +169,12 @@ fn hooks_outside_paddock_record_nothing_and_say_nothing() {
     );
 
     // A broken payload in a paddock terminal is still silent and still exits 0.
-    let out = sandbox.hook("workspace-1", "SessionStart", "{not json");
+    let out = sandbox.hook("space-1", "SessionStart", "{not json");
     assert!(out.stdout.is_empty() && out.stderr.is_empty(), "{out:?}");
 }
 
 #[test]
-fn events_map_to_their_own_pane_tab_and_item() {
+fn agents_of_every_space_are_listed_with_their_space_and_tab() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     new_tab(&mut paddock, "2:home");
@@ -151,23 +186,30 @@ fn events_map_to_their_own_pane_tab_and_item() {
     let start = |t: &str, s: &str, dir: &str, event: &str| {
         sandbox.hook(t, event, &payload_for(event, s, dir));
     };
-    start("workspace-1:0", "s1", "/w/stopped", "SessionEnd");
-    start("workspace-1:1", "s2", "/w/running", "UserPromptSubmit");
-    start("workspace-1:2", "s3", "/w/idle", "Stop");
-    start("workspace-1:3", "s4", "/w/waiting", "PermissionRequest");
+    start("space-1:0", "s1", "/w/stopped", "SessionEnd");
+    start("space-1:1", "s2", "/w/running", "UserPromptSubmit");
+    start("space-1:2", "s3", "/w/idle", "Stop");
+    start("space-1:3", "s4", "/w/waiting", "PermissionRequest");
 
-    // The item shows the most urgent state among its panes.
-    wait_for_sidebar(
+    // Sorted by state; the turn that ended out of sight is done.
+    wait_for_lines(
         &paddock,
         &[
-            " workspace-1",
-            &status(Some("waiting"), "4 tabs"),
-            " workspace-2",
-            &status(None, "1 tab"),
+            space("space-1", true),
+            space("space-2", false),
+            " AGENTS".into(),
+            agent("waiting", "waiting"),
+            place("space-1", "4:claude"),
+            agent("idle", "done"),
+            place("space-1", "3:claude"),
+            agent("running", "running"),
+            place("space-1", "2:claude"),
+            agent("stopped", "stopped"),
+            place("space-1", "1:home"),
         ],
     );
-    // Its tabs show theirs; tabs running Claude are called so.
-    paddock.command(b"s");
+    // The space's tabs show theirs; tabs running Claude are called so.
+    paddock.command(b"w");
     paddock.send(b"k\r");
     paddock.wait_for_tabs(&["1:home", "2:claude", "3:claude ●", "4:claude ●"]);
 }
@@ -179,34 +221,23 @@ fn events_recorded_while_paddock_is_closed_appear_on_reopen() {
     paddock.detach_keys();
     assert!(paddock.wait_exit());
 
+    sandbox.hook("space-1", "UserPromptSubmit", &payload("UserPromptSubmit"));
     sandbox.hook(
-        "workspace-1",
-        "UserPromptSubmit",
-        &payload("UserPromptSubmit"),
-    );
-    sandbox.hook(
-        "workspace-1",
+        "space-1",
         "PermissionRequest",
         &payload("PermissionRequest"),
     );
 
     let again = ready(&sandbox);
-    wait_for_sidebar(&again, &[" workspace-1", &status(Some("waiting"), "1 tab")]);
+    wait_for_lines(&again, &one_agent("repo", "waiting", "1:claude"));
 }
 
 #[test]
 fn claude_agents_corrects_missed_events() {
     let sandbox = Sandbox::new();
     let paddock = ready(&sandbox);
-    sandbox.hook(
-        "workspace-1",
-        "UserPromptSubmit",
-        &payload("UserPromptSubmit"),
-    );
-    wait_for_sidebar(
-        &paddock,
-        &[" workspace-1", &status(Some("running"), "1 tab")],
-    );
+    sandbox.hook("space-1", "UserPromptSubmit", &payload("UserPromptSubmit"));
+    wait_for_lines(&paddock, &one_agent("repo", "running", "1:claude"));
 
     // Esc fires no Stop; claude still reports the session as idle.
     sandbox.set_agents(
@@ -214,7 +245,7 @@ fn claude_agents_corrects_missed_events() {
             .to_string(),
     );
 
-    wait_for_sidebar(&paddock, &[" workspace-1", &status(Some("idle"), "1 tab")]);
+    wait_for_lines(&paddock, &one_agent("fix-login", "idle", "1:claude"));
 }
 
 #[test]
@@ -222,7 +253,7 @@ fn claude_agents_finds_sessions_no_hook_reported() {
     let sandbox = Sandbox::new();
     let paddock = ready(&sandbox);
     let shell: u32 = sandbox
-        .display("workspace-1", "#{pane_pid}")
+        .display("space-1", "#{pane_pid}")
         .parse()
         .expect("pane pid");
 
@@ -231,14 +262,11 @@ fn claude_agents_finds_sessions_no_hook_reported() {
             .to_string(),
     );
 
-    wait_for_sidebar(
-        &paddock,
-        &[" workspace-1", &status(Some("waiting"), "1 tab")],
-    );
+    wait_for_lines(&paddock, &one_agent("older", "waiting", "1:claude"));
 }
 
 #[test]
-fn the_selected_item_is_reversed_and_esc_leaves_the_sidebar_without_switching() {
+fn c_a_w_selects_the_current_space_and_esc_leaves_without_switching() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     paddock.command(b"C");
@@ -246,10 +274,11 @@ fn the_selected_item_is_reversed_and_esc_leaves_the_sidebar_without_switching() 
     paddock.type_line("echo in-two");
     paddock.wait_for_text("in-two\n");
 
-    paddock.command(b"s");
+    paddock.command(b"w");
+    paddock.wait_for("space-2 selected", |_| paddock.reversed(2, 5));
     paddock.send(b"k");
-    // workspace-1's title (screen row 1) is selected.
-    paddock.wait_for("selection", |_| paddock.reversed(1, 1));
+    // space-1 (screen row 1) is selected.
+    paddock.wait_for("space-1 selected", |_| paddock.reversed(1, 5));
     paddock.send(b"\x1b");
     std::thread::sleep(std::time::Duration::from_millis(200));
     paddock.type_line("echo still-on-two");
@@ -272,14 +301,85 @@ fn b_hides_and_shows_the_sidebar() {
     wait_for_width(&sandbox, harness::COLS);
 
     paddock.command(b"b");
-    wait_for_sidebar(&paddock, &[" workspace-1", &status(None, "1 tab")]);
+    wait_for_lines(&paddock, &no_agents());
     wait_for_width(&sandbox, next_to_sidebar);
 }
 
-/// Wait until workspace-1's pane is `cols` wide on the hidden server.
+/// Two spaces, the second current, and an agent done in space-1's second
+/// tab: what the sidebar's agent rows are tested with.
+fn agent_in_another_space(sandbox: &Sandbox) -> Paddock {
+    let mut paddock = ready(sandbox);
+    new_tab(&mut paddock, "2:home");
+    paddock.command(b"C");
+    paddock.wait_for_tabs(&["1:home"]);
+    paddock.wait_for_text(PROMPT);
+    sandbox.hook("space-1:1", "Stop", &payload("Stop"));
+    paddock.wait_for("done", |_| paddock.full_screen().contains("done"));
+    paddock
+}
+
+/// Wait until pane `target` shows `text`, as tmux has it.
+fn wait_in_pane(sandbox: &Sandbox, target: &str, text: &str) {
+    let capture = || sandbox.tmux(&["capture-pane", "-p", "-t", target]);
+    let start = std::time::Instant::now();
+    while !capture().contains(text) {
+        assert!(start.elapsed() < harness::TIMEOUT, "pane:\n{}", capture());
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn enter_on_an_agent_jumps_to_its_space_tab_and_pane() {
+    let sandbox = Sandbox::new();
+    let mut paddock = agent_in_another_space(&sandbox);
+
+    // C-a s starts on the first agent.
+    paddock.command(b"s");
+    paddock.send(b"\r");
+
+    paddock.wait_for_tabs(&["1:home", "2:claude ●"]);
+    paddock.wait_for_current_tab("2:claude ●");
+    // Looked at now: the done turn is idle.
+    paddock.wait_for("idle", |_| paddock.full_screen().contains("idle"));
+    paddock.type_line("echo typed-after-the-jump");
+    wait_in_pane(&sandbox, "space-1:1", "typed-after-the-jump");
+}
+
+#[test]
+fn clicking_an_agent_row_jumps_to_its_pane() {
+    let sandbox = Sandbox::new();
+    let mut paddock = agent_in_another_space(&sandbox);
+
+    // Rows: 0 SPACES, 1-2 spaces, 3 blank, 4 AGENTS, 5-6 the agent.
+    paddock.click_screen(5, 6);
+
+    paddock.wait_for_current_tab("2:claude ●");
+    paddock.type_line("echo typed-after-the-click");
+    wait_in_pane(&sandbox, "space-1:1", "typed-after-the-click");
+}
+
+#[test]
+fn x_on_an_agent_row_closes_its_pane() {
+    let sandbox = Sandbox::new();
+    let mut paddock = agent_in_another_space(&sandbox);
+
+    paddock.command(b"s");
+    paddock.send(b"x");
+
+    paddock.wait_for("its tab closed", |_| {
+        sandbox
+            .tmux(&["list-windows", "-t", "space-1"])
+            .lines()
+            .count()
+            == 1
+    });
+    assert_eq!(sandbox.session_names(), ["space-1", "space-2"]);
+}
+
+/// Wait until space-1's pane is `cols` wide on the hidden server.
 fn wait_for_width(sandbox: &Sandbox, cols: u16) {
     let start = std::time::Instant::now();
-    let width = || sandbox.display("workspace-1", "#{pane_width}");
+    let width = || sandbox.display("space-1", "#{pane_width}");
     while start.elapsed() < harness::TIMEOUT {
         if width() == cols.to_string() {
             return;
@@ -296,10 +396,10 @@ fn parallel_hooks_never_interleave_records() {
     let big = payload("Stop").replace("Both subagents", &"x".repeat(20_000));
     std::thread::scope(|s| {
         for _ in 0..16 {
-            s.spawn(|| sandbox.hook("workspace-1", "Stop", &big));
+            s.spawn(|| sandbox.hook("space-1", "Stop", &big));
         }
     });
-    let pid = sandbox.display("workspace-1", "#{pid}");
+    let pid = sandbox.display("space-1", "#{pid}");
     let log = std::fs::read_to_string(sandbox.path(&format!("state/paddock/events/{pid}.jsonl")))
         .expect("event log");
     let lines: Vec<&str> = log.lines().collect();

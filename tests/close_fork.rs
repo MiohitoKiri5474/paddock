@@ -14,7 +14,7 @@ const SPIKE: &str = concat!(
 const OURS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/hooks");
 const SESSION: &str = "11111111-2222-4333-8444-555555555555";
 const ASK: &str = "close? y/n";
-const ASK_ITEM: &str = "close workspace? y/n";
+const ASK_ITEM: &str = "close space? y/n";
 
 /// A recorded payload for session `session` in directory `cwd`.
 fn payload(name: &str, session: &str, cwd: &str) -> String {
@@ -49,10 +49,10 @@ fn two_tabs(sandbox: &Sandbox) -> Paddock {
     paddock
 }
 
-/// Window count of workspace-1.
+/// Window count of space-1.
 fn tabs(sandbox: &Sandbox) -> usize {
     sandbox
-        .tmux(&["list-windows", "-t", "workspace-1"])
+        .tmux(&["list-windows", "-t", "space-1"])
         .lines()
         .count()
 }
@@ -71,7 +71,7 @@ fn wait_for_items(paddock: &Paddock, sandbox: &Sandbox, want: &[&str]) {
 fn x_closes_an_idle_session_without_asking() {
     let sandbox = Sandbox::new();
     let mut paddock = two_tabs(&sandbox);
-    claude(&sandbox, "workspace-1:1", "Stop", "s2");
+    claude(&sandbox, "space-1:1", "Stop", "s2");
     paddock.wait_for_tabs(&["1:home", "2:claude ●"]);
 
     paddock.command(b"x");
@@ -85,7 +85,7 @@ fn x_closes_an_idle_session_without_asking() {
 fn x_asks_while_claude_is_running() {
     let sandbox = Sandbox::new();
     let mut paddock = two_tabs(&sandbox);
-    claude(&sandbox, "workspace-1:1", "UserPromptSubmit", "s2");
+    claude(&sandbox, "space-1:1", "UserPromptSubmit", "s2");
     paddock.wait_for_tabs(&["1:home", "2:claude"]);
 
     paddock.command(b"x");
@@ -109,7 +109,7 @@ fn the_question_shows_even_with_many_tabs() {
         paddock.command(b"c");
         paddock.wait_for_current_tab(&format!("{n}:home"));
     }
-    claude(&sandbox, "workspace-1:4", "UserPromptSubmit", "s5");
+    claude(&sandbox, "space-1:4", "UserPromptSubmit", "s5");
     paddock.wait_for_text("5:claude");
 
     paddock.command(b"x");
@@ -120,39 +120,39 @@ fn the_question_shows_even_with_many_tabs() {
 }
 
 #[test]
-fn x_on_a_sidebar_item_with_a_waiting_claude_asks_then_closes_the_item() {
+fn x_on_a_space_with_a_waiting_claude_asks_then_closes_the_space() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     paddock.command(b"c");
     paddock.wait_for_current_tab("2:home");
     paddock.command(b"C");
     paddock.wait_for_tabs(&["1:home"]);
-    claude(&sandbox, "workspace-1:0", "PermissionRequest", "s1");
+    claude(&sandbox, "space-1:0", "PermissionRequest", "s1");
     paddock.wait_for("waiting", |_| paddock.full_screen().contains("waiting"));
 
-    paddock.command(b"s");
+    paddock.command(b"w");
     paddock.send(b"k");
     paddock.send(b"x");
     paddock.wait_for_text(ASK_ITEM);
     paddock.send(b"y");
 
-    wait_for_items(&paddock, &sandbox, &["workspace-2"]);
+    wait_for_items(&paddock, &sandbox, &["space-2"]);
     paddock.wait_for_tabs(&["1:home"]);
 }
 
 #[test]
-fn x_on_a_quiet_sidebar_item_closes_it_without_asking() {
+fn x_on_a_quiet_space_closes_it_without_asking() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     paddock.command(b"C");
     paddock.wait_for_text(PROMPT);
 
-    paddock.command(b"s");
+    paddock.command(b"w");
     paddock.send(b"x");
 
-    wait_for_items(&paddock, &sandbox, &["workspace-1"]);
+    wait_for_items(&paddock, &sandbox, &["space-1"]);
     paddock.wait_for("one item left", |_| {
-        !paddock.full_screen().contains("workspace-2")
+        !paddock.full_screen().contains("space-2")
     });
     paddock.send(b"\x1b");
     // Esc right before a key would read as Alt with that key.
@@ -178,7 +178,7 @@ fn f_forks_the_session_into_a_new_tab_in_its_directory() {
     let mut paddock = ready(&sandbox);
     let (dir, canonical) = repo(&sandbox);
     sandbox.hook(
-        "workspace-1",
+        "space-1",
         "Stop",
         &payload("Stop", "0000aaaa-0000-4000-8000-00000000000a", &dir),
     );
@@ -196,20 +196,20 @@ fn f_forks_the_session_into_a_new_tab_in_its_directory() {
 }
 
 #[test]
-fn f_on_a_sidebar_item_forks_its_session_into_a_new_tab_of_that_item() {
+fn f_on_a_space_forks_its_agent_into_a_new_tab_of_that_space() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     paddock.command(b"C");
     paddock.wait_for_text(PROMPT);
     let (dir, canonical) = repo(&sandbox);
     sandbox.hook(
-        "workspace-1",
+        "space-1",
         "Stop",
         &payload("Stop", "0000bbbb-0000-4000-8000-00000000000b", &dir),
     );
     paddock.wait_for("done", |_| paddock.full_screen().contains("done"));
 
-    paddock.command(b"s");
+    paddock.command(b"w");
     paddock.send(b"k");
     paddock.send(b"f");
 
@@ -221,7 +221,7 @@ fn f_on_a_sidebar_item_forks_its_session_into_a_new_tab_of_that_item() {
             "{canonical} --resume 0000bbbb-0000-4000-8000-00000000000b --fork-session"
         )]
     );
-    assert_eq!(sandbox.session_names(), ["workspace-1", "workspace-2"]);
+    assert_eq!(sandbox.session_names(), ["space-1", "space-2"]);
     // The keyboard is back in the new pane.
     paddock.type_line("echo in-the-fork");
     paddock.wait_for_text("in-the-fork\n");

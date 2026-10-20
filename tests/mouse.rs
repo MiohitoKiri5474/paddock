@@ -86,7 +86,7 @@ fn clicking_a_tab_label_switches_tabs() {
 }
 
 #[test]
-fn clicking_a_sidebar_item_shows_its_tabs() {
+fn clicking_a_space_shows_its_tabs() {
     let sandbox = Sandbox::new();
     let mut p = ready(&sandbox);
     p.command(b"c");
@@ -94,8 +94,8 @@ fn clicking_a_sidebar_item_shows_its_tabs() {
     p.command(b"C");
     p.wait_for_tabs(&["1:home"]);
 
-    // Row 0 is the sidebar's title, rows 1-2 the first item.
-    p.click_screen(3, 2);
+    // Row 0 is the SPACES header, row 1 the first space.
+    p.click_screen(3, 1);
     p.wait_for_tabs(&["1:home", "2:home"]);
 }
 

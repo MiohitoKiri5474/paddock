@@ -27,7 +27,7 @@ fn launching_shows_a_working_shell() {
 
     paddock.wait_for("command output", |s| s.lines().any(|l| l.trim() == "42"));
     let sessions = sandbox.tmux(&["list-sessions", "-F", "#{session_name}"]);
-    assert_eq!(sessions.trim(), "workspace-1");
+    assert_eq!(sessions.trim(), "space-1");
 }
 
 #[test]
@@ -130,13 +130,7 @@ fn mouse_wheel_scrolls_the_terminal_history() {
     // tmux itself did not scroll: paddock keeps its own scrollback.
     assert_eq!(
         sandbox
-            .tmux(&[
-                "display-message",
-                "-p",
-                "-t",
-                "workspace-1",
-                "#{pane_in_mode}"
-            ])
+            .tmux(&["display-message", "-p", "-t", "space-1", "#{pane_in_mode}"])
             .trim(),
         "0"
     );
@@ -203,7 +197,7 @@ fn detaching_keeps_the_shell_and_relaunching_restores_history() {
         sandbox
             .tmux(&["list-sessions", "-F", "#{session_name}"])
             .trim(),
-        "workspace-1"
+        "space-1"
     );
 
     // Scroll back to the very first line of the restored history.
@@ -263,7 +257,7 @@ fn resizing_the_outer_terminal_resizes_the_terminal() {
             "display-message",
             "-p",
             "-t",
-            "workspace-1",
+            "space-1",
             "#{pane_width}x#{pane_height}",
         ])
     };

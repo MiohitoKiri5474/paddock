@@ -9,6 +9,7 @@ use super::item::Item;
 use super::mouse::Press;
 use super::rows::{rows, Placed, Row, RowId, TaskDetails, TaskStatus};
 use super::saved;
+use super::sidebar::Selection;
 use super::Event;
 use crate::config::{key_name, Config};
 use crate::hooks::now_ms;
@@ -36,8 +37,8 @@ pub enum Mode {
         text: String,
     },
     Help,
-    /// The sidebar has the keyboard; holds the selected item's session id.
-    Sidebar(Option<String>),
+    /// The sidebar has the keyboard; holds its selection.
+    Sidebar(Selection),
     /// Asking before closing `target`, where Claude is `state`; `back` is
     /// the dashboard asked from, to return to.
     ConfirmClose {

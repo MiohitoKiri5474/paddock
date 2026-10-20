@@ -194,17 +194,15 @@ fn draw(screen: &mut Screen, app: &App) -> Result<()> {
         let rows = app.rows();
         let side = app.sidebar_width().min(full.width);
         if side > 0 {
-            let selected = match &app.mode {
-                Mode::Sidebar(Some(id)) => app.items.iter().position(|i| i.id == *id),
-                _ => None,
-            };
+            let selected = app.sidebar_selection();
             let side_area = Rect {
                 width: side,
                 ..full
             };
-            let items = app.sidebar_items(&rows);
+            let spaces = app.sidebar_spaces(&rows);
+            let agents = app.sidebar_agents(&rows);
             let bg = app.current_item_bg;
-            sidebar::render(&items, selected, bg, side_area, f.buffer_mut());
+            sidebar::render(&spaces, &agents, selected, bg, side_area, f.buffer_mut());
         }
         let area = Rect {
             x: full.x + side,
@@ -242,7 +240,7 @@ fn draw_tab_bar(app: &App, rows: &[Row], area: Rect, buf: &mut Buffer) -> Option
         Mode::ConfirmClose { state, target, .. } => {
             let what = match target {
                 CloseTarget::Pane(_) => "close",
-                CloseTarget::Item(_) => "close workspace",
+                CloseTarget::Item(_) => "close space",
             };
             Some(format!("Claude is {}: {what}? y/n", state.label()))
         }
@@ -259,7 +257,7 @@ fn draw_tab_bar(app: &App, rows: &[Row], area: Rect, buf: &mut Buffer) -> Option
             Mode::Rename { target, text } => {
                 let what = match target {
                     Renaming::Tab => "tab",
-                    Renaming::Item => "workspace",
+                    Renaming::Item => "space",
                 };
                 Some((what, text.as_str()))
             }

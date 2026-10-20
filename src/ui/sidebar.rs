@@ -1,43 +1,93 @@
-//! The sidebar: a title, then one entry per item (tmux session, ADR 0006),
-//! with a border on its right edge. Each item takes two lines and a blank
-//! one after it:
+//! The sidebar, with a border on its right edge: a SPACES section with one
+//! line per space (tmux session, ADR 0006), then an AGENTS section with two
+//! lines per main Claude session, across every space:
 //!
 //! ```text
-//!  api-server
-//!    ● waiting · 3 tabs
+//!  SPACES
+//!  ● api-server
+//!    paddock
+//!
+//!  AGENTS
+//!  ● api-server  waiting
+//!    api-server · 2:claude
 //! ```
 //!
-//! The second line is dim and shows the most urgent Claude state in the
-//! item (none without Claude) and its number of tabs. The current item has
-//! its own background; the selected one, while the sidebar has the keyboard,
-//! is drawn reversed.
+//! A space's dot shows the most urgent state of the agents in it (none
+//! without agents); the current space has its own background. An agent's
+//! second line is dim and names its space and tab. While the sidebar has the
+//! keyboard, the selected space or agent is drawn reversed.
 
 use crate::sessions::State;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 
-const TITLE: &str = "workspaces";
-/// Rows above the first item (the title).
-const FIRST_ROW: u16 = 1;
-/// Rows each item takes: its two lines and a blank one.
-const ITEM_ROWS: u16 = 3;
-/// Marks the Claude state on an item's second line.
-const MARKER: &str = "●";
+const SPACES: &str = "SPACES";
+const AGENTS: &str = "AGENTS";
+/// Marks a state.
+const DOT: &str = "●";
+/// Columns before a name: one space, the dot, one space.
+const INDENT: u16 = 3;
 
-/// One sidebar item as drawn.
+/// One space as the sidebar draws it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SidebarItem {
+pub struct SpaceLine {
     pub name: String,
-    /// The most urgent Claude state among its panes; `None` without Claude.
+    /// The most urgent state of the agents in it; `None` without agents.
     pub state: Option<State>,
-    pub tabs: usize,
     /// Its tabs are the ones shown.
     pub current: bool,
 }
 
-/// How an item's state (or a tab holding it) in `state` stands out, in the
-/// terminal's own ANSI colours: strongly while waiting, softly while idle.
+/// One agent (main Claude session) as the sidebar draws it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentLine {
+    pub label: String,
+    pub state: State,
+    /// Where it runs: `space · tab`.
+    pub place: String,
+}
+
+/// A line of the sidebar, below the top of its area. Drawing and clicks
+/// both go through [`lines`], so they always agree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Line {
+    Header(&'static str),
+    Space(usize),
+    /// An agent's first line: dot, label and state.
+    Agent(usize),
+    /// An agent's second line: its space and tab.
+    AgentPlace(usize),
+    Blank,
+}
+
+/// What a sidebar line picks: space `i` or agent `i`, as an index into the
+/// spaces followed by the agents.
+pub fn pick(line: Line, spaces: usize) -> Option<usize> {
+    match line {
+        Line::Space(i) => Some(i),
+        Line::Agent(i) | Line::AgentPlace(i) => Some(spaces + i),
+        Line::Header(_) | Line::Blank => None,
+    }
+}
+
+/// The sidebar's lines for `spaces` spaces and `agents` agents, top first.
+pub fn lines(spaces: usize, agents: usize) -> Vec<Line> {
+    let mut out = vec![Line::Header(SPACES)];
+    out.extend((0..spaces).map(Line::Space));
+    out.extend([Line::Blank, Line::Header(AGENTS)]);
+    for i in 0..agents {
+        if i > 0 {
+            out.push(Line::Blank);
+        }
+        out.extend([Line::Agent(i), Line::AgentPlace(i)]);
+    }
+    out
+}
+
+/// How a state (of an agent, or of a tab holding it) stands out, in the
+/// terminal's own ANSI colours: strongly while waiting, softly once done
+/// (bold) or idle.
 pub fn highlight(state: State) -> Style {
     match state {
         State::Waiting => Style::default().fg(Color::Black).bg(Color::Yellow),
@@ -49,26 +99,22 @@ pub fn highlight(state: State) -> Style {
     }
 }
 
-/// An item's second line, after its indent: `● waiting · 3 tabs`, as the
-/// state part and the rest.
-fn status(item: &SidebarItem) -> (Option<String>, String) {
-    let tabs = match item.tabs {
-        1 => "1 tab".to_string(),
-        n => format!("{n} tabs"),
-    };
-    match item.state {
-        Some(s) => (
-            Some(format!("{MARKER} {}", s.label())),
-            format!(" · {tabs}"),
-        ),
-        None => (None, tabs),
+/// The colour of a state's dot.
+fn dot(state: State) -> Style {
+    match state {
+        State::Waiting => Style::default().fg(Color::Yellow),
+        State::Done | State::Idle => highlight(state),
+        State::Running => Style::default().fg(Color::Blue),
+        State::Stopped | State::Unknown => Style::default().add_modifier(Modifier::DIM),
     }
 }
 
-/// Draw `items` into `area`. `selected` is the item the keyboard is on while
-/// the sidebar has it; `current_bg` the current item's background.
+/// Draw the sidebar into `area`. `selected` is the pick (see [`pick`]) the
+/// keyboard is on while the sidebar has it; `current_bg` the current
+/// space's background.
 pub fn render(
-    items: &[SidebarItem],
+    spaces: &[SpaceLine],
+    agents: &[AgentLine],
     selected: Option<usize>,
     current_bg: Color,
     area: Rect,
@@ -82,71 +128,84 @@ pub fn render(
         buf.set_string(area.right() - 1, y, "│", Style::default());
     }
     let dim = Style::default().add_modifier(Modifier::DIM);
-    buf.set_stringn(area.x + 1, area.y, TITLE, usize::from(inner - 1), dim);
-    for (i, item) in items.iter().enumerate() {
-        let Some(top) = u16::try_from(i)
-            .ok()
-            .and_then(|i| i.checked_mul(ITEM_ROWS))
-            .and_then(|o| (area.y + FIRST_ROW).checked_add(o))
-        else {
-            break;
-        };
+    for (line, y) in lines(spaces.len(), agents.len())
+        .into_iter()
+        .zip(area.top()..area.bottom())
+    {
+        let row = Rect::new(area.x, y, inner, 1);
         let mut base = Style::default();
-        if item.current {
-            base = base.bg(current_bg);
+        if let Line::Space(i) = line {
+            if spaces[i].current {
+                base = base.bg(current_bg);
+            }
         }
-        if selected == Some(i) {
+        if selected.is_some() && pick(line, spaces.len()) == selected {
             base = base.add_modifier(Modifier::REVERSED);
         }
-        for (line, y) in (0..2).zip(top..) {
-            if y >= area.bottom() {
-                break;
+        buf.set_style(row, base);
+        let mut put = |x: u16, text: &str, style: Style| {
+            let room = usize::from(row.right().saturating_sub(x));
+            buf.set_stringn(x, y, text, room, base.patch(style)).0
+        };
+        let (name_x, end) = (area.x + INDENT, row.right().saturating_sub(1));
+        match line {
+            Line::Header(title) => {
+                put(area.x + 1, title, dim.add_modifier(Modifier::BOLD));
             }
-            let row = Rect::new(area.x, y, inner, 1);
-            buf.set_style(row, base);
-            let width = usize::from(inner);
-            if line == 0 {
-                buf.set_stringn(area.x + 1, y, &item.name, width.saturating_sub(2), base);
-                continue;
+            Line::Space(i) => {
+                let s = &spaces[i];
+                if let Some(state) = s.state {
+                    put(area.x + 1, DOT, dot(state));
+                }
+                put(name_x, &s.name, Style::default());
             }
-            let (state, rest) = status(item);
-            let mut x = area.x + 3;
-            let end = area.x + inner.saturating_sub(1);
-            if let (Some(text), Some(s)) = (state, item.state) {
-                let style = match s {
-                    State::Waiting | State::Idle => base.patch(highlight(s)),
-                    _ => base.patch(dim),
-                };
-                let left = usize::from(end.saturating_sub(x));
-                (x, _) = buf.set_stringn(x, y, &text, left, style);
+            Line::Agent(i) => {
+                let a = &agents[i];
+                put(area.x + 1, DOT, dot(a.state));
+                let state = a.state.label();
+                let width = u16::try_from(state.chars().count()).unwrap_or(0);
+                let state_x = end.saturating_sub(width).max(name_x);
+                let room = usize::from(state_x.saturating_sub(name_x + 1));
+                let label: String = a.label.chars().take(room).collect();
+                put(name_x, &label, Style::default());
+                put(state_x, state, highlight(a.state));
             }
-            let left = usize::from(end.saturating_sub(x));
-            buf.set_stringn(x, y, &rest, left, base.patch(dim));
+            Line::AgentPlace(i) => {
+                put(name_x, &agents[i].place, dim);
+            }
+            Line::Blank => {}
         }
     }
 }
 
-/// The item drawn at screen row `y` of a sidebar over `area`, if any; the
-/// blank line after an item counts as none.
-pub fn item_at(area: Rect, y: u16) -> Option<usize> {
-    let first = area.y + FIRST_ROW;
-    if !(first..area.bottom()).contains(&y) {
+/// What the sidebar line at screen row `y` of `area` picks, if anything.
+pub fn pick_at(spaces: usize, agents: usize, area: Rect, y: u16) -> Option<usize> {
+    if !(area.top()..area.bottom()).contains(&y) {
         return None;
     }
-    let offset = y - first;
-    (offset % ITEM_ROWS < 2).then_some(usize::from(offset / ITEM_ROWS))
+    let line = lines(spaces, agents)
+        .into_iter()
+        .nth(usize::from(y - area.y))?;
+    pick(line, spaces)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn item(name: &str, state: Option<State>, tabs: usize) -> SidebarItem {
-        SidebarItem {
+    fn space(name: &str, state: Option<State>, current: bool) -> SpaceLine {
+        SpaceLine {
             name: name.into(),
             state,
-            tabs,
-            current: false,
+            current,
+        }
+    }
+
+    fn agent(label: &str, state: State, place: &str) -> AgentLine {
+        AgentLine {
+            label: label.into(),
+            state,
+            place: place.into(),
         }
     }
 
@@ -158,104 +217,123 @@ mod tests {
 
     const GREY: Color = Color::Indexed(236);
 
-    #[test]
-    fn items_show_name_then_state_and_tabs_with_a_blank_line_between() {
-        let area = Rect::new(0, 0, 24, 8);
+    fn draw(spaces: &[SpaceLine], agents: &[AgentLine], selected: Option<usize>) -> Buffer {
+        let area = Rect::new(0, 0, 24, 10);
         let mut buf = Buffer::empty(area);
-        let items = [
-            item("api-server", Some(State::Waiting), 3),
-            item("notes", None, 1),
-            item("third", Some(State::Running), 2),
-        ];
-        render(&items, None, GREY, area, &mut buf);
-        assert_eq!(text(&buf, 0), " workspaces            │");
-        assert_eq!(text(&buf, 1), " api-server            │");
-        assert_eq!(text(&buf, 2), "   ● waiting · 3 tabs  │");
-        assert_eq!(text(&buf, 3), "                       │");
-        assert_eq!(text(&buf, 4), " notes                 │");
-        assert_eq!(text(&buf, 5), "   1 tab               │");
-        assert_eq!(text(&buf, 7), " third                 │");
-        assert!(buf[(5, 5)].modifier.contains(Modifier::DIM));
+        render(spaces, agents, selected, GREY, area, &mut buf);
+        buf
     }
 
     #[test]
-    fn waiting_and_idle_states_keep_their_highlight() {
-        let area = Rect::new(0, 0, 24, 6);
-        let mut buf = Buffer::empty(area);
-        let items = [
-            item("w", Some(State::Waiting), 1),
-            item("i", Some(State::Idle), 1),
+    fn spaces_then_agents_each_under_a_header() {
+        let spaces = [
+            space("api-server", Some(State::Waiting), true),
+            space("paddock", None, false),
         ];
-        render(&items, None, GREY, area, &mut buf);
-        let (waiting, idle) = (&buf[(3, 2)], &buf[(3, 5)]);
-        assert_eq!((waiting.fg, waiting.bg), (Color::Black, Color::Yellow));
-        assert_eq!(idle.fg, Color::Green);
-        assert!(buf[(13, 2)].modifier.contains(Modifier::DIM), "tab count");
-    }
-
-    #[test]
-    fn the_current_item_has_its_own_background_and_the_selected_one_is_reversed() {
-        let area = Rect::new(0, 0, 24, 6);
-        let mut buf = Buffer::empty(area);
-        let mut current = item("cur", None, 1);
-        current.current = true;
-        render(
-            &[current, item("other", None, 2)],
-            Some(1),
-            GREY,
-            area,
-            &mut buf,
-        );
-        for (x, y) in [(0, 1), (10, 1), (0, 2), (22, 2)] {
-            assert_eq!(buf[(x, y)].bg, GREY, "({x}, {y})");
+        let agents = [
+            agent("api", State::Waiting, "api-server · 2:claude"),
+            agent("a-very-long-label", State::Running, "api-server · 1:x"),
+        ];
+        let buf = draw(&spaces, &agents, None);
+        let want = [
+            " SPACES                │",
+            " ● api-server          │",
+            "   paddock             │",
+            "                       │",
+            " AGENTS                │",
+            " ● api         waiting │",
+            "   api-server · 2:claud│",
+            "                       │",
+            " ● a-very-long running │",
+            "   api-server · 1:x    │",
+        ];
+        for (y, line) in want.iter().enumerate() {
+            assert_eq!(text(&buf, y as u16), *line, "row {y}");
         }
+        assert!(buf[(3, 6)].modifier.contains(Modifier::DIM), "place is dim");
+    }
+
+    #[test]
+    fn states_stand_out_and_the_current_space_has_its_own_background() {
+        let spaces = [
+            space("cur", Some(State::Idle), true),
+            space("other", Some(State::Done), false),
+        ];
+        let agents = [agent("w", State::Waiting, "cur · 1:a")];
+        let buf = draw(&spaces, &agents, None);
+        assert_eq!(buf[(0, 1)].bg, GREY);
+        assert_eq!(buf[(22, 1)].bg, GREY);
         assert_eq!(buf[(23, 1)].bg, Color::Reset, "not the border");
-        assert_eq!(buf[(0, 3)].bg, Color::Reset, "not the blank line");
-        assert!(buf[(1, 4)].modifier.contains(Modifier::REVERSED));
-        assert!(buf[(20, 5)].modifier.contains(Modifier::REVERSED));
-        assert!(!buf[(1, 1)].modifier.contains(Modifier::REVERSED));
+        assert_eq!(buf[(5, 2)].bg, Color::Reset);
+        assert_eq!(buf[(1, 1)].fg, Color::Green, "idle dot");
+        assert!(buf[(1, 2)].modifier.contains(Modifier::BOLD), "done dot");
+        let waiting = &buf[(16, 5)];
+        assert_eq!((waiting.fg, waiting.bg), (Color::Black, Color::Yellow));
+        assert_eq!(buf[(1, 5)].fg, Color::Yellow);
+    }
+
+    #[test]
+    fn the_selected_space_or_agent_is_reversed() {
+        let spaces = [space("a", None, false), space("b", None, false)];
+        let agents = [agent("x", State::Idle, "a · 1:x")];
+        let buf = draw(&spaces, &agents, Some(1));
+        assert!(buf[(5, 2)].modifier.contains(Modifier::REVERSED));
+        assert!(!buf[(5, 1)].modifier.contains(Modifier::REVERSED));
+        let buf = draw(&spaces, &agents, Some(2));
+        assert!(buf[(5, 5)].modifier.contains(Modifier::REVERSED));
+        assert!(buf[(5, 6)].modifier.contains(Modifier::REVERSED));
+        assert!(!buf[(5, 2)].modifier.contains(Modifier::REVERSED));
     }
 
     #[test]
     fn control_characters_in_names_never_reach_the_screen() {
-        // Names come from tmux; an escape sequence in one must not be
-        // written to the outer terminal.
-        let area = Rect::new(0, 0, 30, 3);
-        let mut buf = Buffer::empty(area);
-        render(
-            &[item("a\x1b]52;c;eA==\x07b", None, 1)],
+        // Names come from tmux and Claude; an escape sequence in one must
+        // not be written to the outer terminal.
+        let evil = "a\x1b]52;c;eA==\x07b";
+        let buf = draw(
+            &[space(evil, None, false)],
+            &[agent(evil, State::Idle, evil)],
             None,
-            GREY,
-            area,
-            &mut buf,
         );
-        let drawn = text(&buf, 1);
-        assert!(!drawn.contains(char::is_control), "{drawn:?}");
+        for y in 0..10 {
+            let drawn = text(&buf, y);
+            assert!(!drawn.contains(char::is_control), "{drawn:?}");
+        }
     }
 
     #[test]
-    fn long_names_are_cut_and_items_stop_at_the_bottom() {
-        let area = Rect::new(0, 0, 12, 3);
-        let mut buf = Buffer::empty(area);
-        let items = [
-            item("a-very-long-name", Some(State::Running), 12),
-            item("hidden", None, 1),
-        ];
-        render(&items, None, GREY, area, &mut buf);
-        assert_eq!(text(&buf, 1), " a-very-lo │");
-        assert_eq!(text(&buf, 2), "   ● runni │");
+    fn clicks_find_what_is_drawn_under_them() {
+        let area = Rect::new(0, 3, 24, 12);
+        // 3 + 0 SPACES, 4-5 spaces, 6 blank, 7 AGENTS, 8-9 agent 0, 10
+        // blank, 11-12 agent 1.
+        let at = |y| pick_at(2, 2, area, y);
+        assert_eq!(at(3), None, "header");
+        assert_eq!(at(4), Some(0));
+        assert_eq!(at(5), Some(1));
+        assert_eq!((at(6), at(7)), (None, None));
+        assert_eq!((at(8), at(9)), (Some(2), Some(2)));
+        assert_eq!(at(10), None);
+        assert_eq!(at(12), Some(3));
+        assert_eq!(at(13), None, "below the last line");
+        assert_eq!(at(20), None, "below the sidebar");
     }
 
     #[test]
-    fn clicks_find_the_item_drawn_under_them() {
-        let area = Rect::new(0, 3, 24, 10);
-        assert_eq!(item_at(area, 3), None, "title");
-        assert_eq!(item_at(area, 4), Some(0));
-        assert_eq!(item_at(area, 5), Some(0));
-        assert_eq!(item_at(area, 6), None, "blank line");
-        assert_eq!(item_at(area, 7), Some(1));
-        assert_eq!(item_at(area, 10), Some(2));
-        assert_eq!(item_at(area, 12), None);
-        assert_eq!(item_at(area, 13), None, "below the sidebar");
+    fn lines_put_a_blank_between_agents_only() {
+        use Line::*;
+        assert_eq!(
+            lines(1, 2),
+            [
+                Header(SPACES),
+                Space(0),
+                Blank,
+                Header(AGENTS),
+                Agent(0),
+                AgentPlace(0),
+                Blank,
+                Agent(1),
+                AgentPlace(1)
+            ]
+        );
     }
 }

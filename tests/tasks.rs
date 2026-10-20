@@ -136,10 +136,10 @@ fn task(branch: &str, fields: &str) -> String {
     format!("{branch} {fields}")
 }
 
-/// Tab count of workspace-1.
+/// Tab count of space-1.
 fn tabs(sandbox: &Sandbox) -> usize {
     sandbox
-        .tmux(&["list-windows", "-t", "workspace-1"])
+        .tmux(&["list-windows", "-t", "space-1"])
         .lines()
         .count()
 }
@@ -151,14 +151,14 @@ fn switching_branches_adds_a_task_row_for_each_branch() {
     let mut paddock = ready(&sandbox);
     let bash = |sandbox: &Sandbox| {
         sandbox.hook(
-            "workspace-1",
+            "space-1",
             "PostToolUse",
             &payload("PostToolUse", &dir, Some("Bash")),
         );
     };
 
     sandbox.hook(
-        "workspace-1",
+        "space-1",
         "SessionStart",
         &payload("SessionStart", &dir, None),
     );
@@ -175,11 +175,11 @@ fn switching_branches_adds_a_task_row_for_each_branch() {
     // Only a shell command can switch branch; other tools do not re-read it.
     git(&dir, &["switch", "-q", "-c", "feat/three"]);
     sandbox.hook(
-        "workspace-1",
+        "space-1",
         "PostToolUse",
         &payload("PostToolUse", &dir, Some("Edit")),
     );
-    sandbox.hook("workspace-1", "Stop", &payload("Stop", &dir, None));
+    sandbox.hook("space-1", "Stop", &payload("Stop", &dir, None));
     wait_for_list(&mut paddock, &[&session("idle"), "feat/one", "feat/two"]);
 }
 
@@ -197,7 +197,7 @@ fn task_rows_show_ahead_behind_and_line_changes() {
     let mut paddock = ready(&sandbox);
 
     sandbox.hook(
-        "workspace-1",
+        "space-1",
         "UserPromptSubmit",
         &payload("UserPromptSubmit", &dir, None),
     );
@@ -237,10 +237,10 @@ fn no_rows_for_the_default_branch_or_shells_without_claude() {
     paddock.wait_for_current_tab("2:shell");
 
     for name in ["SessionStart", "UserPromptSubmit"] {
-        sandbox.hook("workspace-1:1", name, &payload(name, &dir, None));
+        sandbox.hook("space-1:1", name, &payload(name, &dir, None));
     }
     sandbox.hook(
-        "workspace-1:1",
+        "space-1:1",
         "PostToolUse",
         &payload("PostToolUse", &dir, Some("Bash")),
     );
@@ -321,7 +321,7 @@ fn parallel_subagents_show_as_task_rows_from_running_to_done() {
     let (wt_a, wt_b) = (worktree(&dir, AGENT_A), worktree(&dir, AGENT_B));
     let mut paddock = ready(&sandbox);
     let hook = |name: &str, event: &str, agent: &str| {
-        sandbox.hook("workspace-1", event, &recorded(&sandbox, name, &dir, agent));
+        sandbox.hook("space-1", event, &recorded(&sandbox, name, &dir, agent));
     };
 
     hook("SessionStart", "SessionStart", AGENT_A);
@@ -372,7 +372,7 @@ fn subagent_work_done_while_paddock_is_closed_appears_on_reopen() {
     assert!(paddock.wait_exit());
 
     let hook = |name: &str, event: &str, agent: &str| {
-        sandbox.hook("workspace-1", event, &recorded(&sandbox, name, &dir, agent));
+        sandbox.hook("space-1", event, &recorded(&sandbox, name, &dir, agent));
     };
     hook("UserPromptSubmit", "UserPromptSubmit", AGENT_A);
     for (agent, wt, branch) in [(AGENT_A, &wt_a, "fix/a"), (AGENT_B, &wt_b, "fix/b")] {
@@ -439,7 +439,7 @@ fn d_dismisses_a_task_row_and_it_stays_gone_after_reopening() {
     let sandbox = Sandbox::new();
     let dir = repo(&sandbox);
     let mut paddock = ready(&sandbox);
-    work_on(&sandbox, "workspace-1", &dir, &["feat/one", "feat/two"]);
+    work_on(&sandbox, "space-1", &dir, &["feat/one", "feat/two"]);
     wait_for_list(&mut paddock, &[&session("idle"), "feat/one", "feat/two"]);
 
     paddock.send(b"jD");
@@ -458,7 +458,7 @@ fn d_on_a_session_row_hides_it_with_its_tasks_until_claude_reports_again() {
     let sandbox = Sandbox::new();
     let dir = repo(&sandbox);
     let mut paddock = ready(&sandbox);
-    work_on(&sandbox, "workspace-1", &dir, &["feat/one"]);
+    work_on(&sandbox, "space-1", &dir, &["feat/one"]);
     wait_for_list(&mut paddock, &[&session("idle"), "feat/one"]);
 
     paddock.send(b"D");
@@ -470,7 +470,7 @@ fn d_on_a_session_row_hides_it_with_its_tasks_until_claude_reports_again() {
     // Claude is prompted again, back on the default branch.
     git(&dir, &["switch", "-q", "main"]);
     sandbox.hook(
-        "workspace-1",
+        "space-1",
         "UserPromptSubmit",
         &payload("UserPromptSubmit", &dir, None),
     );
@@ -485,7 +485,7 @@ fn a_closed_terminals_rows_stay_as_stopped_after_reopening() {
     let mut paddock = ready(&sandbox);
     paddock.command(b"c");
     paddock.wait_for_current_tab("2:home");
-    work_on(&sandbox, "workspace-1:1", &dir, &["feat/one"]);
+    work_on(&sandbox, "space-1:1", &dir, &["feat/one"]);
     wait_for_list(&mut paddock, &[&session("idle"), "feat/one"]);
 
     close_list(&mut paddock);
@@ -502,12 +502,12 @@ fn a_new_conversation_in_the_same_terminal_keeps_its_task_rows() {
     let sandbox = Sandbox::new();
     let dir = repo(&sandbox);
     let mut paddock = ready(&sandbox);
-    work_on(&sandbox, "workspace-1", &dir, &["feat/one"]);
+    work_on(&sandbox, "space-1", &dir, &["feat/one"]);
     wait_for_list(&mut paddock, &[&session("idle"), "feat/one"]);
 
     let next = payload("UserPromptSubmit", &dir, None)
         .replace(SESSION, "22222222-2222-4333-8444-555555555555");
-    sandbox.hook("workspace-1", "UserPromptSubmit", &next);
+    sandbox.hook("space-1", "UserPromptSubmit", &next);
     wait_for_list(&mut paddock, &[&session("running"), "feat/one"]);
 }
 
@@ -519,11 +519,7 @@ fn a_dismissed_subagent_task_row_stays_gone_after_reopening() {
     let wt_a = worktree(&dir, AGENT_A);
     let mut paddock = ready(&sandbox);
     let hook = |name: &str, event: &str| {
-        sandbox.hook(
-            "workspace-1",
-            event,
-            &recorded(&sandbox, name, &dir, AGENT_A),
-        );
+        sandbox.hook("space-1", event, &recorded(&sandbox, name, &dir, AGENT_A));
     };
     hook("UserPromptSubmit", "UserPromptSubmit");
     hook("SubagentStart-subagent", "SubagentStart");

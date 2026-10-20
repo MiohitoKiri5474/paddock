@@ -24,7 +24,7 @@ pub const PROMPT: &str = "test$";
 /// Columns the sidebar takes while shown, its border included.
 pub const SIDEBAR: u16 = 24;
 /// The sidebar's title, in its first row.
-const SIDEBAR_TITLE: &str = " workspaces";
+const SIDEBAR_TITLE: &str = " SPACES";
 const SOCKET: &str = "paddock-test";
 const CURSOR_QUERY: &[u8] = b"\x1b[6n";
 

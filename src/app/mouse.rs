@@ -1,4 +1,5 @@
-//! The mouse: clicks focus a pane, pick a sidebar item or switch tabs; the
+//! The mouse: clicks focus a pane, open a sidebar space or agent, or switch
+//! tabs; the
 //! wheel and programs' mouse reports go to the pane under the pointer;
 //! dragging selects text and releasing copies it.
 
@@ -54,11 +55,14 @@ impl App {
         }
         if m.column < side {
             let area = Rect::new(0, 0, side, self.screen.1);
-            let Some(i) = sidebar::item_at(area, m.row).filter(|&i| left && i < self.items.len())
-            else {
+            let picks = self.sidebar_picks();
+            let spaces = self.items.len();
+            let agents = picks.len() - spaces;
+            let picked = sidebar::pick_at(spaces, agents, area, m.row).and_then(|i| picks.get(i));
+            let Some(pick) = picked.filter(|_| left) else {
                 return Ok(false);
             };
-            self.select_item(i);
+            self.open(pick);
             return Ok(self.settle());
         }
         let Some((pane, rect)) = self.under(m.column, m.row) else {

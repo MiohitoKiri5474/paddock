@@ -61,10 +61,10 @@ fn wait_anywhere(paddock: &Paddock, text: &str) {
     paddock.wait_for(text, |_| paddock.full_screen().contains(text));
 }
 
-/// Tab count of workspace-1.
+/// Tab count of space-1.
 fn tabs(sandbox: &Sandbox) -> usize {
     sandbox
-        .tmux(&["list-windows", "-t", "workspace-1"])
+        .tmux(&["list-windows", "-t", "space-1"])
         .lines()
         .count()
 }
@@ -116,7 +116,7 @@ fn o_opens_the_dashboard_and_esc_closes_it() {
     paddock.send(b"\x1b");
     paddock.wait_for("the empty dashboard closed", |s| !s.contains(OPEN));
 
-    claude(&sandbox, "workspace-1:0", "Stop", "s1", "/w/repo");
+    claude(&sandbox, "space-1:0", "Stop", "s1", "/w/repo");
     wait_anywhere(&paddock, "idle");
     open(&mut paddock);
     paddock.wait_for_text("preview: repo");
@@ -137,14 +137,8 @@ fn j_and_k_move_and_enter_jumps_to_the_rows_terminal() {
     let sandbox = Sandbox::new();
     let mut paddock = two_tabs(&sandbox);
     // Waiting sorts before idle.
-    claude(
-        &sandbox,
-        "workspace-1:0",
-        "PermissionRequest",
-        "s1",
-        "/w/alpha",
-    );
-    claude(&sandbox, "workspace-1:1", "Stop", "s2", "/w/bravo");
+    claude(&sandbox, "space-1:0", "PermissionRequest", "s1", "/w/alpha");
+    claude(&sandbox, "space-1:1", "Stop", "s2", "/w/bravo");
     paddock.wait_for_tabs(&["1:claude ●", "2:claude ●"]);
 
     open(&mut paddock);
@@ -163,14 +157,8 @@ fn j_and_k_move_and_enter_jumps_to_the_rows_terminal() {
 fn d_dismisses_a_row_and_it_stays_gone_after_reopening() {
     let sandbox = Sandbox::new();
     let mut paddock = two_tabs(&sandbox);
-    claude(
-        &sandbox,
-        "workspace-1:0",
-        "PermissionRequest",
-        "s1",
-        "/w/alpha",
-    );
-    claude(&sandbox, "workspace-1:1", "Stop", "s2", "/w/bravo");
+    claude(&sandbox, "space-1:0", "PermissionRequest", "s1", "/w/alpha");
+    claude(&sandbox, "space-1:1", "Stop", "s2", "/w/bravo");
     paddock.wait_for_tabs(&["1:claude ●", "2:claude ●"]);
 
     open(&mut paddock);
@@ -197,7 +185,7 @@ fn the_preview_shows_the_selected_terminal_live() {
     // No `claude agents` snapshots, whose polls redraw the screen anyway.
     sandbox.set_agents("not json");
     let mut paddock = two_tabs(&sandbox);
-    claude(&sandbox, "workspace-1:0", "Stop", "s1", "/w/repo");
+    claude(&sandbox, "space-1:0", "Stop", "s1", "/w/repo");
     wait_anywhere(&paddock, "done");
     open(&mut paddock);
     paddock.wait_for_text("preview: repo");
@@ -206,7 +194,7 @@ fn the_preview_shows_the_selected_terminal_live() {
     sandbox.tmux(&[
         "send-keys",
         "-t",
-        "workspace-1:0",
+        "space-1:0",
         "echo live-$((6*7))",
         "Enter",
     ]);
@@ -230,12 +218,12 @@ fn wait_for_file(path: &Path, want: &str) {
 fn i_types_into_the_previewed_terminal_and_esc_is_never_sent() {
     let sandbox = Sandbox::new();
     let mut paddock = two_tabs(&sandbox);
-    claude(&sandbox, "workspace-1:0", "Stop", "s1", "/w/repo");
+    claude(&sandbox, "space-1:0", "Stop", "s1", "/w/repo");
     wait_anywhere(&paddock, "done");
     // The first tab's pane writes every byte it reads to a file, ESC shown as `^[`.
     let out = sandbox.path("typed.txt");
     let cat = format!("cat -v > {}", out.display());
-    sandbox.tmux(&["send-keys", "-t", "workspace-1:0", &cat, "Enter"]);
+    sandbox.tmux(&["send-keys", "-t", "space-1:0", &cat, "Enter"]);
 
     open(&mut paddock);
     paddock.send(b"I");
@@ -259,11 +247,11 @@ fn i_types_into_the_previewed_terminal_and_esc_is_never_sent() {
 fn esc_and_a_key_in_one_read_leave_interactive_preview_unsent() {
     let sandbox = Sandbox::new();
     let mut paddock = two_tabs(&sandbox);
-    claude(&sandbox, "workspace-1:0", "Stop", "s1", "/w/repo");
+    claude(&sandbox, "space-1:0", "Stop", "s1", "/w/repo");
     wait_anywhere(&paddock, "done");
     let out = sandbox.path("typed.txt");
     let cat = format!("cat -v > {}", out.display());
-    sandbox.tmux(&["send-keys", "-t", "workspace-1:0", &cat, "Enter"]);
+    sandbox.tmux(&["send-keys", "-t", "space-1:0", &cat, "Enter"]);
 
     open(&mut paddock);
     paddock.send(b"I");
@@ -285,13 +273,7 @@ fn esc_and_a_key_in_one_read_leave_interactive_preview_unsent() {
 fn x_asks_while_claude_runs_then_returns_to_the_dashboard() {
     let sandbox = Sandbox::new();
     let mut paddock = two_tabs(&sandbox);
-    claude(
-        &sandbox,
-        "workspace-1:0",
-        "UserPromptSubmit",
-        "s1",
-        "/w/repo",
-    );
+    claude(&sandbox, "space-1:0", "UserPromptSubmit", "s1", "/w/repo");
     wait_anywhere(&paddock, "running");
 
     open(&mut paddock);
@@ -311,7 +293,7 @@ fn f_forks_the_selected_session() {
     std::fs::create_dir_all(&dir).unwrap();
     let dir = dir.canonicalize().unwrap();
     let id = "0000cccc-0000-4000-8000-00000000000c";
-    claude(&sandbox, "workspace-1:0", "Stop", id, dir.to_str().unwrap());
+    claude(&sandbox, "space-1:0", "Stop", id, dir.to_str().unwrap());
     wait_anywhere(&paddock, "done");
 
     open(&mut paddock);
@@ -333,7 +315,7 @@ fn task_rows_show_base_diff_files_age_and_merged() {
     let mut paddock = ready(&sandbox);
     claude(
         &sandbox,
-        "workspace-1:0",
+        "space-1:0",
         "UserPromptSubmit",
         SESSION,
         dir.to_str().unwrap(),

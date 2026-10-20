@@ -105,7 +105,7 @@ fn pipe_splits_side_by_side_into_a_new_pane() {
     p.type_line("echo typed-into-the-new-split");
     wait_in_region(&p, "typed-into-the-new-split", ALL_ROWS, RIGHT);
     assert!(!in_region(&p, "typed-into-the-new-split", ALL_ROWS, LEFT));
-    assert_eq!(sandbox.session_names(), ["workspace-1"], "one item");
+    assert_eq!(sandbox.session_names(), ["space-1"], "one item");
 }
 
 #[test]

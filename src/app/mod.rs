@@ -11,6 +11,7 @@ mod mouse;
 mod rows;
 mod saved;
 mod screen;
+mod sidebar;
 mod splits;
 mod state;
 mod tabs;

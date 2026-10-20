@@ -30,6 +30,8 @@ pub enum Command {
     Help,
     Detach,
     FocusSidebar,
+    /// Focus the sidebar on the current space.
+    FocusSpaces,
     ToggleSidebar,
     /// Jump to the next session that is waiting or idle.
     NextAttention,
@@ -57,19 +59,20 @@ pub enum KeyAction {
 
 /// Command keys, for both dispatch and the key help.
 pub const BINDINGS: &[(&str, &str)] = &[
-    ("c", "new tab in this workspace"),
-    ("C", "new workspace (sidebar item)"),
+    ("c", "new tab in this space"),
+    ("C", "new space"),
     ("n / p", "next / previous tab"),
     ("1-9", "go to tab"),
     (",", "rename tab"),
-    ("$", "rename workspace"),
+    ("$", "rename space"),
     ("|", "split side by side"),
     ("-", "split top and bottom"),
     ("hjkl", "move focus (also arrows)"),
     ("=", "even out the focused split"),
     ("x", "close pane (asks if Claude is busy)"),
     ("f", "fork Claude into a new tab"),
-    ("s", "focus sidebar (j/k, Enter opens, x, f, Esc)"),
+    ("s", "focus sidebar: spaces, agents (j/k Enter x f Esc)"),
+    ("w", "focus sidebar on the current space"),
     ("b", "show or hide sidebar"),
     ("a", "next session that needs you"),
     ("o", "dashboard (j/k, Enter, D, x, f, I types, Esc back)"),
@@ -110,6 +113,7 @@ fn command(key: &KeyEvent) -> Option<Command> {
         '?' => Command::Help,
         'd' => Command::Detach,
         's' => Command::FocusSidebar,
+        'w' => Command::FocusSpaces,
         'b' => Command::ToggleSidebar,
         'a' => Command::NextAttention,
         'o' => Command::Dashboard,
@@ -248,6 +252,10 @@ mod tests {
         assert_eq!(
             after_prefix('s', none),
             KeyAction::Command(Command::FocusSidebar)
+        );
+        assert_eq!(
+            after_prefix('w', none),
+            KeyAction::Command(Command::FocusSpaces)
         );
         assert_eq!(
             after_prefix('b', none),

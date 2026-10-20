@@ -11,8 +11,8 @@ use crate::tmux::server::quote;
 use anyhow::{bail, Result};
 use std::path::PathBuf;
 
-/// New items are named `workspace-N` until the user renames them.
-const ITEM_STEM: &str = "workspace-";
+/// New spaces are named `space-N` until the user renames them.
+const ITEM_STEM: &str = "space-";
 
 impl App {
     /// Start a shell in a new item at the end of the sidebar and make it
@@ -258,12 +258,6 @@ impl App {
         item.detach();
         if i < self.current || self.current >= self.items.len() {
             self.current = self.current.saturating_sub(1);
-        }
-        if let Mode::Sidebar(Some(selected)) = &self.mode {
-            if selected == id {
-                // The sidebar keeps the keyboard, on the item now current.
-                self.mode = Mode::Sidebar(self.current_item().map(|i| i.id.clone()));
-            }
         }
         self.report(|app| app.save());
         !self.items.is_empty()

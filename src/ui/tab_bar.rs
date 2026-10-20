@@ -26,7 +26,7 @@ pub struct Tab {
 pub struct TabBar<'a> {
     pub tabs: Vec<Tab>,
     pub current: usize,
-    /// While renaming: what is renamed (`tab`, `workspace`) and the text so far.
+    /// While renaming: what is renamed (`tab`, `space`) and the text so far.
     pub rename: Option<(&'a str, &'a str)>,
     /// Shown at the right: a message, or the prefix while it is armed.
     pub status: Option<&'a str>,
@@ -183,12 +183,12 @@ mod tests {
     #[test]
     fn rename_prompt_replaces_the_tabs_and_places_the_cursor() {
         let b = TabBar {
-            rename: Some(("workspace", "new")),
+            rename: Some(("space", "new")),
             ..bar(&["shell"], 0)
         };
         let (buf, cursor) = draw(&b, 30);
-        assert_eq!(text(&buf), " rename workspace: new");
-        assert_eq!(cursor, Some(Position::new(22, 0)));
+        assert_eq!(text(&buf), " rename space: new");
+        assert_eq!(cursor, Some(Position::new(18, 0)));
     }
 
     #[test]

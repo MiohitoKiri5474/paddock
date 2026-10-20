@@ -105,10 +105,8 @@ impl App {
             Command::Equalise => self.report(|app| app.equalise()),
             Command::Help => self.mode = Mode::Help,
             Command::Detach => return Ok(Flow::Quit),
-            Command::FocusSidebar => {
-                self.sidebar_hidden = false;
-                self.mode = Mode::Sidebar(self.current_item().map(|i| i.id.clone()));
-            }
+            Command::FocusSidebar => self.focus_sidebar(false),
+            Command::FocusSpaces => self.focus_sidebar(true),
             Command::ToggleSidebar => {
                 self.sidebar_hidden = !self.sidebar_hidden;
                 if self.sidebar_hidden && matches!(self.mode, Mode::Sidebar(_)) {
@@ -128,59 +126,6 @@ impl App {
     fn start_rename(&mut self, target: Renaming) {
         let text = self.name_of(target);
         self.mode = Mode::Rename { target, text };
-    }
-
-    /// `j`/`k` (or arrows) move over the items, `Enter` makes the selected
-    /// one current and gives the keyboard back, `x` closes it, `f` forks the
-    /// Claude in it that needs you most, `Esc` gives the keyboard back.
-    fn sidebar_key(&mut self, selected: Option<String>, key: KeyEvent) {
-        let at = self
-            .items
-            .iter()
-            .position(|i| Some(&i.id) == selected.as_ref())
-            .unwrap_or(self.current);
-        let id = self.items.get(at).map(|i| i.id.clone());
-        let pick = |i: usize| self.items.get(i).map(|it| it.id.clone());
-        self.mode = match key.code {
-            KeyCode::Char('j') | KeyCode::Down => Mode::Sidebar(pick(at + 1).or(id)),
-            KeyCode::Char('k') | KeyCode::Up => {
-                Mode::Sidebar(at.checked_sub(1).and_then(pick).or(id))
-            }
-            KeyCode::Enter => {
-                self.select_item(at);
-                Mode::Normal
-            }
-            KeyCode::Char('x') => {
-                // Asking takes the keyboard; otherwise the sidebar keeps it.
-                self.mode = Mode::Sidebar(id.clone());
-                if let Some(id) = id {
-                    self.report(|app| app.close_item(&id));
-                }
-                return;
-            }
-            KeyCode::Char('f') => {
-                let pane = self
-                    .rows()
-                    .into_iter()
-                    .find(|r| Some(&r.item) == id.as_ref())
-                    .map(|r| r.pane);
-                match pane {
-                    // The fork's tab gets the keyboard.
-                    Some(pane) => {
-                        self.report(|app| app.fork(&pane));
-                        Mode::Normal
-                    }
-                    None => {
-                        self.notice = Some("no Claude session here".into());
-                        Mode::Sidebar(id)
-                    }
-                }
-            }
-            KeyCode::Esc => Mode::Normal,
-            _ => Mode::Sidebar(id),
-        };
-        self.report(|app| app.relayout());
-        self.report(|app| app.save());
     }
 
     /// Run a command whose failure the user should see but that is not fatal.

@@ -72,7 +72,7 @@ fn waiting_and_finished_turns_notify_once_each() {
 
     hooks(
         &sandbox,
-        "workspace-1:0",
+        "space-1:0",
         &[
             "SessionStart",
             "UserPromptSubmit",
@@ -99,7 +99,7 @@ fn the_terminal_you_look_at_never_notifies() {
     let mut paddock = ready(&sandbox);
     hooks(
         &sandbox,
-        "workspace-1:0",
+        "space-1:0",
         &["UserPromptSubmit", "PermissionRequest", "Stop"],
     );
     paddock.wait_for("idle", |_| paddock.full_screen().contains("idle"));
@@ -109,21 +109,21 @@ fn the_terminal_you_look_at_never_notifies() {
     settle(&mut paddock);
     hooks(
         &sandbox,
-        "workspace-1:0",
+        "space-1:0",
         &["UserPromptSubmit", "PermissionRequest"],
     );
     assert_eq!(sandbox.wait_for_notifications(1), [WAITING]);
 
     paddock.send(b"\x1b[I");
     settle(&mut paddock);
-    hooks(&sandbox, "workspace-1:0", &["Stop"]);
+    hooks(&sandbox, "space-1:0", &["Stop"]);
     paddock.wait_for("idle", |_| paddock.full_screen().contains("idle"));
 
     // The sentinel, once the first tab is out of sight.
     new_tab(&mut paddock, "2:home");
     hooks(
         &sandbox,
-        "workspace-1:0",
+        "space-1:0",
         &["UserPromptSubmit", "PermissionRequest"],
     );
     assert_eq!(sandbox.wait_for_notifications(2), [WAITING, WAITING]);
@@ -139,14 +139,14 @@ fn events_while_paddock_is_closed_never_notify() {
 
     hooks(
         &sandbox,
-        "workspace-1:0",
+        "space-1:0",
         &["UserPromptSubmit", "PermissionRequest"],
     );
     let again = ready(&sandbox);
     again.wait_for("waiting", |_| again.full_screen().contains("waiting"));
     hooks(
         &sandbox,
-        "workspace-1:0",
+        "space-1:0",
         &[
             // The reminder of the wait that began while closed.
             "Notification-permission_prompt",
@@ -166,15 +166,15 @@ fn c_a_a_cycles_through_sessions_that_need_you() {
     paddock.wait_for_text("no session needs you");
 
     new_tab(&mut paddock, "2:home");
-    paddock.command(b"C"); // a second item, current
+    paddock.command(b"C"); // a second space, current
     paddock.wait_for_tabs(&["1:home"]);
     paddock.wait_for_text(PROMPT);
     let hook = |t: &str, s: &str, dir: &str, event: &str| {
         sandbox.hook(t, event, &payload_for(event, s, dir));
     };
-    hook("workspace-1:0", "s1", "/w/idle", "Stop");
-    hook("workspace-1:1", "s2", "/w/running", "UserPromptSubmit");
-    hook("workspace-2:0", "s3", "/w/waiting", "PermissionRequest");
+    hook("space-1:0", "s1", "/w/idle", "Stop");
+    hook("space-1:1", "s2", "/w/running", "UserPromptSubmit");
+    hook("space-2:0", "s3", "/w/waiting", "PermissionRequest");
     // The last hook: all three applied.
     paddock.wait_for_tabs(&["1:claude ●"]);
 
@@ -183,23 +183,24 @@ fn c_a_a_cycles_through_sessions_that_need_you() {
     paddock.wait_for_current_tab("1:claude ●");
     paddock.command(b"a");
     paddock.wait_for_tabs(&["1:claude ●"]);
-    paddock.command(b"s");
+    paddock.command(b"w");
     paddock.send(b"k\r");
     paddock.command(b"2");
     paddock.wait_for_current_tab("2:claude");
     paddock.command(b"a");
     paddock.wait_for_tabs(&["1:claude ●"]);
 
-    // Highlights, in the terminal's own colours: the waiting item's state
+    // Highlights, in the terminal's own colours: the waiting agent's state
     // and the tab holding the idle session.
     let (black, yellow, green) = (
         vt100::Color::Idx(0),
         vt100::Color::Idx(3),
         vt100::Color::Idx(2),
     );
-    assert_eq!(paddock.sidebar()[5], "   ● waiting · 1 tab");
-    assert_eq!(paddock.colors(5, 3), (black, yellow));
-    paddock.command(b"s");
+    // Rows: 0 SPACES, 1-2 spaces, 3 blank, 4 AGENTS, 5 the waiting agent.
+    assert_eq!(paddock.sidebar()[5], " ● waiting     waiting");
+    assert_eq!(paddock.colors(5, 15), (black, yellow));
+    paddock.command(b"w");
     paddock.send(b"k\r");
     paddock.wait_for_tabs(&["1:claude ●", "2:claude"]);
     let left = harness::SIDEBAR;
@@ -212,14 +213,14 @@ fn c_a_a_focuses_the_split_running_the_session() {
     let mut paddock = ready(&sandbox);
     paddock.command(b"|");
     paddock.wait_for("two prompts", |s| s.matches(PROMPT).count() == 2);
-    sandbox.hook("workspace-1:0.1", "Stop", &payload("Stop"));
+    sandbox.hook("space-1:0.1", "Stop", &payload("Stop"));
     paddock.wait_for_tabs(&["1:claude ●"]); // the focused pane runs Claude
     paddock.command(b"h"); // focus the left pane
 
     paddock.command(b"a");
     paddock.type_line("echo typed-into-the-split");
 
-    let capture = || sandbox.tmux(&["capture-pane", "-p", "-t", "workspace-1:0.1"]);
+    let capture = || sandbox.tmux(&["capture-pane", "-p", "-t", "space-1:0.1"]);
     let start = std::time::Instant::now();
     while !capture().contains("typed-into-the-split\n") {
         assert!(
@@ -237,7 +238,7 @@ fn a_turn_finished_out_of_sight_is_done_until_you_look_at_it() {
     let mut paddock = ready(&sandbox);
     new_tab(&mut paddock, "2:home");
 
-    hooks(&sandbox, "workspace-1:0", &["UserPromptSubmit", "Stop"]);
+    hooks(&sandbox, "space-1:0", &["UserPromptSubmit", "Stop"]);
     paddock.wait_for("done", |_| paddock.full_screen().contains("done"));
 
     // Looking at it, with the outer window focused, makes it idle.
@@ -253,7 +254,7 @@ fn a_turn_finished_in_view_is_idle_at_once() {
     let sandbox = Sandbox::new();
     let paddock = ready(&sandbox);
 
-    hooks(&sandbox, "workspace-1:0", &["UserPromptSubmit", "Stop"]);
+    hooks(&sandbox, "space-1:0", &["UserPromptSubmit", "Stop"]);
 
     paddock.wait_for("idle", |_| paddock.full_screen().contains("idle"));
     assert!(!paddock.full_screen().contains("done"));
