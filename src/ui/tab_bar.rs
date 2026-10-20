@@ -9,14 +9,19 @@
 //! Drawing and clicks both go through [`layout`].
 
 use super::sidebar::highlight;
+use super::STATE_DOT;
 use crate::sessions::State;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
 
-/// Marks a tab holding a Claude that needs you.
-pub const MARKER: &str = "●";
+/// The bar's row, a little darker than a tab.
+const DEFAULT_BAR: Color = Color::Indexed(235);
+/// A tab that is not current: a dark grey.
+const DEFAULT_TAB: Color = Color::Indexed(237);
+/// The current tab: the terminal's own blue.
+const DEFAULT_CURRENT: Color = Color::Blue;
 /// The narrowest a tab is drawn.
 pub const MIN_TAB: u16 = 8;
 /// Cells around a tab's name: two on either side.
@@ -52,9 +57,9 @@ pub struct TabColors {
 impl Default for TabColors {
     fn default() -> Self {
         Self {
-            bar: Color::Indexed(235),
-            tab: Color::Indexed(237),
-            current: Color::Blue,
+            bar: DEFAULT_BAR,
+            tab: DEFAULT_TAB,
+            current: DEFAULT_CURRENT,
         }
     }
 }
@@ -80,7 +85,7 @@ pub type Layout = Vec<(Part, u16, u16)>;
 /// What tab `tab` shows: the marker if it needs you, then its name.
 fn label(tab: &Tab) -> String {
     if tab.state.needs_you() {
-        format!("{MARKER} {}", tab.name)
+        format!("{STATE_DOT} {}", tab.name)
     } else {
         tab.name.clone()
     }
@@ -191,7 +196,7 @@ pub struct TabBar<'a> {
     /// While renaming: what is renamed (`tab`, `space`) and the text so far.
     pub rename: Option<(&'a str, &'a str)>,
     /// Shown at the right: a message, or the prefix while it is armed.
-    pub status: Option<&'a str>,
+    pub status: Option<String>,
 }
 
 impl TabBar<'_> {
@@ -212,7 +217,7 @@ impl TabBar<'_> {
             }
             None => self.render_tabs(row, buf),
         }
-        if let Some(status) = self.status {
+        if let Some(status) = &self.status {
             let text = format!(" {status} ");
             let width = u16::try_from(Span::raw(text.as_str()).width()).unwrap_or(u16::MAX);
             // A message too long for the space left covers the tabs, cut at
@@ -283,7 +288,7 @@ impl TabBar<'_> {
         } else {
             marker
         };
-        let (after, _) = buf.set_stringn(x, cell.y, MARKER, room, marker);
+        let (after, _) = buf.set_stringn(x, cell.y, STATE_DOT, room, marker);
         let room = usize::from(cell.right().saturating_sub(after));
         buf.set_stringn(after, cell.y, format!(" {}", tab.name), room, style);
     }
@@ -454,13 +459,13 @@ mod tests {
     #[test]
     fn status_sits_at_the_right_and_long_messages_cover_the_tabs() {
         let b = TabBar {
-            status: Some("C-a"),
+            status: Some("C-a".into()),
             ..bar(&["a", "b"], 0)
         };
         let (buf, _) = draw(&b, 30);
         assert_eq!(text(&buf), "   a        b      +      C-a");
         let b = TabBar {
-            status: Some("cannot read /a/long/path"),
+            status: Some("cannot read /a/long/path".into()),
             ..bar(&["a", "b"], 0)
         };
         let (buf, _) = draw(&b, 20);

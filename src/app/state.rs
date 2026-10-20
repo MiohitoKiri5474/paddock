@@ -61,6 +61,16 @@ pub enum Renaming {
     Space,
 }
 
+impl Renaming {
+    /// What is renamed, as the prompt names it.
+    pub fn noun(self) -> &'static str {
+        match self {
+            Renaming::Tab => "tab",
+            Renaming::Space => "space",
+        }
+    }
+}
+
 /// What a close question is about.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CloseTarget {
@@ -68,6 +78,16 @@ pub enum CloseTarget {
     Pane(String),
     /// A whole space (`$N`) with all its tabs.
     Space(String),
+}
+
+impl CloseTarget {
+    /// What the close question asks to do.
+    pub fn verb(&self) -> &'static str {
+        match self {
+            CloseTarget::Pane(_) => "close",
+            CloseTarget::Space(_) => "close space",
+        }
+    }
 }
 
 pub struct App {

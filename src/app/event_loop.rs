@@ -4,11 +4,11 @@ use super::input::Flow;
 use super::rows::Row;
 use super::screen::Screen;
 use super::space::changes_structure;
-use super::state::{App, CloseTarget, Mode, Renaming, TAB_BAR_ROWS};
+use super::state::{App, Mode, TAB_BAR_ROWS};
 use super::{watch, Event};
 use crate::hooks::now_ms;
 use crate::tmux::Message;
-use crate::ui::{dashboard, help, session_view, sidebar, tab_bar::TabBar};
+use crate::ui::{dashboard, help, session_view, sidebar};
 use anyhow::Result;
 use crossterm::event::{self as ct, KeyEventKind};
 use ratatui::buffer::Buffer;
@@ -250,39 +250,7 @@ fn draw(screen: &mut Screen, app: &App) -> Result<()> {
 /// The tab bar, or the question before a close. Returns the cursor while
 /// renaming.
 fn draw_tab_bar(app: &App, rows: &[Row], area: Rect, buf: &mut Buffer) -> Option<Position> {
-    let armed = app.prefix.armed().then_some(app.prefix_name.as_str());
-    let ask = match &app.mode {
-        Mode::ConfirmClose { state, target, .. } => {
-            let what = match target {
-                CloseTarget::Pane(_) => "close",
-                CloseTarget::Space(_) => "close space",
-            };
-            Some(format!("Claude is {}: {what}? y/n", state.label()))
-        }
-        _ => None,
-    };
-    let bar = TabBar {
-        // The question takes the whole bar, so it always fits.
-        tabs: match ask {
-            Some(_) => Vec::new(),
-            None => app.tabs(rows),
-        },
-        current: app.current_space().map_or(0, |i| i.structure.current),
-        first: app.tab_first,
-        colors: app.tab_colors,
-        rename: match &app.mode {
-            Mode::Rename { target, text } => {
-                let what = match target {
-                    Renaming::Tab => "tab",
-                    Renaming::Space => "space",
-                };
-                Some((what, text.as_str()))
-            }
-            _ => None,
-        },
-        status: ask.as_deref().or(app.notice.as_deref()).or(armed),
-    };
-    bar.render(area, buf)
+    app.tab_bar_view(rows).render(area, buf)
 }
 
 /// The current tab's panes and the borders between them. Returns the

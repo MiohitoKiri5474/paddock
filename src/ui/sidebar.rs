@@ -21,6 +21,7 @@
 //! second line is dim and names its space and tab. While the sidebar has the
 //! keyboard, the selected space or agent is drawn reversed.
 
+use super::STATE_DOT;
 use crate::sessions::State;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -28,8 +29,6 @@ use ratatui::style::{Color, Modifier, Style};
 
 const SPACES: &str = "SPACES";
 const AGENTS: &str = "AGENTS";
-/// Marks a state.
-const DOT: &str = "●";
 /// Columns before a name: one space, the dot, one space.
 const INDENT: u16 = 3;
 
@@ -166,13 +165,13 @@ pub fn render(
             Line::Space(i) => {
                 let s = &spaces[i];
                 if let Some(state) = s.state {
-                    put(area.x + 1, DOT, dot(state));
+                    put(area.x + 1, STATE_DOT, dot(state));
                 }
                 put(name_x, &s.name, Style::default());
             }
             Line::Agent(i) => {
                 let a = &agents[i];
-                put(area.x + 1, DOT, dot(a.state));
+                put(area.x + 1, STATE_DOT, dot(a.state));
                 let state = a.state.label();
                 let width = u16::try_from(state.chars().count()).unwrap_or(0);
                 let state_x = end.saturating_sub(width).max(name_x);

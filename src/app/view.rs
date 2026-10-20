@@ -2,11 +2,11 @@
 //! agents, the current space's tabs, and where the current tab's panes go.
 
 use super::rows::{most_urgent, Row};
-use super::state::App;
+use super::state::{App, Mode};
 use crate::sessions::State;
 use crate::tmux::structure::Window;
 use crate::ui::sidebar::{tilde, AgentLine, SpaceLine};
-use crate::ui::tab_bar::{self, Tab};
+use crate::ui::tab_bar::{self, Tab, TabBar};
 use ratatui::layout::Rect;
 
 /// What a tab running Claude is called while the user has not named it.
@@ -102,6 +102,36 @@ impl App {
                 custom: !w.auto_name,
             })
             .collect()
+    }
+
+    /// The tab bar as drawn now: the current space's tabs, or the question
+    /// before a close (it takes the whole bar, so it always fits), the
+    /// rename prompt, and a notice or the armed prefix at the right.
+    pub(super) fn tab_bar_view(&self, rows: &[Row]) -> TabBar<'_> {
+        let ask = match &self.mode {
+            Mode::ConfirmClose { state, target, .. } => Some(format!(
+                "Claude is {}: {}? y/n",
+                state.label(),
+                target.verb()
+            )),
+            _ => None,
+        };
+        let armed = self.prefix.armed().then(|| self.prefix_name.clone());
+        TabBar {
+            tabs: if ask.is_some() {
+                Vec::new()
+            } else {
+                self.tabs(rows)
+            },
+            current: self.current_space().map_or(0, |s| s.structure.current),
+            first: self.tab_first,
+            colors: self.tab_colors,
+            rename: match &self.mode {
+                Mode::Rename { target, text } => Some((target.noun(), text.as_str())),
+                _ => None,
+            },
+            status: ask.or_else(|| self.notice.clone()).or(armed),
+        }
     }
 
     /// The tab bar's parts as drawn now, for clicks.
