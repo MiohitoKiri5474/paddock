@@ -18,6 +18,7 @@ use crate::input::PrefixKeys;
 use crate::sessions::{dismissed, Session, Sessions, State};
 use crate::terminal::Terminal;
 use crate::tmux::Server;
+use crate::ui::tab_bar::TabColors;
 use anyhow::Result;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
@@ -101,6 +102,11 @@ pub struct App {
     pub(super) attention: Attention,
     /// Background of the current sidebar item.
     pub(super) current_item_bg: Color,
+    pub(super) tab_colors: TabColors,
+    /// The first tab the bar shows when the tabs do not all fit.
+    pub(super) tab_first: usize,
+    /// The space and tab the bar was last scrolled for.
+    pub(super) tab_shown: Option<(String, usize)>,
 }
 
 /// The part of a screen of `(cols, rows)` that shows the current tab's
@@ -166,6 +172,9 @@ impl App {
             press: None,
             attention: Attention::from_env(),
             current_item_bg: config.current_item,
+            tab_colors: config.tabs,
+            tab_first: 0,
+            tab_shown: None,
         };
         match dismissed::load(&app.state_dir) {
             Ok(list) => {

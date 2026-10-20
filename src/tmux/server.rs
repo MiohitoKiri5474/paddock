@@ -232,6 +232,11 @@ impl Server {
         self.run(&args).map(drop)
     }
 
+    /// Swap window `a` with window `b` of the same session; `a` stays current.
+    pub fn swap_windows(&self, a: &str, b: &str) -> Result<()> {
+        self.run(&["swap-window", "-d", "-s", a, "-t", b]).map(drop)
+    }
+
     /// Focus the pane next to `pane` in direction `flag` (`-L`, `-R`, `-U`, `-D`).
     pub fn select_towards(&self, pane: &str, flag: &str) -> Result<()> {
         self.run(&["select-pane", flag, "-t", pane]).map(drop)

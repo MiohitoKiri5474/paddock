@@ -176,19 +176,19 @@ fn c_a_a_cycles_through_sessions_that_need_you() {
     hook("space-1:1", "s2", "/w/running", "UserPromptSubmit");
     hook("space-2:0", "s3", "/w/waiting", "PermissionRequest");
     // The last hook: all three applied.
-    paddock.wait_for_tabs(&["1:claude ●"]);
+    paddock.wait_for_tabs(&["1:● claude"]);
 
     paddock.command(b"a");
-    paddock.wait_for_tabs(&["1:claude ●", "2:claude"]);
-    paddock.wait_for_current_tab("1:claude ●");
+    paddock.wait_for_tabs(&["1:● claude", "2:claude"]);
+    paddock.wait_for_current_tab("1:● claude");
     paddock.command(b"a");
-    paddock.wait_for_tabs(&["1:claude ●"]);
+    paddock.wait_for_tabs(&["1:● claude"]);
     paddock.command(b"w");
     paddock.send(b"k\r");
     paddock.command(b"2");
     paddock.wait_for_current_tab("2:claude");
     paddock.command(b"a");
-    paddock.wait_for_tabs(&["1:claude ●"]);
+    paddock.wait_for_tabs(&["1:● claude"]);
 
     // Highlights, in the terminal's own colours: the waiting agent's state
     // and the tab holding the idle session.
@@ -202,9 +202,9 @@ fn c_a_a_cycles_through_sessions_that_need_you() {
     assert_eq!(paddock.colors(7, 15), (black, yellow));
     paddock.command(b"w");
     paddock.send(b"k\r");
-    paddock.wait_for_tabs(&["1:claude ●", "2:claude"]);
+    paddock.wait_for_tabs(&["1:● claude", "2:claude"]);
     let left = harness::SIDEBAR;
-    assert_eq!(paddock.colors(0, left + 1).0, green);
+    assert_eq!(paddock.colors(0, left + 2).0, green, "the idle marker");
 }
 
 #[test]
@@ -214,7 +214,7 @@ fn c_a_a_focuses_the_split_running_the_session() {
     paddock.command(b"|");
     paddock.wait_for("two prompts", |s| s.matches(PROMPT).count() == 2);
     sandbox.hook("space-1:0.1", "Stop", &payload("Stop"));
-    paddock.wait_for_tabs(&["1:claude ●"]); // the focused pane runs Claude
+    paddock.wait_for_tabs(&["1:● claude"]); // the focused pane runs Claude
     paddock.command(b"h"); // focus the left pane
 
     paddock.command(b"a");

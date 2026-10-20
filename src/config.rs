@@ -5,9 +5,13 @@
 //! prefix = "C-b"
 //!
 //! [colors]
-//! current_item = 236        # or "#303030": the current sidebar item's background
+//! current_item = 236        # or "#303030": the current space's background
+//! tab_bar = 235              # the tab bar's row
+//! tab = 237                  # a tab that is not current
+//! tab_current = 4            # the current tab (default: the terminal's blue)
 //! ```
 
+use crate::ui::tab_bar::TabColors;
 use anyhow::{bail, Context, Result};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::Color;
@@ -24,6 +28,7 @@ pub struct Config {
     pub prefix: KeyEvent,
     /// Background of the current sidebar item.
     pub current_item: Color,
+    pub tabs: TabColors,
 }
 
 #[derive(Deserialize, Default)]
@@ -39,6 +44,18 @@ struct RawConfig {
 #[serde(deny_unknown_fields)]
 struct RawColors {
     current_item: Option<RawColor>,
+    tab_bar: Option<RawColor>,
+    tab: Option<RawColor>,
+    tab_current: Option<RawColor>,
+}
+
+/// `raw` as a colour, else `default`.
+fn colour(raw: Option<RawColor>, default: Color) -> Result<Color> {
+    match raw {
+        None => Ok(default),
+        Some(RawColor::Index(i)) => Ok(Color::Indexed(i)),
+        Some(RawColor::Text(text)) => parse_colour(&text),
+    }
 }
 
 /// A colour as written: a 256-colour index (bare or quoted) or `"#rrggbb"`.
@@ -70,14 +87,16 @@ impl Config {
     pub fn parse(text: &str) -> Result<Self> {
         let raw: RawConfig = toml::from_str(text)?;
         let prefix = raw.keys.prefix.as_deref().unwrap_or(DEFAULT_PREFIX);
-        let current_item = match raw.colors.current_item {
-            None => DEFAULT_CURRENT_ITEM,
-            Some(RawColor::Index(i)) => Color::Indexed(i),
-            Some(RawColor::Text(text)) => parse_colour(&text)?,
-        };
+        let c = raw.colors;
+        let tabs = TabColors::default();
         Ok(Self {
             prefix: parse_key(prefix)?,
-            current_item,
+            current_item: colour(c.current_item, DEFAULT_CURRENT_ITEM)?,
+            tabs: TabColors {
+                bar: colour(c.tab_bar, tabs.bar)?,
+                tab: colour(c.tab, tabs.tab)?,
+                current: colour(c.tab_current, tabs.current)?,
+            },
         })
     }
 }
@@ -87,6 +106,7 @@ impl Default for Config {
         Self {
             prefix: KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
             current_item: DEFAULT_CURRENT_ITEM,
+            tabs: TabColors::default(),
         }
     }
 }
@@ -190,6 +210,27 @@ mod tests {
             assert!(parse(bad).is_err(), "{bad}");
         }
         assert!(Config::parse("[colors]\ncurrent = 1\n").is_err());
+    }
+
+    #[test]
+    fn tab_bar_colours_default_to_herdrs_and_can_be_set() {
+        let tabs = Config::default().tabs;
+        assert_eq!(
+            (tabs.bar, tabs.tab, tabs.current),
+            (Color::Indexed(235), Color::Indexed(237), Color::Blue)
+        );
+        let c = Config::parse("[colors]\ntab_bar = 233\ntab = \"#202020\"\ntab_current = 33\n")
+            .unwrap();
+        assert_eq!(
+            (c.tabs.bar, c.tabs.tab, c.tabs.current),
+            (
+                Color::Indexed(233),
+                Color::Rgb(32, 32, 32),
+                Color::Indexed(33)
+            )
+        );
+        assert!(Config::parse("[colors]\ntabs = 1\n").is_err());
+        assert!(Config::parse("[colors]\ntab = \"blue\"\n").is_err());
     }
 
     #[test]

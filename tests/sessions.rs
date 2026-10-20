@@ -219,7 +219,7 @@ fn agents_of_every_space_are_listed_with_their_space_and_tab() {
     // The space's tabs show theirs; tabs running Claude are called so.
     paddock.command(b"w");
     paddock.send(b"k\r");
-    paddock.wait_for_tabs(&["1:home", "2:claude", "3:claude ●", "4:claude ●"]);
+    paddock.wait_for_tabs(&["1:home", "2:claude", "3:● claude", "4:● claude"]);
 }
 
 #[test]
@@ -304,7 +304,7 @@ fn b_hides_and_shows_the_sidebar() {
     paddock.command(b"b");
     paddock.wait_for("sidebar hidden", |_| paddock.sidebar().is_empty());
     paddock.wait_for("tab bar at the left edge", |_| {
-        paddock.full_screen().starts_with(" 1:home")
+        paddock.full_screen().starts_with("  home")
     });
     wait_for_width(&sandbox, harness::COLS);
 
@@ -345,8 +345,8 @@ fn enter_on_an_agent_jumps_to_its_space_tab_and_pane() {
     paddock.command(b"s");
     paddock.send(b"\r");
 
-    paddock.wait_for_tabs(&["1:home", "2:claude ●"]);
-    paddock.wait_for_current_tab("2:claude ●");
+    paddock.wait_for_tabs(&["1:home", "2:● claude"]);
+    paddock.wait_for_current_tab("2:● claude");
     // Looked at now: the done turn is idle.
     paddock.wait_for("idle", |_| paddock.full_screen().contains("idle"));
     paddock.type_line("echo typed-after-the-jump");
@@ -361,7 +361,7 @@ fn clicking_an_agent_row_jumps_to_its_pane() {
     // Rows: 0 SPACES, 1-4 two spaces, 5 blank, 6 AGENTS, 7-8 the agent.
     paddock.click_screen(5, 8);
 
-    paddock.wait_for_current_tab("2:claude ●");
+    paddock.wait_for_current_tab("2:● claude");
     paddock.type_line("echo typed-after-the-click");
     wait_in_pane(&sandbox, "space-1:1", "typed-after-the-click");
 }

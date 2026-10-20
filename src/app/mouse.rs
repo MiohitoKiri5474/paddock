@@ -5,7 +5,8 @@
 
 use super::state::{App, Mode, TAB_BAR_ROWS};
 use crate::input::{route_mouse, MouseAction};
-use crate::ui::{sidebar, tab_bar};
+use crate::ui::sidebar;
+use crate::ui::tab_bar::{self, Part};
 use anyhow::{Context, Result};
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Position, Rect};
@@ -46,11 +47,14 @@ impl App {
         let left = m.kind == MouseEventKind::Down(MouseButton::Left);
         let side = self.sidebar_width();
         if m.row < TAB_BAR_ROWS && m.column >= side {
-            let tabs = self.tabs(&self.rows());
-            let Some(tab) = tab_bar::tab_at(&tabs, m.column - side).filter(|_| left) else {
-                return Ok(false);
-            };
-            self.report(|app| app.select_tab(tab));
+            let part = tab_bar::part_at(&self.tab_layout(), m.column - side);
+            match part.filter(|_| left) {
+                Some(Part::Tab(i)) => self.report(|app| app.select_tab(i)),
+                Some(Part::Left(true)) => self.tab_first = self.tab_first.saturating_sub(1),
+                Some(Part::Right(true)) => self.tab_first += 1,
+                Some(Part::Plus) => self.report(|app| app.new_tab()),
+                _ => return Ok(false),
+            }
             return Ok(self.settle());
         }
         if m.column < side {
@@ -154,8 +158,23 @@ impl App {
         Ok(true)
     }
 
-    /// The wheel, and motion without a button: to the pane under the pointer.
+    /// The wheel, and motion without a button: over the tab bar, the wheel
+    /// goes to the previous or next tab; else to the pane under the pointer.
     fn hover(&mut self, m: MouseEvent) -> Result<bool> {
+        if m.row < TAB_BAR_ROWS && m.column >= self.sidebar_width() {
+            let step: isize = match m.kind {
+                MouseEventKind::ScrollUp => -1,
+                MouseEventKind::ScrollDown => 1,
+                _ => return Ok(false),
+            };
+            let Some(item) = self.current_item() else {
+                return Ok(false);
+            };
+            if let Some(next) = item.structure.current.checked_add_signed(step) {
+                self.report(|app| app.select_tab(next));
+            }
+            return Ok(true);
+        }
         let Some((pane, rect)) = self.under(m.column, m.row) else {
             return Ok(false);
         };

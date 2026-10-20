@@ -6,7 +6,7 @@ use super::state::App;
 use crate::sessions::State;
 use crate::tmux::structure::Window;
 use crate::ui::sidebar::{tilde, AgentLine, SpaceLine};
-use crate::ui::tab_bar::Tab;
+use crate::ui::tab_bar::{self, Tab};
 use ratatui::layout::Rect;
 
 /// What a tab running Claude is called while the user has not named it.
@@ -102,8 +102,32 @@ impl App {
             .map(|w| Tab {
                 name: self.tab_name(w),
                 state: most_urgent(rows, |r| r.window == w.id).unwrap_or(State::Unknown),
+                custom: !w.auto_name,
             })
             .collect()
+    }
+
+    /// The tab bar's parts as drawn now, for clicks.
+    pub(super) fn tab_layout(&self) -> tab_bar::Layout {
+        tab_bar::layout(&self.tabs(&self.rows()), self.area().width, self.tab_first)
+    }
+
+    /// Scroll the tab bar so the current tab is in sight, when the current
+    /// space or tab changed (scrolling with `<` and `>` stays put otherwise).
+    pub(super) fn settle_tabs(&mut self) {
+        let Some(item) = self.current_item() else {
+            return;
+        };
+        let now = (item.id.clone(), item.structure.current);
+        if self.tab_shown.as_ref() == Some(&now) {
+            return;
+        }
+        if self.tab_shown.as_ref().is_none_or(|(id, _)| *id != now.0) {
+            self.tab_first = 0;
+        }
+        let tabs = self.tabs(&self.rows());
+        self.tab_first = tab_bar::scroll(&tabs, self.area().width, self.tab_first, now.1);
+        self.tab_shown = Some(now);
     }
 
     /// The current tab's panes and where they are drawn on the screen,

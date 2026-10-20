@@ -108,6 +108,26 @@ impl App {
         self.select_tab(next)
     }
 
+    /// Move the current tab `step` places (`-1` left, `1` right) within its
+    /// space, swapping it with its neighbour in tmux; at either end nothing
+    /// moves.
+    pub fn move_tab(&mut self, step: isize) -> Result<()> {
+        let Some(item) = self.current_item() else {
+            return Ok(());
+        };
+        let at = item.structure.current;
+        let Some(to) = at
+            .checked_add_signed(step)
+            .filter(|&i| i < item.windows().len())
+        else {
+            return Ok(());
+        };
+        let (from, to_id) = (item.windows()[at].id.clone(), item.windows()[to].id.clone());
+        let id = item.id.clone();
+        self.server.swap_windows(&from, &to_id)?;
+        self.refresh(&id)
+    }
+
     /// Make item `index` current; its tabs show in the tab bar.
     pub fn select_item(&mut self, index: usize) {
         if index < self.items.len() {

@@ -107,6 +107,7 @@ impl App {
             Command::Detach => return Ok(Flow::Quit),
             Command::FocusSidebar => self.focus_sidebar(false),
             Command::FocusSpaces => self.focus_sidebar(true),
+            Command::MoveTab(step) => self.report(|app| app.move_tab(step)),
             Command::ToggleSidebar => {
                 self.sidebar_hidden = !self.sidebar_hidden;
                 if self.sidebar_hidden && matches!(self.mode, Mode::Sidebar(_)) {

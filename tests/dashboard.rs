@@ -139,7 +139,7 @@ fn j_and_k_move_and_enter_jumps_to_the_rows_terminal() {
     // Waiting sorts before idle.
     claude(&sandbox, "space-1:0", "PermissionRequest", "s1", "/w/alpha");
     claude(&sandbox, "space-1:1", "Stop", "s2", "/w/bravo");
-    paddock.wait_for_tabs(&["1:claude ●", "2:claude ●"]);
+    paddock.wait_for_tabs(&["1:● claude", "2:● claude"]);
 
     open(&mut paddock);
     paddock.wait_for_text("preview: alpha");
@@ -149,7 +149,7 @@ fn j_and_k_move_and_enter_jumps_to_the_rows_terminal() {
     paddock.wait_for_text("preview: alpha");
 
     paddock.send(b"\r");
-    paddock.wait_for_current_tab("1:claude ●");
+    paddock.wait_for_current_tab("1:● claude");
     paddock.wait_for("the dashboard closed", |s| !s.contains(OPEN));
 }
 
@@ -159,7 +159,7 @@ fn d_dismisses_a_row_and_it_stays_gone_after_reopening() {
     let mut paddock = two_tabs(&sandbox);
     claude(&sandbox, "space-1:0", "PermissionRequest", "s1", "/w/alpha");
     claude(&sandbox, "space-1:1", "Stop", "s2", "/w/bravo");
-    paddock.wait_for_tabs(&["1:claude ●", "2:claude ●"]);
+    paddock.wait_for_tabs(&["1:● claude", "2:● claude"]);
 
     open(&mut paddock);
     paddock.wait_for_text("alpha");

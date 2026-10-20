@@ -580,3 +580,26 @@ fn a_space_shows_its_directory_and_git_branch() {
     // Read on the git thread's next round, every few seconds.
     wait_for_spaces_at(&paddock, &[("space-1", "~/project/api  dev")]);
 }
+
+#[test]
+fn c_a_angle_brackets_move_the_tab_left_and_right() {
+    let sandbox = Sandbox::new();
+    let mut paddock = ready(&sandbox);
+    new_tab(&mut paddock, &["1:home", "2:home"]);
+    new_tab(&mut paddock, &["1:home", "2:home", "3:home"]);
+    for (i, name) in ["a", "b", "c"].iter().enumerate() {
+        sandbox.tmux(&["rename-window", "-t", &format!("space-1:{i}"), name]);
+    }
+    paddock.wait_for_tabs(&["1:a", "2:b", "3:c"]);
+
+    paddock.command(b"<");
+    paddock.wait_for_tabs(&["1:a", "2:c", "3:b"]);
+    paddock.wait_for_current_tab("2:c");
+    assert_eq!(windows(&sandbox, "space-1"), ["a", "c", "b"]);
+    paddock.command(b"<");
+    paddock.command(b"<"); // already first: no wrap
+    paddock.command(b">");
+    paddock.wait_for_tabs(&["1:a", "2:c", "3:b"]);
+    paddock.wait_for_current_tab("2:c");
+    assert_eq!(windows(&sandbox, "space-1"), ["a", "c", "b"]);
+}

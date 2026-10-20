@@ -32,6 +32,8 @@ pub enum Command {
     FocusSidebar,
     /// Focus the sidebar on the current space.
     FocusSpaces,
+    /// Move the current tab one place left (`-1`) or right (`1`).
+    MoveTab(isize),
     ToggleSidebar,
     /// Jump to the next session that is waiting or idle.
     NextAttention,
@@ -65,6 +67,7 @@ pub const BINDINGS: &[(&str, &str)] = &[
     ("1-9", "go to tab"),
     (",", "rename tab"),
     ("$", "rename space"),
+    ("< / >", "move the tab left / right"),
     ("|", "split side by side"),
     ("-", "split top and bottom"),
     ("hjkl", "move focus (also arrows)"),
@@ -114,6 +117,8 @@ fn command(key: &KeyEvent) -> Option<Command> {
         'd' => Command::Detach,
         's' => Command::FocusSidebar,
         'w' => Command::FocusSpaces,
+        '<' => Command::MoveTab(-1),
+        '>' => Command::MoveTab(1),
         'b' => Command::ToggleSidebar,
         'a' => Command::NextAttention,
         'o' => Command::Dashboard,
@@ -252,6 +257,14 @@ mod tests {
         assert_eq!(
             after_prefix('s', none),
             KeyAction::Command(Command::FocusSidebar)
+        );
+        assert_eq!(
+            after_prefix('<', KeyModifiers::SHIFT),
+            KeyAction::Command(Command::MoveTab(-1))
+        );
+        assert_eq!(
+            after_prefix('>', KeyModifiers::SHIFT),
+            KeyAction::Command(Command::MoveTab(1))
         );
         assert_eq!(
             after_prefix('w', none),

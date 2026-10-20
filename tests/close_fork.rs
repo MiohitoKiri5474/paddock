@@ -72,7 +72,7 @@ fn x_closes_an_idle_session_without_asking() {
     let sandbox = Sandbox::new();
     let mut paddock = two_tabs(&sandbox);
     claude(&sandbox, "space-1:1", "Stop", "s2");
-    paddock.wait_for_tabs(&["1:home", "2:claude ●"]);
+    paddock.wait_for_tabs(&["1:home", "2:● claude"]);
 
     paddock.command(b"x");
 
@@ -110,12 +110,12 @@ fn the_question_shows_even_with_many_tabs() {
         paddock.wait_for_current_tab(&format!("{n}:home"));
     }
     claude(&sandbox, "space-1:4", "UserPromptSubmit", "s5");
-    paddock.wait_for_text("5:claude");
+    paddock.wait_for_current_tab("5:claude");
 
     paddock.command(b"x");
     paddock.wait_for_text(ASK);
     paddock.send(b"\x1b");
-    paddock.wait_for_text("5:claude");
+    paddock.wait_for_current_tab("5:claude");
     assert_eq!(tabs(&sandbox), 5);
 }
 
@@ -182,7 +182,7 @@ fn f_forks_the_session_into_a_new_tab_in_its_directory() {
         "Stop",
         &payload("Stop", "0000aaaa-0000-4000-8000-00000000000a", &dir),
     );
-    paddock.wait_for_tabs(&["1:claude ●"]);
+    paddock.wait_for_tabs(&["1:● claude"]);
 
     paddock.command(b"f");
 
@@ -213,7 +213,7 @@ fn f_on_a_space_forks_its_agent_into_a_new_tab_of_that_space() {
     paddock.send(b"k");
     paddock.send(b"f");
 
-    paddock.wait_for_tabs(&["1:claude ●", "2:repo"]);
+    paddock.wait_for_tabs(&["1:● claude", "2:repo"]);
     paddock.wait_for_current_tab("2:repo");
     assert_eq!(
         sandbox.claude_calls(),

@@ -41,6 +41,7 @@ Prefix `C-a`, then:
 | `1`–`9` | go to tab |
 | `,` | rename tab |
 | `$` | rename space |
+| `<` / `>` | move the current tab left / right |
 | `\|` / `-` | split side by side / top and bottom |
 | `h` `j` `k` `l` / arrows | move focus |
 | `=` | even out the focused split and its neighbours |
@@ -59,7 +60,7 @@ In the sidebar: `j`/`k` move over spaces and agents; `Enter` on a space shows it
 
 In the dashboard: `j`/`k` move, `Enter` jumps, `D` dismisses, `x` closes, `f` forks, `I` types into the previewed terminal (`Esc` leaves and is never passed on), `Esc` closes it. Task rows show line changes, ahead/behind, the diff and changed files against the base branch (`origin/HEAD`, else `main`/`master`), the last commit's age, and `merged` once the branch is in its base.
 
-Mouse: click to focus a split, switch tabs, or open a space or agent; wheel scrolls history; drag selects and copies (hold Shift over programs that use the mouse).
+Mouse: click to focus a split, switch tabs (`+` after the tabs opens one, `<`/`>` scroll a full bar), or open a space or agent; the wheel over the tab bar switches tabs; wheel scrolls history; drag selects and copies (hold Shift over programs that use the mouse).
 
 ## Configure
 
@@ -71,6 +72,9 @@ prefix = "C-a"
 
 [colors]
 current_item = 236        # the current space's background: 256-colour index or "#rrggbb"
+tab_bar = 235             # the tab bar's row
+tab = 237                 # a tab that is not current
+tab_current = 4           # the current tab (default: the terminal's blue)
 ```
 
 ## Files

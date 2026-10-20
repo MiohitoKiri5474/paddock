@@ -23,6 +23,10 @@ pub const TIMEOUT: Duration = Duration::from_secs(10);
 pub const PROMPT: &str = "test$";
 /// Columns the sidebar takes while shown, its border included.
 pub const SIDEBAR: u16 = 24;
+/// Backgrounds of a tab and of the current tab in the tab bar (paddock's
+/// defaults).
+const TAB: vt100::Color = vt100::Color::Idx(237);
+const CURRENT_TAB: vt100::Color = vt100::Color::Idx(4);
 /// The sidebar's title, in its first row.
 const SIDEBAR_TITLE: &str = " SPACES";
 const SOCKET: &str = "paddock-test";
@@ -473,25 +477,66 @@ impl Paddock {
         self.rows().into_iter().next().unwrap_or_default()
     }
 
-    /// Text of the highlighted (current) tab in the tab bar, trimmed.
-    pub fn current_tab(&self) -> String {
+    /// The tabs in the tab bar, numbered as the keys `1`-`9` reach them
+    /// (`1:home`), and which one is current. Tabs are the filled blocks of
+    /// the bar: cells with a background of their own (the default tab and
+    /// current tab colours).
+    pub fn tabs(&self) -> (Vec<String>, Option<usize>) {
+        let left = self.left();
         let parser = self.screen.lock().expect("screen lock");
         let screen = parser.screen();
-        (0..COLS)
-            .filter_map(|x| screen.cell(0, x))
-            .filter(|c| c.inverse())
-            .map(|c| c.contents().to_string())
-            .collect::<String>()
-            .trim()
-            .to_string()
+        let width = screen.size().1.get();
+        let mut tabs: Vec<(String, bool)> = Vec::new();
+        let mut open = false;
+        for x in left..width {
+            let Some(cell) = screen.cell(0, x) else { break };
+            let bg = cell.bgcolor();
+            let current = bg == CURRENT_TAB;
+            if bg != TAB && !current {
+                open = false;
+                continue;
+            }
+            if !open {
+                tabs.push((String::new(), current));
+                open = true;
+            }
+            if let Some(tab) = tabs.last_mut() {
+                tab.0.push_str(if cell.contents().is_empty() {
+                    " "
+                } else {
+                    cell.contents()
+                });
+            }
+        }
+        let current = tabs.iter().position(|(_, c)| *c);
+        let labels = tabs
+            .iter()
+            .enumerate()
+            .map(|(i, (text, _))| format!("{}:{}", i + 1, text.trim()))
+            .collect();
+        (labels, current)
     }
 
-    /// Wait until the tab bar shows exactly these labels (e.g. `1:terminal-1`).
+    /// The current tab's label (e.g. `2:home`), or empty.
+    pub fn current_tab(&self) -> String {
+        let (labels, current) = self.tabs();
+        current.map(|i| labels[i].clone()).unwrap_or_default()
+    }
+
+    /// Wait until the tab bar shows exactly these tabs (e.g. `1:home`).
     pub fn wait_for_tabs(&self, labels: &[&str]) {
-        let expected = labels.iter().map(|l| format!(" {l} │")).collect::<String>();
-        self.wait_for(&format!("tabs {labels:?}"), |s| {
-            s.lines().next().unwrap_or("").trim_end() == expected
-        });
+        let start = Instant::now();
+        while start.elapsed() < TIMEOUT {
+            if self.tabs().0 == labels {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        panic!(
+            "tabs are {:?}, not {labels:?}; screen:\n{}",
+            self.tabs().0,
+            self.full_screen()
+        );
     }
 
     pub fn wait_for_current_tab(&self, label: &str) {

@@ -154,3 +154,30 @@ fn programs_that_ask_for_the_mouse_get_it_in_their_own_coordinates() {
     p.drag((col, row), (col + 5, row), true);
     sandbox.wait_for_clipboard("pick-1");
 }
+
+#[test]
+fn the_plus_after_the_tabs_opens_a_tab() {
+    let sandbox = Sandbox::new();
+    let mut p = ready(&sandbox);
+    p.wait_for_tabs(&["1:home"]);
+
+    // `home` is columns 0-7, a gap, then ` + ` at 9-11.
+    p.click(10, 0);
+
+    p.wait_for_tabs(&["1:home", "2:home"]);
+    p.wait_for_current_tab("2:home");
+}
+
+#[test]
+fn the_wheel_over_the_tab_bar_switches_tabs() {
+    let sandbox = Sandbox::new();
+    let mut p = ready(&sandbox);
+    p.command(b"c");
+    p.wait_for_current_tab("2:home");
+
+    p.wheel(true, 3, 0);
+    p.wait_for_current_tab("1:home");
+    p.wheel(true, 3, 0); // no tab before the first
+    p.wheel(false, 3, 0);
+    p.wait_for_current_tab("2:home");
+}

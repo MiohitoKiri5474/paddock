@@ -90,6 +90,13 @@ pub fn run(
         // Hook events refresh git; anything else but terminal output and git
         // itself may change which task rows are on screen.
         let hooks = matches!(event, Event::Hooks(_));
+        let output = matches!(
+            event,
+            Event::Tmux {
+                msg: Message::Output { .. },
+                ..
+            }
+        );
         let rows_may_move = !matches!(event, Event::Tmux { .. } | Event::Git(_) | Event::Spaces(_));
         // A terminal can end with its exit still queued: a write to it fails
         // then. Say so, and go on rather than quit without saving.
@@ -100,6 +107,9 @@ pub fn run(
         dirty |= changed;
         // Any event may show a tab or bring the window back.
         app.see_current();
+        if !output {
+            app.settle_tabs();
+        }
         if rows_may_move {
             app.anchor_dashboard();
             git.update(&app, hooks);
@@ -259,6 +269,8 @@ fn draw_tab_bar(app: &App, rows: &[Row], area: Rect, buf: &mut Buffer) -> Option
             None => app.tabs(rows),
         },
         current: app.current_item().map_or(0, |i| i.structure.current),
+        first: app.tab_first,
+        colors: app.tab_colors,
         rename: match &app.mode {
             Mode::Rename { target, text } => {
                 let what = match target {
