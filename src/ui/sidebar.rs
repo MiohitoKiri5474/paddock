@@ -41,8 +41,9 @@ pub struct SpaceLine {
     pub state: Option<State>,
     /// Its tabs are the ones shown.
     pub current: bool,
-    /// Its directory as shown (home as `~`), once read.
-    pub path: String,
+    /// Its directory as shown (home as `~`); `None` until read, and the
+    /// second line stays empty until then.
+    pub path: Option<String>,
     /// The branch (or detached commit) checked out there, if a repository.
     pub branch: Option<String>,
 }
@@ -183,7 +184,9 @@ pub fn render(
             Line::SpacePlace(i) => {
                 let room = usize::from(end.saturating_sub(name_x));
                 let s = &spaces[i];
-                put(name_x, &place(&s.path, s.branch.as_deref(), room), dim);
+                if let Some(path) = &s.path {
+                    put(name_x, &place(path, s.branch.as_deref(), room), dim);
+                }
             }
             Line::AgentPlace(i) => {
                 put(name_x, &agents[i].place, dim);
@@ -261,7 +264,7 @@ mod tests {
             name: name.into(),
             state,
             current,
-            path: format!("~/p/{name}"),
+            path: Some(format!("~/p/{name}")),
             branch: None,
         }
     }
@@ -293,7 +296,7 @@ mod tests {
     fn spaces_then_agents_each_under_a_header() {
         let spaces = [
             SpaceLine {
-                path: "~/project/api".into(),
+                path: Some("~/project/api".into()),
                 branch: Some("main".into()),
                 ..space("api-server", Some(State::Waiting), true)
             },
@@ -365,7 +368,7 @@ mod tests {
         let evil = "a\x1b]52;c;eA==\x07b";
         let buf = draw(
             &[SpaceLine {
-                path: evil.into(),
+                path: Some(evil.into()),
                 branch: Some(evil.into()),
                 ..space(evil, None, false)
             }],
@@ -413,6 +416,19 @@ mod tests {
                 AgentPlace(1)
             ]
         );
+    }
+
+    #[test]
+    fn a_space_whose_directory_is_not_read_yet_shows_no_second_line() {
+        let spaces = [SpaceLine {
+            path: None,
+            branch: Some("main".into()),
+            ..space("new", None, false)
+        }];
+        let buf = draw(&spaces, &[], None);
+        assert_eq!(text(&buf, 1), "   new                 │");
+        assert_eq!(text(&buf, 2), "                       │", "kept, empty");
+        assert!(!buf[(3, 2)].modifier.contains(Modifier::DIM));
     }
 
     #[test]

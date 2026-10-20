@@ -134,11 +134,7 @@ fn hook_events_drive_the_agent_row() {
         let event = name.split('-').next().unwrap();
         let out = sandbox.hook("space-1", event, &payload(name));
         assert!(out.stdout.is_empty() && out.stderr.is_empty(), "{out:?}");
-        let tab = if state == "stopped" {
-            "home"
-        } else {
-            "claude"
-        };
+        let tab = if state == "stopped" { "home" } else { "claude" };
         wait_for_lines(&paddock, &one_agent("repo", state, tab));
     }
 }

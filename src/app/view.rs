@@ -39,7 +39,7 @@ impl App {
                     name: space.name().to_string(),
                     state: most_urgent(rows, |r| r.space == space.id),
                     current: i == self.current,
-                    path: place.map_or_else(String::new, |p| show(&p.path)),
+                    path: place.map(|p| show(&p.path)),
                     branch: place.and_then(|p| p.branch.clone()),
                 }
             })
