@@ -317,13 +317,14 @@ impl<T: Clone + PartialEq> Node<T> {
         let mut offset = 0;
         for (i, (child, size)) in children.iter().zip(sizes).enumerate() {
             if i > 0 {
-                let line = along(area, split, offset, BORDER);
+                // A too small area has no room for every border: clip them.
+                let line = along(area, split, offset, BORDER).intersection(area);
                 borders.push(Border { area: line, split });
                 offset += BORDER;
             }
             child
                 .node
-                .place(along(area, split, offset, size), panes, borders);
+                .place(along(area, split, offset, size).intersection(area), panes, borders);
             offset += size;
         }
     }
@@ -538,6 +539,21 @@ mod tests {
         assert_eq!(l.focus, 2, "the top one is most in line");
         assert!(l.move_focus(Direction::Down, AREA));
         assert_eq!(l.focus, 3);
+    }
+
+    #[test]
+    fn nothing_is_placed_outside_a_too_small_area() {
+        let mut l = Layout::new(1);
+        l.split(Split::Columns, 2);
+        l.split(Split::Columns, 3);
+        l.split(Split::Rows, 4);
+        for area in [Rect::new(20, 1, 0, 5), Rect::new(0, 1, 1, 5), Rect::new(0, 1, 9, 0)] {
+            let (panes, borders) = l.rects(area);
+            let rects = panes.iter().map(|(_, r)| *r).chain(borders.iter().map(|b| b.area));
+            for r in rects {
+                assert!(r.is_empty() || area.intersection(r) == r, "{r:?} in {area:?}");
+            }
+        }
     }
 
     #[test]

@@ -117,8 +117,10 @@ fn changes(dir: &str) -> Option<(u32, u32)> {
     )?;
     for file in untracked.split('\0').filter(|f| !f.is_empty()) {
         let path = Path::new(top.trim()).join(file);
-        // Status is polled: never read a big untracked file (data, logs).
-        if !std::fs::metadata(&path).is_ok_and(|m| m.len() <= MAX_UNTRACKED) {
+        // Status is polled: never read a big untracked file (data, logs), nor
+        // follow a link (to a FIFO it would block, to /dev/zero never end).
+        if !std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_file() && m.len() <= MAX_UNTRACKED)
+        {
             continue;
         }
         if let Ok(bytes) = std::fs::read(&path) {
@@ -268,5 +270,24 @@ mod tests {
         );
         // A branch that is not checked out here has no line changes.
         assert_eq!(status(s(&dir), "main"), Status::default());
+    }
+
+    #[test]
+    fn untracked_links_to_special_files_are_not_read() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = repo(tmp.path());
+        run(&dir, &["switch", "-q", "-c", "feat/x"]);
+        let fifo = tmp.path().join("fifo");
+        let made = Command::new("mkfifo").arg(&fifo).status().unwrap();
+        assert!(made.success());
+        std::os::unix::fs::symlink(&fifo, dir.join("pipe")).unwrap();
+        std::os::unix::fs::symlink("/dev/zero", dir.join("zero")).unwrap();
+        let dir = s(&dir).to_string();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || tx.send(status(&dir, "feat/x")));
+        let got = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("reading git status hung on a special file");
+        assert_eq!(got.changes, Some((0, 0)));
     }
 }

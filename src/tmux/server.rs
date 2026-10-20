@@ -123,7 +123,8 @@ impl Server {
 
     /// Start a session running the user's shell, starting the server if needed.
     pub fn new_session(&self, name: &str, cwd: &Path, (cols, rows): (u16, u16)) -> Result<Session> {
-        let cwd = cwd.to_string_lossy();
+        // tmux expands formats in `-c`: `##` is a literal `#`.
+        let cwd = cwd.to_string_lossy().replace('#', "##");
         let (x, y) = (cols.to_string(), rows.to_string());
         let args = [
             "new-session",
@@ -236,6 +237,24 @@ mod tests {
         let ids: Vec<&str> = got.iter().map(|s| s.id.as_str()).collect();
         assert_eq!(ids, ["$2", "$3", "$10"]);
         assert_eq!(got[1].name, "my tab name");
+    }
+
+    #[test]
+    fn a_start_directory_is_taken_literally() {
+        let tmp = tempfile::tempdir().unwrap();
+        let server = Server::new(Paths {
+            socket: format!("paddock-unit-{}", std::process::id()),
+            state_dir: tmp.path().join("state"),
+            config_dir: tmp.path().join("config"),
+        });
+        server.write_config().unwrap();
+        // tmux expands formats (`#{…}`, `#(…)`) in a start directory.
+        let dir = tmp.path().canonicalize().unwrap().join("x#{session_id}y");
+        std::fs::create_dir(&dir).unwrap();
+        let started = server.new_session("t", &dir, (80, 24));
+        let got = started.and_then(|s| server.display(&s.id, "#{pane_current_path}"));
+        let _ = server.run(&["kill-server"]);
+        assert_eq!(got.unwrap(), dir.to_string_lossy());
     }
 
     #[test]
