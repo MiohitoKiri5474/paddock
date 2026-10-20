@@ -40,6 +40,27 @@ impl GitFeed {
     }
 }
 
+/// What waiting for the next event gave.
+enum Wait {
+    Event(Event),
+    /// Nothing yet, and the next frame is due.
+    FrameDue,
+    /// No more events will come.
+    Closed,
+}
+
+/// Idle: block until something happens. Dirty: wake up for the next frame.
+fn next_event(rx: &Receiver<Event>, dirty: bool, last_draw: Instant) -> Wait {
+    if !dirty {
+        return rx.recv().map_or(Wait::Closed, Wait::Event);
+    }
+    match rx.recv_timeout(FRAME.saturating_sub(last_draw.elapsed())) {
+        Ok(e) => Wait::Event(e),
+        Err(RecvTimeoutError::Timeout) => Wait::FrameDue,
+        Err(RecvTimeoutError::Disconnected) => Wait::Closed,
+    }
+}
+
 pub fn run(
     screen: &mut Screen,
     mut app: App,
@@ -60,18 +81,10 @@ pub fn run(
             last_draw = Instant::now();
             dirty = false;
         }
-        // Idle: block until something happens. Dirty: wake up for the next frame.
-        let event = if dirty {
-            match rx.recv_timeout(FRAME.saturating_sub(last_draw.elapsed())) {
-                Ok(e) => e,
-                Err(RecvTimeoutError::Timeout) => continue,
-                Err(RecvTimeoutError::Disconnected) => break,
-            }
-        } else {
-            match rx.recv() {
-                Ok(e) => e,
-                Err(_) => break,
-            }
+        let event = match next_event(rx, dirty, last_draw) {
+            Wait::Event(e) => e,
+            Wait::FrameDue => continue,
+            Wait::Closed => break,
         };
         // Hook events refresh git; anything else but terminal output and git
         // itself may change which task rows are on screen.
