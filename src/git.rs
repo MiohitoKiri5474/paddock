@@ -1,12 +1,23 @@
 //! What paddock reads from git: the branch a directory has checked out, and a
 //! branch's status (ahead/behind its upstream, uncommitted line changes).
-//! paddock only reads; it never changes a repository.
+//! paddock only reads; it never changes a branch, the index or a working
+//! tree. Telling a squash merge writes one unreferenced commit object.
 
 use std::path::Path;
 use std::process::{Command, Stdio};
 
 /// Branches taken as the default when `origin/HEAD` names none.
 const DEFAULTS: &[&str] = &["main", "master"];
+/// Who makes the commit that tells a squash merge, and when: fixed, so
+/// it needs no configured identity and is the same object every time.
+const SQUASH_IDENTITY: &[(&str, &str)] = &[
+    ("GIT_AUTHOR_NAME", "paddock"),
+    ("GIT_AUTHOR_EMAIL", "paddock@localhost"),
+    ("GIT_AUTHOR_DATE", "@0 +0000"),
+    ("GIT_COMMITTER_NAME", "paddock"),
+    ("GIT_COMMITTER_EMAIL", "paddock@localhost"),
+    ("GIT_COMMITTER_DATE", "@0 +0000"),
+];
 /// Untracked files larger than this (bytes) are not counted in line changes.
 const MAX_UNTRACKED: u64 = 1 << 20;
 
@@ -23,10 +34,16 @@ pub struct Status {
 /// `git -C dir args…`'s output, or `None` if it failed. Never prints: hooks
 /// must stay silent.
 fn git(dir: &str, args: &[&str]) -> Option<String> {
+    git_with(dir, args, &[])
+}
+
+/// [`git`] with environment variables `env` set.
+fn git_with(dir: &str, args: &[&str], env: &[(&str, &str)]) -> Option<String> {
     let out = Command::new("git")
         .arg("-C")
         .arg(dir)
         .args(args)
+        .envs(env.iter().copied())
         // Polling must never take the index lock from Claude's own git.
         .env("GIT_OPTIONAL_LOCKS", "0")
         .stdin(Stdio::null())
@@ -112,8 +129,9 @@ pub struct Details {
     pub base_diff: Option<BaseDiff>,
     /// When the branch's last commit was made (seconds since the epoch).
     pub last_commit: Option<u64>,
-    /// The branch's commits are all in its base, and it is not just the
-    /// base's tip (as a branch with no commits of its own is).
+    /// The branch's work is in its base (merged, rebased or squashed), and
+    /// it is not just the base's tip (as a branch with no commits of its
+    /// own is).
     pub merged: bool,
 }
 
@@ -134,14 +152,52 @@ pub fn details(dir: &str, branch: &str) -> Details {
     let range = format!("{base}...{tip}");
     let base_diff =
         git(dir, &["diff", "--no-color", "--numstat", &range]).map(|o| parse_base_diff(&o));
+    // A branch at the base's tip may be merged, or new with no commits of
+    // its own: there is no telling which, so it counts as not merged.
     let at_base = git(dir, &["rev-parse", "--verify", "--quiet", &base])
         .is_some_and(|b| b.trim() == rev.trim());
-    let merged = !at_base && git(dir, &["merge-base", "--is-ancestor", &tip, &base]).is_some();
     Details {
         base_diff,
         last_commit,
-        merged,
+        merged: !at_base && merged(dir, &base, &tip),
     }
+}
+
+/// Whether branch `tip`'s work is in `base`: merged (`tip` is an ancestor),
+/// rebased (each of its commits has an equivalent in `base`), or squashed
+/// (its whole change, as one commit, has).
+fn merged(dir: &str, base: &str, tip: &str) -> bool {
+    git(dir, &["merge-base", "--is-ancestor", tip, base]).is_some()
+        || all_in(dir, base, tip)
+        || squashed(dir, base, tip).is_some_and(|squash| all_in(dir, base, &squash))
+}
+
+/// Whether every commit of `head` not in `base` has a patch-equivalent
+/// commit in `base` (`git cherry` marks those `-`).
+fn all_in(dir: &str, base: &str, head: &str) -> bool {
+    git(dir, &["cherry", base, head]).is_some_and(|out| {
+        let mut lines = out.lines().filter(|l| !l.is_empty()).peekable();
+        lines.peek().is_some() && lines.all(|l| l.starts_with('-'))
+    })
+}
+
+/// A commit holding all of `tip`'s change since it left `base`, as a
+/// squash merge would. Writes one unreferenced commit object; its fixed
+/// author, date and message make it the same object on every poll, and it
+/// is never signed (no prompt on a poll).
+fn squashed(dir: &str, base: &str, tip: &str) -> Option<String> {
+    let fork = git(dir, &["merge-base", base, tip])?;
+    let tree = format!("{tip}^{{tree}}");
+    let args = [
+        "commit-tree",
+        "--no-gpg-sign",
+        &tree,
+        "-p",
+        fork.trim(),
+        "-m",
+        "paddock: squash check",
+    ];
+    git_with(dir, &args, SQUASH_IDENTITY).map(|c| c.trim().to_string())
 }
 
 /// `diff --numstat` output as lines added, removed, and files changed.
@@ -398,6 +454,41 @@ mod tests {
         let d = details(s(&dir), "feat/x");
         assert!(d.merged);
         assert_eq!(d.base_diff, Some(diff(0, 0, 0)));
+    }
+
+    /// A repository whose `feat/x` has two commits of its own, and whose
+    /// `main` has moved on since; `main` is checked out.
+    fn diverged(root: &Path) -> PathBuf {
+        let dir = repo(root);
+        run(&dir, &["switch", "-q", "-c", "feat/x"]);
+        commit(&dir, "a");
+        commit(&dir, "b");
+        run(&dir, &["switch", "-q", "main"]);
+        commit(&dir, "c");
+        dir
+    }
+
+    #[test]
+    fn a_branch_rebase_merged_into_its_base_is_merged() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = diverged(tmp.path());
+        run(&dir, &["cherry-pick", "main..feat/x~1"]);
+        assert!(!details(s(&dir), "feat/x").merged, "one commit of two");
+        run(&dir, &["cherry-pick", "feat/x"]);
+        assert!(details(s(&dir), "feat/x").merged);
+    }
+
+    #[test]
+    fn a_branch_squash_merged_into_its_base_is_merged() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = diverged(tmp.path());
+        run(&dir, &["merge", "-q", "--squash", "feat/x"]);
+        run(&dir, &["commit", "-q", "-m", "squashed"]);
+        assert!(details(s(&dir), "feat/x").merged);
+        // More work on the branch is not in its base.
+        run(&dir, &["switch", "-q", "feat/x"]);
+        commit(&dir, "d");
+        assert!(!details(s(&dir), "feat/x").merged);
     }
 
     #[test]
