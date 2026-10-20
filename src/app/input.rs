@@ -1,7 +1,8 @@
 //! Applying outer-terminal input to the app, depending on its mode.
 
 use super::layout::Split;
-use super::state::{row_ids, App, Mode, RowId};
+use super::rows::{row_ids, RowId};
+use super::state::{App, Mode};
 use crate::input::{encode_key, encode_paste, Command, KeyAction};
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};

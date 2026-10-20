@@ -7,6 +7,7 @@ mod event_loop;
 mod input;
 mod layout;
 mod mouse;
+mod rows;
 mod saved;
 mod screen;
 mod splits;
@@ -14,7 +15,7 @@ mod state;
 mod tabs;
 mod watch;
 
-pub use state::{Row, RowId, TaskDetails, TaskRow};
+pub use rows::{Row, RowId, TaskDetails, TaskRow};
 
 use crate::config::Config;
 use crate::git::{Details, Status};

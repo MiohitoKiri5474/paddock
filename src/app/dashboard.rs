@@ -4,7 +4,8 @@
 //! It reads the task tree through [`App::rows`] and acts on rows through the
 //! same dismiss, close, fork and jump as the rest of the app.
 
-use super::state::{row_ids, App, Mode, Row, RowId};
+use super::rows::{row_ids, Row, RowId};
+use super::state::{App, Mode};
 use super::watch::Watched;
 use crate::input::{encode_key, encode_paste};
 use anyhow::Result;
