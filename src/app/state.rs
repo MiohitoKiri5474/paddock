@@ -10,6 +10,7 @@ use super::mouse::Press;
 use super::rows::{rows, Placed, Row, RowId, TaskDetails, TaskStatus};
 use super::saved;
 use super::sidebar::Selection;
+use super::watch::Place;
 use super::Event;
 use crate::config::{key_name, Config};
 use crate::hooks::now_ms;
@@ -91,6 +92,8 @@ pub struct App {
     pub(super) sessions: Sessions,
     pub(super) task_status: TaskStatus,
     pub(super) task_details: TaskDetails,
+    /// Each space's directory and branch, by tmux session id, once read.
+    pub(super) places: HashMap<String, Place>,
     /// The user hid the sidebar (`C-a b`).
     pub(super) sidebar_hidden: bool,
     /// Where the held mouse button went, until it is released.
@@ -158,6 +161,7 @@ impl App {
             sessions: Sessions::default(),
             task_status: TaskStatus::new(),
             task_details: TaskDetails::new(),
+            places: HashMap::new(),
             sidebar_hidden: false,
             press: None,
             attention: Attention::from_env(),

@@ -30,10 +30,20 @@ fn windows(sandbox: &Sandbox, session: &str) -> Vec<String> {
         .collect()
 }
 
-/// Wait until the sidebar lists exactly these spaces, without agents.
+/// Wait until the sidebar lists exactly these spaces, all in the test
+/// shells' home (`~`, no git repository), without agents.
 fn wait_for_spaces(paddock: &Paddock, names: &[&str]) {
+    let at_home: Vec<(&str, &str)> = names.iter().map(|n| (*n, "~")).collect();
+    wait_for_spaces_at(paddock, &at_home);
+}
+
+/// Wait until the sidebar lists exactly these spaces, as `(name, place)`,
+/// without agents.
+fn wait_for_spaces_at(paddock: &Paddock, spaces: &[(&str, &str)]) {
     let mut want = vec![" SPACES".to_string()];
-    want.extend(names.iter().map(|n| format!("   {n}")));
+    for (name, place) in spaces {
+        want.extend([format!("   {name}"), format!("   {place}")]);
+    }
     want.push(" AGENTS".to_string());
     let want: Vec<&str> = want.iter().map(String::as_str).collect();
     wait_for_sidebar(paddock, &want);
@@ -124,8 +134,8 @@ fn picking_a_space_shows_its_tabs() {
     paddock.command(b"1");
     paddock.wait_for_text("first-item-marker\n");
 
-    // A click on the second space (screen row 2) goes back.
-    paddock.click_screen(3, 2);
+    // A click on the second space (screen row 3) goes back.
+    paddock.click_screen(3, 3);
     paddock.wait_for_tabs(&["1:home"]);
     paddock.type_line("echo keys-reach-the-item");
     paddock.wait_for_text("keys-reach-the-item\n");
@@ -139,8 +149,8 @@ fn the_current_space_has_its_own_background() {
     wait_for_spaces(&paddock, &["space-1", "space-2"]);
 
     let grey = vt100::Color::Idx(236);
-    assert_eq!(paddock.colors(2, 5).1, grey, "current: space-2");
-    assert_eq!(paddock.colors(2, 20).1, grey, "across its line");
+    assert_eq!(paddock.colors(3, 5).1, grey, "current: space-2");
+    assert_eq!(paddock.colors(4, 20).1, grey, "across both its lines");
     assert_eq!(paddock.colors(1, 5).1, vt100::Color::Default);
 }
 
@@ -413,7 +423,7 @@ fn sessions_of_an_older_paddock_open_as_one_space_each() {
 
     let paddock = sandbox.launch();
 
-    wait_for_spaces(&paddock, &["terminal-1", "api"]);
+    wait_for_spaces_at(&paddock, &[("terminal-1", "/"), ("api", "/")]);
     paddock.wait_for_tabs(&["1:/"]);
     assert!(!paddock.full_screen().contains("invalid layout"));
 }
@@ -543,4 +553,30 @@ fn check_stream(sandbox: &Sandbox, paddock: &mut Paddock, target: &str, col: u16
     let history = sandbox.display(target, "#{history_size}");
     paddock.wheel(true, col + 2, 2);
     paddock.wait_for_text(&format!("[3/{history}]"));
+}
+
+#[test]
+fn a_space_shows_its_directory_and_git_branch() {
+    let sandbox = Sandbox::new();
+    let repo = sandbox.path("home/project/api");
+    std::fs::create_dir_all(&repo).unwrap();
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(args)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .output()
+            .expect("run git");
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    };
+    git(&["init", "-q", "-b", "dev"]);
+    let mut paddock = ready(&sandbox);
+    wait_for_spaces(&paddock, &["space-1"]);
+
+    paddock.type_line("cd project/api");
+
+    // Read on the git thread's next round, every few seconds.
+    wait_for_spaces_at(&paddock, &[("space-1", "~/project/api  dev")]);
 }

@@ -49,6 +49,8 @@ pub enum Event {
     Git(Vec<((String, String), Status)>),
     /// Dashboard details just read for tasks, by `(directory, branch)`.
     Details(Vec<((String, String), Details)>),
+    /// Each space's directory and branch just read, by tmux session id.
+    Spaces(Vec<(String, watch::Place)>),
 }
 
 pub fn run() -> Result<()> {

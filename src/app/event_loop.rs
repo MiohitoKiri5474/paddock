@@ -70,6 +70,8 @@ pub fn run(
         tx: git,
         sent: watch::Watched::default(),
     };
+    // The spaces' directories and branches are read at once.
+    git.update(&app, true);
     let mut dirty = true;
     let mut last_draw = Instant::now()
         .checked_sub(FRAME)
@@ -88,7 +90,7 @@ pub fn run(
         // Hook events refresh git; anything else but terminal output and git
         // itself may change which task rows are on screen.
         let hooks = matches!(event, Event::Hooks(_));
-        let rows_may_move = !matches!(event, Event::Tmux { .. } | Event::Git(_));
+        let rows_may_move = !matches!(event, Event::Tmux { .. } | Event::Git(_) | Event::Spaces(_));
         // A terminal can end with its exit still queued: a write to it fails
         // then. Say so, and go on rather than quit without saving.
         let (flow, changed) = handle(&mut app, event, screen).unwrap_or_else(|e| {
@@ -161,6 +163,10 @@ fn handle(app: &mut App, event: Event, screen: &mut Screen) -> Result<(Flow, boo
         }
         Event::Details(read) => {
             app.task_details.extend(read);
+            Flow::Continue
+        }
+        Event::Spaces(read) => {
+            app.places.extend(read);
             Flow::Continue
         }
         Event::Input(ct::Event::Key(key)) if key.kind != KeyEventKind::Release => app.key(key)?,

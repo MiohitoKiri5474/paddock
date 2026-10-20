@@ -71,6 +71,11 @@ fn space(name: &str, agents: bool) -> String {
     format!(" {dot} {name}")
 }
 
+/// A space's second line, for one in the test shells' home (no repository).
+fn at_home() -> String {
+    "   ~".into()
+}
+
 /// An agent's first line: dot, label, and its state at the right.
 fn agent(label: &str, state: &str) -> String {
     let width = 22 - 3 - state.len();
@@ -86,6 +91,7 @@ fn place(space: &str, tab: &str) -> String {
 fn one_agent(label: &str, state: &str, tab: &str) -> Vec<String> {
     vec![
         space("space-1", true),
+        at_home(),
         " AGENTS".into(),
         agent(label, state),
         place("space-1", tab),
@@ -94,7 +100,7 @@ fn one_agent(label: &str, state: &str, tab: &str) -> Vec<String> {
 
 /// The sidebar with only space-1 and no agents.
 fn no_agents() -> Vec<String> {
-    vec![space("space-1", false), " AGENTS".into()]
+    vec![space("space-1", false), at_home(), " AGENTS".into()]
 }
 
 fn wait_for_lines(paddock: &Paddock, want: &[String]) {
@@ -196,7 +202,9 @@ fn agents_of_every_space_are_listed_with_their_space_and_tab() {
         &paddock,
         &[
             space("space-1", true),
+            at_home(),
             space("space-2", false),
+            at_home(),
             " AGENTS".into(),
             agent("waiting", "waiting"),
             place("space-1", "4:claude"),
@@ -275,9 +283,9 @@ fn c_a_w_selects_the_current_space_and_esc_leaves_without_switching() {
     paddock.wait_for_text("in-two\n");
 
     paddock.command(b"w");
-    paddock.wait_for("space-2 selected", |_| paddock.reversed(2, 5));
+    paddock.wait_for("space-2 selected", |_| paddock.reversed(3, 5));
     paddock.send(b"k");
-    // space-1 (screen row 1) is selected.
+    // space-1 (screen rows 1-2) is selected.
     paddock.wait_for("space-1 selected", |_| paddock.reversed(1, 5));
     paddock.send(b"\x1b");
     std::thread::sleep(std::time::Duration::from_millis(200));
@@ -350,8 +358,8 @@ fn clicking_an_agent_row_jumps_to_its_pane() {
     let sandbox = Sandbox::new();
     let mut paddock = agent_in_another_space(&sandbox);
 
-    // Rows: 0 SPACES, 1-2 spaces, 3 blank, 4 AGENTS, 5-6 the agent.
-    paddock.click_screen(5, 6);
+    // Rows: 0 SPACES, 1-4 two spaces, 5 blank, 6 AGENTS, 7-8 the agent.
+    paddock.click_screen(5, 8);
 
     paddock.wait_for_current_tab("2:claude ●");
     paddock.type_line("echo typed-after-the-click");

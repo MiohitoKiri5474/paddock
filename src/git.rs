@@ -61,6 +61,15 @@ pub fn current_branch(dir: &str) -> Option<String> {
     Some(out.trim().to_string()).filter(|b| !b.is_empty())
 }
 
+/// What is checked out in `dir`: its branch, else (detached) the short
+/// commit id; `None` outside a repository.
+pub fn head(dir: &str) -> Option<String> {
+    current_branch(dir).or_else(|| {
+        let sha = git(dir, &["rev-parse", "--short", "HEAD"])?;
+        Some(sha.trim().to_string()).filter(|s| !s.is_empty())
+    })
+}
+
 /// The repository's default branch: what `origin/HEAD` points at, else the
 /// first of `main` and `master` that exists.
 pub fn default_branch(dir: &str) -> Option<String> {
@@ -359,6 +368,21 @@ mod tests {
         assert_eq!(task_branch(s(&dir)).as_deref(), Some("feat/x"));
         assert_eq!(task_branch(s(&tmp.path().join("nope"))), None);
         assert_eq!(task_branch(s(tmp.path())), None, "not a repository");
+    }
+
+    #[test]
+    fn head_names_the_branch_or_the_detached_commit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = repo(tmp.path());
+        assert_eq!(head(s(&dir)).as_deref(), Some("main"));
+        let sub = dir.join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        assert_eq!(head(s(&sub)).as_deref(), Some("main"), "inside the repo");
+        run(&dir, &["switch", "-q", "--detach"]);
+        let sha = git(s(&dir), &["rev-parse", "--short", "HEAD"]).unwrap();
+        assert_eq!(head(s(&dir)), Some(sha.trim().to_string()));
+        assert_eq!(head(s(tmp.path())), None, "not a repository");
+        assert_eq!(head(s(&tmp.path().join("nope"))), None);
     }
 
     #[test]

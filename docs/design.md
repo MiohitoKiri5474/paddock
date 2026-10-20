@@ -29,14 +29,16 @@ Not in scope for now: agents other than Claude Code, Linux, remote machines, a s
   ```text
    SPACES
    ● api-server
+     ~/project/api  main
      paddock
+     ~/project/paddock  feat/x
 
    AGENTS
    ● api-server  waiting
      api-server · 2:claude
   ```
 
-  SPACES has one line per space: a dot in the most urgent state of its agents (none without agents) and its name (the tmux session name). The current space (the one whose tabs are shown) has its own background (`[colors] current_item`, a 256-colour index or `#rrggbb`, default 236). AGENTS lists every main Claude session in an open pane, in any space, sorted by state: a dot, its label and state, then, dimmed, its space and tab, with a blank line between agents. Subagents and task rows stay in the dashboard. While the sidebar has the keyboard, the selected space or agent is reversed.
+  SPACES has two lines per space: a dot in the most urgent state of its agents (none without agents) and its name (the tmux session name), then, dim, its directory (that of its first tab's first pane, home as `~`) and the branch checked out there (the short commit if detached, nothing outside a repository). A path too long loses its start (`…`) first, then the branch its end. Directories and branches are read on the git thread, on hook events and every few seconds. The current space (the one whose tabs are shown) has its own background over both lines (`[colors] current_item`, a 256-colour index or `#rrggbb`, default 236). AGENTS lists every main Claude session in an open pane, in any space, sorted by state: a dot, its label and state, then, dimmed, its space and tab, with a blank line between agents. Subagents and task rows stay in the dashboard. While the sidebar has the keyboard, the selected space or agent is reversed.
 - Right: the **session view**, the current item's tab bar and the current tab's terminals (splits).
 - Tabs are numbered and set apart by thin lines; the current one is reversed and bold. A tab is named after what runs in its focused pane (`claude` while Claude runs there, else the command, or the directory for a shell) until the user renames it. A tab holding a waiting, done or idle Claude gets its colour and a `●`.
 - The **dashboard** opens as an overlay (`C-a o`) and holds the task tree.
@@ -55,7 +57,7 @@ Not in scope for now: agents other than Claude Code, Linux, remote machines, a s
 
 | Where | Fields |
 |---|---|
-| Sidebar space | name, dot in the most urgent state of its agents |
+| Sidebar space | name, dot in the most urgent state of its agents, directory, branch |
 | Sidebar agent | label, state and highlight, space and tab |
 | Dashboard | state and highlight, branch, ahead/behind upstream, line changes (`+30 −144`, uncommitted), base diff, number of changed files, last commit age, merged badge; PR number and state after v1 |
 

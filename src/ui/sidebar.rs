@@ -5,7 +5,9 @@
 //! ```text
 //!  SPACES
 //!  ● api-server
+//!    ~/project/api  main
 //!    paddock
+//!    ~/project/paddock  feat/x
 //!
 //!  AGENTS
 //!  ● api-server  waiting
@@ -13,7 +15,9 @@
 //! ```
 //!
 //! A space's dot shows the most urgent state of the agents in it (none
-//! without agents); the current space has its own background. An agent's
+//! without agents); its second line, dim, shows its directory and the git
+//! branch checked out there. The current space has its own background
+//! over both lines. An agent's
 //! second line is dim and names its space and tab. While the sidebar has the
 //! keyboard, the selected space or agent is drawn reversed.
 
@@ -37,6 +41,10 @@ pub struct SpaceLine {
     pub state: Option<State>,
     /// Its tabs are the ones shown.
     pub current: bool,
+    /// Its directory as shown (home as `~`), once read.
+    pub path: String,
+    /// The branch (or detached commit) checked out there, if a repository.
+    pub branch: Option<String>,
 }
 
 /// One agent (main Claude session) as the sidebar draws it.
@@ -54,6 +62,8 @@ pub struct AgentLine {
 pub enum Line {
     Header(&'static str),
     Space(usize),
+    /// A space's second line: its directory and branch.
+    SpacePlace(usize),
     /// An agent's first line: dot, label and state.
     Agent(usize),
     /// An agent's second line: its space and tab.
@@ -65,7 +75,7 @@ pub enum Line {
 /// spaces followed by the agents.
 pub fn pick(line: Line, spaces: usize) -> Option<usize> {
     match line {
-        Line::Space(i) => Some(i),
+        Line::Space(i) | Line::SpacePlace(i) => Some(i),
         Line::Agent(i) | Line::AgentPlace(i) => Some(spaces + i),
         Line::Header(_) | Line::Blank => None,
     }
@@ -74,7 +84,7 @@ pub fn pick(line: Line, spaces: usize) -> Option<usize> {
 /// The sidebar's lines for `spaces` spaces and `agents` agents, top first.
 pub fn lines(spaces: usize, agents: usize) -> Vec<Line> {
     let mut out = vec![Line::Header(SPACES)];
-    out.extend((0..spaces).map(Line::Space));
+    out.extend((0..spaces).flat_map(|i| [Line::Space(i), Line::SpacePlace(i)]));
     out.extend([Line::Blank, Line::Header(AGENTS)]);
     for i in 0..agents {
         if i > 0 {
@@ -134,7 +144,7 @@ pub fn render(
     {
         let row = Rect::new(area.x, y, inner, 1);
         let mut base = Style::default();
-        if let Line::Space(i) = line {
+        if let Line::Space(i) | Line::SpacePlace(i) = line {
             if spaces[i].current {
                 base = base.bg(current_bg);
             }
@@ -170,12 +180,65 @@ pub fn render(
                 put(name_x, &label, Style::default());
                 put(state_x, state, highlight(a.state));
             }
+            Line::SpacePlace(i) => {
+                let room = usize::from(end.saturating_sub(name_x));
+                let s = &spaces[i];
+                put(name_x, &place(&s.path, s.branch.as_deref(), room), dim);
+            }
             Line::AgentPlace(i) => {
                 put(name_x, &agents[i].place, dim);
             }
             Line::Blank => {}
         }
     }
+}
+
+/// `path` with the home directory `home` written `~`.
+pub fn tilde(path: &str, home: &str) -> String {
+    match path.strip_prefix(home) {
+        Some(rest) if !home.is_empty() && (rest.is_empty() || rest.starts_with('/')) => {
+            format!("~{rest}")
+        }
+        _ => path.to_string(),
+    }
+}
+
+/// A space's directory and branch in `width` cells: `path  branch`. Too
+/// long, the path loses its start first (`…ject/api`), then the branch its
+/// end (`feat/lo…`).
+pub fn place(path: &str, branch: Option<&str>, width: usize) -> String {
+    let len = |t: &str| t.chars().count();
+    let tail = |t: &str, n: usize| -> String {
+        if len(t) <= n {
+            return t.to_string();
+        }
+        let keep: String = t.chars().skip(len(t) + 1 - n.max(1)).collect();
+        format!("…{keep}")
+    };
+    let head = |t: &str, n: usize| -> String {
+        if len(t) <= n {
+            return t.to_string();
+        }
+        let keep: String = t.chars().take(n.saturating_sub(1)).collect();
+        format!("{keep}…")
+    };
+    let Some(branch) = branch else {
+        return if width == 0 {
+            String::new()
+        } else {
+            tail(path, width)
+        };
+    };
+    let path_room = width.saturating_sub(len(branch) + 2);
+    if path_room >= 1 {
+        return format!("{}  {branch}", tail(path, path_room));
+    }
+    // Even `…` and the branch do not fit: keep `…` and cut the branch.
+    let branch_room = width.saturating_sub(3);
+    format!("…  {}", head(branch, branch_room))
+        .chars()
+        .take(width)
+        .collect()
 }
 
 /// What the sidebar line at screen row `y` of `area` picks, if anything.
@@ -198,6 +261,8 @@ mod tests {
             name: name.into(),
             state,
             current,
+            path: format!("~/p/{name}"),
+            branch: None,
         }
     }
 
@@ -218,7 +283,7 @@ mod tests {
     const GREY: Color = Color::Indexed(236);
 
     fn draw(spaces: &[SpaceLine], agents: &[AgentLine], selected: Option<usize>) -> Buffer {
-        let area = Rect::new(0, 0, 24, 10);
+        let area = Rect::new(0, 0, 24, 12);
         let mut buf = Buffer::empty(area);
         render(spaces, agents, selected, GREY, area, &mut buf);
         buf
@@ -227,7 +292,11 @@ mod tests {
     #[test]
     fn spaces_then_agents_each_under_a_header() {
         let spaces = [
-            space("api-server", Some(State::Waiting), true),
+            SpaceLine {
+                path: "~/project/api".into(),
+                branch: Some("main".into()),
+                ..space("api-server", Some(State::Waiting), true)
+            },
             space("paddock", None, false),
         ];
         let agents = [
@@ -238,7 +307,9 @@ mod tests {
         let want = [
             " SPACES                │",
             " ● api-server          │",
+            "   ~/project/api  main │",
             "   paddock             │",
+            "   ~/p/paddock         │",
             "                       │",
             " AGENTS                │",
             " ● api         waiting │",
@@ -250,7 +321,8 @@ mod tests {
         for (y, line) in want.iter().enumerate() {
             assert_eq!(text(&buf, y as u16), *line, "row {y}");
         }
-        assert!(buf[(3, 6)].modifier.contains(Modifier::DIM), "place is dim");
+        assert!(buf[(3, 2)].modifier.contains(Modifier::DIM), "path is dim");
+        assert!(buf[(3, 8)].modifier.contains(Modifier::DIM), "place is dim");
     }
 
     #[test]
@@ -261,41 +333,46 @@ mod tests {
         ];
         let agents = [agent("w", State::Waiting, "cur · 1:a")];
         let buf = draw(&spaces, &agents, None);
-        assert_eq!(buf[(0, 1)].bg, GREY);
-        assert_eq!(buf[(22, 1)].bg, GREY);
+        for (x, y) in [(0, 1), (22, 1), (0, 2), (22, 2)] {
+            assert_eq!(buf[(x, y)].bg, GREY, "({x}, {y}): both lines");
+        }
         assert_eq!(buf[(23, 1)].bg, Color::Reset, "not the border");
-        assert_eq!(buf[(5, 2)].bg, Color::Reset);
+        assert_eq!(buf[(5, 3)].bg, Color::Reset);
         assert_eq!(buf[(1, 1)].fg, Color::Green, "idle dot");
-        assert!(buf[(1, 2)].modifier.contains(Modifier::BOLD), "done dot");
-        let waiting = &buf[(16, 5)];
+        assert!(buf[(1, 3)].modifier.contains(Modifier::BOLD), "done dot");
+        let waiting = &buf[(16, 7)];
         assert_eq!((waiting.fg, waiting.bg), (Color::Black, Color::Yellow));
-        assert_eq!(buf[(1, 5)].fg, Color::Yellow);
+        assert_eq!(buf[(1, 7)].fg, Color::Yellow);
     }
 
     #[test]
     fn the_selected_space_or_agent_is_reversed() {
         let spaces = [space("a", None, false), space("b", None, false)];
         let agents = [agent("x", State::Idle, "a · 1:x")];
+        let reversed = |buf: &Buffer, y| buf[(5, y)].modifier.contains(Modifier::REVERSED);
         let buf = draw(&spaces, &agents, Some(1));
-        assert!(buf[(5, 2)].modifier.contains(Modifier::REVERSED));
-        assert!(!buf[(5, 1)].modifier.contains(Modifier::REVERSED));
+        assert!(reversed(&buf, 3) && reversed(&buf, 4));
+        assert!(!reversed(&buf, 1) && !reversed(&buf, 2));
         let buf = draw(&spaces, &agents, Some(2));
-        assert!(buf[(5, 5)].modifier.contains(Modifier::REVERSED));
-        assert!(buf[(5, 6)].modifier.contains(Modifier::REVERSED));
-        assert!(!buf[(5, 2)].modifier.contains(Modifier::REVERSED));
+        assert!(reversed(&buf, 7) && reversed(&buf, 8));
+        assert!(!reversed(&buf, 3));
     }
 
     #[test]
     fn control_characters_in_names_never_reach_the_screen() {
-        // Names come from tmux and Claude; an escape sequence in one must
-        // not be written to the outer terminal.
+        // Names and paths come from tmux and Claude; an escape sequence in
+        // one must not be written to the outer terminal.
         let evil = "a\x1b]52;c;eA==\x07b";
         let buf = draw(
-            &[space(evil, None, false)],
+            &[SpaceLine {
+                path: evil.into(),
+                branch: Some(evil.into()),
+                ..space(evil, None, false)
+            }],
             &[agent(evil, State::Idle, evil)],
             None,
         );
-        for y in 0..10 {
+        for y in 0..12 {
             let drawn = text(&buf, y);
             assert!(!drawn.contains(char::is_control), "{drawn:?}");
         }
@@ -303,18 +380,18 @@ mod tests {
 
     #[test]
     fn clicks_find_what_is_drawn_under_them() {
-        let area = Rect::new(0, 3, 24, 12);
-        // 3 + 0 SPACES, 4-5 spaces, 6 blank, 7 AGENTS, 8-9 agent 0, 10
-        // blank, 11-12 agent 1.
+        let area = Rect::new(0, 3, 24, 14);
+        // 3 SPACES, 4-5 space 0, 6-7 space 1, 8 blank, 9 AGENTS,
+        // 10-11 agent 0, 12 blank, 13-14 agent 1.
         let at = |y| pick_at(2, 2, area, y);
         assert_eq!(at(3), None, "header");
-        assert_eq!(at(4), Some(0));
-        assert_eq!(at(5), Some(1));
-        assert_eq!((at(6), at(7)), (None, None));
-        assert_eq!((at(8), at(9)), (Some(2), Some(2)));
-        assert_eq!(at(10), None);
-        assert_eq!(at(12), Some(3));
-        assert_eq!(at(13), None, "below the last line");
+        assert_eq!((at(4), at(5)), (Some(0), Some(0)));
+        assert_eq!((at(6), at(7)), (Some(1), Some(1)));
+        assert_eq!((at(8), at(9)), (None, None));
+        assert_eq!((at(10), at(11)), (Some(2), Some(2)));
+        assert_eq!(at(12), None);
+        assert_eq!(at(14), Some(3));
+        assert_eq!(at(15), None, "below the last line");
         assert_eq!(at(20), None, "below the sidebar");
     }
 
@@ -326,6 +403,7 @@ mod tests {
             [
                 Header(SPACES),
                 Space(0),
+                SpacePlace(0),
                 Blank,
                 Header(AGENTS),
                 Agent(0),
@@ -335,5 +413,35 @@ mod tests {
                 AgentPlace(1)
             ]
         );
+    }
+
+    #[test]
+    fn home_is_written_as_a_tilde() {
+        assert_eq!(tilde("/Users/me/project/api", "/Users/me"), "~/project/api");
+        assert_eq!(tilde("/Users/me", "/Users/me"), "~");
+        assert_eq!(tilde("/Users/meg/x", "/Users/me"), "/Users/meg/x");
+        assert_eq!(tilde("/tmp", ""), "/tmp");
+    }
+
+    #[test]
+    fn a_long_place_loses_the_paths_start_first_then_the_branchs_end() {
+        assert_eq!(
+            place("~/project/api", Some("main"), 19),
+            "~/project/api  main"
+        );
+        assert_eq!(
+            place("~/project/herdr", Some("feat/x"), 19),
+            "…ject/herdr  feat/x"
+        );
+        assert_eq!(
+            place("~/a", Some("feature/very-long"), 19),
+            "…  feature/very-lo…"
+        );
+        assert_eq!(place("~/a/very/long/path", None, 10), "…long/path");
+        assert_eq!(place("~/a", None, 19), "~/a");
+        for width in 0..25 {
+            let got = place("~/project/herdr", Some("feature/branch"), width);
+            assert!(got.chars().count() <= width, "{width}: {got:?}");
+        }
     }
 }

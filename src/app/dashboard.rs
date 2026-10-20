@@ -83,15 +83,19 @@ impl App {
     }
 
     /// Tasks to keep git fresh for: all of the dashboard's, with details,
-    /// while it is open; else the sidebar's.
+    /// while it is open; else the sidebar's. The spaces' directories and
+    /// branches are always read.
     pub fn watched_tasks(&self) -> Watched {
+        let spaces = self.items.iter().map(|i| i.id.clone()).collect();
         if self.dashboard().is_none() {
             return Watched {
                 tasks: self.visible_tasks(),
                 details: false,
+                spaces,
             };
         }
         Watched {
+            spaces,
             tasks: self
                 .rows()
                 .into_iter()

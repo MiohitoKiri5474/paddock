@@ -5,7 +5,7 @@ use super::rows::{most_urgent, Row};
 use super::state::App;
 use crate::sessions::State;
 use crate::tmux::structure::Window;
-use crate::ui::sidebar::{AgentLine, SpaceLine};
+use crate::ui::sidebar::{tilde, AgentLine, SpaceLine};
 use crate::ui::tab_bar::Tab;
 use ratatui::layout::Rect;
 
@@ -13,16 +13,35 @@ use ratatui::layout::Rect;
 const CLAUDE: &str = "claude";
 
 impl App {
-    /// Each space: its name, the most urgent state of its agents, and
-    /// whether it is current.
+    /// Each space: its name, the most urgent state of its agents, whether
+    /// it is current, and its directory and branch once read.
     pub(super) fn sidebar_spaces(&self, rows: &[Row]) -> Vec<SpaceLine> {
+        let home = std::env::var("HOME").unwrap_or_default();
+        // tmux reports directories with symlinks resolved (`/tmp` is
+        // `/private/tmp` on macOS), so home may be written either way.
+        let real_home = std::fs::canonicalize(&home)
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| home.clone());
+        let show = |path: &str| {
+            let short = tilde(path, &home);
+            if short == path {
+                tilde(path, &real_home)
+            } else {
+                short
+            }
+        };
         self.items
             .iter()
             .enumerate()
-            .map(|(i, item)| SpaceLine {
-                name: item.name().to_string(),
-                state: most_urgent(rows, |r| r.item == item.id),
-                current: i == self.current,
+            .map(|(i, item)| {
+                let place = self.places.get(&item.id);
+                SpaceLine {
+                    name: item.name().to_string(),
+                    state: most_urgent(rows, |r| r.item == item.id),
+                    current: i == self.current,
+                    path: place.map_or_else(String::new, |p| show(&p.path)),
+                    branch: place.and_then(|p| p.branch.clone()),
+                }
             })
             .collect()
     }
