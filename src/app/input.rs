@@ -83,12 +83,12 @@ impl App {
     fn command(&mut self, command: Command) -> Result<Flow> {
         match command {
             Command::NewTab => self.report(|app| app.new_tab()),
-            Command::NewItem => self.report(|app| app.new_item()),
+            Command::NewSpace => self.report(|app| app.new_space()),
             Command::NextTab => self.report(|app| app.cycle_tab(true)),
             Command::PreviousTab => self.report(|app| app.cycle_tab(false)),
             Command::GoToTab(i) => self.report(|app| app.select_tab(i)),
             Command::RenameTab => self.start_rename(Renaming::Tab),
-            Command::RenameItem => self.start_rename(Renaming::Item),
+            Command::RenameSpace => self.start_rename(Renaming::Space),
             Command::Close => {
                 if let Some(pane) = self.current_pane() {
                     self.report(|app| app.close(&pane, None));

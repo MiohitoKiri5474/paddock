@@ -1,5 +1,5 @@
 //! What paddock keeps in the state directory (`layout.toml`) that tmux cannot
-//! hold: which sidebar item was current. Tabs, splits, sizes and focus live
+//! hold: which space was current. Tabs, splits, sizes and focus live
 //! in tmux (ADR 0006). A file from before, with its `current` tab and `tabs`
 //! layouts, still reads: those fields are ignored.
 
@@ -11,9 +11,10 @@ pub const FILE_NAME: &str = "layout.toml";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Saved {
-    /// The current item's tmux session id (`$N`).
+    /// The current space's tmux session id (`$N`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub item: Option<String>,
+    #[serde(alias = "item")]
+    pub space: Option<String>,
 }
 
 /// Read the saved state; `None` if there is none yet.
@@ -54,16 +55,22 @@ mod tests {
     }
 
     #[test]
+    fn a_file_saved_as_item_still_names_the_current_space() {
+        let saved: Saved = toml::from_str("item = \"$4\"").unwrap();
+        assert_eq!(saved.space.as_deref(), Some("$4"));
+    }
+
+    #[test]
     fn save_and_load_round_trip() {
         let dir = std::env::temp_dir().join(format!("paddock-saved-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         assert_eq!(load(&dir).unwrap(), None);
         let saved = Saved {
-            item: Some("$3".into()),
+            space: Some("$3".into()),
         };
         save(&dir, &saved).unwrap();
         assert_eq!(load(&dir).unwrap(), Some(saved));
-        std::fs::write(dir.join(FILE_NAME), "item = 1").unwrap();
+        std::fs::write(dir.join(FILE_NAME), "space = 1").unwrap();
         let err = format!("{:#}", load(&dir).unwrap_err());
         assert!(err.contains("layout.toml"), "{err}");
         std::fs::remove_dir_all(&dir).unwrap();

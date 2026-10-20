@@ -1,5 +1,5 @@
 //! The Claude session rows: a session row per pane where Claude runs or ran,
-//! each with its task rows, in display order. They feed the sidebar items'
+//! each with its task rows, in display order. They feed the spaces'
 //! and tabs' states, `C-a a` and the dashboard.
 
 use crate::git::{Details, Status};
@@ -10,14 +10,14 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Row {
     pub pane: String,
-    /// The pane's sidebar item (tmux session id); empty once closed.
-    pub item: String,
+    /// The pane's space (tmux session id); empty once closed.
+    pub space: String,
     /// The pane's tab (tmux window id); empty once closed.
     pub window: String,
     pub label: String,
     pub state: State,
     pub tasks: Vec<TaskRow>,
-    /// The pane was closed: `item` and `window` are empty.
+    /// The pane was closed: `space` and `window` are empty.
     pub closed: bool,
 }
 
@@ -59,12 +59,12 @@ pub type TaskStatus = HashMap<(String, String), Status>;
 /// Last known dashboard details of each task, by `(directory, branch)`.
 pub type TaskDetails = HashMap<(String, String), Details>;
 
-/// A pane as the rows see it: its item and window, their places in the
+/// A pane as the rows see it: its space and window, their places in the
 /// sidebar and tab bar, the tab's name if the user gave it one, and its id.
 pub struct Placed<'a> {
-    pub item: &'a str,
+    pub space: &'a str,
     pub window: &'a str,
-    /// `(item index, window index)`, for sorting.
+    /// `(space index, window index)`, for sorting.
     pub order: (usize, usize),
     pub tab_name: Option<&'a str>,
     pub pane: &'a str,
@@ -121,7 +121,7 @@ fn task_rows(tasks: Vec<&Task>, status: &TaskStatus, session: State, closed: boo
 }
 
 /// Session rows not dismissed, of the given panes and of closed ones, sorted
-/// by state, then by item and tab (closed panes last), each with its task
+/// by state, then by space and tab (closed panes last), each with its task
 /// rows sorted by state.
 pub fn rows<'a>(
     sessions: &Sessions,
@@ -136,7 +136,7 @@ pub fn rows<'a>(
             let (s, tasks) = sessions.shown(p.pane)?;
             let row = Row {
                 pane: p.pane.to_string(),
-                item: p.item.to_string(),
+                space: p.space.to_string(),
                 window: p.window.to_string(),
                 label: sessions::label(s, p.tab_name),
                 state: s.state,
@@ -152,7 +152,7 @@ pub fn rows<'a>(
         let (s, tasks) = sessions.shown(pane)?;
         let row = Row {
             pane: pane.to_string(),
-            item: String::new(),
+            space: String::new(),
             window: String::new(),
             label: sessions::label(s, None),
             // Claude no longer runs there.
@@ -179,13 +179,13 @@ mod tests {
     use super::*;
 
     fn placed<'a>(
-        item: &'a str,
+        space: &'a str,
         window: &'a str,
         order: (usize, usize),
         pane: &'a str,
     ) -> Placed<'a> {
         Placed {
-            item,
+            space,
             window,
             order,
             tab_name: None,
@@ -281,7 +281,7 @@ mod tests {
         }
         s.dismiss("%6", None, 2);
         s.dismiss("%7", None, 2);
-        // Item $2's tab @3 is split: both of its panes run Claude.
+        // Space $2's tab @3 is split: both of its panes run Claude.
         let panes = [
             placed("$1", "@1", (0, 0), "%1"),
             Placed {
@@ -295,7 +295,7 @@ mod tests {
         ];
         let got: Vec<(String, String, String, State, bool)> = rows(&s, &TaskStatus::new(), panes)
             .into_iter()
-            .map(|r| (r.label, r.item, r.window, r.state, r.closed))
+            .map(|r| (r.label, r.space, r.window, r.state, r.closed))
             .collect();
         // Claude no longer runs in a closed pane: its row is stopped.
         let want = [
@@ -315,9 +315,9 @@ mod tests {
 
     #[test]
     fn the_most_urgent_open_row_gives_the_state() {
-        let row = |item: &str, state, closed| Row {
+        let row = |space: &str, state, closed| Row {
             pane: "%1".into(),
-            item: item.into(),
+            space: space.into(),
             window: "@1".into(),
             label: String::new(),
             state,
@@ -330,9 +330,9 @@ mod tests {
             row("", State::Stopped, true),
             row("$2", State::Waiting, false),
         ];
-        assert_eq!(most_urgent(&rows, |r| r.item == "$1"), Some(State::Idle));
-        assert_eq!(most_urgent(&rows, |r| r.item.is_empty()), None);
-        assert_eq!(most_urgent(&rows, |r| r.item == "$9"), None);
+        assert_eq!(most_urgent(&rows, |r| r.space == "$1"), Some(State::Idle));
+        assert_eq!(most_urgent(&rows, |r| r.space.is_empty()), None);
+        assert_eq!(most_urgent(&rows, |r| r.space == "$9"), None);
     }
 
     #[test]
@@ -400,7 +400,7 @@ mod tests {
         };
         let row = |pane: &str, tasks| Row {
             pane: pane.into(),
-            item: String::new(),
+            space: String::new(),
             window: String::new(),
             label: String::new(),
             state: State::Idle,

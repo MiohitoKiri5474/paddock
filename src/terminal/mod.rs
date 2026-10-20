@@ -1,6 +1,6 @@
 //! A terminal: one pane on the hidden server, as paddock sees it. It holds an
 //! emulator fed by the pane's output; input goes through the control client
-//! of the pane's tmux session (see `app::item`).
+//! of the pane's tmux session (see `app::space`).
 
 pub mod emulator;
 pub mod key_modes;

@@ -86,7 +86,7 @@ impl App {
     /// while it is open; else the sidebar's. The spaces' directories and
     /// branches are always read.
     pub fn watched_tasks(&self) -> Watched {
-        let spaces = self.items.iter().map(|i| i.id.clone()).collect();
+        let spaces = self.spaces.iter().map(|i| i.id.clone()).collect();
         if self.dashboard().is_none() {
             return Watched {
                 tasks: self.visible_tasks(),

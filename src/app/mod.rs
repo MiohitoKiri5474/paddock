@@ -1,17 +1,17 @@
 //! The running app: connect to the hidden server, show its sessions as
-//! sidebar items with their windows as tabs, and pass input to the focused
+//! spaces with their windows as tabs, and pass input to the focused
 //! pane until the user detaches.
 
 mod attention;
 mod dashboard;
 mod event_loop;
 mod input;
-mod item;
 mod mouse;
 mod rows;
 mod saved;
 mod screen;
 mod sidebar;
+mod space;
 mod splits;
 mod state;
 mod tabs;
@@ -33,7 +33,7 @@ use std::sync::mpsc;
 
 /// Everything the event loop waits on, from tmux and from the outer terminal.
 pub enum Event {
-    /// A control message from the client of item (tmux session) `session` (`$N`).
+    /// A control message from the client of space (tmux session) `session` (`$N`).
     Tmux {
         session: String,
         msg: Message,

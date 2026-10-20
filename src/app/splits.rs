@@ -1,9 +1,9 @@
 //! Splitting a tab into several panes and moving focus between them, through
-//! tmux, which keeps the layout (ADR 0006); and keeping each item's size and
+//! tmux, which keeps the layout (ADR 0006); and keeping each space's size and
 //! the saved state in step.
 
-use super::item::clamp;
 use super::saved::{self, Saved};
+use super::space::clamp;
 use super::state::App;
 use crate::input::Direction;
 use anyhow::Result;
@@ -14,7 +14,7 @@ impl App {
     pub fn split(&mut self, columns: bool) -> Result<()> {
         let (Some(pane), Some(id)) = (
             self.current_pane(),
-            self.current_item().map(|i| i.id.clone()),
+            self.current_space().map(|i| i.id.clone()),
         ) else {
             return Ok(());
         };
@@ -27,7 +27,7 @@ impl App {
     pub fn move_focus(&mut self, dir: Direction) -> Result<()> {
         let (Some(pane), Some(id)) = (
             self.current_pane(),
-            self.current_item().map(|i| i.id.clone()),
+            self.current_space().map(|i| i.id.clone()),
         ) else {
             return Ok(());
         };
@@ -49,23 +49,23 @@ impl App {
         }
     }
 
-    /// Show every item at the size of the session area; tmux resizes its
+    /// Show every space at the size of the session area; tmux resizes its
     /// windows and reports the new layout.
     pub(super) fn relayout(&mut self) -> Result<()> {
         let area = self.area();
         let size = clamp((area.width, area.height));
-        // One item that cannot be resized (it just ended) stops no other.
+        // One space that cannot be resized (it just ended) stops no other.
         let mut result = Ok(());
-        for item in &mut self.items {
-            result = result.and(item.resize(size));
+        for space in &mut self.spaces {
+            result = result.and(space.resize(size));
         }
         result
     }
 
-    /// Write the current item to the state directory.
+    /// Write the current space to the state directory.
     pub(super) fn save(&self) -> Result<()> {
         let saved = Saved {
-            item: self.current_item().map(|i| i.id.clone()),
+            space: self.current_space().map(|i| i.id.clone()),
         };
         saved::save(&self.state_dir, &saved)
     }

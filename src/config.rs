@@ -5,7 +5,7 @@
 //! prefix = "C-b"
 //!
 //! [colors]
-//! current_item = 236        # or "#303030": the current space's background
+//! current_space = 236        # or "#303030": the current space's background
 //! tab_bar = 235              # the tab bar's row
 //! tab = 237                  # a tab that is not current
 //! tab_current = 4            # the current tab (default: the terminal's blue)
@@ -21,13 +21,13 @@ use std::path::Path;
 pub const FILE_NAME: &str = "config.toml";
 const DEFAULT_PREFIX: &str = "C-a";
 /// A dark grey, a little darker than most dark themes' background.
-const DEFAULT_CURRENT_ITEM: Color = Color::Indexed(236);
+const DEFAULT_CURRENT_SPACE: Color = Color::Indexed(236);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
     pub prefix: KeyEvent,
-    /// Background of the current sidebar item.
-    pub current_item: Color,
+    /// Background of the current space.
+    pub current_space: Color,
     pub tabs: TabColors,
 }
 
@@ -43,7 +43,9 @@ struct RawConfig {
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 struct RawColors {
-    current_item: Option<RawColor>,
+    /// Written `current_item` before spaces were called spaces.
+    #[serde(alias = "current_item")]
+    current_space: Option<RawColor>,
     tab_bar: Option<RawColor>,
     tab: Option<RawColor>,
     tab_current: Option<RawColor>,
@@ -91,7 +93,7 @@ impl Config {
         let tabs = TabColors::default();
         Ok(Self {
             prefix: parse_key(prefix)?,
-            current_item: colour(c.current_item, DEFAULT_CURRENT_ITEM)?,
+            current_space: colour(c.current_space, DEFAULT_CURRENT_SPACE)?,
             tabs: TabColors {
                 bar: colour(c.tab_bar, tabs.bar)?,
                 tab: colour(c.tab, tabs.tab)?,
@@ -105,7 +107,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             prefix: KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
-            current_item: DEFAULT_CURRENT_ITEM,
+            current_space: DEFAULT_CURRENT_SPACE,
             tabs: TabColors::default(),
         }
     }
@@ -197,19 +199,25 @@ mod tests {
     }
 
     #[test]
-    fn the_current_item_colour_is_an_index_or_hex_and_dark_grey_by_default() {
-        assert_eq!(Config::default().current_item, Color::Indexed(236));
-        let parse = |t: &str| Config::parse(&format!("[colors]\ncurrent_item = {t}\n"));
-        assert_eq!(parse("238").unwrap().current_item, Color::Indexed(238));
+    fn the_current_space_colour_is_an_index_or_hex_and_dark_grey_by_default() {
+        assert_eq!(Config::default().current_space, Color::Indexed(236));
+        let parse = |t: &str| Config::parse(&format!("[colors]\ncurrent_space = {t}\n"));
+        assert_eq!(parse("238").unwrap().current_space, Color::Indexed(238));
         assert_eq!(
-            parse("\"#1a2B3c\"").unwrap().current_item,
+            parse("\"#1a2B3c\"").unwrap().current_space,
             Color::Rgb(0x1a, 0x2b, 0x3c)
         );
-        assert_eq!(parse("\"236\"").unwrap().current_item, Color::Indexed(236));
+        assert_eq!(parse("\"236\"").unwrap().current_space, Color::Indexed(236));
         for bad in ["256", "-1", "\"256\"", "\"#12345\"", "\"red\""] {
             assert!(parse(bad).is_err(), "{bad}");
         }
         assert!(Config::parse("[colors]\ncurrent = 1\n").is_err());
+    }
+
+    #[test]
+    fn the_old_current_item_key_still_sets_the_current_space_colour() {
+        let c = Config::parse("[colors]\ncurrent_item = 238\n").unwrap();
+        assert_eq!(c.current_space, Color::Indexed(238));
     }
 
     #[test]

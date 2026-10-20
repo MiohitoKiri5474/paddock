@@ -1,15 +1,15 @@
-//! What the running app holds: the sidebar items (tmux sessions, ADR 0006),
+//! What the running app holds: the spaces (tmux sessions, ADR 0006),
 //! each with its tabs (windows) and splits (panes) as tmux has them, a
 //! terminal per pane, the Claude sessions in them, and what the keyboard is
 //! doing (typing into the focused pane, renaming, reading help).
 
 use super::attention::Attention;
 use super::dashboard::Dashboard;
-use super::item::Item;
 use super::mouse::Press;
 use super::rows::{rows, Placed, Row, RowId, TaskDetails, TaskStatus};
 use super::saved;
 use super::sidebar::Selection;
+use super::space::Space;
 use super::watch::Place;
 use super::Event;
 use crate::config::{key_name, Config};
@@ -33,7 +33,7 @@ pub const SIDEBAR_COLS: u16 = 24;
 
 pub enum Mode {
     Normal,
-    /// Renaming the current tab or item; holds the text typed so far.
+    /// Renaming the current tab or space; holds the text typed so far.
     Rename {
         target: Renaming,
         text: String,
@@ -57,8 +57,8 @@ pub enum Mode {
 pub enum Renaming {
     /// The current tab (tmux window).
     Tab,
-    /// The current sidebar item (tmux session).
-    Item,
+    /// The current space (tmux session).
+    Space,
 }
 
 /// What a close question is about.
@@ -66,16 +66,16 @@ pub enum Renaming {
 pub enum CloseTarget {
     /// A pane (`%N`).
     Pane(String),
-    /// A whole sidebar item (`$N`) with all its tabs.
-    Item(String),
+    /// A whole space (`$N`) with all its tabs.
+    Space(String),
 }
 
 pub struct App {
     pub(super) server: Server,
     pub(super) events: Sender<Event>,
-    /// The sidebar items, oldest first.
-    pub(super) items: Vec<Item>,
-    /// Index of the current item: the one whose tabs are shown.
+    /// The spaces, oldest first.
+    pub(super) spaces: Vec<Space>,
+    /// Index of the current space: the one whose tabs are shown.
     pub(super) current: usize,
     /// Every attached pane's terminal, by pane id.
     pub(super) terminals: HashMap<String, Terminal>,
@@ -100,8 +100,8 @@ pub struct App {
     /// Where the held mouse button went, until it is released.
     pub(super) press: Option<Press>,
     pub(super) attention: Attention,
-    /// Background of the current sidebar item.
-    pub(super) current_item_bg: Color,
+    /// Background of the current space.
+    pub(super) current_space_bg: Color,
     pub(super) tab_colors: TabColors,
     /// The first tab the bar shows when the tabs do not all fit.
     pub(super) tab_first: usize,
@@ -141,7 +141,7 @@ pub fn next_name<'a>(stem: &str, taken: impl IntoIterator<Item = &'a str> + Clon
 }
 
 impl App {
-    /// Show the items already on the hidden server (one per tmux session),
+    /// Show the spaces already on the hidden server (one per tmux session),
     /// the saved one current, or start the first one.
     pub fn start(
         server: Server,
@@ -154,7 +154,7 @@ impl App {
         let mut app = Self {
             server,
             events,
-            items: Vec::new(),
+            spaces: Vec::new(),
             current: 0,
             terminals: HashMap::new(),
             prefix: PrefixKeys::new(config.prefix),
@@ -171,7 +171,7 @@ impl App {
             sidebar_hidden: false,
             press: None,
             attention: Attention::from_env(),
-            current_item_bg: config.current_item,
+            current_space_bg: config.current_space,
             tab_colors: config.tabs,
             tab_first: 0,
             tab_shown: None,
@@ -194,18 +194,18 @@ impl App {
             None
         });
         for s in &sessions {
-            // An item that cannot be attached (it just ended) keeps paddock
+            // A space that cannot be attached (it just ended) keeps paddock
             // from opening no other.
             app.report(|app| app.attach(&s.id));
         }
-        let saved_item = saved.and_then(|s| s.item);
+        let saved_space = saved.and_then(|s| s.space);
         app.current = app
-            .items
+            .spaces
             .iter()
-            .position(|i| Some(&i.id) == saved_item.as_ref())
+            .position(|i| Some(&i.id) == saved_space.as_ref())
             .unwrap_or(0);
-        if app.items.is_empty() {
-            app.new_item()?;
+        if app.spaces.is_empty() {
+            app.new_space()?;
         }
         Ok(app)
     }
@@ -217,16 +217,20 @@ impl App {
 
     /// Every open pane with its place, for [`rows`].
     fn placed(&self) -> impl Iterator<Item = Placed<'_>> {
-        self.items.iter().enumerate().flat_map(|(i, item)| {
-            item.windows().iter().enumerate().flat_map(move |(w, win)| {
-                win.panes.iter().map(move |p| Placed {
-                    item: &item.id,
-                    window: &win.id,
-                    order: (i, w),
-                    tab_name: (!win.auto_name).then_some(win.name.as_str()),
-                    pane: &p.id,
+        self.spaces.iter().enumerate().flat_map(|(i, space)| {
+            space
+                .windows()
+                .iter()
+                .enumerate()
+                .flat_map(move |(w, win)| {
+                    win.panes.iter().map(move |p| Placed {
+                        space: &space.id,
+                        window: &win.id,
+                        order: (i, w),
+                        tab_name: (!win.auto_name).then_some(win.name.as_str()),
+                        pane: &p.id,
+                    })
                 })
-            })
         })
     }
 
@@ -266,7 +270,7 @@ impl App {
         }
     }
 
-    /// Attach tmux session `id` as a new item at the end of the sidebar.
+    /// Attach tmux session `id` as a new space at the end of the sidebar.
     pub(super) fn attach(&mut self, id: &str) -> Result<()> {
         let events = self.events.clone();
         let session = id.to_string();
@@ -279,9 +283,9 @@ impl App {
                 .is_ok()
         };
         let size = (self.area().width, self.area().height);
-        let (item, terminals) = Item::attach(&self.server, id, size, deliver)?;
+        let (space, terminals) = Space::attach(&self.server, id, size, deliver)?;
         self.terminals.extend(terminals);
-        self.items.push(item);
+        self.spaces.push(space);
         Ok(())
     }
 
@@ -307,22 +311,22 @@ impl App {
         self.sessions.get(pane)
     }
 
-    pub(super) fn current_item(&self) -> Option<&Item> {
-        self.items.get(self.current)
+    pub(super) fn current_space(&self) -> Option<&Space> {
+        self.spaces.get(self.current)
     }
 
-    pub(super) fn current_item_mut(&mut self) -> Option<&mut Item> {
-        self.items.get_mut(self.current)
+    pub(super) fn current_space_mut(&mut self) -> Option<&mut Space> {
+        self.spaces.get_mut(self.current)
     }
 
-    /// The item holding pane `pane`, by index.
-    pub(super) fn item_of(&self, pane: &str) -> Option<usize> {
-        self.items.iter().position(|i| i.window_of(pane).is_some())
+    /// The space holding pane `pane`, by index.
+    pub(super) fn space_of(&self, pane: &str) -> Option<usize> {
+        self.spaces.iter().position(|i| i.window_of(pane).is_some())
     }
 
     /// The focused pane of the current tab.
     pub fn current_pane(&self) -> Option<String> {
-        Some(self.current_item()?.current_window()?.active.clone())
+        Some(self.current_space()?.current_window()?.active.clone())
     }
 
     /// Send bytes to pane `pane`'s program, returning its view to the live
@@ -331,16 +335,16 @@ impl App {
         if let Some(t) = self.terminals.get_mut(pane) {
             t.emulator_mut().scroll_to_bottom();
         }
-        match self.item_of(pane) {
-            Some(i) => self.items[i].input(pane, bytes),
+        match self.space_of(pane) {
+            Some(i) => self.spaces[i].input(pane, bytes),
             None => Ok(()),
         }
     }
 
     /// Whether pane `pane` is on screen (in the current tab).
     pub fn shows(&self, pane: &str) -> bool {
-        self.current_item()
-            .and_then(Item::current_window)
+        self.current_space()
+            .and_then(Space::current_window)
             .is_some_and(|w| w.contains(pane))
     }
 
@@ -349,12 +353,12 @@ impl App {
         self.relayout()
     }
 
-    /// Detach every item; they keep running on the hidden server. The
-    /// current item is saved first.
+    /// Detach every space; they keep running on the hidden server. The
+    /// current space is saved first.
     pub fn detach_all(self) -> Result<()> {
         let saved = self.save();
-        for item in self.items {
-            item.detach();
+        for space in self.spaces {
+            space.detach();
         }
         saved
     }

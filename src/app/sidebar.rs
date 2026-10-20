@@ -53,7 +53,7 @@ impl App {
     /// The sidebar's picks in line order: the spaces, then the agents.
     pub(super) fn sidebar_picks(&self) -> Vec<Pick> {
         let rows = self.rows();
-        let spaces = self.items.iter().map(|i| Pick::Space(i.id.clone()));
+        let spaces = self.spaces.iter().map(|i| Pick::Space(i.id.clone()));
         let agents = self
             .agents(&rows)
             .into_iter()
@@ -105,7 +105,7 @@ impl App {
                 // Asking takes the keyboard; otherwise the sidebar keeps it.
                 self.mode = Mode::Sidebar(s.clone());
                 match &s.pick {
-                    Some(Pick::Space(id)) => self.report(|app| app.close_item(id)),
+                    Some(Pick::Space(id)) => self.report(|app| app.close_space(id)),
                     Some(Pick::Agent(pane)) => self.report(|app| app.close(pane, None)),
                     None => {}
                 }
@@ -133,8 +133,8 @@ impl App {
     pub(super) fn open(&mut self, pick: &Pick) {
         match pick {
             Pick::Space(id) => {
-                if let Some(i) = self.items.iter().position(|it| it.id == *id) {
-                    self.select_item(i);
+                if let Some(i) = self.spaces.iter().position(|it| it.id == *id) {
+                    self.select_space(i);
                 }
             }
             Pick::Agent(pane) => self.jump_to(pane),
@@ -149,7 +149,7 @@ impl App {
             Pick::Space(id) => self
                 .rows()
                 .into_iter()
-                .find(|r| r.item == *id)
+                .find(|r| r.space == *id)
                 .map(|r| r.pane),
         }
     }

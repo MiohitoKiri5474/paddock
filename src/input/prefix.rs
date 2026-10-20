@@ -6,20 +6,20 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 /// What paddock does for a command key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {
-    /// A new tab (tmux window) in the current item.
+    /// A new tab (tmux window) in the current space.
     NewTab,
-    /// A new sidebar item (tmux session).
-    NewItem,
+    /// A new space (tmux session).
+    NewSpace,
     NextTab,
     PreviousTab,
     /// Go to tab N (0-based).
     GoToTab(usize),
     RenameTab,
-    RenameItem,
-    /// End the focused pane; its tab goes with its last pane, its item with
+    RenameSpace,
+    /// End the focused pane; its tab goes with its last pane, its space with
     /// its last tab.
     Close,
-    /// Continue a copy of the focused session in a new tab of its item.
+    /// Continue a copy of the focused session in a new tab of its space.
     Fork,
     /// Split the focused terminal side by side.
     SplitColumns,
@@ -98,8 +98,8 @@ fn command(key: &KeyEvent) -> Option<Command> {
     };
     Some(match c {
         'c' => Command::NewTab,
-        'C' => Command::NewItem,
-        '$' => Command::RenameItem,
+        'C' => Command::NewSpace,
+        '$' => Command::RenameSpace,
         'n' => Command::NextTab,
         'p' => Command::PreviousTab,
         '1'..='9' => Command::GoToTab(c as usize - '1' as usize),
@@ -201,11 +201,11 @@ mod tests {
         assert_eq!(after_prefix('c', none), KeyAction::Command(Command::NewTab));
         assert_eq!(
             after_prefix('C', KeyModifiers::SHIFT),
-            KeyAction::Command(Command::NewItem)
+            KeyAction::Command(Command::NewSpace)
         );
         assert_eq!(
             after_prefix('$', KeyModifiers::SHIFT),
-            KeyAction::Command(Command::RenameItem)
+            KeyAction::Command(Command::RenameSpace)
         );
         assert_eq!(
             after_prefix('n', none),

@@ -157,7 +157,7 @@ fn the_current_space_has_its_own_background() {
 #[test]
 fn the_current_space_background_comes_from_the_config() {
     let sandbox = Sandbox::new();
-    sandbox.write_config("[colors]\ncurrent_item = \"#102030\"\n");
+    sandbox.write_config("[colors]\ncurrent_space = \"#102030\"\n");
     let paddock = ready(&sandbox);
 
     paddock.wait_for("current item colour", |_| {

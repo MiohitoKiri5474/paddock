@@ -1,4 +1,4 @@
-//! The mouse: clicks focus a pane, open a sidebar space or agent, or switch
+//! The mouse: clicks focus a pane, open a space or agent, or switch
 //! tabs; the
 //! wheel and programs' mouse reports go to the pane under the pointer;
 //! dragging selects text and releasing copies it.
@@ -60,7 +60,7 @@ impl App {
         if m.column < side {
             let area = Rect::new(0, 0, side, self.screen.1);
             let picks = self.sidebar_picks();
-            let spaces = self.items.len();
+            let spaces = self.spaces.len();
             let agents = picks.len() - spaces;
             let picked = sidebar::pick_at(spaces, agents, area, m.row).and_then(|i| picks.get(i));
             let Some(pick) = picked.filter(|_| left) else {
@@ -98,7 +98,10 @@ impl App {
 
     /// Focus pane `pane` of the current tab, here at once and in tmux.
     fn focus_pane(&mut self, pane: &str) {
-        let Some(window) = self.current_item_mut().and_then(|i| i.current_window_mut()) else {
+        let Some(window) = self
+            .current_space_mut()
+            .and_then(|i| i.current_window_mut())
+        else {
             return;
         };
         window.active = pane.to_string();
@@ -167,10 +170,10 @@ impl App {
                 MouseEventKind::ScrollDown => 1,
                 _ => return Ok(false),
             };
-            let Some(item) = self.current_item() else {
+            let Some(space) = self.current_space() else {
                 return Ok(false);
             };
-            if let Some(next) = item.structure.current.checked_add_signed(step) {
+            if let Some(next) = space.structure.current.checked_add_signed(step) {
                 self.report(|app| app.select_tab(next));
             }
             return Ok(true);

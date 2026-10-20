@@ -135,7 +135,7 @@ impl App {
         if !self.attention.window_focused {
             return;
         }
-        let Some(window) = self.current_item().and_then(|i| i.current_window()) else {
+        let Some(window) = self.current_space().and_then(|i| i.current_window()) else {
             return;
         };
         let panes: Vec<String> = window.panes.iter().map(|p| p.id.clone()).collect();
@@ -167,7 +167,7 @@ impl App {
             .args(["-e", "on run argv"])
             .args([
                 "-e",
-                "display notification (item 1 of argv) with title \"paddock\"",
+                "display notification (space 1 of argv) with title \"paddock\"",
             ])
             .args(["-e", "end run", &message])
             .stdin(Stdio::null())
@@ -296,7 +296,7 @@ mod tests {
     fn row(pane: &str, state: State) -> Row {
         Row {
             pane: pane.into(),
-            item: "$1".into(),
+            space: "$1".into(),
             window: "@1".into(),
             label: pane.into(),
             state,

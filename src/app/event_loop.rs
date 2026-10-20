@@ -1,9 +1,9 @@
 //! The main loop: feed terminal output, route input, redraw at most once a frame.
 
 use super::input::Flow;
-use super::item::changes_structure;
 use super::rows::Row;
 use super::screen::Screen;
+use super::space::changes_structure;
 use super::state::{App, CloseTarget, Mode, Renaming, TAB_BAR_ROWS};
 use super::{watch, Event};
 use crate::hooks::now_ms;
@@ -130,7 +130,7 @@ fn handle(app: &mut App, event: Event, screen: &mut Screen) -> Result<(Flow, boo
         } => {
             if !app.terminals.contains_key(&pane) {
                 // A pane made since the last look, maybe through `tmux
-                // attach`. If the item has just ended, its exit follows.
+                // attach`. If the space has just ended, its exit follows.
                 let _ = app.refresh(&session);
             }
             if let Some(t) = app.terminals.get_mut(&pane) {
@@ -139,12 +139,12 @@ fn handle(app: &mut App, event: Event, screen: &mut Screen) -> Result<(Flow, boo
             let seen = app.shows(&pane) || app.shows_in_preview(&pane);
             return Ok((Flow::Continue, seen));
         }
-        // That item's tmux session ended: its last pane exited or was closed.
+        // That space's tmux session ended: its last pane exited or was closed.
         Event::Tmux {
             session,
             msg: Message::Exit,
         } => {
-            if app.item_ended(&session) {
+            if app.space_ended(&session) {
                 Flow::Continue
             } else {
                 Flow::Quit
@@ -154,7 +154,7 @@ fn handle(app: &mut App, event: Event, screen: &mut Screen) -> Result<(Flow, boo
             session,
             msg: Message::Notification(n),
         } if changes_structure(&n) => {
-            // If the item has just ended, its exit follows.
+            // If the space has just ended, its exit follows.
             let _ = app.refresh(&session);
             Flow::Continue
         }
@@ -217,7 +217,7 @@ fn draw(screen: &mut Screen, app: &App) -> Result<()> {
             };
             let spaces = app.sidebar_spaces(&rows);
             let agents = app.sidebar_agents(&rows);
-            let bg = app.current_item_bg;
+            let bg = app.current_space_bg;
             sidebar::render(&spaces, &agents, selected, bg, side_area, f.buffer_mut());
         }
         let area = Rect {
@@ -256,7 +256,7 @@ fn draw_tab_bar(app: &App, rows: &[Row], area: Rect, buf: &mut Buffer) -> Option
         Mode::ConfirmClose { state, target, .. } => {
             let what = match target {
                 CloseTarget::Pane(_) => "close",
-                CloseTarget::Item(_) => "close space",
+                CloseTarget::Space(_) => "close space",
             };
             Some(format!("Claude is {}: {what}? y/n", state.label()))
         }
@@ -268,14 +268,14 @@ fn draw_tab_bar(app: &App, rows: &[Row], area: Rect, buf: &mut Buffer) -> Option
             Some(_) => Vec::new(),
             None => app.tabs(rows),
         },
-        current: app.current_item().map_or(0, |i| i.structure.current),
+        current: app.current_space().map_or(0, |i| i.structure.current),
         first: app.tab_first,
         colors: app.tab_colors,
         rename: match &app.mode {
             Mode::Rename { target, text } => {
                 let what = match target {
                     Renaming::Tab => "tab",
-                    Renaming::Item => "space",
+                    Renaming::Space => "space",
                 };
                 Some((what, text.as_str()))
             }

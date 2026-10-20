@@ -1,4 +1,4 @@
-//! A sidebar item: one tmux session on the hidden server (ADR 0006), with its
+//! A space: one tmux session on the hidden server (ADR 0006), with its
 //! windows (tabs) and panes (splits) as tmux has them, and the one control
 //! client that carries every pane's output and input.
 
@@ -10,7 +10,7 @@ use anyhow::Result;
 /// The smallest size paddock gives tmux, as `(cols, rows)`.
 pub const MIN_SIZE: (u16, u16) = (2, 1);
 
-pub struct Item {
+pub struct Space {
     /// The tmux session id (`$N`).
     pub id: String,
     pub structure: Structure,
@@ -24,10 +24,10 @@ pub fn clamp((cols, rows): (u16, u16)) -> (u16, u16) {
     (cols.max(MIN_SIZE.0), rows.max(MIN_SIZE.1))
 }
 
-impl Item {
+impl Space {
     /// Attach to tmux session `id` at `size` and rebuild every pane's screen
     /// and history. Afterwards every control message, in order, goes to
-    /// `deliver`. Returns the item and a terminal for each pane.
+    /// `deliver`. Returns the space and a terminal for each pane.
     pub fn attach(
         server: &Server,
         id: &str,
@@ -55,16 +55,16 @@ impl Item {
             t.output(&seed::stream(&seed)?);
             terminals.push((pane.to_string(), t));
         }
-        let item = Self {
+        let space = Self {
             id: id.to_string(),
             structure,
             control,
             size,
         };
-        Ok((item, terminals))
+        Ok((space, terminals))
     }
 
-    /// The session name, shown as the item's title.
+    /// The session name, shown as the space's title.
     pub fn name(&self) -> &str {
         &self.structure.name
     }
@@ -94,12 +94,12 @@ impl Item {
             .flat_map(|w| w.panes.iter().map(|p| p.id.as_str()))
     }
 
-    /// Write raw bytes to pane `pane` of this item.
+    /// Write raw bytes to pane `pane` of this space.
     pub fn input(&mut self, pane: &str, bytes: &[u8]) -> Result<()> {
         self.control.send_bytes(pane, bytes)
     }
 
-    /// Show the item at `size`: tmux resizes every window of the session.
+    /// Show the space at `size`: tmux resizes every window of the session.
     pub fn resize(&mut self, size: (u16, u16)) -> Result<()> {
         let size = clamp(size);
         if size == self.size {
@@ -109,13 +109,13 @@ impl Item {
         self.control.resize(size.0, size.1)
     }
 
-    /// Leave the item running on the hidden server.
+    /// Leave the space running on the hidden server.
     pub fn detach(self) {
         self.control.detach();
     }
 }
 
-/// Whether a control notification changes an item's windows or panes, so
+/// Whether a control notification changes a space's windows or panes, so
 /// they must be read again (ADR 0006).
 pub fn changes_structure(notification: &str) -> bool {
     let kind = notification.split(' ').next().unwrap_or("");

@@ -30,14 +30,14 @@ impl App {
                 short
             }
         };
-        self.items
+        self.spaces
             .iter()
             .enumerate()
-            .map(|(i, item)| {
-                let place = self.places.get(&item.id);
+            .map(|(i, space)| {
+                let place = self.places.get(&space.id);
                 SpaceLine {
-                    name: item.name().to_string(),
-                    state: most_urgent(rows, |r| r.item == item.id),
+                    name: space.name().to_string(),
+                    state: most_urgent(rows, |r| r.space == space.id),
                     current: i == self.current,
                     path: place.map_or_else(String::new, |p| show(&p.path)),
                     branch: place.and_then(|p| p.branch.clone()),
@@ -66,13 +66,13 @@ impl App {
 
     /// Where row `r` runs, as `space · N:tab`.
     fn place_of(&self, r: &Row) -> Option<String> {
-        let item = self.items.iter().find(|i| i.id == r.item)?;
-        let (n, w) = item
+        let space = self.spaces.iter().find(|i| i.id == r.space)?;
+        let (n, w) = space
             .windows()
             .iter()
             .enumerate()
             .find(|(_, w)| w.id == r.window)?;
-        Some(format!("{} · {}:{}", item.name(), n + 1, self.tab_name(w)))
+        Some(format!("{} · {}:{}", space.name(), n + 1, self.tab_name(w)))
     }
 
     /// A tab's name as shown: tmux's, except that a tab tmux names (not
@@ -94,10 +94,11 @@ impl App {
 
     /// The current space's tabs: their names and most urgent Claude state.
     pub(super) fn tabs(&self, rows: &[Row]) -> Vec<Tab> {
-        let Some(item) = self.current_item() else {
+        let Some(space) = self.current_space() else {
             return Vec::new();
         };
-        item.windows()
+        space
+            .windows()
             .iter()
             .map(|w| Tab {
                 name: self.tab_name(w),
@@ -115,10 +116,10 @@ impl App {
     /// Scroll the tab bar so the current tab is in sight, when the current
     /// space or tab changed (scrolling with `<` and `>` stays put otherwise).
     pub(super) fn settle_tabs(&mut self) {
-        let Some(item) = self.current_item() else {
+        let Some(space) = self.current_space() else {
             return;
         };
-        let now = (item.id.clone(), item.structure.current);
+        let now = (space.id.clone(), space.structure.current);
         if self.tab_shown.as_ref() == Some(&now) {
             return;
         }
@@ -134,7 +135,7 @@ impl App {
     /// clipped to the session area.
     pub(super) fn pane_rects(&self) -> Vec<(String, Rect)> {
         let area = self.area();
-        let Some(window) = self.current_item().and_then(|i| i.current_window()) else {
+        let Some(window) = self.current_space().and_then(|i| i.current_window()) else {
             return Vec::new();
         };
         window
