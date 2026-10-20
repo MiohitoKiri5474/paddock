@@ -28,8 +28,9 @@ const KEPT_VARS: &[&str] = &[
 const SERVER_TERM: &str = "xterm-256color";
 const HISTORY_LIMIT: u32 = 50_000;
 /// How tmux names a window the user has not renamed.
-const AUTO_NAME: &str =
-    "#{?#{m:*sh,#{pane_current_command}},#{b:pane_current_path},#{pane_current_command}}";
+/// Shells (not `ssh` or `mosh`) are named after their directory.
+const AUTO_NAME: &str = "#{?#{m/r:^-?(ba|z|fi|da|k|tc|c)?sh$,#{pane_current_command}},\
+#{b:pane_current_path},#{pane_current_command}}";
 
 /// The environment tmux runs with: an allowlist of the given variables.
 pub fn clean_env(vars: impl IntoIterator<Item = (String, String)>) -> Vec<(String, String)> {
@@ -372,6 +373,41 @@ mod tests {
             let _ = std::fs::remove_file(socket.trim());
         }
         assert_eq!(got.unwrap(), dir.to_string_lossy());
+    }
+
+    #[test]
+    fn tabs_running_a_shell_are_named_after_its_directory_and_others_after_their_command() {
+        let tmp = tempfile::tempdir().unwrap();
+        let server = Server::new(Paths {
+            socket: format!("paddock-unit-names-{}", std::process::id()),
+            state_dir: tmp.path().join("state"),
+            config_dir: tmp.path().join("config"),
+        });
+        server.write_config().unwrap();
+        let dir = tmp.path().canonicalize().unwrap().join("proj");
+        std::fs::create_dir(&dir).unwrap();
+        let started = server.new_session("t", &dir, (80, 24));
+        // The format, as tmux expands it for each command name.
+        let name = |command: &str| {
+            let format = AUTO_NAME.replace("#{pane_current_command}", command);
+            started
+                .as_ref()
+                .map_err(|e| anyhow::anyhow!("{e:#}"))
+                .and_then(|s| server.display(&s.id, &format))
+        };
+        let got: Vec<String> = ["zsh", "-zsh", "bash", "sh", "fish", "ssh", "mosh", "vim"]
+            .into_iter()
+            .map(|c| name(c).unwrap_or_else(|e| format!("{e:#}")))
+            .collect();
+        let socket = server.run(&["display-message", "-p", "#{socket_path}"]);
+        let _ = server.run(&["kill-server"]);
+        if let Ok(socket) = socket {
+            let _ = std::fs::remove_file(socket.trim());
+        }
+        assert_eq!(
+            got,
+            ["proj", "proj", "proj", "proj", "proj", "ssh", "mosh", "vim"]
+        );
     }
 
     #[test]

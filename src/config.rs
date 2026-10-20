@@ -41,12 +41,12 @@ struct RawColors {
     current_item: Option<RawColor>,
 }
 
-/// A colour as written: a 256-colour index or `"#rrggbb"`.
+/// A colour as written: a 256-colour index (bare or quoted) or `"#rrggbb"`.
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum RawColor {
     Index(u8),
-    Hex(String),
+    Text(String),
 }
 
 #[derive(Deserialize, Default)]
@@ -73,7 +73,7 @@ impl Config {
         let current_item = match raw.colors.current_item {
             None => DEFAULT_CURRENT_ITEM,
             Some(RawColor::Index(i)) => Color::Indexed(i),
-            Some(RawColor::Hex(hex)) => parse_hex(&hex)?,
+            Some(RawColor::Text(text)) => parse_colour(&text)?,
         };
         Ok(Self {
             prefix: parse_key(prefix)?,
@@ -91,8 +91,11 @@ impl Default for Config {
     }
 }
 
-/// Parse a colour written `#rrggbb`.
-fn parse_hex(spec: &str) -> Result<Color> {
+/// Parse a colour written `236` (a 256-colour index) or `#rrggbb`.
+fn parse_colour(spec: &str) -> Result<Color> {
+    if let Ok(i) = spec.parse::<u8>() {
+        return Ok(Color::Indexed(i));
+    }
     let digits = spec
         .strip_prefix('#')
         .filter(|d| d.len() == 6 && d.bytes().all(|b| b.is_ascii_hexdigit()));
@@ -182,7 +185,8 @@ mod tests {
             parse("\"#1a2B3c\"").unwrap().current_item,
             Color::Rgb(0x1a, 0x2b, 0x3c)
         );
-        for bad in ["256", "-1", "\"236\"", "\"#12345\"", "\"red\""] {
+        assert_eq!(parse("\"236\"").unwrap().current_item, Color::Indexed(236));
+        for bad in ["256", "-1", "\"256\"", "\"#12345\"", "\"red\""] {
             assert!(parse(bad).is_err(), "{bad}");
         }
         assert!(Config::parse("[colors]\ncurrent = 1\n").is_err());
