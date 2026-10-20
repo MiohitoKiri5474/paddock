@@ -6,13 +6,14 @@
 //! survives reattaching; when that terminal ends, the next one names the tab.
 
 use super::attention::Attention;
+use super::dashboard::Dashboard;
 use super::layout::{terminal_size, Layout};
 use super::mouse::Press;
 use super::saved;
 use super::tabs::Tabs;
 use super::Event;
 use crate::config::{key_name, Config};
-use crate::git::Status;
+use crate::git::{Details, Status};
 use crate::hooks::now_ms;
 use crate::input::PrefixKeys;
 use crate::sessions::{self, dismissed, Session, Sessions, State, SubagentTask, Task, TaskState};
@@ -39,11 +40,15 @@ pub enum Mode {
     Help,
     /// The sidebar has the keyboard; holds the selected row.
     Sidebar(Option<RowId>),
-    /// Asking before closing terminal `terminal`, where Claude is `state`.
+    /// Asking before closing terminal `terminal`, where Claude is `state`;
+    /// `back` is the dashboard asked from, to return to.
     ConfirmClose {
         terminal: String,
         state: State,
+        back: Option<Dashboard>,
     },
+    /// The dashboard is open.
+    Dashboard(Dashboard),
 }
 
 /// One session row of the sidebar.
@@ -96,6 +101,9 @@ pub struct TaskRow {
 /// Last known git status of each task, by `(directory, branch)`.
 pub type TaskStatus = HashMap<(String, String), Status>;
 
+/// Last known dashboard details of each task, by `(directory, branch)`.
+pub type TaskDetails = HashMap<(String, String), Details>;
+
 pub struct App {
     pub(super) server: Server,
     pub(super) events: Sender<Event>,
@@ -116,6 +124,7 @@ pub struct App {
     pub(super) state_dir: PathBuf,
     pub(super) sessions: Sessions,
     pub(super) task_status: TaskStatus,
+    pub(super) task_details: TaskDetails,
     /// The user hid the sidebar (`C-a b`).
     pub(super) sidebar_hidden: bool,
     /// Where the held mouse button went, until it is released.
@@ -258,6 +267,7 @@ impl App {
             state_dir,
             sessions: Sessions::default(),
             task_status: TaskStatus::new(),
+            task_details: TaskDetails::new(),
             sidebar_hidden: false,
             press: None,
             attention: Attention::from_env(),
@@ -341,6 +351,7 @@ impl App {
             .map(|t| (t.cwd, t.branch))
             .collect();
         self.task_status.retain(|task, _| shown.contains(task));
+        self.task_details.retain(|task, _| shown.contains(task));
         dismissed::save(&self.state_dir, &self.sessions.dismissals())
     }
 
@@ -466,6 +477,7 @@ impl App {
                 self.mode = Mode::ConfirmClose {
                     terminal: id.to_string(),
                     state,
+                    back: None,
                 };
                 Ok(())
             }

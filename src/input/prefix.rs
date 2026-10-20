@@ -28,6 +28,8 @@ pub enum Command {
     ToggleSidebar,
     /// Jump to the next session that is waiting or idle.
     NextAttention,
+    /// Open or close the dashboard.
+    Dashboard,
 }
 
 /// A direction to move focus in.
@@ -63,6 +65,7 @@ pub const BINDINGS: &[(&str, &str)] = &[
     ("s", "focus sidebar (j/k, Enter jumps, Esc back)"),
     ("b", "show or hide sidebar"),
     ("a", "next session that needs you"),
+    ("o", "dashboard (j/k, Enter, D, x, f, I types, Esc back)"),
     ("d", "detach: quit, terminals keep running"),
     ("?", "this help"),
 ];
@@ -100,6 +103,7 @@ fn command(key: &KeyEvent) -> Option<Command> {
         's' => Command::FocusSidebar,
         'b' => Command::ToggleSidebar,
         'a' => Command::NextAttention,
+        'o' => Command::Dashboard,
         _ => return None,
     })
 }
@@ -235,6 +239,10 @@ mod tests {
         assert_eq!(
             after_prefix('a', none),
             KeyAction::Command(Command::NextAttention)
+        );
+        assert_eq!(
+            after_prefix('o', none),
+            KeyAction::Command(Command::Dashboard)
         );
     }
 

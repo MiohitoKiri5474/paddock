@@ -99,6 +99,82 @@ pub fn status(dir: &str, branch: &str) -> Status {
     }
 }
 
+/// What the dashboard shows of a task branch beyond its [`Status`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Details {
+    /// Lines added and removed, and files changed, on the branch since it
+    /// left its base; `None` without a base.
+    pub base_diff: Option<(u32, u32, u32)>,
+    /// When the branch's last commit was made (seconds since the epoch).
+    pub last_commit: Option<u64>,
+    /// The branch's commits are all in its base, and it is not just the
+    /// base's tip (as a branch with no commits of its own is).
+    pub merged: bool,
+}
+
+/// The branch tasks are compared with: the remote branch `origin/HEAD`
+/// points at, else the first of `main` and `master` that exists.
+fn base_ref(dir: &str) -> Option<String> {
+    let origin = git(
+        dir,
+        &["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"],
+    );
+    if let Some(r) = origin
+        .map(|o| o.trim().to_string())
+        .filter(|r| !r.is_empty())
+    {
+        return Some(r);
+    }
+    DEFAULTS
+        .iter()
+        .map(|b| format!("refs/heads/{b}"))
+        .find(|r| git(dir, &["rev-parse", "--verify", "--quiet", r]).is_some())
+}
+
+/// `branch`'s details, read in `dir`.
+pub fn details(dir: &str, branch: &str) -> Details {
+    let tip = format!("refs/heads/{branch}");
+    let Some(rev) = git(dir, &["rev-parse", "--verify", "--quiet", &tip]) else {
+        return Details::default();
+    };
+    let last_commit =
+        git(dir, &["log", "-1", "--format=%ct", &tip]).and_then(|o| o.trim().parse().ok());
+    let Some(base) = base_ref(dir) else {
+        return Details {
+            last_commit,
+            ..Details::default()
+        };
+    };
+    let range = format!("{base}...{tip}");
+    let base_diff =
+        git(dir, &["diff", "--no-color", "--numstat", &range]).map(|o| parse_base_diff(&o));
+    let at_base = git(dir, &["rev-parse", "--verify", "--quiet", &base])
+        .is_some_and(|b| b.trim() == rev.trim());
+    let merged = !at_base && git(dir, &["merge-base", "--is-ancestor", &tip, &base]).is_some();
+    Details {
+        base_diff,
+        last_commit,
+        merged,
+    }
+}
+
+/// `diff --numstat` output as lines added, removed, and files changed.
+fn parse_base_diff(out: &str) -> (u32, u32, u32) {
+    let (added, removed) = parse_numstat(out);
+    let files = out.lines().filter(|l| !l.is_empty()).count();
+    (added, removed, u32::try_from(files).unwrap_or(u32::MAX))
+}
+
+/// A short age: `now`, `5m`, `2h`, `3d`.
+pub fn age(secs: u64) -> String {
+    match secs {
+        0..=59 => "now".to_string(),
+        60..=3599 => format!("{}m", secs / 60),
+        3600..=86_399 => format!("{}h", secs / 3600),
+        _ => format!("{}d", secs / 86_400),
+    }
+}
+
 /// Uncommitted lines added and removed in `dir`'s working tree.
 fn changes(dir: &str) -> Option<(u32, u32)> {
     let (mut added, removed) =
@@ -270,6 +346,71 @@ mod tests {
         );
         // A branch that is not checked out here has no line changes.
         assert_eq!(status(s(&dir), "main"), Status::default());
+    }
+
+    #[test]
+    fn parses_base_numstat_and_ages() {
+        assert_eq!(
+            parse_base_diff("2\t1\ta.txt\n-\t-\tlogo.png\n10\t0\tb.rs\n"),
+            (12, 1, 3)
+        );
+        assert_eq!(parse_base_diff(""), (0, 0, 0));
+        assert_eq!(age(0), "now");
+        assert_eq!(age(59), "now");
+        assert_eq!(age(60), "1m");
+        assert_eq!(age(3599), "59m");
+        assert_eq!(age(3600), "1h");
+        assert_eq!(age(86_399), "23h");
+        assert_eq!(age(86_400 * 3), "3d");
+    }
+
+    #[test]
+    fn details_compare_a_branch_with_main() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = repo(tmp.path());
+        run(&dir, &["switch", "-q", "-c", "feat/x"]);
+        let fresh = details(s(&dir), "feat/x");
+        assert_eq!(fresh.base_diff, Some((0, 0, 0)));
+        assert!(!fresh.merged, "a branch with no commits of its own");
+        std::fs::write(dir.join("f.txt"), "1\nchanged\n3\nnew\n").unwrap();
+        commit(&dir, "a");
+        // Uncommitted work is not part of the base diff.
+        std::fs::write(dir.join("loose.txt"), "x\n").unwrap();
+        let d = details(s(&dir), "feat/x");
+        // f.txt +2 -1, a +1
+        assert_eq!(d.base_diff, Some((3, 1, 2)));
+        assert!(d.last_commit.is_some_and(|t| t > 0));
+        assert!(!d.merged);
+        assert_eq!(details(s(&dir), "nope"), Details::default());
+    }
+
+    #[test]
+    fn a_branch_merged_into_its_base_is_merged() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = repo(tmp.path());
+        run(&dir, &["switch", "-q", "-c", "feat/x"]);
+        commit(&dir, "a");
+        run(&dir, &["switch", "-q", "main"]);
+        commit(&dir, "b");
+        run(&dir, &["merge", "-q", "--no-edit", "feat/x"]);
+        let d = details(s(&dir), "feat/x");
+        assert!(d.merged);
+        assert_eq!(d.base_diff, Some((0, 0, 0)));
+    }
+
+    #[test]
+    fn the_base_is_what_origin_head_names_on_the_remote() {
+        let tmp = tempfile::tempdir().unwrap();
+        let origin = repo(tmp.path());
+        run(&origin, &["switch", "-q", "-c", "trunk"]);
+        let clone = tmp.path().join("clone");
+        run(tmp.path(), &["clone", "-q", s(&origin), s(&clone)]);
+        // The local trunk moves on; the remote's does not.
+        commit(&clone, "local");
+        run(&clone, &["switch", "-q", "-c", "feat/x"]);
+        commit(&clone, "a");
+        let d = details(s(&clone), "feat/x");
+        assert_eq!(d.base_diff, Some((2, 0, 2)), "vs origin/trunk");
     }
 
     #[test]

@@ -24,12 +24,29 @@ impl App {
                 Ok(Flow::Continue)
             }
             // `y` closes; any other key keeps the terminal, and is not passed on.
-            Mode::ConfirmClose { terminal, .. } => {
+            Mode::ConfirmClose { terminal, back, .. } => {
                 if key.code == KeyCode::Char('y') {
                     self.report(|app| app.server.kill_session(&terminal));
                 }
+                if let Some(d) = back {
+                    self.mode = Mode::Dashboard(d);
+                }
                 Ok(Flow::Continue)
             }
+            Mode::Dashboard(d) => match self.prefix.handle(key) {
+                KeyAction::Command(c) => {
+                    self.mode = Mode::Dashboard(d);
+                    self.command(c)
+                }
+                KeyAction::Forward(key) => {
+                    self.dashboard_key(d, key);
+                    Ok(Flow::Continue)
+                }
+                KeyAction::None => {
+                    self.mode = Mode::Dashboard(d);
+                    Ok(Flow::Continue)
+                }
+            },
             Mode::Sidebar(selected) => match self.prefix.handle(key) {
                 KeyAction::Command(c) => {
                     self.mode = Mode::Sidebar(selected);
@@ -108,6 +125,7 @@ impl App {
                 }
             }
             Command::NextAttention => self.next_attention(),
+            Command::Dashboard => self.toggle_dashboard(),
         }
         // The sidebar may have come or gone.
         self.report(|app| app.relayout());
@@ -205,10 +223,14 @@ impl App {
     }
 
     pub fn paste(&mut self, text: &str) -> Result<()> {
+        if let Mode::Dashboard(d) = &self.mode {
+            let d = d.clone();
+            return self.dashboard_paste(&d, text);
+        }
         match &mut self.mode {
             Mode::Rename(name) => name.extend(text.chars().filter(|c| !c.is_control())),
             Mode::Help => self.mode = Mode::Normal,
-            Mode::Sidebar(_) | Mode::ConfirmClose { .. } => {}
+            Mode::Sidebar(_) | Mode::ConfirmClose { .. } | Mode::Dashboard(_) => {}
             Mode::Normal => {
                 if let Some(t) = self.current_mut() {
                     let bytes = encode_paste(text, t.emulator().modes().bracketed_paste);

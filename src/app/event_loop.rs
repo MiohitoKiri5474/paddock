@@ -6,8 +6,9 @@ use super::layout::Split;
 use super::screen::Screen;
 use super::state::{session_area, App, Mode, TAB_BAR_ROWS};
 use super::{watch, Event};
+use crate::hooks::now_ms;
 use crate::tmux::Message;
-use crate::ui::{help, session_view, sidebar, tab_bar::TabBar};
+use crate::ui::{dashboard, help, session_view, sidebar, tab_bar::TabBar};
 use anyhow::Result;
 use crossterm::event::{self as ct, KeyEventKind};
 use ratatui::layout::Rect;
@@ -19,14 +20,14 @@ const FRAME: Duration = Duration::from_millis(16);
 
 /// Tells the git thread which task rows are on screen.
 struct GitFeed {
-    tx: Sender<watch::Tasks>,
-    sent: watch::Tasks,
+    tx: Sender<watch::Watched>,
+    sent: watch::Watched,
 }
 
 impl GitFeed {
     /// Send the tasks on screen if they changed, or always if `now`.
     fn update(&mut self, app: &App, now: bool) {
-        let tasks = app.visible_tasks();
+        let tasks = app.watched_tasks();
         if now || tasks != self.sent {
             // The thread only ends with the app.
             let _ = self.tx.send(tasks.clone());
@@ -39,11 +40,11 @@ pub fn run(
     screen: &mut Screen,
     mut app: App,
     rx: &Receiver<Event>,
-    git: Sender<watch::Tasks>,
+    git: Sender<watch::Watched>,
 ) -> Result<()> {
     let mut git = GitFeed {
         tx: git,
-        sent: Vec::new(),
+        sent: watch::Watched::default(),
     };
     let mut dirty = true;
     let mut last_draw = Instant::now()
@@ -99,7 +100,8 @@ fn handle(app: &mut App, event: Event, screen: &mut Screen) -> Result<(Flow, boo
             if let Some(t) = app.terminals.get_mut(&session) {
                 t.output(&data);
             }
-            return Ok((Flow::Continue, app.shows(&session)));
+            let seen = app.shows(&session) || app.previews(&session);
+            return Ok((Flow::Continue, seen));
         }
         // That terminal's tmux session ended: its shell exited or it was closed.
         Event::Tmux {
@@ -125,6 +127,10 @@ fn handle(app: &mut App, event: Event, screen: &mut Screen) -> Result<(Flow, boo
         }
         Event::Git(read) => {
             app.task_status.extend(read);
+            Flow::Continue
+        }
+        Event::Details(read) => {
+            app.task_details.extend(read);
             Flow::Continue
         }
         Event::Input(ct::Event::Key(key)) if key.kind != KeyEventKind::Release => app.key(key)?,
@@ -217,8 +223,27 @@ fn draw(screen: &mut Screen, app: &App) -> Result<()> {
                 session_view::border(b.area, b.split == Split::Columns, f.buffer_mut());
             }
         }
+        let dash_cursor = app.dashboard().and_then(|d| {
+            let row = app.dashboard_row(d);
+            let view = dashboard::View {
+                rows: &rows,
+                details: &app.task_details,
+                selected: d.selected.as_ref(),
+                preview: row
+                    .and_then(|r| app.terminals.get(&r.terminal))
+                    .map(|t| t.emulator()),
+                interactive: d.interactive,
+                now: now_ms() / 1000,
+            };
+            dashboard::render(&view, term_area, f.buffer_mut())
+        });
         if let Mode::Help = app.mode {
             help::render(&app.prefix_name, full, f.buffer_mut());
+        } else if app.dashboard().is_some() {
+            // Only typing into the preview shows a cursor.
+            if let Some(cursor) = dash_cursor {
+                f.set_cursor_position(cursor);
+            }
         } else if let Mode::Sidebar(_) = app.mode {
             // The sidebar has the keyboard: no terminal cursor.
         } else if let Some(cursor) = bar_cursor.or(term_cursor) {

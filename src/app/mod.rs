@@ -2,6 +2,7 @@
 //! and pass input to the current one until the user detaches.
 
 mod attention;
+mod dashboard;
 mod event_loop;
 mod input;
 mod layout;
@@ -13,10 +14,10 @@ mod state;
 mod tabs;
 mod watch;
 
-pub use state::{Row, RowId, TaskRow};
+pub use state::{Row, RowId, TaskDetails, TaskRow};
 
 use crate::config::Config;
-use crate::git::Status;
+use crate::git::{Details, Status};
 use crate::paths::Paths;
 use crate::sessions::{Agent, HookRecord};
 use crate::tmux::{Message, Server};
@@ -42,6 +43,8 @@ pub enum Event {
     Agents(u64, Vec<Agent>),
     /// Git status just read for tasks, by `(directory, branch)`.
     Git(Vec<((String, String), Status)>),
+    /// Dashboard details just read for tasks, by `(directory, branch)`.
+    Details(Vec<((String, String), Details)>),
 }
 
 pub fn run() -> Result<()> {
