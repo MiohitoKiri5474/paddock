@@ -232,7 +232,12 @@ fn no_rows_for_the_default_branch_or_shells_without_claude() {
             shell_dir.to_str().unwrap(),
         ],
     );
-    paddock.type_line(&format!("cd {}", shell_dir.display()));
+    paddock.type_line(&format!(
+        "cd {} && echo moved-$((1+1))",
+        shell_dir.display()
+    ));
+    // The new tab starts where the shell is, once it got there.
+    paddock.wait_for_text("moved-2\n");
     paddock.command(b"c");
     paddock.wait_for_current_tab("2:shell");
 
