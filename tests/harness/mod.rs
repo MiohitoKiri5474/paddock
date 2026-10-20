@@ -446,8 +446,10 @@ impl Paddock {
     pub fn wait_for_tabs(&self, labels: &[&str]) {
         let expected = labels.iter().map(|l| format!(" {l} ")).collect::<String>();
         let expected = expected.trim_end().to_string();
+        // Right of the sidebar's border, if a sidebar is shown.
         self.wait_for(&format!("tabs {labels:?}"), |s| {
-            s.lines().next().unwrap_or("").trim_end() == expected
+            let first = s.lines().next().unwrap_or("");
+            first.rsplit('│').next().unwrap_or("").trim_end() == expected
         });
     }
 

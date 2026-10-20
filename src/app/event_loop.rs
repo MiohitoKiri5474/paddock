@@ -154,7 +154,7 @@ fn draw(screen: &mut Screen, app: &App) -> Result<()> {
         let side = app.sidebar_width().min(full.width);
         if side > 0 {
             let selected = match &app.mode {
-                Mode::Sidebar(pane) => pane.as_deref(),
+                Mode::Sidebar(selected) => selected.as_ref(),
                 _ => None,
             };
             let side_area = Rect {

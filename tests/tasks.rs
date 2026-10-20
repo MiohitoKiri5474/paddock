@@ -368,3 +368,151 @@ fn subagent_work_done_while_paddock_is_closed_appears_on_reopen() {
         ],
     );
 }
+
+// Ticket 10: rows stay, across new conversations, closed terminals and
+// reopening, until dismissed with `D`.
+
+/// Main-agent events in tmux session `terminal`: it starts in `dir`, then a
+/// shell command leaves it on each of `branches` in turn, then it stops.
+fn work_on(sandbox: &Sandbox, terminal: &str, dir: &Path, branches: &[&str]) {
+    sandbox.hook(
+        terminal,
+        "SessionStart",
+        &payload("SessionStart", dir, None),
+    );
+    for b in branches {
+        git(dir, &["switch", "-q", "-c", b]);
+        sandbox.hook(
+            terminal,
+            "PostToolUse",
+            &payload("PostToolUse", dir, Some("Bash")),
+        );
+    }
+    sandbox.hook(terminal, "Stop", &payload("Stop", dir, None));
+}
+
+/// Detach, then open paddock again.
+fn reopen(sandbox: &Sandbox, mut paddock: Paddock) -> Paddock {
+    paddock.detach_keys();
+    assert!(paddock.wait_exit());
+    ready(sandbox)
+}
+
+fn has_branch(dir: &Path, branch: &str) -> bool {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["branch", "--list", branch])
+        .output()
+        .expect("run git");
+    !String::from_utf8_lossy(&out.stdout).trim().is_empty()
+}
+
+#[test]
+fn d_dismisses_a_task_row_and_it_stays_gone_after_reopening() {
+    let sandbox = Sandbox::new();
+    let dir = repo(&sandbox);
+    let mut paddock = ready(&sandbox);
+    work_on(&sandbox, "terminal-1", &dir, &["feat/one", "feat/two"]);
+    wait_for_sidebar(&paddock, &[&session("idle"), "feat/one", "feat/two"]);
+
+    paddock.command(b"s");
+    paddock.send(b"jD");
+    wait_for_sidebar(&paddock, &[&session("idle"), "feat/two"]);
+    assert!(has_branch(&dir, "feat/one"), "git is untouched");
+
+    let mut again = reopen(&sandbox, paddock);
+    wait_for_sidebar(&again, &[&session("idle"), "feat/two"]);
+
+    again.command(b"s");
+    again.send(b"jD");
+    wait_for_sidebar(&again, &[&session("idle")]);
+}
+
+#[test]
+fn d_on_a_session_row_hides_it_with_its_tasks_until_claude_reports_again() {
+    let sandbox = Sandbox::new();
+    let dir = repo(&sandbox);
+    let mut paddock = ready(&sandbox);
+    work_on(&sandbox, "terminal-1", &dir, &["feat/one"]);
+    wait_for_sidebar(&paddock, &[&session("idle"), "feat/one"]);
+
+    paddock.command(b"s");
+    paddock.send(b"D");
+    paddock.wait_for("the sidebar gone", |s| !s.contains("sessions"));
+    assert_eq!(sandbox.session_names(), ["terminal-1"], "terminal kept");
+    assert!(has_branch(&dir, "feat/one"), "git is untouched");
+
+    let again = reopen(&sandbox, paddock);
+    // Claude is prompted again, back on the default branch.
+    git(&dir, &["switch", "-q", "main"]);
+    sandbox.hook(
+        "terminal-1",
+        "UserPromptSubmit",
+        &payload("UserPromptSubmit", &dir, None),
+    );
+    // Back, but the tasks dismissed with it stay gone.
+    wait_for_sidebar(&again, &[&session("running")]);
+}
+
+#[test]
+fn a_closed_terminals_rows_stay_as_stopped_after_reopening() {
+    let sandbox = Sandbox::new();
+    let dir = repo(&sandbox);
+    let mut paddock = ready(&sandbox);
+    paddock.command(b"c");
+    paddock.wait_for_current_tab("2:terminal-2");
+    work_on(&sandbox, "terminal-2", &dir, &["feat/one"]);
+    wait_for_sidebar(&paddock, &[&session("idle"), "feat/one"]);
+
+    paddock.type_line("exit");
+    wait_for_sidebar(&paddock, &[&session("stopped"), "feat/one"]);
+    assert_eq!(sandbox.session_names(), ["terminal-1"]);
+
+    let again = reopen(&sandbox, paddock);
+    wait_for_sidebar(&again, &[&session("stopped"), "feat/one"]);
+}
+
+#[test]
+fn a_new_conversation_in_the_same_terminal_keeps_its_task_rows() {
+    let sandbox = Sandbox::new();
+    let dir = repo(&sandbox);
+    let paddock = ready(&sandbox);
+    work_on(&sandbox, "terminal-1", &dir, &["feat/one"]);
+    wait_for_sidebar(&paddock, &[&session("idle"), "feat/one"]);
+
+    let next = payload("UserPromptSubmit", &dir, None)
+        .replace(SESSION, "22222222-2222-4333-8444-555555555555");
+    sandbox.hook("terminal-1", "UserPromptSubmit", &next);
+    wait_for_sidebar(&paddock, &[&session("running"), "feat/one"]);
+}
+
+#[test]
+fn a_dismissed_subagent_task_row_stays_gone_after_reopening() {
+    let sandbox = Sandbox::new();
+    let dir = repo(&sandbox);
+    write_meta(&sandbox);
+    let wt_a = worktree(&dir, AGENT_A);
+    let mut paddock = ready(&sandbox);
+    let hook = |name: &str, event: &str| {
+        sandbox.hook(
+            "terminal-1",
+            event,
+            &recorded(&sandbox, name, &dir, AGENT_A),
+        );
+    };
+    hook("UserPromptSubmit", "UserPromptSubmit");
+    hook("SubagentStart-subagent", "SubagentStart");
+    git(&wt_a, &["switch", "-q", "-c", "fix/a"]);
+    hook("PostToolUse-subagent", "PostToolUse");
+    hook("SubagentStop-subagent", "SubagentStop");
+    wait_for_sidebar(&paddock, &[&session("running"), &sub(FIX_A, "done")]);
+
+    paddock.command(b"s");
+    paddock.send(b"jD");
+    wait_for_sidebar(&paddock, &[&session("running")]);
+
+    let again = reopen(&sandbox, paddock);
+    hook("Stop", "Stop");
+    wait_for_sidebar(&again, &[&session("idle")]);
+}

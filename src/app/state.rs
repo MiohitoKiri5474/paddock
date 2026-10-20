@@ -13,8 +13,9 @@ use super::tabs::Tabs;
 use super::Event;
 use crate::config::{key_name, Config};
 use crate::git::Status;
+use crate::hooks::now_ms;
 use crate::input::PrefixKeys;
-use crate::sessions::{self, Session, Sessions, State, SubagentTask};
+use crate::sessions::{self, dismissed, Session, Sessions, State, SubagentTask, Task, TaskState};
 use crate::terminal::Terminal;
 use crate::tmux::server::quote;
 use crate::tmux::Server;
@@ -36,8 +37,8 @@ pub enum Mode {
     /// Renaming the current tab; holds the text typed so far.
     Rename(String),
     Help,
-    /// The sidebar has the keyboard; holds the selected row's pane.
-    Sidebar(Option<String>),
+    /// The sidebar has the keyboard; holds the selected row.
+    Sidebar(Option<RowId>),
     /// Asking before closing terminal `terminal`, where Claude is `state`.
     ConfirmClose {
         terminal: String,
@@ -56,6 +57,28 @@ pub struct Row {
     pub label: String,
     pub state: State,
     pub tasks: Vec<TaskRow>,
+    /// The terminal was closed: `terminal` is empty and `tab` means nothing.
+    pub closed: bool,
+}
+
+/// A sidebar line: pane `pane`'s session row, or its task row on `branch`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RowId {
+    pub pane: String,
+    pub branch: Option<String>,
+}
+
+/// Every sidebar line of `rows`, in display order.
+pub fn row_ids(rows: &[Row]) -> Vec<RowId> {
+    rows.iter()
+        .flat_map(|r| {
+            let id = |branch| RowId {
+                pane: r.pane.clone(),
+                branch,
+            };
+            std::iter::once(id(None)).chain(r.tasks.iter().map(move |t| id(Some(t.branch.clone()))))
+        })
+        .collect()
 }
 
 /// One task row, under its session row.
@@ -127,41 +150,67 @@ pub struct Placed<'a> {
     pub pane: &'a str,
 }
 
-/// Session rows of the given terminals, sorted by state, then by tab, each
-/// with its task rows.
+/// Session rows not dismissed, of the given terminals and of closed ones,
+/// sorted by state, then by tab (closed terminals last), each with its task
+/// rows.
 pub fn rows<'a>(
     sessions: &Sessions,
     status: &TaskStatus,
     terminals: impl IntoIterator<Item = Placed<'a>>,
 ) -> Vec<Row> {
+    // In a closed terminal, no subagent works on.
+    let task_rows = |tasks: Vec<&Task>, closed: bool| -> Vec<TaskRow> {
+        tasks
+            .into_iter()
+            .map(|task| TaskRow {
+                branch: task.branch.clone(),
+                cwd: task.cwd.clone(),
+                status: status
+                    .get(&(task.cwd.clone(), task.branch.clone()))
+                    .copied(),
+                subagent: task.subagent.clone().map(|mut sub| {
+                    if closed && matches!(sub.state, TaskState::Running | TaskState::Waiting) {
+                        sub.state = TaskState::Stopped;
+                    }
+                    sub
+                }),
+            })
+            .collect()
+    };
+    let mut placed = Vec::new();
     let mut rows: Vec<Row> = terminals
         .into_iter()
         .filter_map(|t| {
-            let s = sessions.get(t.pane)?;
+            placed.push(t.pane);
+            let (s, tasks) = sessions.shown(t.pane)?;
             let tab_name = (!is_default_name(t.tab_name)).then_some(t.tab_name);
-            let tasks = s
-                .tasks
-                .iter()
-                .map(|task| TaskRow {
-                    branch: task.branch.clone(),
-                    cwd: task.cwd.clone(),
-                    status: status
-                        .get(&(task.cwd.clone(), task.branch.clone()))
-                        .copied(),
-                    subagent: task.subagent.clone(),
-                })
-                .collect();
             Some(Row {
                 pane: t.pane.to_string(),
                 terminal: t.terminal.to_string(),
                 tab: t.tab,
                 label: sessions::label(s, tab_name),
                 state: s.state,
-                tasks,
+                tasks: task_rows(tasks, false),
+                closed: false,
             })
         })
         .collect();
-    rows.sort_by_key(|r| (r.state.rank(), r.tab));
+    let mut closed: Vec<&str> = sessions.panes().filter(|p| !placed.contains(p)).collect();
+    closed.sort_by_key(|p| p.trim_start_matches('%').parse::<u32>().unwrap_or(u32::MAX));
+    rows.extend(closed.into_iter().filter_map(|pane| {
+        let (s, tasks) = sessions.shown(pane)?;
+        Some(Row {
+            pane: pane.to_string(),
+            terminal: String::new(),
+            tab: 0,
+            label: sessions::label(s, None),
+            // Claude no longer runs there.
+            state: State::Stopped,
+            tasks: task_rows(tasks, true),
+            closed: true,
+        })
+    }));
+    rows.sort_by_key(|r| (r.state.rank(), r.closed, r.tab));
     rows
 }
 
@@ -202,6 +251,14 @@ impl App {
             press: None,
             attention: Attention::from_env(),
         };
+        match dismissed::load(&app.state_dir) {
+            Ok(list) => {
+                for d in list {
+                    app.sessions.dismiss(&d.pane, d.branch.as_deref(), d.at);
+                }
+            }
+            Err(e) => app.notice = Some(format!("{e:#}")),
+        }
         let sessions = app.server.sessions();
         let saved = saved::load(&app.state_dir).unwrap_or_else(|e| {
             app.notice = Some(format!("{e:#}"));
@@ -248,6 +305,22 @@ impl App {
             })
         });
         rows(&self.sessions, &self.task_status, placed)
+    }
+
+    /// Dismiss a sidebar row: it leaves the sidebar, and stays gone after
+    /// reopening, until Claude reports on it again. Git and terminals are
+    /// untouched.
+    pub fn dismiss(&mut self, id: &RowId) -> Result<()> {
+        self.sessions
+            .dismiss(&id.pane, id.branch.as_deref(), now_ms());
+        let shown: Vec<(String, String)> = self
+            .rows()
+            .into_iter()
+            .flat_map(|r| r.tasks)
+            .map(|t| (t.cwd, t.branch))
+            .collect();
+        self.task_status.retain(|task, _| shown.contains(task));
+        dismissed::save(&self.state_dir, &self.sessions.dismissals())
     }
 
     /// Tasks whose rows the sidebar shows now, as `(directory, branch)`:
@@ -510,7 +583,7 @@ mod tests {
     }
 
     #[test]
-    fn rows_cover_terminals_with_sessions_sorted_by_state_then_tab() {
+    fn rows_cover_sessions_sorted_by_state_then_tab_closed_terminals_last() {
         use crate::sessions::HookRecord;
         let mut s = Sessions::default();
         for (pane, event, cwd) in [
@@ -518,16 +591,22 @@ mod tests {
             ("%2", "Stop", "/w/b"),
             ("%3", "PermissionRequest", "/w/c"),
             ("%4", "Stop", "/w/d"),
-            ("%9", "Stop", "/w/gone"),
+            ("%10", "Stop", "/w/ten"),
+            ("%9", "PermissionRequest", "/w/gone"),
+            ("%6", "Stop", "/w/dismissed"),
+            ("%7", "Stop", "/w/closed-dismissed"),
         ] {
             s.apply(&HookRecord {
                 event: event.into(),
                 pane: pane.into(),
                 session_id: Some(pane.into()),
                 cwd: Some(cwd.into()),
+                ts: 1,
                 ..Default::default()
             });
         }
+        s.dismiss("%6", None, 2);
+        s.dismiss("%7", None, 2);
         // Tab 3 is split: both of its terminals run Claude.
         let terminals = [
             (0, "terminal-1", "$1", "%1"),
@@ -535,6 +614,7 @@ mod tests {
             (2, "terminal-3", "$3", "%3"),
             (2, "terminal-3", "$4", "%4"),
             (3, "shell", "$5", "%5"),
+            (4, "terminal-6", "$6", "%6"),
         ];
         let placed = terminals
             .iter()
@@ -544,19 +624,22 @@ mod tests {
                 terminal,
                 pane,
             });
-        let got: Vec<(String, String, State)> = rows(&s, &TaskStatus::new(), placed)
+        let got: Vec<(String, String, State, bool)> = rows(&s, &TaskStatus::new(), placed)
             .into_iter()
-            .map(|r| (r.label, r.terminal, r.state))
+            .map(|r| (r.label, r.terminal, r.state, r.closed))
             .collect();
+        // Claude no longer runs in a closed terminal: its row is stopped.
         let want = [
-            ("c", "$3", State::Waiting),
-            ("api", "$2", State::Idle),
-            ("d", "$4", State::Idle),
-            ("a", "$1", State::Stopped),
+            ("c", "$3", State::Waiting, false),
+            ("api", "$2", State::Idle, false),
+            ("d", "$4", State::Idle, false),
+            ("a", "$1", State::Stopped, false),
+            ("gone", "", State::Stopped, true),
+            ("ten", "", State::Stopped, true),
         ];
-        let want: Vec<(String, String, State)> = want
+        let want: Vec<(String, String, State, bool)> = want
             .iter()
-            .map(|&(l, t, s)| (l.to_string(), t.to_string(), s))
+            .map(|&(l, t, s, c)| (l.to_string(), t.to_string(), s, c))
             .collect();
         assert_eq!(got, want);
     }
@@ -604,6 +687,55 @@ mod tests {
             },
         ];
         assert_eq!(got, &want);
+    }
+
+    #[test]
+    fn a_closed_terminals_subagent_tasks_are_stopped() {
+        use crate::sessions::{HookRecord, TaskState};
+        let mut s = Sessions::default();
+        s.apply(&HookRecord {
+            event: "PermissionRequest".into(),
+            pane: "%1".into(),
+            agent_id: Some("a1".into()),
+            cwd: Some("/r/wt".into()),
+            branch: Some("fix/a".into()),
+            ..Default::default()
+        });
+        let got = &rows(&s, &TaskStatus::new(), [])[0].tasks[0];
+        assert_eq!(got.subagent.as_ref().unwrap().state, TaskState::Stopped);
+    }
+
+    #[test]
+    fn row_ids_follow_the_sidebar_lines() {
+        let task = |branch: &str| TaskRow {
+            branch: branch.into(),
+            cwd: "/r".into(),
+            status: None,
+            subagent: None,
+        };
+        let row = |pane: &str, tasks| Row {
+            pane: pane.into(),
+            terminal: String::new(),
+            tab: 0,
+            label: String::new(),
+            state: State::Idle,
+            tasks,
+            closed: false,
+        };
+        let rows = [row("%1", vec![task("a"), task("b")]), row("%2", vec![])];
+        let id = |pane: &str, branch: Option<&str>| RowId {
+            pane: pane.into(),
+            branch: branch.map(str::to_string),
+        };
+        assert_eq!(
+            row_ids(&rows),
+            [
+                id("%1", None),
+                id("%1", Some("a")),
+                id("%1", Some("b")),
+                id("%2", None)
+            ]
+        );
     }
 
     #[test]

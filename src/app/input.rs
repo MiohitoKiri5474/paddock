@@ -1,7 +1,7 @@
 //! Applying outer-terminal input to the app, depending on its mode.
 
 use super::layout::Split;
-use super::state::{App, Mode};
+use super::state::{row_ids, App, Mode, RowId};
 use crate::input::{encode_key, encode_paste, Command, KeyAction};
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -94,7 +94,10 @@ impl App {
             Command::FocusSidebar => match self.rows().first() {
                 Some(row) => {
                     self.sidebar_hidden = false;
-                    self.mode = Mode::Sidebar(Some(row.pane.clone()));
+                    self.mode = Mode::Sidebar(Some(RowId {
+                        pane: row.pane.clone(),
+                        branch: None,
+                    }));
                 }
                 None => self.notice = Some("no Claude sessions yet".into()),
             },
@@ -118,16 +121,22 @@ impl App {
         self.tabs.current().map(|t| t.content.focus.clone())
     }
 
-    /// `j`/`k` (or arrows) move, `Enter` jumps to the row's terminal, `x`
-    /// closes it, `f` forks its session, `Esc` gives the keyboard back to the
-    /// terminal.
-    fn sidebar_key(&mut self, selected: Option<String>, key: KeyEvent) {
+    /// `j`/`k` (or arrows) move over session and task rows, `Enter` jumps to
+    /// the row's terminal, `x` closes it, `f` forks its session, `D`
+    /// dismisses the row, `Esc` gives the keyboard back to the terminal. A
+    /// closed terminal's row can only be dismissed.
+    fn sidebar_key(&mut self, selected: Option<RowId>, key: KeyEvent) {
         let rows = self.rows();
-        let at = rows
+        let ids = row_ids(&rows);
+        let at = ids
             .iter()
-            .position(|r| Some(&r.pane) == selected.as_ref())
+            .position(|id| Some(id) == selected.as_ref())
             .unwrap_or(0);
-        match (key.code, rows.get(at)) {
+        let row = ids
+            .get(at)
+            .and_then(|id| rows.iter().find(|r| r.pane == id.pane))
+            .filter(|r| !r.closed);
+        match (key.code, row) {
             (KeyCode::Char('x'), Some(row)) => {
                 // Asking takes the keyboard; otherwise the sidebar keeps it.
                 self.mode = Mode::Sidebar(selected);
@@ -141,18 +150,29 @@ impl App {
             }
             _ => {}
         }
-        let pick = |i: usize| rows.get(i).map(|r| r.pane.clone());
+        if let (KeyCode::Char('D'), Some(id)) = (key.code, ids.get(at)) {
+            self.report(|app| app.dismiss(id));
+            // The line that took its place, else the one above.
+            let ids = row_ids(&self.rows());
+            self.mode = match ids.get(at.min(ids.len().saturating_sub(1))) {
+                Some(next) => Mode::Sidebar(Some(next.clone())),
+                None => Mode::Normal,
+            };
+            return self.report(|app| app.relayout());
+        }
+        let pick = |i: usize| ids.get(i).cloned();
         self.mode = match key.code {
             KeyCode::Char('j') | KeyCode::Down => Mode::Sidebar(pick(at + 1).or(selected)),
             KeyCode::Char('k') | KeyCode::Up => {
                 Mode::Sidebar(at.checked_sub(1).and_then(pick).or(selected))
             }
-            KeyCode::Enter => {
-                if let Some(row) = rows.get(at) {
+            KeyCode::Enter => match row {
+                Some(row) => {
                     self.jump_to(row.tab, &row.terminal);
+                    Mode::Normal
                 }
-                Mode::Normal
-            }
+                None => Mode::Sidebar(selected),
+            },
             KeyCode::Esc => Mode::Normal,
             _ => Mode::Sidebar(selected),
         };

@@ -2,10 +2,14 @@
 //! `claude agents --json` reports, folded into one state per terminal.
 //!
 //! Terminals are keyed by tmux pane id (`%N`). Each terminal shows its latest
-//! conversation only: an event from a new session id replaces the old one.
+//! conversation only: an event from a new session id replaces the old one,
+//! keeping only the terminal's task rows.
 
 pub mod agents;
+pub mod dismissed;
 pub mod log;
+
+pub use dismissed::Dismissal;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -278,6 +282,24 @@ impl Session {
         }
     }
 
+    /// The task branch subagent `id` works on, once read.
+    fn subagent_branch(&self, id: &str) -> Option<String> {
+        self.subagents
+            .iter()
+            .find(|a| a.id == id)
+            .and_then(|a| a.branch.clone())
+    }
+
+    /// The same terminal's next conversation: only the task rows carry over.
+    fn next(&mut self, session_id: Option<String>) {
+        self.stop_subagents();
+        let tasks = std::mem::take(&mut self.tasks);
+        *self = Session {
+            tasks,
+            ..Session::new(session_id)
+        };
+    }
+
     fn on_branch(&self, branch: &str) -> bool {
         self.subagents
             .iter()
@@ -338,9 +360,16 @@ impl Session {
 /// which can lag behind it by a poll or so.
 pub const HOOK_GRACE: u64 = 4_000;
 
+/// A session row (`None`) or one of its task rows (`Some(branch)`) of a pane.
+type RowKey = (String, Option<String>);
+
 #[derive(Debug, Default)]
 pub struct Sessions {
     by_pane: HashMap<String, Session>,
+    /// When a row last had an event about it (ms since the epoch).
+    seen: HashMap<RowKey, u64>,
+    /// When the user dismissed a row (ms since the epoch).
+    dismissed: HashMap<RowKey, u64>,
 }
 
 impl Sessions {
@@ -348,14 +377,88 @@ impl Sessions {
         self.by_pane.get(pane)
     }
 
+    /// Every terminal with a session, closed ones included.
+    pub fn panes(&self) -> impl Iterator<Item = &str> {
+        self.by_pane.keys().map(String::as_str)
+    }
+
+    /// Pane `pane`'s session and task rows, leaving out dismissed ones; `None`
+    /// if its session row is dismissed. A dismissed row stays hidden until an
+    /// event about it newer than the dismissal (a dismissed session row hides
+    /// its task rows too), so replaying the event log keeps it hidden.
+    pub fn shown(&self, pane: &str) -> Option<(&Session, Vec<&Task>)> {
+        let s = self.by_pane.get(pane)?;
+        let key = |branch: Option<&str>| (pane.to_string(), branch.map(str::to_string));
+        let seen = |k: &RowKey| self.seen.get(k).copied().unwrap_or(0);
+        let hidden =
+            |k: &RowKey, by: &RowKey| self.dismissed.get(by).is_some_and(|&at| seen(k) <= at);
+        let row = key(None);
+        if hidden(&row, &row) {
+            return None;
+        }
+        let tasks = s
+            .tasks
+            .iter()
+            .filter(|t| {
+                let k = key(Some(&t.branch));
+                !hidden(&k, &row) && !hidden(&k, &k)
+            })
+            .collect();
+        Some((s, tasks))
+    }
+
+    /// Dismiss pane `pane`'s session row, or its task row on `branch`, at
+    /// `at` (ms since the epoch).
+    pub fn dismiss(&mut self, pane: &str, branch: Option<&str>, at: u64) {
+        let key = (pane.to_string(), branch.map(str::to_string));
+        let old = self.dismissed.entry(key).or_insert(at);
+        *old = (*old).max(at);
+    }
+
+    /// Every dismissal, in a stable order.
+    pub fn dismissals(&self) -> Vec<Dismissal> {
+        let mut list: Vec<Dismissal> = self
+            .dismissed
+            .iter()
+            .map(|((pane, branch), &at)| Dismissal {
+                pane: pane.clone(),
+                branch: branch.clone(),
+                at,
+            })
+            .collect();
+        list.sort();
+        list
+    }
+
+    /// Note an event about a row at `ts`.
+    fn touch(&mut self, pane: &str, branch: Option<String>, ts: u64) {
+        let seen = self.seen.entry((pane.to_string(), branch)).or_insert(ts);
+        *seen = (*seen).max(ts);
+    }
+
     /// Apply one recorded hook event.
     pub fn apply(&mut self, r: &HookRecord) {
+        self.fold(r);
+        self.touch(&r.pane, None, r.ts);
+        let branch = match &r.agent_id {
+            Some(id) => self
+                .by_pane
+                .get(&r.pane)
+                .and_then(|s| s.subagent_branch(id)),
+            None => r.branch.clone().filter(|_| r.cwd.is_some()),
+        };
+        if branch.is_some() {
+            self.touch(&r.pane, branch, r.ts);
+        }
+    }
+
+    fn fold(&mut self, r: &HookRecord) {
         let s = self
             .by_pane
             .entry(r.pane.clone())
             .or_insert_with(|| Session::new(r.session_id.clone()));
         if r.session_id.is_some() && r.session_id != s.session_id {
-            *s = Session::new(r.session_id.clone());
+            s.next(r.session_id.clone());
         }
         // A subagent's directory is its worktree, not the session's.
         if r.cwd.is_some() && r.agent_id.is_none() {
@@ -399,9 +502,10 @@ impl Sessions {
             let Some(pane) = known.or_else(|| a.pane.clone()) else {
                 continue;
             };
+            let found = !self.by_pane.contains_key(&pane);
             let s = self
                 .by_pane
-                .entry(pane)
+                .entry(pane.clone())
                 .or_insert_with(|| Session::new(Some(a.session_id.clone())));
             let same = s.session_id.as_deref() == Some(a.session_id.as_str());
             let fresh_hook = same && s.hooked.is_some_and(|h| taken <= h + HOOK_GRACE);
@@ -412,7 +516,7 @@ impl Sessions {
                 continue;
             }
             if !same {
-                *s = Session::new(Some(a.session_id.clone()));
+                s.next(Some(a.session_id.clone()));
             }
             if s.cwd.is_none() {
                 s.cwd.clone_from(&a.cwd);
@@ -420,6 +524,10 @@ impl Sessions {
             s.name.clone_from(&a.name);
             s.state = State::from_status(&a.status);
             s.updated = taken;
+            // A conversation no hook reported counts as an event of its row.
+            if found || !same {
+                self.touch(&pane, None, taken);
+            }
         }
     }
 }
@@ -537,7 +645,10 @@ mod tests {
         let now = s.get("%1").unwrap();
         assert_eq!(now.session_id.as_deref(), Some("new"));
         assert_eq!(now.state, State::Idle);
-        assert_eq!(now.cwd, None, "nothing kept from the old conversation");
+        assert_eq!(
+            now.cwd, None,
+            "only tasks are kept from the old conversation"
+        );
     }
 
     #[test]
@@ -844,14 +955,105 @@ mod tests {
     }
 
     #[test]
-    fn a_new_conversation_starts_without_tasks() {
+    fn a_new_conversation_keeps_the_terminals_tasks() {
         let mut s = Sessions::default();
         s.apply(&on("feat/a", "/r", 1));
         s.apply(&HookRecord {
             session_id: Some("new".into()),
             ..rec("SessionStart", 2)
         });
-        assert!(tasks(&s).is_empty());
+        assert_eq!(tasks(&s), [("feat/a", "/r")]);
+        // Subagents of the old conversation never finish.
+        s.apply(&sub("SubagentStart", "a1", WT_A, Some("fix/a"), 3));
+        s.reconcile(10_000, &[agent("newer", "busy", Some("%1"))]);
+        assert_eq!(
+            subtasks(&s)[1],
+            line("fix/a", None, Some(TaskState::Stopped))
+        );
+        assert_eq!(s.get("%1").unwrap().session_id.as_deref(), Some("newer"));
+        assert_eq!(tasks(&s), [("feat/a", "/r"), ("fix/a", WT_A)]);
+    }
+
+    /// `%1`'s task rows' branches, if its session row is shown.
+    fn shown(s: &Sessions) -> Option<Vec<&str>> {
+        let (_, tasks) = s.shown("%1")?;
+        Some(tasks.iter().map(|t| t.branch.as_str()).collect())
+    }
+
+    #[test]
+    fn a_dismissed_session_row_stays_hidden_until_its_next_hook_event() {
+        let mut s = Sessions::default();
+        s.apply(&on("feat/a", "/r", 1));
+        s.apply(&rec("Stop", 2));
+        assert_eq!(shown(&s), Some(vec!["feat/a"]));
+        s.dismiss("%1", None, 5);
+        assert_eq!(shown(&s), None);
+        // Snapshots of the same conversation do not bring it back.
+        s.reconcile(10_000, &[agent(S1, "busy", Some("%1"))]);
+        assert_eq!(shown(&s), None);
+        // A hook event does, without the tasks dismissed with it.
+        s.apply(&rec("UserPromptSubmit", 10_001));
+        assert_eq!(shown(&s), Some(vec![]));
+        s.apply(&on("feat/b", "/r", 10_002));
+        s.apply(&on("feat/a", "/r", 10_003));
+        assert_eq!(shown(&s), Some(vec!["feat/a", "feat/b"]));
+    }
+
+    #[test]
+    fn a_new_conversation_found_by_snapshot_brings_a_dismissed_row_back() {
+        let mut s = Sessions::default();
+        s.apply(&rec("Stop", 1));
+        s.dismiss("%1", None, 5);
+        s.reconcile(10, &[agent("newer", "idle", Some("%1"))]);
+        assert_eq!(shown(&s), Some(vec![]));
+        // A terminal first seen after a dismissal of its pane id (from
+        // before tmux reused it) is shown.
+        s.dismiss("%7", None, 20);
+        s.reconcile(30, &[agent("x", "idle", Some("%7"))]);
+        assert!(s.shown("%7").is_some());
+    }
+
+    #[test]
+    fn dismissing_a_task_row_hides_only_that_task() {
+        let mut s = Sessions::default();
+        s.apply(&on("feat/a", "/r", 1));
+        s.apply(&on("feat/b", "/r", 2));
+        s.dismiss("%1", Some("feat/a"), 5);
+        assert_eq!(shown(&s), Some(vec!["feat/b"]));
+        s.apply(&rec("Stop", 6));
+        assert_eq!(shown(&s), Some(vec!["feat/b"]), "not an event of feat/a");
+        s.apply(&on("feat/a", "/r", 7));
+        assert_eq!(shown(&s), Some(vec!["feat/a", "feat/b"]));
+    }
+
+    #[test]
+    fn a_dismissed_subagent_task_comes_back_only_with_that_subagents_events() {
+        let mut s = Sessions::default();
+        s.apply(&sub("SubagentStart", "a1", WT_A, Some("fix/a"), 1));
+        s.apply(&sub("SubagentStop", "a1", WT_A, Some("fix/a"), 2));
+        s.dismiss("%1", Some("fix/a"), 5);
+        s.apply(&sub("SubagentStart", "b2", WT_B, Some("fix/b"), 6));
+        assert_eq!(shown(&s), Some(vec!["fix/b"]));
+        s.apply(&sub("PostToolUse", "a1", WT_A, None, 7));
+        assert_eq!(shown(&s), Some(vec!["fix/a", "fix/b"]));
+    }
+
+    #[test]
+    fn events_older_than_a_dismissal_stay_hidden_in_any_order() {
+        // On reopen the dismissals are loaded before the log is replayed.
+        let mut s = Sessions::default();
+        s.dismiss("%1", Some("feat/a"), 5);
+        s.dismiss("%1", Some("feat/a"), 3);
+        s.apply(&on("feat/a", "/r", 1));
+        s.apply(&on("feat/b", "/r", 2));
+        assert_eq!(shown(&s), Some(vec!["feat/b"]));
+        let want = Dismissal {
+            pane: "%1".into(),
+            branch: Some("feat/a".into()),
+            at: 5,
+        };
+        assert_eq!(s.dismissals(), [want]);
+        assert_eq!(s.panes().collect::<Vec<_>>(), ["%1"]);
     }
 
     #[test]

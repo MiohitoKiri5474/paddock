@@ -2,7 +2,7 @@
 //! state right, each followed by its task rows (branch left, git fields
 //! right), with a border on its right edge.
 
-use crate::app::{Row, TaskRow};
+use crate::app::{Row, RowId, TaskRow};
 use crate::sessions::{State, TaskState};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -22,8 +22,8 @@ pub fn highlight(state: State) -> Style {
     }
 }
 
-/// Draw `rows` into `area`; `selected` is the focused row's pane, if focused.
-pub fn render(rows: &[Row], selected: Option<&str>, area: Rect, buf: &mut Buffer) {
+/// Draw `rows` into `area`; `selected` is the focused line, if focused.
+pub fn render(rows: &[Row], selected: Option<&RowId>, area: Rect, buf: &mut Buffer) {
     if area.width < 2 || area.height == 0 {
         return;
     }
@@ -37,15 +37,19 @@ pub fn render(rows: &[Row], selected: Option<&str>, area: Rect, buf: &mut Buffer
     for ((index, task), y) in lines(rows).zip(area.y + FIRST_ROW..area.bottom()) {
         let row = &rows[index];
         let (text, style) = match task {
-            None if selected == Some(row.pane.as_str()) => (
-                spread(1, &row.label, row.state.label(), width),
-                highlight(row.state).add_modifier(Modifier::REVERSED),
-            ),
             None => (
                 spread(1, &row.label, row.state.label(), width),
                 highlight(row.state),
             ),
             Some(t) => task_line(t, width),
+        };
+        let picked = selected.is_some_and(|s| {
+            s.pane == row.pane && s.branch.as_deref() == task.map(|t| t.branch.as_str())
+        });
+        let style = if picked {
+            style.add_modifier(Modifier::REVERSED)
+        } else {
+            style
         };
         buf.set_string(area.x, y, text, style);
     }
@@ -146,6 +150,7 @@ mod tests {
             label: label.into(),
             state,
             tasks: Vec::new(),
+            closed: false,
         }
     }
 
@@ -165,6 +170,25 @@ mod tests {
         }
     }
 
+    fn pick(pane: &str, branch: Option<&str>) -> RowId {
+        RowId {
+            pane: pane.into(),
+            branch: branch.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn a_selected_task_row_is_drawn_reversed() {
+        let area = Rect::new(0, 0, 24, 4);
+        let mut buf = Buffer::empty(area);
+        let mut api = row("api", State::Running);
+        api.tasks = vec![task("feat/a", None, None), task("feat/b", None, None)];
+        render(&[api], Some(&pick("%api", Some("feat/b"))), area, &mut buf);
+        assert!(!buf[(1, 1)].modifier.contains(Modifier::REVERSED));
+        assert!(!buf[(2, 2)].modifier.contains(Modifier::REVERSED));
+        assert!(buf[(2, 3)].modifier.contains(Modifier::REVERSED));
+    }
+
     fn text(buf: &Buffer, y: u16) -> String {
         (0..buf.area.width)
             .map(|x| buf[(x, y)].symbol())
@@ -176,7 +200,7 @@ mod tests {
         let area = Rect::new(0, 0, 16, 4);
         let mut buf = Buffer::empty(area);
         let rows = [row("api", State::Waiting), row("a-long-label", State::Idle)];
-        render(&rows, Some("%api"), area, &mut buf);
+        render(&rows, Some(&pick("%api", None)), area, &mut buf);
         assert_eq!(text(&buf, 0), " sessions      │");
         assert_eq!(text(&buf, 1), " api   waiting │");
         assert_eq!(text(&buf, 2), " a-long-l idle │");
@@ -235,7 +259,7 @@ mod tests {
         ];
         render(
             &[api, row("web", State::Idle)],
-            Some("%api"),
+            Some(&pick("%api", None)),
             area,
             &mut buf,
         );
@@ -303,7 +327,7 @@ mod tests {
             row("i", State::Idle),
             row("r", State::Running),
         ];
-        render(&rows, Some("%w"), area, &mut buf);
+        render(&rows, Some(&pick("%w", None)), area, &mut buf);
         let (waiting, idle, running) = (&buf[(1, 1)], &buf[(1, 2)], &buf[(1, 3)]);
         assert_eq!((waiting.fg, waiting.bg), (Color::Black, Color::Yellow));
         assert!(

@@ -108,7 +108,7 @@ pub fn next_needing<'a>(rows: &'a [Row], focused: Option<&str>) -> Option<&'a Ro
 /// The most urgent session state in each of `tabs` tabs.
 pub fn tab_states(rows: &[Row], tabs: usize) -> Vec<State> {
     let mut states = vec![State::Unknown; tabs];
-    for r in rows {
+    for r in rows.iter().filter(|r| !r.closed) {
         if let Some(s) = states.get_mut(r.tab) {
             if r.state.rank() < s.rank() {
                 *s = r.state;
@@ -303,6 +303,7 @@ mod tests {
             label: terminal.into(),
             state,
             tasks: Vec::new(),
+            closed: false,
         }
     }
 
@@ -329,6 +330,10 @@ mod tests {
             row("b", 0, State::Idle),
             row("c", 1, State::Idle),
             row("d", 0, State::Running),
+            Row {
+                closed: true,
+                ..row("", 2, State::Stopped)
+            },
         ];
         assert_eq!(
             tab_states(&rows, 3),

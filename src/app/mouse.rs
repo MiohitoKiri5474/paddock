@@ -58,7 +58,7 @@ impl App {
                 let rows = self.rows();
                 sidebar::row_at(&rows, area, m.row).and_then(|i| rows.get(i).cloned())
             };
-            let Some(row) = row.filter(|_| left) else {
+            let Some(row) = row.filter(|r| left && !r.closed) else {
                 return Ok(false);
             };
             self.jump_to(row.tab, &row.terminal);

@@ -13,7 +13,7 @@ mod state;
 mod tabs;
 mod watch;
 
-pub use state::{Row, TaskRow};
+pub use state::{Row, RowId, TaskRow};
 
 use crate::config::Config;
 use crate::git::Status;
