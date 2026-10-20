@@ -180,6 +180,8 @@ fn d_dismisses_a_row_and_it_stays_gone_after_reopening() {
 #[test]
 fn the_preview_shows_the_selected_terminal_live() {
     let sandbox = Sandbox::new();
+    // No `claude agents` snapshots, whose polls redraw the screen anyway.
+    sandbox.set_agents("not json");
     let mut paddock = two_tabs(&sandbox);
     claude(&sandbox, "terminal-1", "Stop", "s1", "/w/repo");
     paddock.wait_for_text("idle");
