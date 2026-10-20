@@ -74,33 +74,64 @@ pub struct Placed<'a> {
     pub pane: &'a str,
 }
 
+/// Sort order of task rows: waiting, running, done, stopped. A main agent's
+/// task row has its session's state, idle counting as done.
+fn task_rank(task: &TaskRow, session: State) -> u8 {
+    let state = task.subagent.as_ref().map_or(
+        match session {
+            State::Waiting => TaskState::Waiting,
+            State::Running => TaskState::Running,
+            State::Idle => TaskState::Done,
+            State::Stopped | State::Unknown => TaskState::Stopped,
+        },
+        |s| s.state,
+    );
+    match state {
+        TaskState::Waiting => 0,
+        TaskState::Running => 1,
+        TaskState::Done => 2,
+        TaskState::Stopped => 3,
+    }
+}
+
+/// `tasks` sorted by state, in tree order within a state, under a session
+/// in state `session`.
+fn sort_tasks(mut tasks: Vec<TaskRow>, session: State) -> Vec<TaskRow> {
+    // Stable: tree order breaks ties.
+    tasks.sort_by_key(|t| task_rank(t, session));
+    tasks
+}
+
+/// The task rows of a session in state `session`, with their git status.
+/// In a closed terminal, no subagent works on.
+fn task_rows(tasks: Vec<&Task>, status: &TaskStatus, session: State, closed: bool) -> Vec<TaskRow> {
+    let rows = tasks
+        .into_iter()
+        .map(|task| TaskRow {
+            branch: task.branch.clone(),
+            cwd: task.cwd.clone(),
+            status: status
+                .get(&(task.cwd.clone(), task.branch.clone()))
+                .copied(),
+            subagent: task.subagent.clone().map(|mut sub| {
+                if closed && matches!(sub.state, TaskState::Running | TaskState::Waiting) {
+                    sub.state = TaskState::Stopped;
+                }
+                sub
+            }),
+        })
+        .collect();
+    sort_tasks(rows, session)
+}
+
 /// Session rows not dismissed, of the given terminals and of closed ones,
 /// sorted by state, then by tab (closed terminals last), each with its task
-/// rows.
+/// rows sorted by state.
 pub fn rows<'a>(
     sessions: &Sessions,
     status: &TaskStatus,
     terminals: impl IntoIterator<Item = Placed<'a>>,
 ) -> Vec<Row> {
-    // In a closed terminal, no subagent works on.
-    let task_rows = |tasks: Vec<&Task>, closed: bool| -> Vec<TaskRow> {
-        tasks
-            .into_iter()
-            .map(|task| TaskRow {
-                branch: task.branch.clone(),
-                cwd: task.cwd.clone(),
-                status: status
-                    .get(&(task.cwd.clone(), task.branch.clone()))
-                    .copied(),
-                subagent: task.subagent.clone().map(|mut sub| {
-                    if closed && matches!(sub.state, TaskState::Running | TaskState::Waiting) {
-                        sub.state = TaskState::Stopped;
-                    }
-                    sub
-                }),
-            })
-            .collect()
-    };
     let mut placed = Vec::new();
     let mut rows: Vec<Row> = terminals
         .into_iter()
@@ -114,7 +145,7 @@ pub fn rows<'a>(
                 tab: t.tab,
                 label: sessions::label(s, tab_name),
                 state: s.state,
-                tasks: task_rows(tasks, false),
+                tasks: task_rows(tasks, status, s.state, false),
                 closed: false,
             })
         })
@@ -130,7 +161,7 @@ pub fn rows<'a>(
             label: sessions::label(s, None),
             // Claude no longer runs there.
             state: State::Stopped,
-            tasks: task_rows(tasks, true),
+            tasks: task_rows(tasks, status, State::Stopped, true),
             closed: true,
         })
     }));
@@ -141,6 +172,75 @@ pub fn rows<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn task_rows_sort_by_state_in_tree_order_within_a_state() {
+        let task = |branch: &str, state: Option<TaskState>| TaskRow {
+            branch: branch.into(),
+            cwd: "/r".into(),
+            status: None,
+            subagent: state.map(|state| SubagentTask {
+                agent_id: branch.into(),
+                description: None,
+                state,
+            }),
+        };
+        let tasks = vec![
+            task("stopped", Some(TaskState::Stopped)),
+            task("done-1", Some(TaskState::Done)),
+            task("main", None),
+            task("running", Some(TaskState::Running)),
+            task("done-2", Some(TaskState::Done)),
+            task("waiting", Some(TaskState::Waiting)),
+        ];
+        let order = |session| -> Vec<String> {
+            sort_tasks(tasks.clone(), session)
+                .into_iter()
+                .map(|t| t.branch)
+                .collect()
+        };
+        // The main agent's task row takes its session's state; idle is done.
+        assert_eq!(
+            order(State::Idle),
+            ["waiting", "running", "done-1", "main", "done-2", "stopped"]
+        );
+        assert_eq!(
+            order(State::Waiting),
+            ["main", "waiting", "running", "done-1", "done-2", "stopped"]
+        );
+        assert_eq!(
+            order(State::Unknown),
+            ["waiting", "running", "done-1", "done-2", "stopped", "main"]
+        );
+    }
+
+    #[test]
+    fn rows_sort_their_task_rows() {
+        use crate::sessions::HookRecord;
+        let mut s = Sessions::default();
+        let record = |event: &str, agent: Option<&str>, branch: &str| HookRecord {
+            event: event.into(),
+            pane: "%1".into(),
+            agent_id: agent.map(str::to_string),
+            cwd: Some(format!("/r/{branch}")),
+            branch: Some(branch.into()),
+            ..Default::default()
+        };
+        s.apply(&record("PostToolUse", Some("a1"), "fix/a"));
+        s.apply(&record("PermissionRequest", None, "feat/main"));
+        let placed = [Placed {
+            tab: 0,
+            tab_name: "terminal-1",
+            terminal: "$1",
+            pane: "%1",
+        }];
+        let got: Vec<String> = rows(&s, &TaskStatus::new(), placed)[0]
+            .tasks
+            .iter()
+            .map(|t| t.branch.clone())
+            .collect();
+        assert_eq!(got, ["feat/main", "fix/a"], "waiting before running");
+    }
 
     #[test]
     fn rows_cover_sessions_sorted_by_state_then_tab_closed_terminals_last() {

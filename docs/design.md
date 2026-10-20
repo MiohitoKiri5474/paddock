@@ -51,6 +51,7 @@ Not in scope for now: agents other than Claude Code, Linux, remote machines, a s
 - Session: running, waiting, idle, stopped, or unknown.
 - Subagent task: running, waiting, done, or stopped.
 - Compacting counts as running. Sort order: waiting, idle, running, stopped.
+- Task rows within a session sort waiting, running, done, stopped, ties in tree order; the main agent's task row has its session's state (idle counts as done).
 
 ### Attention
 
