@@ -1,0 +1,9 @@
+{
+  "session_id": "11111111-2222-4333-8444-555555555555",
+  "transcript_path": "/home/user/.claude/projects/-tmp-repo/11111111-2222-4333-8444-555555555555.jsonl",
+  "cwd": "/tmp/repo/.claude/worktrees/agent-a02c2bd27020e23b4",
+  "prompt_id": "6ead5051-ad1f-40ad-837c-72acc08402ad",
+  "agent_id": "a02c2bd27020e23b4",
+  "agent_type": "general-purpose",
+  "hook_event_name": "SubagentStart"
+}

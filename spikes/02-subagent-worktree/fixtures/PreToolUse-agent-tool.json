@@ -1,0 +1,19 @@
+{
+  "session_id": "11111111-2222-4333-8444-555555555555",
+  "transcript_path": "/home/user/.claude/projects/-tmp-repo/11111111-2222-4333-8444-555555555555.jsonl",
+  "cwd": "/tmp/repo",
+  "prompt_id": "6ead5051-ad1f-40ad-837c-72acc08402ad",
+  "permission_mode": "bypassPermissions",
+  "effort": {
+    "level": "medium"
+  },
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Agent",
+  "tool_input": {
+    "description": "Create fix/a branch and a.txt",
+    "prompt": "In this git repository, do the following and nothing else:\n1. Create and switch to a new branch named `fix/a` (`git switch -c fix/a`).\n2. Create a file named `a.txt` in the repository root whose content is exactly the single character `a` followed by a newline.\n3. Stage it and commit with the message below. Do not push. Do not touch any other branch or file.\n\nCommit message (use exactly this, with a blank line before the trailer lines):\n```\nfeat: add a.txt\n\nDisclosure: Based on Claude Code generated output.\n\nCo-Authored-By: Claude Haiku 5.5 <noreply@anthropic.com>\n```\n\nWhen finished, report the commit hash (`git rev-parse --short HEAD`) and the output of `git log -1 --format=%B`. If anything fails, report the exact error.",
+    "subagent_type": "general-purpose",
+    "isolation": "worktree"
+  },
+  "tool_use_id": "toolu_01YCYpZaThc8wdDsVLqgiRRF"
+}

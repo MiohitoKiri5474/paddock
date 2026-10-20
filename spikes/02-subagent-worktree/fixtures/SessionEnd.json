@@ -1,0 +1,8 @@
+{
+  "session_id": "11111111-2222-4333-8444-555555555555",
+  "transcript_path": "/home/user/.claude/projects/-tmp-repo/11111111-2222-4333-8444-555555555555.jsonl",
+  "cwd": "/tmp/repo",
+  "prompt_id": "3a86b82b-9872-4475-929d-c57373cbabdf",
+  "hook_event_name": "SessionEnd",
+  "reason": "other"
+}
