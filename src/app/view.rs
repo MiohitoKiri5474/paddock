@@ -5,7 +5,7 @@ use super::rows::{most_urgent, Row};
 use super::state::{App, CloseTarget, Mode};
 use crate::sessions::State;
 use crate::tmux::structure::Window;
-use crate::ui::prompt::{Body, Prompt};
+use crate::ui::prompt::{self, Body, Prompt};
 use crate::ui::sidebar::{tilde, AgentLine, SpaceLine};
 use crate::ui::tab_bar::{self, Tab, TabBar};
 use ratatui::layout::Rect;
@@ -123,35 +123,41 @@ impl App {
     /// before a close.
     pub(super) fn prompt(&self) -> Option<Prompt<'_>> {
         match &self.mode {
-            Mode::Name { target, line } => Some(Prompt {
+            Mode::Naming { target, line, .. } => Some(Prompt {
                 title: target.title(),
                 body: Body::Input(line),
+                accent: self.tab_colors.current,
             }),
             Mode::ConfirmClose { target, state, .. } => Some(Prompt {
                 title: self.close_title(target),
                 body: Body::Message(format!("Claude is {}: close? y/n", state.label())),
+                accent: self.tab_colors.current,
             }),
             _ => None,
         }
     }
 
     /// The title of the question before closing `target`: a pane alone in
-    /// its tab closes the tab.
+    /// its tab closes the tab, and alone in its space's only tab, the space.
     fn close_title(&self, target: &CloseTarget) -> &'static str {
         let CloseTarget::Pane(pane) = target else {
             return " Close space ";
         };
-        let alone = self
-            .spaces
-            .iter()
-            .flat_map(|s| s.windows())
-            .find(|w| w.contains(pane))
-            .is_none_or(|w| w.panes.len() == 1);
-        if alone {
-            " Close tab "
-        } else {
-            " Close pane "
+        let found = self.spaces.iter().find_map(|s| {
+            let w = s.windows().iter().find(|w| w.contains(pane))?;
+            Some((s.windows().len(), w.panes.len()))
+        });
+        match found {
+            Some((1, 1)) => " Close space ",
+            Some((_, 1)) | None => " Close tab ",
+            Some(_) => " Close pane ",
         }
+    }
+
+    /// Where the prompt popup is on the screen: drawn there, and clicks
+    /// are judged against it.
+    pub(super) fn prompt_area(&self) -> Rect {
+        prompt::area(Rect::new(0, 0, self.screen.0, self.screen.1))
     }
 
     /// The tab bar's parts as drawn now, for clicks.

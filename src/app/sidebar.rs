@@ -2,7 +2,7 @@
 //! over its spaces and agents, and acting on the one picked.
 
 use super::space::MIN_SIZE;
-use super::state::{App, Mode};
+use super::state::{App, Mode, Panel};
 use crate::input::keymap::SidebarAction;
 use crossterm::event::KeyEvent;
 
@@ -119,10 +119,15 @@ impl App {
         });
     }
 
-    /// The sidebar selection, if the sidebar has the keyboard.
+    /// The sidebar selection, if the sidebar has the keyboard (or gets it
+    /// back when the prompt closes).
     pub(super) fn sidebar_selection(&self) -> Option<usize> {
         match &self.mode {
-            Mode::Sidebar(s) => Some(s.anchored(&self.sidebar_picks()).index),
+            Mode::Sidebar(s)
+            | Mode::Naming {
+                back: Some(Panel::Sidebar(s)),
+                ..
+            } => Some(s.anchored(&self.sidebar_picks()).index),
             _ => None,
         }
     }

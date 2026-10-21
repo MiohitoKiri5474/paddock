@@ -1,6 +1,6 @@
 //! Applying outer-terminal input to the app, depending on its mode.
 
-use super::state::{App, Mode, Naming};
+use super::state::{App, Mode, NameTarget, Panel, Renamed};
 use crate::input::line::LineEdit;
 use crate::input::{encode_key, encode_paste, Command, KeyAction};
 use anyhow::Result;
@@ -19,8 +19,8 @@ impl App {
         match std::mem::replace(&mut self.mode, Mode::Normal) {
             // Any key closes the help, and is not passed on.
             Mode::Help => Ok(Flow::Continue),
-            Mode::Name { target, line } => {
-                self.name_key(target, line, key);
+            Mode::Naming { target, line, back } => {
+                self.naming_key(target, line, back, key);
                 Ok(Flow::Continue)
             }
             // `y` closes; any other key keeps it, and is not passed on.
@@ -93,12 +93,12 @@ impl App {
     fn command(&mut self, command: Command) -> Result<Flow> {
         match command {
             Command::NewTab => self.report(|app| app.new_tab()),
-            Command::NewSpace => self.start_naming(Naming::NewSpace),
+            Command::NewSpace => self.start_naming(NameTarget::NewSpace),
             Command::NextTab => self.report(|app| app.cycle_tab(true)),
             Command::PreviousTab => self.report(|app| app.cycle_tab(false)),
             Command::GoToTab(i) => self.report(|app| app.select_tab(i)),
-            Command::RenameTab => self.start_naming(Naming::Tab),
-            Command::RenameSpace => self.start_naming(Naming::Space),
+            Command::RenameTab => self.start_naming(NameTarget::Rename(Renamed::Tab)),
+            Command::RenameSpace => self.start_naming(NameTarget::Rename(Renamed::Space)),
             Command::Close => {
                 if let Some(pane) = self.current_pane() {
                     self.report(|app| app.close(&pane, None));
@@ -134,9 +134,16 @@ impl App {
     }
 
     /// Open the prompt for `target`, holding its current or default name.
-    fn start_naming(&mut self, target: Naming) {
+    /// A panel with the keyboard (the sidebar or the dashboard) gets it
+    /// back when the prompt closes.
+    fn start_naming(&mut self, target: NameTarget) {
         let line = LineEdit::new(&self.name_of(target));
-        self.mode = Mode::Name { target, line };
+        let back = match std::mem::replace(&mut self.mode, Mode::Normal) {
+            Mode::Sidebar(s) => Some(Panel::Sidebar(s)),
+            Mode::Dashboard(d) => Some(Panel::Dashboard(d)),
+            _ => None,
+        };
+        self.mode = Mode::Naming { target, line, back };
     }
 
     /// Run a command whose failure the user should see but that is not fatal.
@@ -147,20 +154,27 @@ impl App {
     }
 
     /// A key while the prompt asks for a name: `Enter` acts on it, `Esc`
-    /// closes the prompt, others edit the line.
-    fn name_key(&mut self, target: Naming, mut line: LineEdit, key: KeyEvent) {
+    /// closes the prompt, others edit the line. Closing gives the keyboard
+    /// back to `back`.
+    fn naming_key(
+        &mut self,
+        target: NameTarget,
+        mut line: LineEdit,
+        back: Option<Panel>,
+        key: KeyEvent,
+    ) {
         match key.code {
             KeyCode::Enter => {
-                self.report(|app| app.name(target, line.text()));
+                self.mode = Panel::mode(back);
+                self.report(|app| app.submit_name(target, line.text()));
                 self.relayout_and_save();
-                return;
             }
-            KeyCode::Esc => return,
+            KeyCode::Esc => self.mode = Panel::mode(back),
             _ => {
                 line.key(key);
+                self.mode = Mode::Naming { target, line, back };
             }
         }
-        self.mode = Mode::Name { target, line };
     }
 
     pub fn paste(&mut self, text: &str) -> Result<()> {
@@ -169,7 +183,7 @@ impl App {
             return self.dashboard_paste(&d, text);
         }
         match &mut self.mode {
-            Mode::Name { line, .. } => line.insert(text),
+            Mode::Naming { line, .. } => line.insert(text),
             Mode::Help => self.mode = Mode::Normal,
             Mode::Sidebar(_) | Mode::ConfirmClose { .. } | Mode::Dashboard(_) => {}
             Mode::Normal => {

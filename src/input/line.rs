@@ -5,8 +5,10 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use unicode_width::UnicodeWidthChar;
 
+/// A line being typed: its text and where the cursor is in it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LineEdit {
+    /// The text typed so far.
     text: String,
     /// Characters before the cursor.
     cursor: usize,
@@ -21,6 +23,7 @@ impl LineEdit {
         }
     }
 
+    /// The text typed so far.
     pub fn text(&self) -> &str {
         &self.text
     }
@@ -48,6 +51,7 @@ impl LineEdit {
         self.cursor = from;
     }
 
+    /// The text's length in characters.
     fn len(&self) -> usize {
         self.text.chars().count()
     }
@@ -71,8 +75,8 @@ impl LineEdit {
 
     /// Apply an editing key: arrows, `Home`, `End`, `Backspace`, `Delete`,
     /// `C-u` (clear), `C-w` (delete the word before the cursor), or a
-    /// character. Returns whether the key was one of them.
-    pub fn key(&mut self, key: KeyEvent) -> bool {
+    /// character. Other keys change nothing.
+    pub fn key(&mut self, key: KeyEvent) {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         match key.code {
@@ -88,9 +92,8 @@ impl LineEdit {
             KeyCode::Char('u') if ctrl => self.remove(0, self.len()),
             KeyCode::Char('w') if ctrl => self.remove(self.word_start(), self.cursor),
             KeyCode::Char(c) if !ctrl && !alt => self.insert(c.encode_utf8(&mut [0; 4])),
-            _ => return false,
+            _ => {}
         }
-        true
     }
 
     /// What shows in a box `width` cells wide, and the cursor's column in
@@ -132,11 +135,11 @@ mod tests {
     use super::*;
 
     fn press(line: &mut LineEdit, code: KeyCode) {
-        assert!(line.key(KeyEvent::new(code, KeyModifiers::NONE)));
+        line.key(KeyEvent::new(code, KeyModifiers::NONE));
     }
 
     fn ctrl(line: &mut LineEdit, c: char) {
-        assert!(line.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)));
+        line.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL));
     }
 
     fn typed(line: &mut LineEdit, text: &str) {
@@ -208,12 +211,14 @@ mod tests {
     }
 
     #[test]
-    fn other_keys_are_not_editing() {
-        let mut line = LineEdit::new("a");
-        assert!(!line.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
-        assert!(!line.key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::ALT)));
-        assert!(!line.key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL)));
-        assert_eq!(line.text(), "a");
+    fn other_keys_change_nothing() {
+        let mut line = LineEdit::new("ab");
+        press(&mut line, KeyCode::Left);
+        let before = line.clone();
+        press(&mut line, KeyCode::Enter);
+        line.key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::ALT));
+        ctrl(&mut line, 'a');
+        assert_eq!(line, before);
     }
 
     #[test]

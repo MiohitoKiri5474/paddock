@@ -3,11 +3,11 @@
 //! wheel and programs' mouse reports go to the pane under the pointer;
 //! dragging selects text and releasing copies it.
 
-use super::state::{App, Mode, TAB_BAR_ROWS};
+use super::state::{App, Mode, Panel, TAB_BAR_ROWS};
 use crate::input::{route_mouse, MouseAction};
 use crate::terminal::emulator::Emulator;
+use crate::ui::sidebar;
 use crate::ui::tab_bar::{self, Part};
-use crate::ui::{prompt, sidebar};
 use anyhow::{Context, Result};
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Position, Rect};
@@ -31,7 +31,7 @@ impl App {
     /// Returns whether the screen may have changed.
     pub fn mouse(&mut self, m: MouseEvent) -> Result<bool> {
         match self.mode {
-            Mode::Name { .. } | Mode::ConfirmClose { .. } => return Ok(self.prompt_mouse(m)),
+            Mode::Naming { .. } | Mode::ConfirmClose { .. } => return Ok(self.prompt_mouse(m)),
             Mode::Help | Mode::Dashboard(_) => return Ok(false),
             Mode::Normal | Mode::Sidebar(_) => {}
         }
@@ -43,18 +43,18 @@ impl App {
     }
 
     /// The mouse while the prompt popup is open: a press outside it closes
-    /// it, as `Esc` would; nothing else does anything.
+    /// it, as `Esc` would, giving the keyboard back to the panel it was
+    /// asked from; nothing else does anything.
     fn prompt_mouse(&mut self, m: MouseEvent) -> bool {
-        let screen = Rect::new(0, 0, self.screen.0, self.screen.1);
-        let inside = prompt::area(screen).contains(Position::new(m.column, m.row));
+        let inside = self.prompt_area().contains(Position::new(m.column, m.row));
         if inside || !matches!(m.kind, MouseEventKind::Down(_)) {
             return false;
         }
-        if let Mode::ConfirmClose { back: Some(d), .. } =
-            std::mem::replace(&mut self.mode, Mode::Normal)
-        {
-            self.mode = Mode::Dashboard(d);
-        }
+        self.mode = match std::mem::replace(&mut self.mode, Mode::Normal) {
+            Mode::ConfirmClose { back: Some(d), .. } => Mode::Dashboard(d),
+            Mode::Naming { back, .. } => Panel::mode(back),
+            _ => Mode::Normal,
+        };
         true
     }
 

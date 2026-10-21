@@ -274,28 +274,23 @@ fn draw(screen: &mut Screen, app: &App) -> Result<()> {
         if let Mode::Help = app.mode {
             help::render(&app.prefix_name, &app.keymap, full, f.buffer_mut());
         }
-        // Over everything, sidebar included.
-        let prompt_cursor = app.prompt().map(|p| p.render(full, f.buffer_mut()));
-        if let Some(cursor) = cursor(app, prompt_cursor, dash_cursor, term_cursor) {
-            f.set_cursor_position(cursor);
+        let at = match app.prompt() {
+            // Over everything, sidebar included; clipped to a frame that
+            // may be smaller than the screen the app knows.
+            Some(p) => p.render(app.prompt_area().intersection(full), f.buffer_mut()),
+            None => cursor(app, dash_cursor, term_cursor),
+        };
+        if let Some(at) = at {
+            f.set_cursor_position(at);
         }
     })?;
     Ok(())
 }
 
-/// Where the cursor shows: in the prompt while it is open (none while it
-/// asks a question), in the dashboard only while typing into the preview,
-/// nowhere while the help or the sidebar has the keyboard, else in the
-/// focused pane.
-fn cursor(
-    app: &App,
-    prompt: Option<Option<Position>>,
-    dashboard: Option<Position>,
-    pane: Option<Position>,
-) -> Option<Position> {
-    if let Some(at) = prompt {
-        return at;
-    }
+/// Where the cursor shows while the prompt is closed: in the dashboard
+/// only while typing into the preview, nowhere while the help or the
+/// sidebar has the keyboard, else in the focused pane.
+fn cursor(app: &App, dashboard: Option<Position>, pane: Option<Position>) -> Option<Position> {
     match app.mode {
         Mode::Help | Mode::Sidebar(_) => None,
         _ if app.dashboard().is_some() => dashboard,

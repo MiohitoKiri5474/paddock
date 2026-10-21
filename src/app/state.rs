@@ -35,10 +35,12 @@ pub const TAB_BAR_ROWS: u16 = 1;
 
 pub enum Mode {
     Normal,
-    /// The prompt popup asks for a name; holds the line typed so far.
-    Name {
-        target: Naming,
+    /// The prompt popup asks for a name for `target`; holds the line typed
+    /// so far. `back` is the panel asked from, to return to.
+    Naming {
+        target: NameTarget,
         line: LineEdit,
+        back: Option<Panel>,
     },
     Help,
     /// The sidebar has the keyboard; holds its selection.
@@ -54,24 +56,52 @@ pub enum Mode {
     Dashboard(Dashboard),
 }
 
+/// A panel that had the keyboard when the prompt opened, and gets it back
+/// when the prompt closes.
+pub enum Panel {
+    /// The sidebar, with its selection.
+    Sidebar(Selection),
+    /// The dashboard.
+    Dashboard(Dashboard),
+}
+
+impl Panel {
+    /// The mode that gives the keyboard back to `panel`, or to the focused
+    /// pane if none.
+    pub fn mode(panel: Option<Self>) -> Mode {
+        match panel {
+            Some(Panel::Sidebar(s)) => Mode::Sidebar(s),
+            Some(Panel::Dashboard(d)) => Mode::Dashboard(d),
+            None => Mode::Normal,
+        }
+    }
+}
+
 /// What a name is asked for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Naming {
-    /// Renaming the current tab (tmux window).
-    Tab,
-    /// Renaming the current space (tmux session).
-    Space,
+pub enum NameTarget {
+    /// Renaming the current tab or space.
+    Rename(Renamed),
     /// A new space.
     NewSpace,
 }
 
-impl Naming {
+/// What a rename is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Renamed {
+    /// The current tab (tmux window).
+    Tab,
+    /// The current space (tmux session).
+    Space,
+}
+
+impl NameTarget {
     /// The prompt's title.
     pub fn title(self) -> &'static str {
         match self {
-            Naming::Tab => " Rename tab ",
-            Naming::Space => " Rename space ",
-            Naming::NewSpace => " New space ",
+            NameTarget::Rename(Renamed::Tab) => " Rename tab ",
+            NameTarget::Rename(Renamed::Space) => " Rename space ",
+            NameTarget::NewSpace => " New space ",
         }
     }
 }

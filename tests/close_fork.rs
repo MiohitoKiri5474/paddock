@@ -236,3 +236,17 @@ fn f_in_a_plain_shell_says_so_and_opens_nothing() {
     paddock.wait_for_text("no Claude session here");
     assert_eq!(tabs(&sandbox), 1);
 }
+
+#[test]
+fn closing_the_only_pane_of_a_spaces_only_tab_asks_to_close_the_space() {
+    let sandbox = Sandbox::new();
+    let mut paddock = ready(&sandbox);
+    claude(&sandbox, "space-1:0", "UserPromptSubmit", "s1");
+    paddock.wait_for_tabs(&["1:claude"]);
+
+    paddock.command(b"x");
+    paddock.wait_for_popup("Close space", "Claude is running: close? y/n");
+    paddock.send(b"n");
+    paddock.wait_for_no_popup();
+    assert_eq!(sandbox.session_names(), ["space-1"]);
+}

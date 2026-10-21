@@ -4,7 +4,7 @@
 
 use super::dashboard::Dashboard;
 use super::space::clamp;
-use super::state::{is_session_id, next_name, App, CloseTarget, Mode, Naming};
+use super::state::{is_session_id, next_name, App, CloseTarget, Mode, NameTarget, Renamed};
 use crate::sessions::State;
 use crate::terminal::Terminal;
 use crate::tmux::server::quote;
@@ -180,47 +180,45 @@ impl App {
     }
 
     /// Act on a name typed into the prompt for `target`: rename the current
-    /// tab or space, or start a new space (a blank name keeps the default).
-    pub fn name(&mut self, target: Naming, name: &str) -> Result<()> {
+    /// tab or space, or start a new space (a blank name keeps the default,
+    /// or the old name).
+    pub fn submit_name(&mut self, target: NameTarget, name: &str) -> Result<()> {
         let name = name.trim();
         match target {
-            Naming::NewSpace if name.is_empty() => self.new_space(),
-            Naming::NewSpace => self.new_space_named(name),
-            Naming::Tab | Naming::Space => self.rename(target, name),
+            NameTarget::NewSpace if name.is_empty() => self.new_space(),
+            NameTarget::NewSpace => self.new_space_named(name),
+            NameTarget::Rename(_) if name.is_empty() => Ok(()),
+            NameTarget::Rename(what) => self.rename(what, name),
         }
     }
 
     /// Rename the current tab or space in tmux, so the name survives
     /// reattaching. tmux may adjust a session name (it replaces `.` and `:`).
-    fn rename(&mut self, target: Naming, name: &str) -> Result<()> {
+    fn rename(&mut self, what: Renamed, name: &str) -> Result<()> {
         let Some(space) = self.current_space() else {
             return Ok(());
         };
-        if name.is_empty() {
-            return Ok(());
-        }
         let id = space.id.clone();
-        match target {
-            Naming::Space => self.server.rename_session(&id, name)?,
-            Naming::Tab => match space.current_window() {
+        match what {
+            Renamed::Space => self.server.rename_session(&id, name)?,
+            Renamed::Tab => match space.current_window() {
                 Some(w) => self.server.rename_window(&w.id, name)?,
                 None => return Ok(()),
             },
-            Naming::NewSpace => return Ok(()),
         }
         self.refresh(&id)
     }
 
     /// What the prompt for `target` starts with: the current name, or the
     /// default for a new space.
-    pub fn name_of(&self, target: Naming) -> String {
+    pub fn name_of(&self, target: NameTarget) -> String {
         let space = self.current_space();
         match target {
-            Naming::Space => space.map(|i| i.name().to_string()),
-            Naming::Tab => space
+            NameTarget::Rename(Renamed::Space) => space.map(|i| i.name().to_string()),
+            NameTarget::Rename(Renamed::Tab) => space
                 .and_then(|i| i.current_window())
                 .map(|w| w.name.clone()),
-            Naming::NewSpace => Some(self.new_space_name()),
+            NameTarget::NewSpace => Some(self.new_space_name()),
         }
         .unwrap_or_default()
     }

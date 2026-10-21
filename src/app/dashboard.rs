@@ -5,7 +5,7 @@
 //! same dismiss, close, fork and jump as the rest of the app.
 
 use super::rows::{row_ids, Row, RowId};
-use super::state::{App, Mode};
+use super::state::{App, Mode, Panel};
 use super::watch::Watched;
 use crate::input::keymap::DashboardAction;
 use crate::input::{encode_key, encode_paste};
@@ -44,7 +44,12 @@ impl App {
     /// The dashboard, if open (also while asking before a close from it).
     pub fn dashboard(&self) -> Option<&Dashboard> {
         match &self.mode {
-            Mode::Dashboard(d) | Mode::ConfirmClose { back: Some(d), .. } => Some(d),
+            Mode::Dashboard(d)
+            | Mode::ConfirmClose { back: Some(d), .. }
+            | Mode::Naming {
+                back: Some(Panel::Dashboard(d)),
+                ..
+            } => Some(d),
             _ => None,
         }
     }
@@ -78,7 +83,13 @@ impl App {
     /// highlighted is the one keys act on.
     pub fn anchor_dashboard(&mut self) {
         let ids = row_ids(&self.rows());
-        if let Mode::Dashboard(d) | Mode::ConfirmClose { back: Some(d), .. } = &mut self.mode {
+        if let Mode::Dashboard(d)
+        | Mode::ConfirmClose { back: Some(d), .. }
+        | Mode::Naming {
+            back: Some(Panel::Dashboard(d)),
+            ..
+        } = &mut self.mode
+        {
             *d = d.anchored(&ids);
         }
     }

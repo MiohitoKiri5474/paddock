@@ -1,6 +1,6 @@
 //! The prompt popup (after LazyVim's input): a small rounded box in the
-//! middle of the screen, drawn over everything, its title in the top
-//! border. It holds a line being typed (a name) or a question.
+//! middle of the screen, drawn over everything, its border in the accent
+//! colour and its title in the top border. It holds a line being typed (a name) or a question.
 //!
 //! ```text
 //! ╭──────── Rename tab ────────╮
@@ -19,8 +19,6 @@ use ratatui::widgets::{Block, BorderType, Clear, Widget};
 const WIDTH: u16 = 40;
 /// Borders and one line.
 const HEIGHT: u16 = 3;
-/// The border: the accent colour, the terminal's blue.
-const ACCENT: Color = Color::Blue;
 /// Blank columns between the border and the text, each side.
 const PAD: u16 = 1;
 
@@ -32,10 +30,15 @@ pub enum Body<'a> {
     Message(String),
 }
 
+/// The popup as drawn now: its title, what it holds, and its colour.
 pub struct Prompt<'a> {
     /// Shown in the top border, e.g. ` Rename tab `.
     pub title: &'a str,
+    /// The line being typed, or the question.
     pub body: Body<'a>,
+    /// The border's colour: the accent (`[colors] tab_current`), as the
+    /// current tab has.
+    pub accent: Color,
 }
 
 /// Where the box goes on a screen `screen`: centred, [`WIDTH`] wide or
@@ -52,13 +55,13 @@ pub fn area(screen: Rect) -> Rect {
 }
 
 impl Prompt<'_> {
-    /// Draw the box over `screen`. Returns the cursor while typing.
-    pub fn render(&self, screen: Rect, buf: &mut Buffer) -> Option<Position> {
-        let popup = area(screen);
+    /// Draw the box at `popup` (see [`area`]). Returns the cursor while
+    /// typing.
+    pub fn render(&self, popup: Rect, buf: &mut Buffer) -> Option<Position> {
         Clear.render(popup, buf);
         let block = Block::bordered()
             .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(ACCENT))
+            .border_style(Style::default().fg(self.accent))
             .title(Line::from(self.title).centered());
         let inner = block.inner(popup);
         block.render(popup, buf);
@@ -112,8 +115,9 @@ mod tests {
         let prompt = Prompt {
             title: " Rename tab ",
             body: Body::Input(&line),
+            accent: Color::Indexed(33),
         };
-        let cursor = prompt.render(screen, &mut buf);
+        let cursor = prompt.render(area(screen), &mut buf);
         let shown = rows(&buf);
         assert_eq!(
             shown[1],
@@ -122,8 +126,8 @@ mod tests {
         assert_eq!(shown[2], format!("     │ claude{:31}│     ", ""));
         assert_eq!(shown[3], format!("     ╰{}╯     ", "─".repeat(38)));
         assert_eq!(cursor, Some(Position::new(13, 2)));
-        assert_eq!(buf[(5, 1)].fg, Color::Blue);
-        assert_eq!(buf[(44, 3)].fg, Color::Blue);
+        assert_eq!(buf[(5, 1)].fg, Color::Indexed(33));
+        assert_eq!(buf[(44, 3)].fg, Color::Indexed(33));
     }
 
     #[test]
@@ -134,8 +138,9 @@ mod tests {
         let prompt = Prompt {
             title: " x ",
             body: Body::Input(&line),
+            accent: Color::Blue,
         };
-        let cursor = prompt.render(screen, &mut buf);
+        let cursor = prompt.render(area(screen), &mut buf);
         assert_eq!(rows(&buf)[1], "│ fghijkl  │");
         // Text 8 wide from column 2: 7 letters, then the cursor.
         assert_eq!(cursor, Some(Position::new(2 + 7, 1)));
@@ -148,8 +153,9 @@ mod tests {
         let prompt = Prompt {
             title: " Close tab ",
             body: Body::Message("Claude is running: close? y/n".into()),
+            accent: Color::Blue,
         };
-        assert_eq!(prompt.render(screen, &mut buf), None);
+        assert_eq!(prompt.render(area(screen), &mut buf), None);
         assert!(rows(&buf)[1].contains("│ Claude is running: close? y/n"));
         assert!(rows(&buf)[0].contains(" Close tab "));
     }
@@ -162,8 +168,9 @@ mod tests {
             let prompt = Prompt {
                 title: " Rename tab ",
                 body: Body::Input(&line),
+                accent: Color::Blue,
             };
-            prompt.render(screen, &mut Buffer::empty(screen));
+            prompt.render(area(screen), &mut Buffer::empty(screen));
         }
     }
 }
