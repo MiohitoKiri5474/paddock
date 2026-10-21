@@ -4,6 +4,7 @@
 
 use super::space::clamp;
 use super::state::{is_session_id, next_name, App, CloseTarget, Mode, NameTarget, Renamed};
+use super::watch;
 use crate::paths::HomePaths;
 use crate::sessions::State;
 use crate::terminal::Terminal;
@@ -260,13 +261,15 @@ impl App {
         };
         let (id, name) = (space.id.clone(), space.name().to_string());
         let Some(dir) = self.dir_of(&pane) else {
-            bail!("the focused terminal's directory is unknown: the root stays");
+            bail!("the focused terminal's directory is unknown: the space root stays");
         };
         self.server.set_root(&id, &dir)?;
-        let root = dir.to_string_lossy().into_owned();
+        let root = dir.to_string_lossy();
         self.notice = Some(format!("{name}'s root: {}", HomePaths::new().show(&root)));
-        if let Some(place) = self.places.get_mut(&id) {
-            place.root = Some(root);
+        // Read again now, so the finder is never stale, even for a space
+        // whose place the background read has not reached yet.
+        if let Some(place) = watch::place(&self.server, &id) {
+            self.places.insert(id, place);
         }
         Ok(())
     }

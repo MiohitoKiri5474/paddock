@@ -268,3 +268,30 @@ fn the_finder_shows_a_worktree_space_s_root_with_its_branch() {
             .any(|l| l.contains("space repo/x") && l.contains("worktrees/repo/x  x"))
     });
 }
+
+#[test]
+fn a_root_in_a_subdirectory_of_a_checkout_keeps_its_branch_in_the_finder() {
+    let sandbox = Sandbox::new();
+    let repo = repo(&sandbox);
+    let sub = repo.join("sub");
+    std::fs::create_dir(&sub).unwrap();
+    let mut paddock = ready(&sandbox);
+    cd(&mut paddock, &sandbox, "space-1", &sub);
+    paddock.command(b"R");
+    paddock.wait_for("the root set", |_| {
+        root(&sandbox, "space-1") == sub.to_string_lossy()
+    });
+    // The first tab leaves the root, for the top of the checkout.
+    cd(&mut paddock, &sandbox, "space-1", &repo);
+    paddock.wait_for("the sidebar on the repository", |_| {
+        paddock.sidebar().iter().any(|r| r.ends_with("repo  main"))
+    });
+
+    paddock.command(b"g");
+    paddock.wait_for("the space row with the root's branch", |_| {
+        paddock
+            .full_screen()
+            .lines()
+            .any(|l| l.contains("space space-1") && l.contains("~/repo/sub  main"))
+    });
+}

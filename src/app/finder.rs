@@ -7,7 +7,6 @@
 
 use super::rows::Row;
 use super::state::{App, Mode, Panel};
-use super::watch::Place;
 use crate::fuzzy;
 use crate::input::line::LineEdit;
 use crate::paths::HomePaths;
@@ -181,19 +180,6 @@ fn place_detail(path: Option<&str>, branch: Option<&str>) -> String {
         .join("  ")
 }
 
-/// A space's root (home as `~`) and, if the root is its first tab's
-/// directory, the branch checked out there; nothing until read. A branch
-/// is never paired with another place's directory.
-fn space_place(place: Option<&Place>, home: &HomePaths) -> (Option<String>, Option<String>) {
-    let Some(place) = place else {
-        return (None, None);
-    };
-    let branch = (place.root() == place.path)
-        .then(|| place.branch.clone())
-        .flatten();
-    (Some(home.show(place.root())), branch)
-}
-
 /// A tab's directory and branch, taken as a pair from one place: the
 /// Claude's in its focused pane (`claude`) when its directory is known,
 /// else its space's (the first tab's), which needs no round trip to tmux.
@@ -237,7 +223,14 @@ impl App {
             .iter()
             .zip(&self.spaces)
             .map(|(line, space)| {
-                let (path, branch) = space_place(self.places.get(&space.id), &home);
+                // Nothing until read.
+                let (path, branch) = match self.places.get(&space.id) {
+                    Some(place) => {
+                        let (root, branch) = place.root_shown(&home);
+                        (Some(root), branch)
+                    }
+                    None => (None, None),
+                };
                 FinderRow {
                     kind: Kind::Space,
                     name: line.name.clone(),
@@ -526,26 +519,6 @@ mod tests {
         f.selected = 2;
         f.filtered(StateFilter::Only(State::Idle));
         assert_eq!((f.state, f.selected), (StateFilter::Only(State::Idle), 0));
-    }
-
-    #[test]
-    fn a_space_shows_its_root_and_the_branch_only_when_the_root_is_its_directory() {
-        let home = HomePaths::new();
-        let place = |root: Option<&str>| Place {
-            path: "/w/api".into(),
-            branch: Some("main".into()),
-            tree: None,
-            root: root.map(str::to_string),
-        };
-        assert_eq!(space_place(None, &home), (None, None));
-        let same = (Some("/w/api".to_string()), Some("main".to_string()));
-        // Made before roots: its directory is its root.
-        assert_eq!(space_place(Some(&place(None)), &home), same);
-        assert_eq!(space_place(Some(&place(Some("/w/api"))), &home), same);
-        assert_eq!(
-            space_place(Some(&place(Some("/w/other"))), &home),
-            (Some("/w/other".into()), None)
-        );
     }
 
     #[test]

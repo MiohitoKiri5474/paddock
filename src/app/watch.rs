@@ -6,6 +6,7 @@
 use super::Event;
 use crate::git;
 use crate::hooks::now_ms;
+use crate::paths::HomePaths;
 use crate::sessions::{agents, log};
 use crate::tmux::Server;
 use crate::worktree::space_dir;
@@ -43,9 +44,12 @@ pub struct Place {
     /// The working tree and its repository's main checkout; `None`
     /// outside a git repository.
     pub tree: Option<git::WorkingTree>,
-    /// The space's root as stored; `None` for a space made before roots,
-    /// whose root is `path`.
+    /// The space's root as stored (as the user made it, links kept);
+    /// `None` for a space made before roots, whose root is `path`.
     pub root: Option<String>,
+    /// What is checked out at the root (as `branch` at `path`); `None`
+    /// outside a git checkout.
+    pub root_branch: Option<String>,
 }
 
 impl Place {
@@ -53,26 +57,39 @@ impl Place {
     pub fn root(&self) -> &str {
         self.root.as_deref().unwrap_or(&self.path)
     }
+
+    /// The root and what is checked out there, as the finder shows them
+    /// (home as `~`): a branch always belongs to the directory beside it.
+    pub fn root_shown(&self, home: &HomePaths) -> (String, Option<String>) {
+        (home.show(self.root()), self.root_branch.clone())
+    }
 }
 
-/// Read each of `spaces`' directory and branch.
+/// Space `id`'s directory, root and what is checked out in each, read
+/// now; `None` if tmux cannot say.
+pub fn place(server: &Server, id: &str) -> Option<Place> {
+    let path = space_dir(server, id)?;
+    let branch = git::head(&path);
+    let tree = git::working_tree(&path);
+    let root = server.root(id);
+    let root_branch = match &root {
+        Some(root) => git::head(root),
+        None => branch.clone(),
+    };
+    Some(Place {
+        path,
+        branch,
+        tree,
+        root,
+        root_branch,
+    })
+}
+
+/// Read each of `spaces`' place.
 fn places(server: &Server, spaces: &[String]) -> Vec<(String, Place)> {
     spaces
         .iter()
-        .filter_map(|id| {
-            let path = space_dir(server, id)?;
-            let branch = git::head(&path);
-            let tree = git::working_tree(&path);
-            // Links resolved, as `path` is (tmux's), so the two compare.
-            let root = server.root(id).map(|r| git::resolved(&r));
-            let place = Place {
-                path,
-                branch,
-                tree,
-                root,
-            };
-            Some((id.clone(), place))
-        })
+        .filter_map(|id| Some((id.clone(), place(server, id)?)))
         .collect()
 }
 
@@ -153,4 +170,35 @@ fn read_watched(server: &Server, watched: &Watched, events: &Sender<Event>) -> b
         .map(|(dir, branch)| ((dir.clone(), branch.clone()), git::details(dir, branch)))
         .collect();
     events.send(Event::Details(read)).is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_space_shows_its_root_as_stored_with_what_is_checked_out_there() {
+        let home = HomePaths::new();
+        let place = |root: Option<&str>, root_branch: Option<&str>| Place {
+            path: "/w/api".into(),
+            branch: Some("main".into()),
+            tree: None,
+            root: root.map(str::to_string),
+            root_branch: root_branch.map(str::to_string),
+        };
+        // Made before roots: its directory is its root.
+        assert_eq!(
+            place(None, Some("main")).root_shown(&home),
+            ("/w/api".into(), Some("main".into()))
+        );
+        // Stored as made, links kept; the branch is the root's own.
+        assert_eq!(
+            place(Some("/tmp/x/sub"), Some("feat")).root_shown(&home),
+            ("/tmp/x/sub".into(), Some("feat".into()))
+        );
+        assert_eq!(
+            place(Some("/w/notes"), None).root_shown(&home),
+            ("/w/notes".into(), None)
+        );
+    }
 }
