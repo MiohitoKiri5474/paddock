@@ -63,7 +63,8 @@ fn places(server: &Server, spaces: &[String]) -> Vec<(String, Place)> {
             let path = space_dir(server, id)?;
             let branch = git::head(&path);
             let tree = git::working_tree(&path);
-            let root = server.root(id);
+            // Links resolved, as `path` is (tmux's), so the two compare.
+            let root = server.root(id).map(|r| git::resolved(&r));
             let place = Place {
                 path,
                 branch,

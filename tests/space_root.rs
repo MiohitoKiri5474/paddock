@@ -246,3 +246,25 @@ fn the_finder_shows_a_space_s_root() {
             .any(|l| l.contains("space space-1") && l.contains("~/b"))
     });
 }
+
+#[test]
+fn the_finder_shows_a_worktree_space_s_root_with_its_branch() {
+    let sandbox = Sandbox::new();
+    let repo = repo(&sandbox);
+    let mut paddock = ready(&sandbox);
+    let out = sandbox.run_in(&repo, &["worktree", "new", "x"], &[], "");
+    assert!(out.status.success(), "{out:?}");
+    paddock.wait_for("the worktree space", |_| {
+        paddock.sidebar().iter().any(|r| r.contains("repo/x"))
+    });
+
+    paddock.command(b"g");
+    // The root as stored and the first tab's directory may be written
+    // differently (`/tmp` is `/private/tmp`): still one place.
+    paddock.wait_for("the space row with its root and branch", |_| {
+        paddock
+            .full_screen()
+            .lines()
+            .any(|l| l.contains("space repo/x") && l.contains("worktrees/repo/x  x"))
+    });
+}
