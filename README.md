@@ -54,7 +54,7 @@ Every key is an action with a name you can rebind (see [Configure](#configure));
 | `=` | even out the focused split | `equalize` |
 | `x` | close pane (asks if busy) | `close` |
 | `f` | fork Claude into a new tab | `fork` |
-| `s` | focus sidebar where you are | `focus_sidebar` |
+| `s` | focus sidebar on current agent | `focus_sidebar` |
 | `w` | focus sidebar on the space | `focus_spaces` |
 | `b` | show or hide sidebar | `toggle_sidebar` |
 | `{` | sidebar narrower | `sidebar_narrower` |

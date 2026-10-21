@@ -63,7 +63,7 @@ impl App {
                 label: r.label.clone(),
                 state: r.state,
                 place: self.place_of(r).unwrap_or_default(),
-                current: self.is_focused(&r.pane),
+                current: self.is_current_pane(&r.pane),
             })
             .collect()
     }
