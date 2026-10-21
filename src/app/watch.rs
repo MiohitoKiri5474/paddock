@@ -43,6 +43,16 @@ pub struct Place {
     /// The working tree and its repository's main checkout; `None`
     /// outside a git repository.
     pub tree: Option<git::WorkingTree>,
+    /// The space's root as stored; `None` for a space made before roots,
+    /// whose root is `path`.
+    pub root: Option<String>,
+}
+
+impl Place {
+    /// The space's root: as stored, else its directory.
+    pub fn root(&self) -> &str {
+        self.root.as_deref().unwrap_or(&self.path)
+    }
 }
 
 /// Read each of `spaces`' directory and branch.
@@ -53,7 +63,14 @@ fn places(server: &Server, spaces: &[String]) -> Vec<(String, Place)> {
             let path = space_dir(server, id)?;
             let branch = git::head(&path);
             let tree = git::working_tree(&path);
-            Some((id.clone(), Place { path, branch, tree }))
+            let root = server.root(id);
+            let place = Place {
+                path,
+                branch,
+                tree,
+                root,
+            };
+            Some((id.clone(), place))
         })
         .collect()
 }

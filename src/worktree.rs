@@ -232,6 +232,13 @@ pub fn space_dir(server: &Server, id: &str) -> Option<String> {
     first_tab_dir(&panes(server, id))
 }
 
+/// Space `id`'s root, read now: as stored in tmux, else (a space made
+/// before roots) its directory ([`space_dir`]). It may have been deleted
+/// since; `None` if tmux cannot say.
+pub fn space_root(server: &Server, id: &str) -> Option<String> {
+    server.root(id).or_else(|| space_dir(server, id))
+}
+
 /// The directory of the first pane in `panes` that is not a float's.
 fn first_tab_dir(panes: &[Pane]) -> Option<String> {
     panes

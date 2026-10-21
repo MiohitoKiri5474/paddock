@@ -24,6 +24,11 @@ const KEPT_VARS: &[&str] = &[
     "PADDOCK_TMUX_SOCKET",
 ];
 
+/// The session option holding a space's root: the directory it was made
+/// in, or the one `set_root` (`C-a R`) gave it. New tabs and splits start
+/// there with `[spaces] new_tab_dir = "root"`.
+pub const ROOT_OPTION: &str = "@paddock-root";
+
 /// `TERM` tmux itself sees (the panes get `default-terminal`).
 const SERVER_TERM: &str = "xterm-256color";
 const HISTORY_LIMIT: u32 = 50_000;
@@ -137,8 +142,14 @@ impl Server {
             .unwrap_or_default()
     }
 
-    /// Start a session running the user's shell, starting the server if needed.
+    /// Start a session running the user's shell in `cwd`, starting the
+    /// server if needed. `cwd` is also its root ([`ROOT_OPTION`]), set in
+    /// the same tmux run: a command after `new-session` in one run targets
+    /// the new session, and no other client's command (a structure read,
+    /// `paddock worktree`) sees the session without its root.
     pub fn new_session(&self, name: &str, cwd: &Path, (cols, rows): (u16, u16)) -> Result<Session> {
+        // Not format-expanded (no `-F`): only a final `;` needs care.
+        let root = literal(&cwd.to_string_lossy());
         let cwd = start_dir(cwd);
         let named = unexpanded(name);
         let (x, y) = (cols.to_string(), rows.to_string());
@@ -156,12 +167,32 @@ impl Server {
             &y,
             "-c",
             &cwd,
+            ";",
+            "set-option",
+            ROOT_OPTION,
+            &root,
         ];
         let id = self.run(&args)?.trim().to_string();
         Ok(Session {
             id,
             name: name.to_string(),
         })
+    }
+
+    /// Make `dir` session `id`'s root ([`ROOT_OPTION`]).
+    pub fn set_root(&self, id: &str, dir: &Path) -> Result<()> {
+        // `set-option` does not format-expand a value without `-F`: only
+        // a final `;` needs care.
+        let dir = literal(&dir.to_string_lossy());
+        self.run(&["set-option", "-t", id, ROOT_OPTION, &dir])
+            .map(drop)
+    }
+
+    /// Session `id`'s root as stored; `None` if it has none (a space made
+    /// before roots) or tmux cannot say.
+    pub fn root(&self, id: &str) -> Option<String> {
+        let format = format!("#{{{ROOT_OPTION}}}");
+        self.display(id, &format).ok().filter(|r| !r.is_empty())
     }
 
     /// Apply the generated config to a server that already runs: tmux reads
@@ -628,6 +659,42 @@ mod tests {
         let got = got.unwrap();
         // The tab stays current and unmarked; the floats are marked.
         assert_eq!(got[..3], ["1 1 []", "0 1 [;]", "0 1 [C-;]"], "{got:?}");
+    }
+
+    #[test]
+    fn a_new_session_s_directory_is_its_root_whatever_its_characters() {
+        let tmp = tempfile::tempdir().unwrap();
+        let server = Server::new(Paths {
+            socket: format!("paddock-unit-root-{}", std::process::id()),
+            state_dir: tmp.path().join("state"),
+            config_dir: tmp.path().join("config"),
+        });
+        server.write_config().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let dir = base.join(r#"a #{session_id} 'q' "w" \ x;"#);
+        let other = base.join("b#S;");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::create_dir(&other).unwrap();
+        let run = || -> Result<Vec<Option<String>>> {
+            let s = server.new_session("t", &dir, (80, 24))?;
+            // The root goes to the session just made, not the one before.
+            let second = server.new_session("u", &base, (80, 24))?;
+            let made = server.root(&s.id);
+            server.set_root(&s.id, &other)?;
+            let changed = server.root(&s.id);
+            server.run(&["set-option", "-u", "-t", &s.id, ROOT_OPTION])?;
+            let unset = server.root(&s.id);
+            Ok(vec![made, server.root(&second.id), changed, unset])
+        };
+        let got = run();
+        let socket = server.run(&["display-message", "-p", "#{socket_path}"]);
+        let _ = server.run(&["kill-server"]);
+        if let Ok(socket) = socket {
+            let _ = std::fs::remove_file(socket.trim());
+        }
+        let path = |p: &Path| Some(p.to_string_lossy().into_owned());
+        // Spaces made before roots have none.
+        assert_eq!(got.unwrap(), [path(&dir), path(&base), path(&other), None]);
     }
 
     #[test]

@@ -4,6 +4,7 @@
 
 use super::space::clamp;
 use super::state::{is_session_id, next_name, App, CloseTarget, Mode, NameTarget, Renamed};
+use crate::paths::HomePaths;
 use crate::sessions::State;
 use crate::terminal::Terminal;
 use crate::tmux::server::quote;
@@ -75,7 +76,7 @@ impl App {
         let Some(id) = self.current_space().map(|i| i.id.clone()) else {
             return Ok(());
         };
-        let dir = self.new_dir();
+        let dir = self.tab_dir();
         self.open_tab(&id, dir).map(drop)
     }
 
@@ -249,6 +250,25 @@ impl App {
             },
         }
         self.refresh(&id)
+    }
+
+    /// `C-a R`: make the focused terminal's directory the current space's
+    /// root, saying so in a notice.
+    pub fn set_root(&mut self) -> Result<()> {
+        let (Some(pane), Some(space)) = (self.current_pane(), self.current_space()) else {
+            return Ok(());
+        };
+        let (id, name) = (space.id.clone(), space.name().to_string());
+        let Some(dir) = self.dir_of(&pane) else {
+            bail!("the focused terminal's directory is unknown: the root stays");
+        };
+        self.server.set_root(&id, &dir)?;
+        let root = dir.to_string_lossy().into_owned();
+        self.notice = Some(format!("{name}'s root: {}", HomePaths::new().show(&root)));
+        if let Some(place) = self.places.get_mut(&id) {
+            place.root = Some(root);
+        }
+        Ok(())
     }
 
     /// What the prompt for `target` starts with: the current name, the
