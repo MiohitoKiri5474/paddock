@@ -13,7 +13,6 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Clear, Widget};
 
 pub const TITLE: &str = "dashboard";
-const KEYS: &str = "j/k move  Enter jump  D dismiss  x close  f fork  I interact  Esc back";
 /// The list's only line without rows.
 const EMPTY: &str = " no Claude sessions yet";
 /// From this width on, the preview sits beside the list instead of below it.
@@ -22,6 +21,8 @@ const SIDE_BY_SIDE: u16 = 140;
 /// What the dashboard shows.
 pub struct View<'a> {
     pub rows: &'a [Row],
+    /// The keys, shown after the title.
+    pub keys: &'a str,
     pub details: &'a TaskDetails,
     pub selected: Option<&'a RowId>,
     /// The selected row's terminal, unless it was closed.
@@ -164,7 +165,7 @@ pub fn render(view: &View, area: Rect, buf: &mut Buffer) -> Option<Position> {
 }
 
 /// The title and the keys, on the list's first line.
-fn render_title(area: Rect, buf: &mut Buffer) {
+fn render_title(keys: &str, area: Rect, buf: &mut Buffer) {
     let bold = Style::default().add_modifier(Modifier::BOLD);
     let title = format!(" {TITLE}");
     buf.set_stringn(area.x, area.y, &title, usize::from(area.width), bold);
@@ -172,7 +173,7 @@ fn render_title(area: Rect, buf: &mut Buffer) {
     if keys_at < area.width {
         let dim = Style::default().add_modifier(Modifier::DIM);
         let room = usize::from(area.width - keys_at);
-        buf.set_stringn(area.x + keys_at, area.y, KEYS, room, dim);
+        buf.set_stringn(area.x + keys_at, area.y, keys, room, dim);
     }
 }
 
@@ -203,7 +204,7 @@ fn render_list(view: &View, area: Rect, buf: &mut Buffer) {
         return;
     }
     let width = usize::from(area.width);
-    render_title(area, buf);
+    render_title(view.keys, area, buf);
     let lines = lines(view.rows);
     if lines.is_empty() && area.height > 1 {
         buf.set_stringn(area.x, area.y + 1, EMPTY, width, Style::default());
@@ -293,6 +294,8 @@ pub fn first_row(emu: &Emulator, height: u16) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const KEYS: &str = "j down  k up";
     use crate::git::{BaseDiff, Status};
     use crate::sessions::SubagentTask;
 
@@ -459,6 +462,7 @@ mod tests {
             branch: Some("feat/a".into()),
         };
         let view = View {
+            keys: KEYS,
             rows: &rows,
             details: &details,
             selected: Some(&selected),
@@ -467,7 +471,7 @@ mod tests {
             now: 0,
         };
         assert_eq!(render(&view, area, &mut buf), None);
-        assert!(text(&buf, 0).starts_with(" dashboard  j/k move"));
+        assert!(text(&buf, 0).starts_with(" dashboard  j down  k up"));
         assert_eq!(
             text(&buf, 1),
             " api                                                   idle"
@@ -504,6 +508,7 @@ mod tests {
             branch: None,
         };
         let view = View {
+            keys: KEYS,
             rows: &rows,
             details: &TaskDetails::new(),
             selected: Some(&selected),
@@ -520,6 +525,7 @@ mod tests {
         let area = Rect::new(0, 0, 40, 6);
         let mut buf = Buffer::empty(area);
         let view = View {
+            keys: KEYS,
             rows: &[],
             details: &TaskDetails::new(),
             selected: None,
@@ -544,6 +550,7 @@ mod tests {
             branch: None,
         };
         let view = View {
+            keys: KEYS,
             rows: &rows,
             details: &TaskDetails::new(),
             selected: Some(&selected),

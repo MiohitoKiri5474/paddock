@@ -272,7 +272,7 @@ fn draw(screen: &mut Screen, app: &App) -> Result<()> {
         let term_cursor = draw_panes(app, panes, f.buffer_mut());
         let dash_cursor = draw_dashboard(app, &rows, panes, f.buffer_mut());
         if let Mode::Help = app.mode {
-            help::render(&app.prefix_name, full, f.buffer_mut());
+            help::render(&app.prefix_name, &app.keymap, full, f.buffer_mut());
         } else if app.dashboard().is_some() {
             // Only typing into the preview shows a cursor.
             if let Some(cursor) = dash_cursor {
@@ -322,8 +322,10 @@ fn draw_panes(app: &App, area: Rect, buf: &mut Buffer) -> Option<Position> {
 fn draw_dashboard(app: &App, rows: &[Row], area: Rect, buf: &mut Buffer) -> Option<Position> {
     let d = app.dashboard()?;
     let row = app.dashboard_row(d);
+    let keys = app.keymap.dashboard.hints().join("  ");
     let view = dashboard::View {
         rows,
+        keys: &keys,
         details: &app.task_details,
         selected: d.selected.as_ref(),
         preview: row

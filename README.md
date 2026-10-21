@@ -31,36 +31,66 @@ The sidebar has two sections. SPACES lists your spaces, each with its directory 
 
 ### Keys
 
-Prefix `C-a`, then:
+Every key is an action with a name you can rebind (see [Configure](#configure)); `paddock keys` prints them all. By default, prefix `C-a`, then:
 
-| Key | Action |
-|---|---|
-| `c` | new tab in the current space |
-| `C` | new space |
-| `n` / `p` | next / previous tab |
-| `Tab` | last page: back to the space and tab shown before (again: return) |
-| `1`–`9` | go to tab |
-| `,` | rename tab |
-| `$` | rename space |
-| `<` / `>` | move the current tab left / right |
-| `\|` / `-` | split side by side / top and bottom |
-| `h` `j` `k` `l` / arrows | move focus |
-| `=` | even out the focused split and its neighbours |
-| `x` | close pane; the last one closes its tab, the last tab its space (asks if Claude is busy) |
-| `f` | fork Claude into a new tab of the same space |
-| `s` | focus sidebar (on the first agent) |
-| `w` | focus sidebar on the current space |
-| `b` | show or hide sidebar |
-| `{` / `}` | sidebar narrower / wider (also: drag its border) |
-| `a` | next session that needs you |
-| `o` | dashboard: every session and task with details and a live preview |
-| `d` | detach: paddock quits, terminals keep running |
-| `?` | key help |
-| `C-a` | literal `C-a` |
+| Key | Action | Name |
+|---|---|---|
+| `c` | new tab in this space | `new_tab` |
+| `C` | new space | `new_space` |
+| `n` | next tab | `next_tab` |
+| `p` | previous tab | `previous_tab` |
+| `Tab` | last space and tab shown | `last_page` |
+| `1` `2` `3` `4` `5` `6` `7` `8` `9` | go to tab 1, 2, ... 9 | `go_to_tab` |
+| `,` | rename tab | `rename_tab` |
+| `$` | rename space | `rename_space` |
+| `<` | move tab left | `move_tab_left` |
+| `>` | move tab right | `move_tab_right` |
+| `\|` | split side by side | `split_right` |
+| `-` | split top and bottom | `split_down` |
+| `h` `Left` | focus left | `focus_left` |
+| `j` `Down` | focus down | `focus_down` |
+| `k` `Up` | focus up | `focus_up` |
+| `l` `Right` | focus right | `focus_right` |
+| `=` | even out the focused split | `equalize` |
+| `x` | close pane (asks if busy) | `close` |
+| `f` | fork Claude into a new tab | `fork` |
+| `s` | focus sidebar on agents | `focus_sidebar` |
+| `w` | focus sidebar on the space | `focus_spaces` |
+| `b` | show or hide sidebar | `toggle_sidebar` |
+| `{` | sidebar narrower | `sidebar_narrower` |
+| `}` | sidebar wider | `sidebar_wider` |
+| `a` | next session needing you | `next_attention` |
+| `o` | dashboard | `dashboard` |
+| `d` | detach (terminals go on) | `detach` |
+| `?` | this help | `help` |
 
-In the sidebar: `j`/`k` move over spaces and agents; `Enter` on a space shows its tabs, on an agent jumps to its pane (space, tab and split); `x` closes the space, or the agent's pane; `f` forks the agent (on a space, its agent that needs you most); `Esc` goes back.
+`C-a` pressed twice sends a literal `C-a`. `go_to_tab`'s first key goes to tab 1, its second to tab 2, and so on. `close` closes the pane; the last one closes its tab, the last tab its space, and it asks first if Claude is busy. `{`/`}` can also be done by dragging the sidebar's border.
 
-In the dashboard: `j`/`k` move, `Enter` jumps, `D` dismisses, `x` closes, `f` forks, `I` types into the previewed terminal (`Esc` leaves and is never passed on), `Esc` closes it. Task rows show line changes, ahead/behind, the diff and changed files against the base branch (`origin/HEAD`, else `main`/`master`), the last commit's age, and `merged` once the branch is in its base.
+In the sidebar (`[keys.sidebar]`; prefix commands work too):
+
+| Key | Action | Name |
+|---|---|---|
+| `j` `Down` | next space or agent | `down` |
+| `k` `Up` | previous space or agent | `up` |
+| `Enter` | show the space's tabs, or jump to the agent's pane | `open` |
+| `x` | close the space, or the agent's pane | `close` |
+| `f` | fork the agent (on a space, its agent that needs you most) | `fork` |
+| `Esc` | give the keyboard back | `back` |
+
+In the dashboard (`[keys.dashboard]`):
+
+| Key | Action | Name |
+|---|---|---|
+| `j` `Down` | next row | `down` |
+| `k` `Up` | previous row | `up` |
+| `Enter` | jump to the row's terminal | `open` |
+| `D` | dismiss the row | `dismiss` |
+| `x` | close the row's terminal | `close` |
+| `f` | fork the row's Claude session | `fork` |
+| `I` | type into the previewed terminal (Esc leaves) | `interact` |
+| `Esc` | close the dashboard | `back` |
+
+While typing into the preview, every key goes to the terminal except `Esc`, which only leaves and is never passed on; this is fixed, so a remap can never trap you there. Task rows show line changes, ahead/behind, the diff and changed files against the base branch (`origin/HEAD`, else `main`/`master`), the last commit's age, and `merged` once the branch is in its base. Renaming (`Enter`, `Esc`, `Backspace`, `C-u`) and the `y` that confirms a close are fixed too.
 
 Mouse: click to focus a split, switch tabs (`+` after the tabs opens one, `<`/`>` scroll a full bar), or open a space or agent; the wheel over the tab bar switches tabs; wheel scrolls history; drag selects and copies (hold Shift over programs that use the mouse).
 
@@ -71,6 +101,18 @@ Mouse: click to focus a split, switch tabs (`+` after the tabs opens one, `<`/`>
 ```toml
 [keys]
 prefix = "C-a"
+
+[keys.commands]           # keys after the prefix, by action name
+new_tab = "t"             # one key...
+split_right = ["|", "\\"] # ...or a list of them
+next_tab = ""             # "" or [] unbinds
+go_to_tab = ["F1", "F2", "F3", "F4"]
+
+[keys.sidebar]            # while the sidebar has the keyboard
+back = ["Esc", "q"]
+
+[keys.dashboard]          # while the dashboard is open
+interact = "i"
 
 [colors]
 current_space = 236       # the current space's background: 256-colour index or "#rrggbb" (also read as current_item)
@@ -83,6 +125,19 @@ width = 32                # columns until you resize it
 ```
 
 Once you resize the sidebar (`C-a {`, `C-a }` or dragging its border), paddock saves that width in `~/.local/state/paddock/layout.toml` (`sidebar = N`), and it overrides `[sidebar] width` from then on. Delete that line (with paddock closed) to go back to the configured width.
+
+`paddock keys` prints every action with its default keys, ready to copy. Actions you leave out keep their defaults. The prefix and the bindings share one key syntax:
+
+- a character (`c`, `|`, `$`, `{`) or a name (`Tab`, `Enter`, `Esc`, `Space`, `Backspace`, `Delete`, `Insert`, `Home`, `End`, `PageUp`, `PageDown`, `Left`, `Down`, `Up`, `Right`, `F1`-`F12`); names in any case
+- optionally after `C-` (Ctrl), `S-` (Shift) or `M-` (Alt), in any case (`c-n` is `C-n`)
+- `C-` with a letter is the same key in either case (`C-A` is `C-a`: terminals send them alike); `C-S-` with a character is refused for the same reason
+- `S-` goes with a letter (`S-a` is `A`) or a named key (`S-Tab`); for other characters write the shifted one itself (`!`, not `S-1`)
+- `M-` works, with a warning at start and again on leaving, but not every terminal sends it, so paddock's own keys avoid it
+- the prefix must be `C-` with a letter, `Space`, or one of `\ ] ^ _`
+
+After the prefix, Shift does not matter for a key bound without it (Shift+arrows move focus too); in the sidebar and the dashboard, neither do Ctrl and Shift. A key bound with the modifier wins.
+
+paddock refuses to start, naming the file and the setting, on an unknown action or section, a key it cannot read, a key listed twice for one action, a key bound to two actions in the same section (unbind one with `""`, even a default), or the prefix key inside a `[keys.…]` section.
 
 ## Files
 

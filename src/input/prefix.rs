@@ -1,7 +1,8 @@
 //! The prefix key (`C-a` unless configured): the key after it is a paddock
 //! command instead of input for the terminal.
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use super::keymap::{Key, Keys};
+use crossterm::event::KeyEvent;
 
 /// What paddock does for a command key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,87 +67,17 @@ pub enum KeyAction {
 /// Columns `C-a {` and `C-a }` take away or add.
 pub const SIDEBAR_STEP: i16 = 2;
 
-/// Command keys, for both dispatch and the key help.
-pub const BINDINGS: &[(&str, &str)] = &[
-    ("c", "new tab in this space"),
-    ("C", "new space"),
-    ("n / p", "next / previous tab"),
-    ("Tab", "last page: the space and tab before"),
-    ("1-9", "go to tab"),
-    (",", "rename tab"),
-    ("$", "rename space"),
-    ("< / >", "move the tab left / right"),
-    ("|", "split side by side"),
-    ("-", "split top and bottom"),
-    ("hjkl", "move focus (also arrows)"),
-    ("=", "even out the focused split"),
-    ("x", "close pane (asks if Claude is busy)"),
-    ("f", "fork Claude into a new tab"),
-    ("s", "focus sidebar: spaces, agents (j/k Enter x f Esc)"),
-    ("w", "focus sidebar on the current space"),
-    ("b", "show or hide sidebar"),
-    ("{ / }", "sidebar narrower / wider"),
-    ("a", "next session that needs you"),
-    ("o", "dashboard (j/k, Enter, D, x, f, I types, Esc back)"),
-    ("d", "detach: quit, terminals keep running"),
-    ("?", "this help"),
-];
-
-fn command(key: &KeyEvent) -> Option<Command> {
-    // Shift is part of characters like `?`; any other modifier is not a command.
-    if !(key.modifiers - KeyModifiers::SHIFT).is_empty() {
-        return None;
-    }
-    let c = match key.code {
-        KeyCode::Tab => return Some(Command::LastPage),
-        KeyCode::Char(c) => c,
-        KeyCode::Left => 'h',
-        KeyCode::Down => 'j',
-        KeyCode::Up => 'k',
-        KeyCode::Right => 'l',
-        _ => return None,
-    };
-    Some(match c {
-        'c' => Command::NewTab,
-        'C' => Command::NewSpace,
-        '$' => Command::RenameSpace,
-        'n' => Command::NextTab,
-        'p' => Command::PreviousTab,
-        '1'..='9' => Command::GoToTab(c as usize - '1' as usize),
-        ',' => Command::RenameTab,
-        'x' => Command::Close,
-        'f' => Command::Fork,
-        '|' => Command::SplitColumns,
-        '-' => Command::SplitRows,
-        'h' => Command::Focus(Direction::Left),
-        'j' => Command::Focus(Direction::Down),
-        'k' => Command::Focus(Direction::Up),
-        'l' => Command::Focus(Direction::Right),
-        '=' => Command::Equalise,
-        '?' => Command::Help,
-        'd' => Command::Detach,
-        's' => Command::FocusSidebar,
-        'w' => Command::FocusSpaces,
-        '<' => Command::MoveTab(-1),
-        '>' => Command::MoveTab(1),
-        '{' => Command::ResizeSidebar(-SIDEBAR_STEP),
-        '}' => Command::ResizeSidebar(SIDEBAR_STEP),
-        'b' => Command::ToggleSidebar,
-        'a' => Command::NextAttention,
-        'o' => Command::Dashboard,
-        _ => return None,
-    })
-}
-
 pub struct PrefixKeys {
-    prefix: KeyEvent,
+    prefix: Key,
+    commands: Keys<Command>,
     armed: bool,
 }
 
 impl PrefixKeys {
-    pub fn new(prefix: KeyEvent) -> Self {
+    pub fn new(prefix: Key, commands: Keys<Command>) -> Self {
         Self {
             prefix,
+            commands,
             armed: false,
         }
     }
@@ -157,7 +88,7 @@ impl PrefixKeys {
     }
 
     fn is_prefix(&self, k: &KeyEvent) -> bool {
-        k.code == self.prefix.code && k.modifiers == self.prefix.modifiers
+        Key::of(k) == self.prefix
     }
 
     pub fn handle(&mut self, key: KeyEvent) -> KeyAction {
@@ -173,20 +104,31 @@ impl PrefixKeys {
             // Pressing the prefix twice sends it literally.
             return KeyAction::Forward(key);
         }
-        command(&key).map_or(KeyAction::None, KeyAction::Command)
+        let Some((command, i)) = self.commands.get(&key) else {
+            return KeyAction::None;
+        };
+        // `go_to_tab`'s Nth key goes to tab N.
+        let command = if let Command::GoToTab(_) = command {
+            Command::GoToTab(i)
+        } else {
+            command
+        };
+        KeyAction::Command(command)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::input::keymap::COMMAND_KEYS;
+    use crossterm::event::{KeyCode, KeyModifiers};
 
     fn k(c: char, m: KeyModifiers) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(c), m)
     }
 
     fn ctrl_a() -> PrefixKeys {
-        PrefixKeys::new(k('a', KeyModifiers::CONTROL))
+        PrefixKeys::new(Key::parse("C-a").unwrap(), Keys::defaults(&COMMAND_KEYS))
     }
 
     fn after_prefix(c: char, m: KeyModifiers) -> KeyAction {
@@ -332,6 +274,24 @@ mod tests {
     }
 
     #[test]
+    fn shift_arrows_after_the_prefix_move_focus_too() {
+        let mut p = ctrl_a();
+        p.handle(k('a', KeyModifiers::CONTROL));
+        assert_eq!(
+            p.handle(KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT)),
+            KeyAction::Command(Command::Focus(Direction::Right))
+        );
+    }
+
+    #[test]
+    fn the_prefix_matches_however_shift_is_reported() {
+        let mut p = ctrl_a();
+        let ctrl_shift_a = k('A', KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+        assert_eq!(p.handle(ctrl_shift_a), KeyAction::None);
+        assert!(p.armed());
+    }
+
+    #[test]
     fn unbound_and_modified_keys_are_swallowed() {
         assert_eq!(after_prefix('z', KeyModifiers::NONE), KeyAction::None);
         assert_eq!(after_prefix('0', KeyModifiers::NONE), KeyAction::None);
@@ -348,7 +308,7 @@ mod tests {
 
     #[test]
     fn any_prefix_key_works() {
-        let mut p = PrefixKeys::new(k('b', KeyModifiers::CONTROL));
+        let mut p = PrefixKeys::new(Key::parse("C-b").unwrap(), Keys::defaults(&COMMAND_KEYS));
         assert_eq!(
             p.handle(k('a', KeyModifiers::CONTROL)),
             KeyAction::Forward(k('a', KeyModifiers::CONTROL))

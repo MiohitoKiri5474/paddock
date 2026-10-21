@@ -12,12 +12,16 @@ mod terminal;
 mod tmux;
 mod ui;
 
-const USAGE: &str = "usage: paddock [hooks install|hooks uninstall]";
+const USAGE: &str = "usage: paddock [keys|hooks install|hooks uninstall]";
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
         [] => app::run(),
+        ["keys"] => {
+            print!("{}", config::default_keys_toml());
+            Ok(())
+        }
         ["hook", event] => hooks::hook(event),
         ["hooks", action] => hooks::command(action),
         _ => anyhow::bail!(USAGE),

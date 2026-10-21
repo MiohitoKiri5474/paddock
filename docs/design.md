@@ -96,34 +96,13 @@ Not in scope for now: agents other than Claude Code, Linux, remote machines, a s
 
 Prefix `C-a`, configurable; pressing it twice sends a literal `C-a`.
 
-| Key | Action |
-|---|---|
-| `c` | new tab in the current space |
-| `C` | new space |
-| `\|` / `-` | split side by side / top and bottom |
-| `x` | close terminal (asks if Claude is running or waiting) |
-| `f` | fork Claude into a new tab |
-| `h` `j` `k` `l` / arrows | move focus |
-| `1`–`9` | go to tab |
-| `n` / `p` | next / previous tab |
-| `Tab` | last page: the space and tab shown before, across spaces (not kept across reopening) |
-| `a` | next session that needs you |
-| `=` | even out the focused split and its neighbours |
-| `o` | dashboard |
-| `s` | focus sidebar (on the first agent) |
-| `w` | focus sidebar on the current space |
-| `b` | show or hide sidebar |
-| `{` / `}` | sidebar narrower / wider |
-| `?` | key help |
-| `d` | detach: leave paddock, terminals keep running |
-| `,` | rename tab |
-| `$` | rename space |
-| `<` / `>` | move the current tab left / right |
-| `[` | keyboard copy mode (v1.2) |
-| `/` | search scrollback (v1.2) |
-| `C-a` | literal `C-a` |
+Every key paddock reads is a named action in one table per mode (`src/input/keymap/tables.rs`): after the prefix (`[keys.commands]`), with the sidebar focused (`[keys.sidebar]`) and in the dashboard (`[keys.dashboard]`). Dispatch, the help overlay, the dashboard's key line and `paddock keys` (the defaults as TOML) are built from those tables, and a unit test checks that the README's key tables match them, so the README is where the default keys are listed. `config.toml` gives an action one key, a list, or `""` to unbind it; an action left out keeps its defaults.
 
-In the sidebar: `j`/`k` move over spaces then agents, `Enter` shows a space's tabs or jumps to an agent's pane, `x` closes the space or the agent's pane, `f` forks the agent (on a space, its most urgent one), `Esc` goes back. In the dashboard: `j`/`k` move, `Enter` jumps, `D` dismisses, `x` closes, `f` forks, `I` for interactive preview, `Esc` goes back.
+One key grammar serves the prefix and the bindings (`src/input/keymap/key.rs`), normalised the way terminals report keys: Shift folded into characters, a Ctrl letter always lowercase. Defaults avoid Alt (any terminal app); `M-` keys are accepted with a warning, shown at start and printed again on leaving. As before keys were configurable, Shift does not matter after the prefix, and Ctrl and Shift do not matter in the sidebar and dashboard, unless a key is bound with them. Config errors stop paddock before it touches the screen, naming the file, section and action: an unknown action or section, a key that does not parse, a key listed twice for one action, one key bound to two actions in one section (defaults included), or the prefix key bound inside a section (it always starts a command).
+
+Some keys are fixed on purpose: the prefix twice sends it; `Esc` always leaves typing into the dashboard preview and is never passed on, so no remap can trap you there; rename editing (`Enter`, `Esc`, `Backspace`, `C-u`) and the `y` that confirms a close.
+
+Planned (v1.2): `[` keyboard copy mode, `/` search scrollback.
 
 ## Tasks and worktrees
 

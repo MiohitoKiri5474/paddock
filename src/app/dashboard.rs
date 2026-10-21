@@ -7,6 +7,7 @@
 use super::rows::{row_ids, Row, RowId};
 use super::state::{App, Mode};
 use super::watch::Watched;
+use crate::input::keymap::DashboardAction;
 use crate::input::{encode_key, encode_paste};
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -107,22 +108,28 @@ impl App {
     }
 
     /// A key for the dashboard. Interactive: see [`Self::interactive_key`].
-    /// Else `j`/`k` (or arrows) move, `Enter` jumps to the row's terminal,
-    /// `D` dismisses the row, `x` closes and `f` forks its terminal, `I`
-    /// types into it, `Esc` closes the dashboard. A closed terminal's row can
-    /// only be dismissed.
+    /// Else `[keys.dashboard]`, by default: `j`/`k` (or arrows) move,
+    /// `Enter` jumps to the row's terminal, `D` dismisses the row, `x`
+    /// closes and `f` forks its terminal, `I` types into it, `Esc` closes
+    /// the dashboard. A closed terminal's row can only be dismissed.
     pub(super) fn dashboard_key(&mut self, d: Dashboard, key: KeyEvent) {
         // Act on the line highlighted, even if rows changed since the draw.
         let d = d.anchored(&row_ids(&self.rows()));
         if d.interactive {
             return self.interactive_key(d, key);
         }
-        self.mode = match key.code {
-            KeyCode::Char('j') | KeyCode::Down => self.dashboard_move(d, 1),
-            KeyCode::Char('k') | KeyCode::Up => self.dashboard_move(d, -1),
-            KeyCode::Char('D') => self.dashboard_dismiss(d),
-            KeyCode::Esc => Mode::Normal,
-            code => self.dashboard_act(d, code),
+        self.mode = match self.keymap.dashboard.action(&key) {
+            Some(DashboardAction::Down) => self.dashboard_move(d, 1),
+            Some(DashboardAction::Up) => self.dashboard_move(d, -1),
+            Some(DashboardAction::Dismiss) => self.dashboard_dismiss(d),
+            Some(DashboardAction::Back) => Mode::Normal,
+            Some(
+                action @ (DashboardAction::Open
+                | DashboardAction::Close
+                | DashboardAction::Fork
+                | DashboardAction::Interact),
+            ) => self.dashboard_act(d, action),
+            None => Mode::Dashboard(d),
         };
         self.report(|app| app.relayout());
     }
@@ -173,33 +180,36 @@ impl App {
         Mode::Dashboard(d.anchored(&row_ids(&self.rows())))
     }
 
-    /// `Enter`, `x`, `f` and `I` on the selected row's terminal, unless it
+    /// Open, close, fork and interact on the selected row's terminal, unless it
     /// was closed.
-    fn dashboard_act(&mut self, d: Dashboard, code: KeyCode) -> Mode {
+    fn dashboard_act(&mut self, d: Dashboard, action: DashboardAction) -> Mode {
         let Some(row) = self.dashboard_row(&d).filter(|r| !r.closed) else {
             return Mode::Dashboard(d);
         };
-        match code {
-            KeyCode::Enter => {
+        match action {
+            DashboardAction::Open => {
                 self.jump_to(&row.pane);
                 Mode::Normal
             }
-            KeyCode::Char('x') => {
+            DashboardAction::Close => {
                 self.mode = Mode::Dashboard(d.clone());
                 self.report(|app| app.close(&row.pane, Some(d)));
                 // Asking takes the keyboard, then comes back here.
                 std::mem::replace(&mut self.mode, Mode::Normal)
             }
-            KeyCode::Char('f') => {
+            DashboardAction::Fork => {
                 // The fork's tab gets the keyboard.
                 self.report(|app| app.fork(&row.pane));
                 Mode::Normal
             }
-            KeyCode::Char('I') => Mode::Dashboard(Dashboard {
+            DashboardAction::Interact => Mode::Dashboard(Dashboard {
                 interactive: true,
                 ..d
             }),
-            _ => Mode::Dashboard(d),
+            DashboardAction::Down
+            | DashboardAction::Up
+            | DashboardAction::Dismiss
+            | DashboardAction::Back => Mode::Dashboard(d),
         }
     }
 

@@ -16,7 +16,7 @@ const SPIKE: &str = concat!(
 const OURS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/hooks");
 const SESSION: &str = "11111111-2222-4333-8444-555555555555";
 /// The dashboard's title line, as drawn while it is open.
-const OPEN: &str = "dashboard  j/k move";
+const OPEN: &str = "dashboard  j down  k up";
 /// The preview's title while keys go to the terminal.
 const TYPING: &str = "typing into";
 const ASK: &str = "close? y/n";
