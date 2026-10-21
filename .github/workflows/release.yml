@@ -4,29 +4,40 @@ on:
   push:
     tags: ['v*']
 
-permissions:
-  contents: write
+permissions: {}
 
 jobs:
   release:
     # ponytail: Apple Silicon only; macos-latest is arm64. Add an x86_64 job if anyone asks.
     runs-on: macos-latest
+    permissions:
+      contents: write
     env:
       TAG: ${{ github.ref_name }}
       TARGET: aarch64-apple-darwin
+    defaults:
+      run:
+        # Like `shell: bash` (-eo pipefail), plus -u for unset variables.
+        shell: bash --noprofile --norc -euo pipefail {0}
     steps:
       - uses: actions/checkout@v4
+      # rustup is preinstalled on the runner; no third-party action runs with write access.
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal --target "$TARGET"
+          rustup default stable
+      # ponytail: no rust-cache; releases are rare and a clean build is what we want to ship.
       # The tag must name the version in Cargo.toml, so the binary reports what the release says.
       - name: Check tag matches Cargo.toml
         run: |
-          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version') || {
+            echo "::error::could not read the version from Cargo.toml (cargo metadata failed)"
+            exit 1
+          }
           if [ "$TAG" != "v$version" ]; then
             echo "::error::tag $TAG does not match Cargo.toml version $version"
             exit 1
           fi
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-darwin
       # Some unit tests drive a real tmux server.
       - name: Install tmux
         run: brew install tmux
@@ -45,5 +56,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # A rerun replaces its own earlier draft; a published release is never touched.
+          if is_draft=$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null); then
+            if [ "$is_draft" != true ]; then
+              echo "::error::release $TAG is already published"
+              exit 1
+            fi
+            gh release delete "$TAG" --yes
+          fi
+          archive="paddock-$TAG-$TARGET.tar.gz"
           gh release create "$TAG" --draft --prerelease --generate-notes --title "$TAG" \
-            "paddock-$TAG-$TARGET.tar.gz" "paddock-$TAG-$TARGET.tar.gz.sha256"
+            "$archive" "$archive.sha256"

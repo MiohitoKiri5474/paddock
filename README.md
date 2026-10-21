@@ -20,10 +20,11 @@ Pick one of these, then install the hooks (below).
 ```sh
 tar xzf paddock-v0.0.1-aarch64-apple-darwin.tar.gz
 xattr -d com.apple.quarantine paddock   # unsigned binary: lets Gatekeeper run it ("No such xattr" is fine)
+sudo mkdir -p /usr/local/bin             # missing on a fresh Apple Silicon Mac
 sudo mv paddock /usr/local/bin/         # or anywhere on your PATH
 ```
 
-**Homebrew** (installs tmux too):
+**Homebrew** (installs tmux too; the tap is published alongside each release, starting with v0.0.1):
 
 ```sh
 brew install MiohitoKiri5474/paddock/paddock
@@ -56,7 +57,7 @@ paddock hooks install               # adds paddock's hooks to ~/.claude/settings
 paddock          # open (a second launch offers to take over)
 ```
 
-The sidebar has two sections. SPACES lists your spaces, each with its directory and git branch on a dim second line: each space is a tmux session on paddock's hidden server, its tabs are the session's windows and its splits their panes, so `tmux -L paddock attach` shows the same thing. AGENTS lists every main Claude session in any space, with its state (waiting, done, idle, running, stopped) and the space and tab it runs in. The space you are in and the agent in the focused terminal have a darker background (`[colors] current_space`), and `C-a s` puts the sidebar's selection on that agent (else on that space). Open a tab with `C-a c` and run `claude` in it; the dashboard (`C-a o`) shows the branches it and its subagents work on. A turn that ends while you look elsewhere is `done` until you look at its tab, then `idle`. You get a macOS notification when a session starts waiting or a main agent finishes a turn.
+The sidebar has two sections. SPACES lists your spaces, each with its directory and git branch on a dim second line: each space is a tmux session on paddock's hidden server, its tabs are the session's windows and its splits their panes, so `tmux -L paddock attach` shows the same thing. AGENTS lists every main Claude session in any space, with its state (waiting, done, idle, running, stopped) and the space and tab it runs in. The space you are in and the agent in the focused terminal have a darker background (`[colors] current_space`), and `C-a s` puts the sidebar's selection on that agent (else on that space). Open a tab with `C-a c` and run `claude` in it; the dashboard (`C-a o`) shows the branches it and its subagents work on. The dashboard lists the sessions on top as an aligned table (NAME, STATE, ↑↓, CHANGES, BASE, FILES, AGE, MERGED; on a narrow screen whole columns drop, NAME and STATE stay). A session and its branch and subagent rows form one block: only sessions are selected, the whole selected block is highlighted, and `D` dismisses the block. Below the list, a live preview of the selected session sits in a rounded border (`I` types into it), and the keys are on the last line. A turn that ends while you look elsewhere is `done` until you look at its tab, then `idle`. You get a macOS notification when a session starts waiting or a main agent finishes a turn.
 
 ### Keys
 
