@@ -860,6 +860,7 @@ dependencies = [
  "signal-hook 0.3.18",
  "tempfile",
  "toml",
+ "unicode-width",
  "vt100",
  "yas-alacritty-terminal",
 ]

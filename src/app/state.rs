@@ -1,7 +1,7 @@
 //! What the running app holds: the spaces (tmux sessions, ADR 0006),
 //! each with its tabs (windows) and splits (panes) as tmux has them, a
 //! terminal per pane, the Claude sessions in them, and what the keyboard is
-//! doing (typing into the focused pane, renaming, reading help).
+//! doing (typing into the focused pane, naming, reading help).
 
 use super::attention::Attention;
 use super::dashboard::Dashboard;
@@ -17,6 +17,7 @@ use super::Event;
 use crate::config::Config;
 use crate::hooks::now_ms;
 use crate::input::keymap::Keymap;
+use crate::input::line::LineEdit;
 use crate::input::PrefixKeys;
 use crate::sessions::{dismissed, Session, Sessions, State};
 use crate::terminal::Terminal;
@@ -34,10 +35,10 @@ pub const TAB_BAR_ROWS: u16 = 1;
 
 pub enum Mode {
     Normal,
-    /// Renaming the current tab or space; holds the text typed so far.
-    Rename {
-        target: Renaming,
-        text: String,
+    /// The prompt popup asks for a name; holds the line typed so far.
+    Name {
+        target: Naming,
+        line: LineEdit,
     },
     Help,
     /// The sidebar has the keyboard; holds its selection.
@@ -53,21 +54,24 @@ pub enum Mode {
     Dashboard(Dashboard),
 }
 
-/// What is being renamed.
+/// What a name is asked for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Renaming {
-    /// The current tab (tmux window).
+pub enum Naming {
+    /// Renaming the current tab (tmux window).
     Tab,
-    /// The current space (tmux session).
+    /// Renaming the current space (tmux session).
     Space,
+    /// A new space.
+    NewSpace,
 }
 
-impl Renaming {
-    /// What is renamed, as the prompt names it.
-    pub fn noun(self) -> &'static str {
+impl Naming {
+    /// The prompt's title.
+    pub fn title(self) -> &'static str {
         match self {
-            Renaming::Tab => "tab",
-            Renaming::Space => "space",
+            Naming::Tab => " Rename tab ",
+            Naming::Space => " Rename space ",
+            Naming::NewSpace => " New space ",
         }
     }
 }
@@ -79,16 +83,6 @@ pub enum CloseTarget {
     Pane(String),
     /// A whole space (`$N`) with all its tabs.
     Space(String),
-}
-
-impl CloseTarget {
-    /// What the close question asks to do.
-    pub fn verb(&self) -> &'static str {
-        match self {
-            CloseTarget::Pane(_) => "close",
-            CloseTarget::Space(_) => "close space",
-        }
-    }
 }
 
 pub struct App {

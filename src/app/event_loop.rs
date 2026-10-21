@@ -260,7 +260,7 @@ fn draw(screen: &mut Screen, app: &App) -> Result<()> {
             height: TAB_BAR_ROWS.min(area.height),
             ..area
         };
-        let bar_cursor = draw_tab_bar(app, &rows, bar_area, f.buffer_mut());
+        app.tab_bar_view(&rows).render(bar_area, f.buffer_mut());
         // The frame may already have a new size the app has not seen yet
         // (its resize event is still queued): never draw outside it.
         // When the sizes agree, the panes fit: clipping hides only the lag.
@@ -273,24 +273,34 @@ fn draw(screen: &mut Screen, app: &App) -> Result<()> {
         let dash_cursor = draw_dashboard(app, &rows, panes, f.buffer_mut());
         if let Mode::Help = app.mode {
             help::render(&app.prefix_name, &app.keymap, full, f.buffer_mut());
-        } else if app.dashboard().is_some() {
-            // Only typing into the preview shows a cursor.
-            if let Some(cursor) = dash_cursor {
-                f.set_cursor_position(cursor);
-            }
-        } else if let Mode::Sidebar(_) = app.mode {
-            // The sidebar has the keyboard: no terminal cursor.
-        } else if let Some(cursor) = bar_cursor.or(term_cursor) {
+        }
+        // Over everything, sidebar included.
+        let prompt_cursor = app.prompt().map(|p| p.render(full, f.buffer_mut()));
+        if let Some(cursor) = cursor(app, prompt_cursor, dash_cursor, term_cursor) {
             f.set_cursor_position(cursor);
         }
     })?;
     Ok(())
 }
 
-/// The tab bar, or the question before a close. Returns the cursor while
-/// renaming.
-fn draw_tab_bar(app: &App, rows: &[Row], area: Rect, buf: &mut Buffer) -> Option<Position> {
-    app.tab_bar_view(rows).render(area, buf)
+/// Where the cursor shows: in the prompt while it is open (none while it
+/// asks a question), in the dashboard only while typing into the preview,
+/// nowhere while the help or the sidebar has the keyboard, else in the
+/// focused pane.
+fn cursor(
+    app: &App,
+    prompt: Option<Option<Position>>,
+    dashboard: Option<Position>,
+    pane: Option<Position>,
+) -> Option<Position> {
+    if let Some(at) = prompt {
+        return at;
+    }
+    match app.mode {
+        Mode::Help | Mode::Sidebar(_) => None,
+        _ if app.dashboard().is_some() => dashboard,
+        _ => pane,
+    }
 }
 
 /// The current tab's panes and the borders between them. Returns the

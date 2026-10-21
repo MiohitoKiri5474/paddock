@@ -6,8 +6,8 @@
 use super::state::{App, Mode, TAB_BAR_ROWS};
 use crate::input::{route_mouse, MouseAction};
 use crate::terminal::emulator::Emulator;
-use crate::ui::sidebar;
 use crate::ui::tab_bar::{self, Part};
+use crate::ui::{prompt, sidebar};
 use anyhow::{Context, Result};
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Position, Rect};
@@ -30,17 +30,32 @@ pub enum Press {
 impl App {
     /// Returns whether the screen may have changed.
     pub fn mouse(&mut self, m: MouseEvent) -> Result<bool> {
-        if matches!(
-            self.mode,
-            Mode::Help | Mode::Rename { .. } | Mode::ConfirmClose { .. } | Mode::Dashboard(_)
-        ) {
-            return Ok(false);
+        match self.mode {
+            Mode::Name { .. } | Mode::ConfirmClose { .. } => return Ok(self.prompt_mouse(m)),
+            Mode::Help | Mode::Dashboard(_) => return Ok(false),
+            Mode::Normal | Mode::Sidebar(_) => {}
         }
         match m.kind {
             MouseEventKind::Down(_) => self.press(m),
             MouseEventKind::Drag(_) | MouseEventKind::Up(_) => self.held(m),
             _ => self.hover(m),
         }
+    }
+
+    /// The mouse while the prompt popup is open: a press outside it closes
+    /// it, as `Esc` would; nothing else does anything.
+    fn prompt_mouse(&mut self, m: MouseEvent) -> bool {
+        let screen = Rect::new(0, 0, self.screen.0, self.screen.1);
+        let inside = prompt::area(screen).contains(Position::new(m.column, m.row));
+        if inside || !matches!(m.kind, MouseEventKind::Down(_)) {
+            return false;
+        }
+        if let Mode::ConfirmClose { back: Some(d), .. } =
+            std::mem::replace(&mut self.mode, Mode::Normal)
+        {
+            self.mode = Mode::Dashboard(d);
+        }
+        true
     }
 
     fn press(&mut self, m: MouseEvent) -> Result<bool> {

@@ -286,6 +286,25 @@ fn x_asks_while_claude_runs_then_returns_to_the_dashboard() {
 }
 
 #[test]
+fn a_click_outside_the_close_question_cancels_it_back_to_the_dashboard() {
+    let sandbox = Sandbox::new();
+    let mut paddock = two_tabs(&sandbox);
+    claude(&sandbox, "space-1:0", "UserPromptSubmit", "s1", "/w/repo");
+    wait_anywhere(&paddock, "running");
+
+    open(&mut paddock);
+    paddock.send(b"x");
+    paddock.wait_for_popup("Close tab", "Claude is running: close? y/n");
+    // Outside the 40x3 box centred on the 100x30 screen.
+    paddock.click_screen(80, 25);
+
+    paddock.wait_for_no_popup();
+    paddock.wait_for_text(OPEN);
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(tabs(&sandbox), 2);
+}
+
+#[test]
 fn f_forks_the_selected_session() {
     let sandbox = Sandbox::new();
     let mut paddock = two_tabs(&sandbox);

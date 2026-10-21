@@ -14,7 +14,6 @@ const SPIKE: &str = concat!(
 const OURS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/hooks");
 const SESSION: &str = "11111111-2222-4333-8444-555555555555";
 const ASK: &str = "close? y/n";
-const ASK_ITEM: &str = "close space? y/n";
 
 /// A recorded payload for session `session` in directory `cwd`.
 fn payload(name: &str, session: &str, cwd: &str) -> String {
@@ -89,7 +88,7 @@ fn x_asks_while_claude_is_running() {
     paddock.wait_for_tabs(&["1:home", "2:claude"]);
 
     paddock.command(b"x");
-    paddock.wait_for_text(ASK);
+    paddock.wait_for_popup("Close tab", "Claude is running: close? y/n");
     paddock.send(b"n");
     paddock.wait_for("the question gone", |s| !s.contains(ASK));
     std::thread::sleep(Duration::from_millis(200));
@@ -125,7 +124,7 @@ fn x_on_a_space_with_a_waiting_claude_asks_then_closes_the_space() {
     let mut paddock = ready(&sandbox);
     paddock.command(b"c");
     paddock.wait_for_current_tab("2:home");
-    paddock.command(b"C");
+    paddock.command(b"C\r");
     paddock.wait_for_tabs(&["1:home"]);
     claude(&sandbox, "space-1:0", "PermissionRequest", "s1");
     paddock.wait_for("waiting", |_| paddock.full_screen().contains("waiting"));
@@ -133,7 +132,7 @@ fn x_on_a_space_with_a_waiting_claude_asks_then_closes_the_space() {
     paddock.command(b"w");
     paddock.send(b"k");
     paddock.send(b"x");
-    paddock.wait_for_text(ASK_ITEM);
+    paddock.wait_for_popup("Close space", "Claude is waiting: close? y/n");
     paddock.send(b"y");
 
     wait_for_items(&paddock, &sandbox, &["space-2"]);
@@ -144,7 +143,7 @@ fn x_on_a_space_with_a_waiting_claude_asks_then_closes_the_space() {
 fn x_on_a_quiet_space_closes_it_without_asking() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
-    paddock.command(b"C");
+    paddock.command(b"C\r");
     paddock.wait_for_text(PROMPT);
 
     paddock.command(b"w");
@@ -199,7 +198,7 @@ fn f_forks_the_session_into_a_new_tab_in_its_directory() {
 fn f_on_a_space_forks_its_agent_into_a_new_tab_of_that_space() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
-    paddock.command(b"C");
+    paddock.command(b"C\r");
     paddock.wait_for_text(PROMPT);
     let (dir, canonical) = repo(&sandbox);
     sandbox.hook(

@@ -4,7 +4,7 @@
 
 use super::dashboard::Dashboard;
 use super::space::clamp;
-use super::state::{is_session_id, next_name, App, CloseTarget, Mode, Renaming};
+use super::state::{is_session_id, next_name, App, CloseTarget, Mode, Naming};
 use crate::sessions::State;
 use crate::terminal::Terminal;
 use crate::tmux::server::quote;
@@ -15,16 +15,27 @@ use std::path::PathBuf;
 const SPACE_STEM: &str = "space-";
 
 impl App {
-    /// Start a shell in a new space at the end of the sidebar and make it
-    /// current.
-    pub fn new_space(&mut self) -> Result<()> {
+    /// The name a new space gets unless the user picks one: the first free
+    /// `space-N`.
+    pub fn new_space_name(&self) -> String {
         let sessions = self.server.sessions();
-        let name = next_name(SPACE_STEM, sessions.iter().map(|s| s.name.as_str()));
+        next_name(SPACE_STEM, sessions.iter().map(|s| s.name.as_str()))
+    }
+
+    /// Start a shell in a new space named [`Self::new_space_name`].
+    pub fn new_space(&mut self) -> Result<()> {
+        let name = self.new_space_name();
+        self.new_space_named(&name)
+    }
+
+    /// Start a shell in a new space named `name` at the end of the sidebar
+    /// and make it current.
+    pub fn new_space_named(&mut self, name: &str) -> Result<()> {
         let dir = self.new_dir();
         let area = self.area();
         let session = self
             .server
-            .new_session(&name, &dir, clamp((area.width, area.height)))?;
+            .new_session(name, &dir, clamp((area.width, area.height)))?;
         if let Err(e) = self.attach(&session.id) {
             // Best effort: never leave a shell running out of sight.
             let _ = self.server.kill_session(&session.id);
@@ -168,10 +179,20 @@ impl App {
         self.report(|app| app.server.select(&id, Some(pane)));
     }
 
+    /// Act on a name typed into the prompt for `target`: rename the current
+    /// tab or space, or start a new space (a blank name keeps the default).
+    pub fn name(&mut self, target: Naming, name: &str) -> Result<()> {
+        let name = name.trim();
+        match target {
+            Naming::NewSpace if name.is_empty() => self.new_space(),
+            Naming::NewSpace => self.new_space_named(name),
+            Naming::Tab | Naming::Space => self.rename(target, name),
+        }
+    }
+
     /// Rename the current tab or space in tmux, so the name survives
     /// reattaching. tmux may adjust a session name (it replaces `.` and `:`).
-    pub fn rename(&mut self, target: Renaming, name: &str) -> Result<()> {
-        let name = name.trim();
+    fn rename(&mut self, target: Naming, name: &str) -> Result<()> {
         let Some(space) = self.current_space() else {
             return Ok(());
         };
@@ -180,23 +201,26 @@ impl App {
         }
         let id = space.id.clone();
         match target {
-            Renaming::Space => self.server.rename_session(&id, name)?,
-            Renaming::Tab => match space.current_window() {
+            Naming::Space => self.server.rename_session(&id, name)?,
+            Naming::Tab => match space.current_window() {
                 Some(w) => self.server.rename_window(&w.id, name)?,
                 None => return Ok(()),
             },
+            Naming::NewSpace => return Ok(()),
         }
         self.refresh(&id)
     }
 
-    /// The current name of what `target` renames.
-    pub fn name_of(&self, target: Renaming) -> String {
+    /// What the prompt for `target` starts with: the current name, or the
+    /// default for a new space.
+    pub fn name_of(&self, target: Naming) -> String {
         let space = self.current_space();
         match target {
-            Renaming::Space => space.map(|i| i.name().to_string()),
-            Renaming::Tab => space
+            Naming::Space => space.map(|i| i.name().to_string()),
+            Naming::Tab => space
                 .and_then(|i| i.current_window())
                 .map(|w| w.name.clone()),
+            Naming::NewSpace => Some(self.new_space_name()),
         }
         .unwrap_or_default()
     }

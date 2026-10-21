@@ -2,6 +2,7 @@
 
 pub mod keymap;
 pub mod keys;
+pub mod line;
 pub mod mouse;
 pub mod paste;
 pub mod prefix;
