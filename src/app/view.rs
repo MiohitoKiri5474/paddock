@@ -48,10 +48,10 @@ impl App {
             .collect()
     }
 
-    /// The main Claude sessions in open panes, across every space, in row
-    /// order.
+    /// The main Claude sessions, across every space, in row order: every
+    /// row is one in an open pane whose session has not ended.
     pub(super) fn agents<'a>(&self, rows: &'a [Row]) -> Vec<&'a Row> {
-        rows.iter().filter(|r| !r.closed).collect()
+        rows.iter().collect()
     }
 
     /// Each agent: its label, state, its space and tab, and whether it is

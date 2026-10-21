@@ -80,6 +80,9 @@ pub struct HookRecord {
     pub source: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notification_type: Option<String>,
+    /// Why a session ended (`SessionEnd`), e.g. [`CLEAR`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
     /// Set when a subagent, not the main agent, caused the event.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<String>,
@@ -97,6 +100,10 @@ pub struct HookRecord {
     pub ts: u64,
 }
 
+/// The `SessionEnd` reason `/clear` gives: a new conversation starts in
+/// the same Claude at once, so the terminal's session goes on.
+pub const CLEAR: &str = "clear";
+
 /// The session state an event leads to, if it changes it.
 pub fn state_after(r: &HookRecord) -> Option<State> {
     let state = match r.event.as_str() {
@@ -109,6 +116,7 @@ pub fn state_after(r: &HookRecord) -> Option<State> {
             Some("idle_prompt") => State::Idle,
             _ => return None,
         },
+        "SessionEnd" if r.reason.as_deref() == Some(CLEAR) => return None,
         "SessionEnd" => State::Stopped,
         _ => return None,
     };
@@ -386,17 +394,17 @@ impl Sessions {
         self.by_pane.get(pane)
     }
 
-    /// Every terminal with a session, closed ones included.
-    pub fn panes(&self) -> impl Iterator<Item = &str> {
-        self.by_pane.keys().map(String::as_str)
-    }
-
     /// Pane `pane`'s session and task rows, leaving out dismissed ones; `None`
-    /// if its session row is dismissed. A dismissed row stays hidden until an
-    /// event about it newer than the dismissal (a dismissed session row hides
-    /// its task rows too), so replaying the event log keeps it hidden.
+    /// if its session ended (Claude quit: it is stopped) or its session row
+    /// is dismissed. A dismissed row stays hidden until an event about it
+    /// newer than the dismissal (a dismissed session row hides its task rows
+    /// too), so replaying the event log keeps it hidden. An ended session
+    /// stays hidden until a new one starts in the same terminal.
     pub fn shown(&self, pane: &str) -> Option<(&Session, Vec<&Task>)> {
         let s = self.by_pane.get(pane)?;
+        if s.state == State::Stopped {
+            return None;
+        }
         let key = |branch: Option<&str>| (pane.to_string(), branch.map(str::to_string));
         let seen = |k: &RowKey| self.seen.get(k).copied().unwrap_or(0);
         let hidden =
@@ -532,6 +540,11 @@ impl Sessions {
                 .entry(pane.clone())
                 .or_insert_with(|| Session::new(Some(a.session_id.clone())));
             let same = s.session_id.as_deref() == Some(a.session_id.as_str());
+            // A session that ended never runs again: a snapshot still
+            // listing it lags behind.
+            if same && s.state == State::Stopped {
+                continue;
+            }
             let fresh_hook = same && s.hooked.is_some_and(|h| taken <= h + HOOK_GRACE);
             if taken <= s.updated || fresh_hook {
                 if same {
@@ -1053,6 +1066,39 @@ mod tests {
     }
 
     #[test]
+    fn a_session_that_ended_is_not_shown_until_the_next_one_starts() {
+        let mut s = Sessions::default();
+        s.apply(&on("feat/a", "/r", 1));
+        s.apply(&rec("SessionEnd", 2));
+        assert_eq!(shown(&s), None);
+        // A snapshot that still lists it, even long after, does not bring
+        // it back.
+        s.reconcile(10_000, &[agent(S1, "idle", Some("%1"))]);
+        assert_eq!(shown(&s), None);
+        // A new Claude in the same terminal is shown, with its tasks.
+        s.apply(&HookRecord {
+            session_id: Some("newer".into()),
+            ..rec("SessionStart", 10_001)
+        });
+        assert_eq!(shown(&s), Some(vec!["feat/a"]));
+    }
+
+    #[test]
+    fn clear_ends_a_conversation_but_not_the_terminals_session() {
+        let mut s = Sessions::default();
+        s.apply(&rec("Stop", 1));
+        s.see("%1");
+        let clear = HookRecord {
+            reason: Some(CLEAR.into()),
+            ..rec("SessionEnd", 2)
+        };
+        assert_eq!(state_after(&clear), None);
+        s.apply(&clear);
+        assert_eq!(state(&s), State::Idle);
+        assert_eq!(shown(&s), Some(vec![]));
+    }
+
+    #[test]
     fn a_dismissed_session_row_stays_hidden_until_its_next_hook_event() {
         let mut s = Sessions::default();
         s.apply(&on("feat/a", "/r", 1));
@@ -1125,7 +1171,6 @@ mod tests {
             at: 5,
         };
         assert_eq!(s.dismissals(), [want]);
-        assert_eq!(s.panes().collect::<Vec<_>>(), ["%1"]);
     }
 
     #[test]

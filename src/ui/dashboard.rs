@@ -45,7 +45,7 @@ pub struct View<'a> {
     pub keys: &'a str,
     pub details: &'a TaskDetails,
     pub selected: Option<&'a RowId>,
-    /// The selected row's terminal, unless it was closed.
+    /// The selected row's terminal, once paddock has it.
     pub preview: Option<&'a Emulator>,
     /// Keys go to the previewed terminal.
     pub interactive: bool,
@@ -346,7 +346,6 @@ mod tests {
             label: label.into(),
             state,
             tasks,
-            closed: false,
         }
     }
 
@@ -557,7 +556,7 @@ mod tests {
     }
 
     #[test]
-    fn a_closed_rows_preview_says_it_has_no_terminal() {
+    fn a_rows_preview_without_its_terminal_says_so() {
         let area = Rect::new(0, 0, 40, 12);
         let mut buf = Buffer::empty(area);
         let rows = [row("gone", State::Stopped, vec![])];

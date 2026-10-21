@@ -71,7 +71,7 @@ The main agent finished its turn while you looked at another tab; it turns idle 
 The main agent finished its turn and is ready for your next prompt.
 
 **Stopped**:
-Claude no longer runs in that terminal, or the session ended while a subagent was still running.
+Claude no longer runs in that terminal, or the session ended while a subagent was still running. A stopped session leaves the dashboard and the sidebar.
 
 **Unknown**:
 No state has been reported yet.

@@ -66,9 +66,19 @@ struct EventEffects {
     hooks: bool,
     /// Pane output: the most frequent event, changing nothing but a screen.
     output: bool,
-    /// Anything but tmux and the readers' results may change which rows are
-    /// on screen.
+    /// Anything but the readers' results and tmux messages that leave the
+    /// panes as they are may change which rows are on screen: a pane that
+    /// closes takes its session's row with it.
     rows_may_move: bool,
+}
+
+/// Whether tmux message `msg` may close or open panes.
+fn moves_panes(msg: &Message) -> bool {
+    match msg {
+        Message::Exit => true,
+        Message::Notification(n) => changes_structure(n),
+        Message::Output { .. } | Message::Reply { .. } => false,
+    }
 }
 
 impl EventEffects {
@@ -82,7 +92,11 @@ impl EventEffects {
                     ..
                 }
             ),
-            rows_may_move: !matches!(event, Event::Tmux { .. } | Event::Git(_) | Event::Spaces(_)),
+            rows_may_move: match event {
+                Event::Tmux { msg, .. } => moves_panes(msg),
+                Event::Git(_) | Event::Spaces(_) => false,
+                _ => true,
+            },
         }
     }
 }

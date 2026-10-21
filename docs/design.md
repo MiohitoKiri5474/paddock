@@ -38,7 +38,7 @@ Not in scope for now: agents other than Claude Code, Linux, remote machines, a s
      api-server · claude
   ```
 
-  SPACES has two lines per space: a dot in the most urgent state of its agents (none without agents) and its name (the tmux session name), then, dim, its directory (that of its first tab's first pane, home as `~`) and the branch checked out there (the short commit if detached, nothing outside a repository). A path too long loses its start (`…`) first, then the branch its end. Directories and branches are read on the git thread, at start, on hook events and every few seconds; the second line stays empty until the first read. The current space (the one whose tabs are shown) has its own background over both lines (`[colors] current_space`, a 256-colour index or `#rrggbb`, default 236). AGENTS lists every main Claude session in an open pane, in any space, sorted by state: a dot, its label and state, then, dimmed, its space and tab, with a blank line between agents. The current agent (the one in the focused terminal of the page shown) has the current space's background over both its lines. Subagents and task rows stay in the dashboard. While the sidebar has the keyboard, the selected space or agent is reversed. `C-a s` gives it the keyboard on the current agent if the focused terminal holds one, else on the current space; `C-a w` always on the current space; either shows a hidden sidebar.
+  SPACES has two lines per space: a dot in the most urgent state of its agents (none without agents) and its name (the tmux session name), then, dim, its directory (that of its first tab's first pane, home as `~`) and the branch checked out there (the short commit if detached, nothing outside a repository). A path too long loses its start (`…`) first, then the branch its end. Directories and branches are read on the git thread, at start, on hook events and every few seconds; the second line stays empty until the first read. The current space (the one whose tabs are shown) has its own background over both lines (`[colors] current_space`, a 256-colour index or `#rrggbb`, default 236). AGENTS lists every main Claude session that has not ended (see Task tree) in an open pane, in any space, sorted by state: a dot, its label and state, then, dimmed, its space and tab, with a blank line between agents. The current agent (the one in the focused terminal of the page shown) has the current space's background over both its lines. Subagents and task rows stay in the dashboard. While the sidebar has the keyboard, the selected space or agent is reversed. `C-a s` gives it the keyboard on the current agent if the focused terminal holds one, else on the current space; `C-a w` always on the current space; either shows a hidden sidebar.
 - Right: the **session view**, the current item's tab bar and the current tab's terminals (splits).
 - The tab bar follows herdr's look: a darker row (`[colors] tab_bar`, default 235) with each tab a filled block, its name centred, at least 8 cells wide, one blank column apart; the current tab has the accent colour (`tab_current`, default the terminal's blue) with dark text, the others a dark grey (`tab`, default 237) with dim text, and a name the user gave is bold. A `+` after the last tab opens a new one. When the tabs do not fit, `<` and `>` scroll by one and `…` marks hidden tabs; switching tabs scrolls the current one into sight, about in the middle. The wheel over the bar switches tabs; `C-a <` and `C-a >` move the current tab (no wrap). A tab is named after what runs in its focused pane (`claude` while Claude runs there, else the command, or the directory for a shell) until the user renames it. A tab holding a waiting, done or idle Claude gets a `●` in that state's colour before its name.
 - The **dashboard** opens as an overlay (`C-a o`) and holds the task tree: the list on top (as tall as its rows, at most about 40% of the height, with a blank line under its column header and another under its rows), the live preview below it in a rounded border with its title in the top border, and the keys on its last line, under that border. On a short screen the preview goes first.
@@ -48,11 +48,11 @@ Not in scope for now: agents other than Claude Code, Linux, remote machines, a s
 ### Task tree
 
 - Shown in the dashboard. Levels: session → task.
-- A session row is a terminal where Claude runs or ran. Its label is the Claude session name if set, else the tab name if the user gave one, else the directory name.
+- A session row is a terminal where Claude runs. Its label is the Claude session name if set, else the tab name if the user gave one, else the directory name.
 - Task rows are the main agent's branch plus each subagent's branch, labelled with the subagent's task description.
 - Plain shells and the default branch get no row.
 - Everything under a session belongs to it: a session and its task rows form a block, with a blank line between two blocks. Only sessions are selected: moving skips task rows, the whole selected block gets the current space's background (`[colors] current_space`, as in the sidebar; each line keeps its own colours as text), scrolling keeps the whole block in sight where it fits, and every key acts on the session; dismissing it dismisses its task rows with it.
-- Rows stay until dismissed (`D`).
+- Rows stay until dismissed (`D`) or until their session ends: its terminal (pane, tab or space) is closed, or Claude quits in it (`SessionEnd`: the session is stopped). A session that ended leaves at once with its task rows, everywhere rows are used (the dashboard, the sidebar's AGENTS, the dots and tab markers, `C-a a`), and replaying the event log on reopen does not bring it back. If it was selected, the session that took its place is selected, and interactive preview ends. A new Claude in the same terminal is a new session and gets a row. `/clear` (`SessionEnd` with reason `clear`) only starts a new conversation in the same Claude, so its row stays. There is no setting to keep ended sessions.
 - External sessions appear dimmed in a group at the bottom (v1.2).
 
 ### Fields
@@ -67,9 +67,9 @@ The dashboard list is a table under a dim header: NAME (the session's label, its
 
 ### States
 
-- Session: running, waiting, done, idle, stopped, or unknown. A main agent that finishes a turn (`Stop`) is done while you are not looking at its tab (the current space's current tab, outer window focused), and turns idle once you do. Done is not saved: it is per running paddock.
+- Session: running, waiting, done, idle, or unknown. A stopped session (Claude quit) has no row. A main agent that finishes a turn (`Stop`) is done while you are not looking at its tab (the current space's current tab, outer window focused), and turns idle once you do. Done is not saved: it is per running paddock.
 - Subagent task: running, waiting, done, or stopped.
-- Compacting counts as running. Sort order: waiting, done, idle, running, stopped.
+- Compacting counts as running. Sort order: waiting, done, idle, running, unknown.
 - Task rows within a session sort waiting, running, done, stopped, ties in tree order; the main agent's task row has its session's state (done and idle count as done).
 
 ### Attention
@@ -152,4 +152,4 @@ Test-first with at least 80% coverage:
 - Claude Code's transcript files, `.meta.json` and the `claude agents --json` fields are undocumented and may change. Hooks are the primary source; these only reconcile.
 - The renderer is the largest piece of work, and encoding keys, mouse and paste for control mode is the hardest part of it. Spike 0a gates the build.
 - One instance at a time is the price of having no daemon.
-- Rows stay until dismissed, so the task list grows unless the user prunes it.
+- A session ends for paddock on `SessionEnd` or when its terminal closes. A Claude killed without `SessionEnd` (e.g. `kill -9`) keeps its row, in its last state, until its terminal closes or it is dismissed.

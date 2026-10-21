@@ -397,22 +397,20 @@ fn subagent_work_done_while_paddock_is_closed_appears_on_reopen() {
         hook("PostToolUse-subagent", "PostToolUse", agent);
     }
     hook("SubagentStop-subagent", "SubagentStop", AGENT_A);
-    // The session ends while agent B still runs.
-    hook("SessionEnd", "SessionEnd", AGENT_A);
 
     let mut again = ready(&sandbox);
     wait_for_list(
         &mut again,
         &[
-            &session("stopped"),
+            &session("running"),
+            &sub("fix/b", "running"),
             &sub(FIX_A, "done"),
-            &sub("fix/b", "stopped"),
         ],
     );
 }
 
-// Ticket 10: rows stay, across new conversations, closed terminals and
-// reopening, until dismissed with `D`.
+// Ticket 10: rows stay, across new conversations and reopening, until
+// dismissed with `D` or until their session ends (ticket 20).
 
 /// Main-agent events in the pane tmux target `terminal` names: it starts in `dir`, then a
 /// shell command leaves it on each of `branches` in turn, then it stops.
@@ -503,7 +501,7 @@ fn d_on_a_session_row_hides_it_with_its_tasks_until_claude_reports_again() {
 }
 
 #[test]
-fn a_closed_terminals_rows_stay_as_stopped_after_reopening() {
+fn a_closed_terminals_rows_leave_at_once_and_stay_gone_after_reopening() {
     let sandbox = Sandbox::new();
     let dir = repo(&sandbox);
     let mut paddock = ready(&sandbox);
@@ -514,11 +512,28 @@ fn a_closed_terminals_rows_stay_as_stopped_after_reopening() {
 
     close_list(&mut paddock);
     paddock.type_line("exit");
-    wait_for_list(&mut paddock, &[&session("stopped"), "feat/one"]);
+    wait_for_list(&mut paddock, &[]);
     assert_eq!(tabs(&sandbox), 1);
 
+    // Replaying the event log does not bring them back.
     let mut again = reopen(&sandbox, paddock);
-    wait_for_list(&mut again, &[&session("stopped"), "feat/one"]);
+    wait_for_list(&mut again, &[]);
+}
+
+#[test]
+fn a_session_whose_claude_quit_leaves_with_its_task_rows() {
+    let sandbox = Sandbox::new();
+    let dir = repo(&sandbox);
+    let mut paddock = ready(&sandbox);
+    work_on(&sandbox, "space-1", &dir, &["feat/one"]);
+    wait_for_list(&mut paddock, &[&session("idle"), "feat/one"]);
+
+    sandbox.hook("space-1", "SessionEnd", &payload("SessionEnd", &dir, None));
+    wait_for_list(&mut paddock, &[]);
+    assert_eq!(tabs(&sandbox), 1, "terminal kept");
+
+    let mut again = reopen(&sandbox, paddock);
+    wait_for_list(&mut again, &[]);
 }
 
 #[test]

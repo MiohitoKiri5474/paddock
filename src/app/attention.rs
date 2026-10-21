@@ -477,7 +477,6 @@ mod tests {
             label: pane.into(),
             state,
             tasks: Vec::new(),
-            closed: false,
         }
     }
 
