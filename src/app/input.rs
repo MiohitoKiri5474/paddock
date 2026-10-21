@@ -64,6 +64,7 @@ impl App {
                 }
                 Ok(Flow::Continue)
             }
+            Mode::Copy(copy) => self.copy_key(copy, key),
             Mode::Normal => self.normal_key(key),
         }
     }
@@ -125,7 +126,7 @@ impl App {
         }
     }
 
-    fn command(&mut self, command: Command) -> Result<Flow> {
+    pub(super) fn command(&mut self, command: Command) -> Result<Flow> {
         // A command that changes the page or gives a panel the keyboard
         // hides the float first.
         if !command.keeps_float() {
@@ -176,6 +177,8 @@ impl App {
             Command::NextAttention => self.next_attention(),
             Command::Dashboard => self.toggle_dashboard(),
             Command::Finder => self.open_finder(),
+            Command::CopyMode => self.enter_copy(false),
+            Command::Search => self.enter_copy(true),
             Command::ToggleFloat(i) => {
                 // The float takes the keyboard from any panel.
                 self.mode = Mode::Normal;
@@ -238,6 +241,10 @@ impl App {
             }
             Mode::Finder { finder, .. } => {
                 finder.edited(|line| line.insert(text));
+                return Ok(());
+            }
+            Mode::Copy(_) => {
+                self.copy_paste(text);
                 return Ok(());
             }
             _ => {}

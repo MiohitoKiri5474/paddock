@@ -136,6 +136,8 @@ pub fn run(
 /// Keep up with an event just handled (see `effects`): turns seen, the tab bar
 /// scrolled to the current tab, the dashboard's selection and git's tasks.
 fn follow_up(app: &mut App, git: &mut GitFeed, effects: &EventEffects) {
+    // Copy mode ends with its terminal, or once that is off screen.
+    app.check_copy();
     // Any event may show a tab or bring the window back.
     app.see_current();
     // Pane output changes the space or tab shown only through a refresh,
@@ -381,7 +383,10 @@ fn draw_panes(app: &App, area: Rect, buf: &mut Buffer) -> Option<Position> {
         let Some(t) = app.terminals.get(pane) else {
             continue;
         };
-        let at = session_view::render(t.emulator(), *rect, buf);
+        let at = match app.copy_view(pane) {
+            Some(copy) => copy.render(t.emulator(), *rect, buf),
+            None => session_view::render(t.emulator(), *rect, buf),
+        };
         if Some(pane) == focus.as_ref() {
             cursor = at;
         }

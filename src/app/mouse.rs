@@ -3,9 +3,11 @@
 //! wheel and programs' mouse reports go to the pane under the pointer;
 //! dragging selects text and releasing copies it. While a float is shown,
 //! the mouse reaches only the float; a click outside it does nothing.
-//! While the finder is open, see `finder.rs`.
+//! While the finder is open, see `finder.rs`. In copy mode the wheel over
+//! its terminal scrolls the copy view, and a click or drag leaves it first.
 
 use super::state::{App, Mode, TAB_BAR_ROWS};
+use crate::input::mouse::WHEEL_LINES;
 use crate::input::{route_mouse, MouseAction};
 use crate::terminal::emulator::Emulator;
 use crate::ui::sidebar;
@@ -40,6 +42,9 @@ impl App {
             Mode::Help | Mode::Dashboard(_) => return Ok(false),
             _ => {}
         }
+        if let Some(changed) = self.copy_mouse(m) {
+            return Ok(changed);
+        }
         match m.kind {
             MouseEventKind::Down(_) => self.press(m),
             MouseEventKind::Drag(_) | MouseEventKind::Up(_) => self.held(m),
@@ -59,6 +64,34 @@ impl App {
             self.mode = back;
         }
         true
+    }
+
+    /// The mouse in copy mode: the wheel over its terminal scrolls the
+    /// copy view (elsewhere it does nothing), and motion does nothing; any
+    /// other event leaves copy mode and then acts as usual (`None`).
+    fn copy_mouse(&mut self, m: MouseEvent) -> Option<bool> {
+        let Mode::Copy(copy) = &self.mode else {
+            return None;
+        };
+        let lines = match m.kind {
+            MouseEventKind::ScrollUp => WHEEL_LINES,
+            MouseEventKind::ScrollDown => -WHEEL_LINES,
+            MouseEventKind::Moved | MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight => {
+                return Some(false)
+            }
+            MouseEventKind::Down(_) | MouseEventKind::Drag(_) | MouseEventKind::Up(_) => {
+                if let Mode::Copy(copy) = std::mem::replace(&mut self.mode, Mode::Normal) {
+                    self.leave_copy(&copy);
+                }
+                return None;
+            }
+        };
+        let at = Position::new(m.column, m.row);
+        let over = self.rect_of(&copy.pane).is_some_and(|r| r.contains(at));
+        if over {
+            self.copy_wheel(lines);
+        }
+        Some(over)
     }
 
     fn press(&mut self, m: MouseEvent) -> Result<bool> {
@@ -343,7 +376,7 @@ fn select_held(
 
 /// Put `text` on the clipboard with `pbcopy`, or with the program named by
 /// `PADDOCK_COPY_COMMAND` (tests use it to keep off the real clipboard).
-fn copy(text: &str) -> Result<()> {
+pub(super) fn copy(text: &str) -> Result<()> {
     let program = std::env::var_os("PADDOCK_COPY_COMMAND").unwrap_or_else(|| "pbcopy".into());
     let name = program.to_string_lossy().into_owned();
     let mut child = Command::new(&program)

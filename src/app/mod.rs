@@ -3,6 +3,7 @@
 //! pane until the user detaches.
 
 mod attention;
+mod copy;
 mod dashboard;
 mod event_loop;
 mod finder;

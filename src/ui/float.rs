@@ -8,6 +8,7 @@
 //! ╰─────────────────────────────────────╯
 //! ```
 
+use super::copy::CopyView;
 use super::{prompt, session_view};
 use crate::terminal::emulator::Emulator;
 use ratatui::buffer::Buffer;
@@ -58,6 +59,8 @@ pub struct Float<'a> {
     pub accent: Color,
     /// The program's screen.
     pub emulator: &'a Emulator,
+    /// Its copy mode, if in it.
+    pub copy: Option<CopyView<'a>>,
 }
 
 impl Float<'_> {
@@ -71,7 +74,10 @@ impl Float<'_> {
         if inside.is_empty() {
             return None;
         }
-        session_view::render(self.emulator, inside, buf)
+        match &self.copy {
+            Some(copy) => copy.render(self.emulator, inside, buf),
+            None => session_view::render(self.emulator, inside, buf),
+        }
     }
 }
 
@@ -127,6 +133,7 @@ mod tests {
             title: "cat",
             accent: Color::Indexed(33),
             emulator: &emu,
+            copy: None,
         };
         let box_at = Rect::new(2, 1, 16, 4);
         let cursor = float.render(box_at, &mut buf);
@@ -147,6 +154,7 @@ mod tests {
                 title: "lazygit",
                 accent: Color::Blue,
                 emulator: &emu,
+                copy: None,
             };
             float.render(screen, &mut Buffer::empty(screen));
         }

@@ -37,7 +37,7 @@ pub fn title(prefix: &str) -> String {
 
 /// The lines of the help: the commands' and floats' keys in two columns,
 /// each command with its direct chord in brackets, then the sidebar's and
-/// the dashboard's keys.
+/// the dashboard's keys. Copy mode's keys are on its own status line.
 pub fn lines(keys: &Keymap, floats: &Floats) -> Vec<String> {
     let mut out = Vec::new();
     let mut cells: Vec<String> = keys
@@ -60,8 +60,9 @@ pub fn lines(keys: &Keymap, floats: &Floats) -> Vec<String> {
         };
         format!("{:<LABEL$} float: {command}{cut}", f.key.name())
     }));
+    // No blank line after the commands: with copy mode they need its row
+    // to fit 80x24.
     out.extend(two_columns(&cells));
-    out.push(String::new());
     out.extend(wrapped("Sidebar:   ", &keys.sidebar.hints()));
     out.extend(wrapped("Dashboard: ", &keys.dashboard.hints()));
     let prompt: Vec<String> = PROMPT_KEYS.iter().map(|k| k.to_string()).collect();
@@ -183,6 +184,10 @@ mod tests {
             .iter()
             .any(|x| x.contains("g      find a space, tab or agent")));
         assert!(l.iter().any(|x| x.contains("G      float: lazygit")));
+        assert!(l
+            .iter()
+            .any(|x| x.contains("[      copy mode: move, select, copy")));
+        assert!(l.iter().any(|x| x.contains("/      search the history")));
         assert!(l.iter().any(|x| x.starts_with("Sidebar:   j down  k up")));
         assert!(l.iter().any(|x| x.contains("I interact  / filter")));
         assert!(l

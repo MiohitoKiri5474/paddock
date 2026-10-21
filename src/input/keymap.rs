@@ -1,6 +1,6 @@
 //! Key bindings: every paddock action by name, its default keys, and the
-//! keys `[keys.commands]`, `[keys.direct]`, `[keys.sidebar]` and
-//! `[keys.dashboard]` in `config.toml` give it instead. Dispatch, the key
+//! keys `[keys.commands]`, `[keys.direct]`, `[keys.sidebar]`,
+//! `[keys.dashboard]` and `[keys.copy]` in `config.toml` give it instead. Dispatch, the key
 //! help, `paddock keys` and the README's key tables all come from the
 //! tables here.
 
@@ -12,7 +12,9 @@ use anyhow::{bail, Result};
 use crossterm::event::{KeyEvent, KeyModifiers};
 pub use key::Key;
 use std::collections::BTreeMap;
-pub use tables::{Binding, DashboardAction, SidebarAction, COMMANDS, DASHBOARD, SIDEBAR};
+pub use tables::{
+    Binding, CopyAction, DashboardAction, SidebarAction, COMMANDS, COPY, DASHBOARD, SIDEBAR,
+};
 
 /// An action's keys in `config.toml`, by action name, for one section.
 pub type Given = BTreeMap<String, Vec<String>>;
@@ -25,6 +27,7 @@ pub struct GivenKeys {
     pub direct: Option<Given>,
     pub sidebar: Given,
     pub dashboard: Given,
+    pub copy: Given,
 }
 
 /// Warnings about settings that work but may surprise.
@@ -82,6 +85,15 @@ pub const DASHBOARD_KEYS: Section<DashboardAction> = Section {
     name: "dashboard",
     table: DASHBOARD,
     ignored: KeyModifiers::CONTROL.union(KeyModifiers::SHIFT),
+    defaults_are_chords: false,
+};
+
+/// In copy mode, Ctrl matters (`b` and `C-b` are different moves); Shift
+/// does not, as after the prefix.
+pub const COPY_KEYS: Section<CopyAction> = Section {
+    name: "copy",
+    table: COPY,
+    ignored: KeyModifiers::SHIFT,
     defaults_are_chords: false,
 };
 
@@ -179,7 +191,13 @@ impl<A: Copy> Keys<A> {
             let defaults = section.default_keys(b);
             let specs: Vec<&str> = match given.get(b.name) {
                 Some(specs) => specs.iter().map(String::as_str).collect(),
-                None => defaults.to_vec(),
+                // A default that is the prefix (copy mode's `C-b` under a
+                // `C-b` prefix) could never be pressed: it is left out.
+                None => defaults
+                    .iter()
+                    .copied()
+                    .filter(|d| Key::parse(d).ok() != Some(prefix))
+                    .collect(),
             };
             let mut keys = Vec::new();
             for spec in specs.into_iter().filter(|s| !s.is_empty()) {
@@ -265,6 +283,15 @@ impl<A: Copy> Keys<A> {
         out
     }
 
+    /// [`Self::hints`] for the actions `names` only, in that order; those
+    /// without a key are left out.
+    pub fn hints_for(&self, names: &[&str]) -> Vec<String> {
+        names
+            .iter()
+            .filter_map(|n| Some(format!("{} {n}", self.keys_of(n).first()?.name())))
+            .collect()
+    }
+
     /// The keys as help: `j down`, `k up`, ..., with each action's first key.
     pub fn hints(&self) -> Vec<String> {
         self.bindings()
@@ -306,7 +333,7 @@ pub fn label(keys: &[Key]) -> String {
 }
 
 /// Every binding: after the prefix, without it, in the sidebar, in the
-/// dashboard.
+/// dashboard, in copy mode.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Keymap {
     pub commands: Keys<Command>,
@@ -314,6 +341,7 @@ pub struct Keymap {
     pub direct: Keys<Command>,
     pub sidebar: Keys<SidebarAction>,
     pub dashboard: Keys<DashboardAction>,
+    pub copy: Keys<CopyAction>,
 }
 
 impl Keymap {
@@ -335,6 +363,7 @@ impl Keymap {
                 prefix,
                 &mut warnings,
             )?,
+            copy: configured_section(&COPY_KEYS, &given.copy, prefix, &mut warnings)?,
         };
         if given.direct.is_none() {
             warnings.extend(keymap.control_chars_warning());
@@ -375,6 +404,7 @@ impl Keymap {
             self.direct.toml(),
             self.sidebar.toml(),
             self.dashboard.toml(),
+            self.copy.toml(),
         ]
         .join("\n")
     }
@@ -387,6 +417,7 @@ impl Default for Keymap {
             direct: Keys::defaults(&DIRECT_KEYS),
             sidebar: Keys::defaults(&SIDEBAR_KEYS),
             dashboard: Keys::defaults(&DASHBOARD_KEYS),
+            copy: Keys::defaults(&COPY_KEYS),
         }
     }
 }
@@ -417,6 +448,7 @@ pub fn given(pairs: &[(&str, &[&str])]) -> Given {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::terminal::emulator::Motion;
     use crossterm::event::KeyCode;
 
     fn key(code: KeyCode, mods: KeyModifiers) -> KeyEvent {
@@ -448,7 +480,8 @@ mod tests {
             .map(|(_, k)| k)
             .chain(keymap.direct.bindings().map(|(_, k)| k))
             .chain(keymap.sidebar.bindings().map(|(_, k)| k))
-            .chain(keymap.dashboard.bindings().map(|(_, k)| k));
+            .chain(keymap.dashboard.bindings().map(|(_, k)| k))
+            .chain(keymap.copy.bindings().map(|(_, k)| k));
         for k in all.flatten() {
             assert_eq!(Key::parse(&k.name()).unwrap(), *k, "{}", k.name());
         }
@@ -471,6 +504,7 @@ mod tests {
         check(&DIRECT_KEYS);
         check(&SIDEBAR_KEYS);
         check(&DASHBOARD_KEYS);
+        check(&COPY_KEYS);
         // Valid together: no key twice, none the default prefix, no
         // warning (the direct chords' Alt is paddock's choice) once
         // `[keys.direct]` is written.
@@ -791,6 +825,70 @@ mod tests {
     }
 
     #[test]
+    fn copy_mode_keys_are_vi_like_and_ctrl_matters() {
+        let keys = Keys::defaults(&COPY_KEYS);
+        let ctrl = KeyModifiers::CONTROL;
+        assert_eq!(
+            keys.action(&plain('b')),
+            Some(CopyAction::Move(Motion::WordBack))
+        );
+        assert_eq!(
+            keys.action(&key(KeyCode::Char('b'), ctrl)),
+            Some(CopyAction::Page(-1))
+        );
+        assert_eq!(
+            keys.action(&key(KeyCode::Char('d'), ctrl)),
+            Some(CopyAction::HalfPage(1))
+        );
+        assert_eq!(keys.action(&plain('d')), None);
+        let shift_g = key(KeyCode::Char('G'), KeyModifiers::SHIFT);
+        assert_eq!(
+            keys.action(&shift_g),
+            Some(CopyAction::Move(Motion::Bottom))
+        );
+        assert_eq!(
+            keys.action(&plain('g')),
+            Some(CopyAction::Move(Motion::Top))
+        );
+        let enter = key(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(keys.action(&enter), Some(CopyAction::Copy));
+        assert_eq!(
+            keys.action(&plain('/')),
+            Some(CopyAction::Search { forward: false })
+        );
+        assert_eq!(
+            keys.action(&plain('?')),
+            Some(CopyAction::Search { forward: true })
+        );
+        let esc = key(KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(keys.action(&esc), Some(CopyAction::Leave));
+        // Rebound and checked like every section.
+        let copy = |pairs| Keys::configured(&COPY_KEYS, &given(pairs), ctrl_a());
+        let (keys, _) = copy(&[("leave", &["x"])]).unwrap();
+        assert_eq!(keys.action(&plain('x')), Some(CopyAction::Leave));
+        assert_eq!(keys.action(&plain('q')), None);
+        let e = err(copy(&[("leave", &["y"])]));
+        assert!(
+            e.contains("[keys.copy] \"y\" is bound to both copy (default) and leave"),
+            "{e}"
+        );
+        // Under a `C-b` prefix, the default `C-b` page up is left out; written
+        // out, it is an error as anywhere.
+        let ctrl_b = Key::parse("C-b").unwrap();
+        let (keys, _) = Keys::configured(&COPY_KEYS, &Given::new(), ctrl_b).unwrap();
+        assert_eq!(keys.keys_of("page_up"), &[] as &[Key]);
+        let written = given(&[("page_up", &["C-b"])]);
+        assert!(Keys::configured(&COPY_KEYS, &written, ctrl_b).is_err());
+        let e = err(copy(&[("yank", &["y"])]));
+        assert!(e.contains("[keys.copy] yank: unknown action"), "{e}");
+        let toml = Keymap::default().toml();
+        assert!(
+            toml.contains("[keys.copy]\nleft = [\"h\", \"Left\"]"),
+            "{toml}"
+        );
+    }
+
+    #[test]
     fn the_readme_lists_the_default_keys() {
         let readme = include_str!("../../README.md");
         let keymap = Keymap::default();
@@ -799,6 +897,7 @@ mod tests {
             keymap.direct.markdown(),
             keymap.sidebar.markdown(),
             keymap.dashboard.markdown(),
+            keymap.copy.markdown(),
         ] {
             assert!(readme.contains(&table), "README is missing:\n{table}");
         }

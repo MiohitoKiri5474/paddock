@@ -1,6 +1,7 @@
 //! The actions, by section, with their names and default keys.
 
 use crate::input::prefix::{Command, Direction, SIDEBAR_STEP};
+use crate::terminal::emulator::Motion;
 
 /// An action as bound: its name in `config.toml`, what it does, its default
 /// keys, its default direct chords (commands only), and a line for the help.
@@ -64,6 +65,32 @@ pub enum DashboardAction {
     /// Type a filter for the list.
     Filter,
     Back,
+}
+
+/// What a key does in copy mode (`[keys.copy]`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CopyAction {
+    /// Move the cursor.
+    Move(Motion),
+    /// Half a page up (`-1`) or down (`1`).
+    HalfPage(i32),
+    /// A page up (`-1`) or down (`1`).
+    Page(i32),
+    /// Start or stop selecting characters.
+    Select,
+    /// Start or stop selecting whole lines.
+    SelectLines,
+    /// Copy the selection and leave.
+    Copy,
+    /// Type a search, matched back towards the top (`/`) or on towards the
+    /// bottom (`?`).
+    Search { forward: bool },
+    /// The next match, in the search's direction.
+    NextMatch,
+    /// The previous match.
+    PreviousMatch,
+    /// Leave without copying.
+    Leave,
 }
 
 /// Keys after the prefix (`[keys.commands]`), and the direct chords some
@@ -218,6 +245,13 @@ pub const COMMANDS: &[Binding<Command>] = &[
         &["d"],
         "detach (terminals go on)",
     ),
+    bind(
+        "copy_mode",
+        Command::CopyMode,
+        &["["],
+        "copy mode: move, select, copy",
+    ),
+    bind("search", Command::Search, &["/"], "search the history"),
     bind("help", Command::Help, &["?"], "this help"),
 ];
 
@@ -323,5 +357,137 @@ pub const DASHBOARD: &[Binding<DashboardAction>] = &[
         DashboardAction::Back,
         &["Esc"],
         "close the dashboard",
+    ),
+];
+
+/// Keys in copy mode (`[keys.copy]`), vi-like.
+pub const COPY: &[Binding<CopyAction>] = &[
+    bind(
+        "left",
+        CopyAction::Move(Motion::Left),
+        &["h", "Left"],
+        "cursor left",
+    ),
+    bind(
+        "down",
+        CopyAction::Move(Motion::Down),
+        &["j", "Down"],
+        "cursor down",
+    ),
+    bind(
+        "up",
+        CopyAction::Move(Motion::Up),
+        &["k", "Up"],
+        "cursor up",
+    ),
+    bind(
+        "right",
+        CopyAction::Move(Motion::Right),
+        &["l", "Right"],
+        "cursor right",
+    ),
+    bind(
+        "next_word",
+        CopyAction::Move(Motion::WordNext),
+        &["w"],
+        "start of the next word",
+    ),
+    bind(
+        "previous_word",
+        CopyAction::Move(Motion::WordBack),
+        &["b"],
+        "start of the word",
+    ),
+    bind(
+        "word_end",
+        CopyAction::Move(Motion::WordEnd),
+        &["e"],
+        "end of the word",
+    ),
+    bind(
+        "line_start",
+        CopyAction::Move(Motion::LineStart),
+        &["0"],
+        "start of the line",
+    ),
+    bind(
+        "line_end",
+        CopyAction::Move(Motion::LineEnd),
+        &["$"],
+        "end of the line",
+    ),
+    bind(
+        "top",
+        CopyAction::Move(Motion::Top),
+        &["g"],
+        "top of the history",
+    ),
+    bind(
+        "bottom",
+        CopyAction::Move(Motion::Bottom),
+        &["G"],
+        "bottom of the screen",
+    ),
+    bind(
+        "half_page_up",
+        CopyAction::HalfPage(-1),
+        &["C-u"],
+        "half a page up",
+    ),
+    bind(
+        "half_page_down",
+        CopyAction::HalfPage(1),
+        &["C-d"],
+        "half a page down",
+    ),
+    bind("page_up", CopyAction::Page(-1), &["C-b"], "a page up"),
+    bind("page_down", CopyAction::Page(1), &["C-f"], "a page down"),
+    bind(
+        "select",
+        CopyAction::Select,
+        &["v"],
+        "start or stop a selection",
+    ),
+    bind(
+        "select_lines",
+        CopyAction::SelectLines,
+        &["V"],
+        "start or stop a line selection",
+    ),
+    bind(
+        "copy",
+        CopyAction::Copy,
+        &["y", "Enter"],
+        "copy the selection and leave",
+    ),
+    bind(
+        "search_up",
+        CopyAction::Search { forward: false },
+        &["/"],
+        "search back towards the top",
+    ),
+    bind(
+        "search_down",
+        CopyAction::Search { forward: true },
+        &["?"],
+        "search on towards the bottom",
+    ),
+    bind(
+        "next_match",
+        CopyAction::NextMatch,
+        &["n"],
+        "next match, the search's way",
+    ),
+    bind(
+        "previous_match",
+        CopyAction::PreviousMatch,
+        &["N"],
+        "previous match",
+    ),
+    bind(
+        "leave",
+        CopyAction::Leave,
+        &["Esc", "q"],
+        "leave without copying",
     ),
 ];
