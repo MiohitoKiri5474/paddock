@@ -3,12 +3,14 @@
 use crate::input::prefix::{Command, Direction, SIDEBAR_STEP};
 
 /// An action as bound: its name in `config.toml`, what it does, its default
-/// keys, and a line for the help.
+/// keys, its default direct chords (commands only), and a line for the help.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Binding<A: 'static> {
     pub name: &'static str,
     pub action: A,
     pub keys: &'static [&'static str],
+    /// Default keys in `[keys.direct]`: the command on one chord, no prefix.
+    pub chords: &'static [&'static str],
     pub help: &'static str,
 }
 
@@ -22,7 +24,15 @@ const fn bind<A>(
         name,
         action,
         keys,
+        chords: &[],
         help,
+    }
+}
+
+impl Binding<Command> {
+    /// The command with these default direct chords.
+    const fn chords(self, chords: &'static [&'static str]) -> Self {
+        Self { chords, ..self }
     }
 }
 
@@ -51,13 +61,17 @@ pub enum DashboardAction {
     Close,
     Fork,
     Interact,
+    /// Type a filter for the list.
+    Filter,
     Back,
 }
 
-/// Keys after the prefix (`[keys.commands]`). `go_to_tab`'s Nth key goes to tab
-/// N: its action is completed with the key's index.
+/// Keys after the prefix (`[keys.commands]`), and the direct chords some
+/// commands also have (`[keys.direct]`). `go_to_tab`'s Nth key goes to tab
+/// N: its action is completed with the key's index. Chords are Ctrl keys,
+/// with Alt only where no free Ctrl key is left.
 pub const COMMANDS: &[Binding<Command>] = &[
-    bind("new_tab", Command::NewTab, &["c"], "new tab in this space"),
+    bind("new_tab", Command::NewTab, &["c"], "new tab in this space").chords(&["C-M-c"]),
     bind("new_space", Command::NewSpace, &["C"], "new space"),
     bind("next_tab", Command::NextTab, &["n"], "next tab"),
     bind("previous_tab", Command::PreviousTab, &["p"], "previous tab"),
@@ -92,37 +106,43 @@ pub const COMMANDS: &[Binding<Command>] = &[
         Command::SplitColumns,
         &["|"],
         "split side by side",
-    ),
+    )
+    .chords(&["C-\\"]),
     bind(
         "split_down",
         Command::SplitRows,
         &["-"],
         "split top and bottom",
-    ),
+    )
+    .chords(&["C--"]),
     bind(
         "focus_left",
         Command::Focus(Direction::Left),
         &["h", "Left"],
         "focus left",
-    ),
+    )
+    .chords(&["C-h"]),
     bind(
         "focus_down",
         Command::Focus(Direction::Down),
         &["j", "Down"],
         "focus down",
-    ),
+    )
+    .chords(&["C-j"]),
     bind(
         "focus_up",
         Command::Focus(Direction::Up),
         &["k", "Up"],
         "focus up",
-    ),
+    )
+    .chords(&["C-k"]),
     bind(
         "focus_right",
         Command::Focus(Direction::Right),
         &["l", "Right"],
         "focus right",
-    ),
+    )
+    .chords(&["C-l"]),
     bind(
         "equalize",
         Command::Equalise,
@@ -186,6 +206,12 @@ pub const COMMANDS: &[Binding<Command>] = &[
         "next session needing you",
     ),
     bind("dashboard", Command::Dashboard, &["o"], "dashboard"),
+    bind(
+        "finder",
+        Command::Finder,
+        &["g"],
+        "find a space, tab or agent",
+    ),
     bind(
         "detach",
         Command::Detach,
@@ -285,6 +311,12 @@ pub const DASHBOARD: &[Binding<DashboardAction>] = &[
         DashboardAction::Interact,
         &["I"],
         "type into the previewed terminal (Esc leaves)",
+    ),
+    bind(
+        "filter",
+        DashboardAction::Filter,
+        &["/"],
+        "filter the list (Enter keeps, Esc clears)",
     ),
     bind(
         "back",

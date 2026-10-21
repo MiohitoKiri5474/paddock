@@ -9,7 +9,7 @@
 
 use super::sidebar::Pick;
 use super::state::{App, CloseTarget, Mode, NameTarget, Panel};
-use super::view::Home;
+use super::view::HomePaths;
 use crate::git::{self, WorkingTree, Worktree};
 use crate::sessions::State;
 use anyhow::{anyhow, bail, Result};
@@ -244,7 +244,7 @@ impl App {
         let Some(tree) = self.tree_for(pick) else {
             return;
         };
-        let home = Home::from_env();
+        let home = HomePaths::new();
         let repo = tree.repo();
         let taken: Vec<String> = self
             .spaces
@@ -440,7 +440,7 @@ impl App {
         }
         // The path first: a notice cut to the tab bar still names it.
         git::remove_worktree(&target.main, path, force)
-            .map_err(|e| anyhow!("space closed; {} left: {e}", Home::from_env().show(path)))?;
+            .map_err(|e| anyhow!("space closed; {} left: {e}", HomePaths::new().show(path)))?;
         if let Some(branch) = &target.branch {
             if let Err(e) = git::delete_branch(&target.main, branch) {
                 self.notice = Some(format!("worktree removed; branch {branch} kept: {e}"));

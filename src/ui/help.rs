@@ -29,21 +29,27 @@ const PROMPT_KEYS: [&str; 5] = [
 ];
 
 /// The help's title, in its top border, with the prefix written out
-/// (e.g. `C-a`): how commands start, and that the prefix pressed twice
+/// (e.g. `C-a`): how commands start, and that the prefix pressed again
 /// goes to the terminal. In the border, it leaves every line to the keys.
 pub fn title(prefix: &str) -> String {
-    format!(" paddock keys: {prefix}, then a key; {prefix} twice to send {prefix} to the terminal ")
+    format!(" paddock keys: {prefix}, then a key ({prefix} again sends {prefix} to the terminal) ")
 }
 
 /// The lines of the help: the commands' and floats' keys in two columns,
-/// then the sidebar's and the dashboard's.
+/// each command with its direct chord in brackets, then the sidebar's and
+/// the dashboard's keys.
 pub fn lines(keys: &Keymap, floats: &Floats) -> Vec<String> {
     let mut out = Vec::new();
     let mut cells: Vec<String> = keys
-        .commands
-        .bindings()
-        .filter(|(_, k)| !k.is_empty())
-        .map(|(b, k)| format!("{:<LABEL$} {}", label(k), b.help))
+        .commands_with_chords()
+        .filter(|(_, k, chords)| !k.is_empty() || !chords.is_empty())
+        .map(|(b, k, chords)| {
+            let chord = match chords {
+                [] => String::new(),
+                _ => format!(" [{}]", label(chords)),
+            };
+            format!("{:<LABEL$} {}{chord}", label(k), b.help)
+        })
         .collect();
     cells.extend(floats.list.iter().map(|f| {
         let command: String = f.command.chars().take(FLOAT_COMMAND).collect();
@@ -129,7 +135,7 @@ pub fn render(prefix: &str, keys: &Keymap, floats: &Floats, area: Rect, buf: &mu
             Block::default()
                 .borders(Borders::ALL)
                 .title(title)
-                .title_bottom(" any key closes this help "),
+                .title_bottom(" any key closes this help · [chord]: works without the prefix "),
         )
         .render(popup, buf);
 }
@@ -137,7 +143,7 @@ pub fn render(prefix: &str, keys: &Keymap, floats: &Floats, area: Rect, buf: &mu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::input::keymap::{Given, Key};
+    use crate::input::keymap::{given, GivenKeys, Key};
 
     fn rows(area: Rect, buf: &Buffer) -> Vec<String> {
         (0..area.height)
@@ -150,18 +156,35 @@ mod tests {
         let l = lines(&Keymap::default(), &Floats::default());
         assert_eq!(
             title("C-b"),
-            " paddock keys: C-b, then a key; C-b twice to send C-b to the terminal "
+            " paddock keys: C-b, then a key (C-b again sends C-b to the terminal) "
         );
-        assert!(l.iter().any(|x| x.contains("c      new tab in this space")));
-        assert!(l.iter().any(|x| x.contains("1...9  go to tab")));
         assert!(l
             .iter()
             .any(|x| x.contains("W      new worktree as a new space")));
-        assert!(l.iter().any(|x| x.contains("g      float: lazygit")));
-        assert!(l.iter().any(|x| x.starts_with("Sidebar:   j down  k up")));
-        assert!(l.iter().any(|x| x.contains("I interact  Esc back")));
         assert!(l.iter().any(|x| x.contains("W new_worktree")));
         assert!(l.iter().any(|x| x.contains("o open_worktree")));
+        assert!(l
+            .iter()
+            .any(|x| x.contains("c      new tab in this space [C-M-c]")));
+        assert!(l.iter().any(|x| x.contains("l Right focus right [C-l]")));
+        assert!(l.iter().any(|x| x.contains("n      next tab   ")));
+        assert!(!l.iter().any(|x| x.contains("C-M-]") || x.contains("C-M-[")));
+        assert!(l
+            .iter()
+            .any(|x| x.contains("|      split side by side [C-\\]")));
+        assert!(l
+            .iter()
+            .any(|x| x.contains("-      split top and bottom [C--]")));
+        assert!(l
+            .iter()
+            .any(|x| x.contains("x      close pane (asks if busy)")));
+        assert!(l.iter().any(|x| x.contains("1...9  go to tab")));
+        assert!(l
+            .iter()
+            .any(|x| x.contains("g      find a space, tab or agent")));
+        assert!(l.iter().any(|x| x.contains("G      float: lazygit")));
+        assert!(l.iter().any(|x| x.starts_with("Sidebar:   j down  k up")));
+        assert!(l.iter().any(|x| x.contains("I interact  / filter")));
         assert!(l
             .iter()
             .any(|x| x.starts_with("Prompts:   Enter ok  Esc cancel")));
@@ -178,17 +201,32 @@ mod tests {
 
     #[test]
     fn shows_remapped_keys_and_leaves_out_unbound_ones() {
-        let commands: Given = [
-            ("new_tab".to_string(), vec!["t".to_string()]),
-            ("detach".to_string(), vec![]),
-        ]
-        .into();
-        let none = Given::new();
         let prefix = Key::parse("C-a").unwrap();
-        let (keys, _) = Keymap::configured(prefix, [&commands, &none, &none]).unwrap();
-        let l = lines(&keys, &Floats::default());
+        let keys = |commands: &[(&str, &[&str])], direct: &[(&str, &[&str])]| {
+            let written = GivenKeys {
+                commands: given(commands),
+                direct: Some(given(direct)),
+                ..GivenKeys::default()
+            };
+            Keymap::configured(prefix, &written).unwrap().0
+        };
+        let remapped = keys(
+            &[("new_tab", &["t"]), ("detach", &[])],
+            &[("focus_left", &[""]), ("help", &["F1"])],
+        );
+        let l = lines(&remapped, &Floats::default());
         assert!(l.iter().any(|x| x.contains("t      new tab in this space")));
         assert!(!l.iter().any(|x| x.contains("detach")));
+        assert!(l
+            .iter()
+            .any(|x| x.contains("focus left") && !x.contains("[C-h]")));
+        assert!(l.iter().any(|x| x.contains("this help [F1]")));
+        // A command on a chord only still shows, with no key before it.
+        let chord_only = keys(&[("detach", &[])], &[("detach", &["C-M-q"])]);
+        let l = lines(&chord_only, &Floats::default());
+        assert!(l
+            .iter()
+            .any(|x| x.contains("       detach (terminals go on) [C-M-q]")));
     }
 
     #[test]
@@ -200,6 +238,9 @@ mod tests {
         let shown = rows(area, &buf);
         assert!(shown.iter().any(|r| r.contains(title("C-a").trim())));
         assert!(shown.iter().any(|r| r.contains("any key closes this help")));
+        assert!(shown
+            .iter()
+            .any(|r| r.contains("[chord]: works without the prefix")));
         for line in lines(&keys, &Floats::default())
             .iter()
             .filter(|l| !l.is_empty())

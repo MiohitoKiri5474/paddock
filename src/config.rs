@@ -8,6 +8,9 @@
 //! new_tab = "t"              # a key, a list of keys, or "" for none
 //! split_right = ["|", "\\"]
 //!
+//! [keys.direct]              # the same actions on one chord, no prefix
+//! focus_left = ""
+//!
 //! [keys.sidebar]             # while the sidebar has the keyboard
 //! [keys.dashboard]           # while the dashboard is open
 //!
@@ -23,7 +26,7 @@
 //! [floats]                   # the prefix, then a key, shows or hides a float
 //! width = 80                 # percent of the screen
 //! height = 80
-//! g = "lazygit"              # the default; "" removes it
+//! G = "lazygit"              # the default; "" removes it
 //!
 //! [notify]                   # macOS notifications, on unless set false
 //! waiting = true             # a session or one of its subagents starts waiting on you
@@ -39,7 +42,7 @@ mod floats;
 
 pub use floats::{Float, Floats};
 
-use crate::input::keymap::{Given, Key, Keymap, Warnings};
+use crate::input::keymap::{Given, GivenKeys, Key, Keymap, Warnings};
 use crate::ui::tab_bar::TabColors;
 use anyhow::{bail, Context, Result};
 use ratatui::style::Color;
@@ -216,6 +219,8 @@ struct RawKeys {
     prefix: Option<String>,
     #[serde(default)]
     commands: RawSection,
+    /// `None` while `[keys.direct]` is not written at all.
+    direct: Option<RawSection>,
     #[serde(default)]
     sidebar: RawSection,
     #[serde(default)]
@@ -259,8 +264,13 @@ impl Config {
     pub fn parse(text: &str) -> Result<Self> {
         let raw: RawConfig = toml::from_str(text)?;
         let prefix = Key::parse_prefix(raw.keys.prefix.as_deref().unwrap_or(DEFAULT_PREFIX))?;
-        let sections = [raw.keys.commands, raw.keys.sidebar, raw.keys.dashboard].map(given);
-        let (keys, warnings) = Keymap::configured(prefix, sections.each_ref())?;
+        let written = GivenKeys {
+            commands: given(raw.keys.commands),
+            direct: raw.keys.direct.map(given),
+            sidebar: given(raw.keys.sidebar),
+            dashboard: given(raw.keys.dashboard),
+        };
+        let (keys, warnings) = Keymap::configured(prefix, &written)?;
         let floats = Floats::configured(&raw.floats, prefix, &keys.commands)?;
         let directory = match &raw.worktrees.directory {
             None => None,
@@ -296,10 +306,16 @@ impl Config {
 
 impl Default for Config {
     fn default() -> Self {
+        let prefix = Key::parse_prefix(DEFAULT_PREFIX).expect("the default prefix parses");
+        // As a config with no keys reads: the default direct chords take
+        // `C-h` and `C-j` from the terminal, which an unwritten
+        // `[keys.direct]` warns of.
+        let (keys, warnings) =
+            Keymap::configured(prefix, &GivenKeys::default()).expect("the default keys are valid");
         Self {
-            prefix: Key::parse_prefix(DEFAULT_PREFIX).expect("the default prefix parses"),
-            keys: Keymap::default(),
-            warnings: Warnings::new(),
+            prefix,
+            keys,
+            warnings,
             current_space: DEFAULT_CURRENT_SPACE,
             tabs: TabColors::default(),
             sidebar_width: DEFAULT_SIDEBAR_WIDTH,
@@ -342,7 +358,7 @@ fn parse_colour(spec: &str) -> Result<Color> {
 mod tests {
     use super::*;
     use crate::input::keymap::SidebarAction;
-    use crate::input::Command;
+    use crate::input::{Command, Direction};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     fn ctrl(c: char) -> Key {
@@ -479,13 +495,30 @@ mod tests {
     fn the_printed_default_keys_read_back_as_the_defaults() {
         let text = default_keys_toml();
         assert!(text.contains("[keys.commands]\nnew_tab = \"c\""), "{text}");
-        assert_eq!(Config::parse(&text).unwrap(), Config::default());
+        assert!(
+            text.contains("[keys.direct]\nnew_tab = \"C-M-c\""),
+            "{text}"
+        );
+        assert!(text.contains("\nsplit_right = 'C-\\'"), "{text}");
+        assert!(text.contains("\nsplit_down = \"C--\""), "{text}");
+        // With `[keys.direct]` written out, the control characters it
+        // takes are chosen: no warning.
+        let read = Config::parse(&text).unwrap();
+        assert!(read.warnings.is_empty(), "{:?}", read.warnings);
+        assert_eq!(
+            Config {
+                warnings: Warnings::new(),
+                ..Config::default()
+            },
+            read
+        );
     }
 
     #[test]
     fn remapped_keys_come_from_the_keys_sections() {
         let c = Config::parse(
-            "[keys.commands]\nnew_tab = \"t\"\n[keys.sidebar]\nback = [\"q\", \"Esc\"]\n",
+            "[keys.commands]\nnew_tab = \"t\"\n[keys.sidebar]\nback = [\"q\", \"Esc\"]\n\
+             [keys.direct]\nfocus_left = \"\"\n",
         )
         .unwrap();
         let key = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
@@ -493,8 +526,77 @@ mod tests {
         assert_eq!(c.keys.commands.action(&key('c')), None);
         assert_eq!(c.keys.sidebar.action(&key('q')), Some(SidebarAction::Back));
         assert!(c.warnings.is_empty());
-        let alt = Config::parse("[keys.dashboard]\ninteract = \"M-i\"\n").unwrap();
+        let alt = Config::parse("[keys.dashboard]\ninteract = \"M-i\"\n[keys.direct]\n").unwrap();
         assert_eq!(alt.warnings.len(), 1);
+    }
+
+    #[test]
+    fn direct_chords_come_from_their_section_and_warn_of_control_characters_unless_set() {
+        let ctrl = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
+        let c = Config::parse("").unwrap();
+        assert_eq!(
+            c.keys.direct.action(&ctrl('h')),
+            Some(Command::Focus(Direction::Left))
+        );
+        assert_eq!(
+            c.keys.direct.action(&ctrl('l')),
+            Some(Command::Focus(Direction::Right))
+        );
+        assert_eq!(
+            c.warnings,
+            vec!["[keys.direct] takes C-h and C-j from the terminal".to_string()]
+        );
+        assert_eq!(c, Config::default());
+        // Set, even to the same chords or empty, the user knows.
+        let set = Config::parse("[keys.direct]\nfocus_left = \"C-h\"\n").unwrap();
+        assert!(set.warnings.is_empty(), "{:?}", set.warnings);
+        let empty = Config::parse("[keys.direct]\n").unwrap();
+        assert!(empty.warnings.is_empty(), "{:?}", empty.warnings);
+        assert_eq!(empty.keys, Keymap::default());
+        // Other control characters chosen are the user's business too.
+        let other = Config::parse("[keys.direct]\nclose = \"C-m\"\n").unwrap();
+        assert!(other.warnings.is_empty(), "{:?}", other.warnings);
+        assert_eq!(
+            set.keys.direct.action(&ctrl('h')),
+            Some(Command::Focus(Direction::Left))
+        );
+        // Unbound, the chord goes to the terminal again.
+        let unbound = Config::parse("[keys.direct]\nfocus_left = \"\"\n").unwrap();
+        assert_eq!(unbound.keys.direct.action(&ctrl('h')), None);
+        assert_eq!(
+            unbound.keys.direct.action(&ctrl('l')),
+            Some(Command::Focus(Direction::Right))
+        );
+        // Any command may be bound, on a chord, and a given Alt chord warns.
+        let more = Config::parse("[keys.direct]\ndetach = \"C-M-q\"\nhelp = \"F1\"\n").unwrap();
+        let ctrl_alt = KeyModifiers::CONTROL | KeyModifiers::ALT;
+        let alt_q = KeyEvent::new(KeyCode::Char('q'), ctrl_alt);
+        assert_eq!(more.keys.direct.action(&alt_q), Some(Command::Detach));
+        let f1 = KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE);
+        assert_eq!(more.keys.direct.action(&f1), Some(Command::Help));
+        assert_eq!(more.warnings.len(), 1, "{:?}", more.warnings);
+        assert!(more.warnings[0].contains("[keys.direct] detach: \"C-M-q\" uses Alt"));
+    }
+
+    #[test]
+    fn direct_chord_errors_name_the_section_and_a_command_key_is_no_clash() {
+        let err = |t: &str| format!("{:#}", Config::parse(t).unwrap_err());
+        assert!(err("[keys.direct]\nnew_tabs = \"C-t\"\n").contains("[keys.direct] new_tabs"));
+        assert!(err("[keys.direct]\nnew_tab = \"Ctrl+t\"\n").contains("invalid key \"Ctrl+t\""));
+        assert!(err("[keys.direct]\nnew_tab = \"C-a\"\n").contains("is the prefix key"));
+        assert!(err("[keys.direct]\nnew_tab = [\"C-t\", \"C-t\"]\n").contains("is listed twice"));
+        let e = err("[keys.direct]\nnew_tab = \"C-l\"\n");
+        assert!(
+            e.contains("[keys.direct] \"C-l\" is bound to both new_tab and focus_right (default)"),
+            "{e}"
+        );
+        // `C-_` is `C--`, so it clashes with the default `split_down`.
+        assert!(err("[keys.direct]\nclose = \"C-_\"\n").contains("\"C--\" is bound to both"));
+        // After the prefix, `c` is a new tab; the same key is free here.
+        let c = Config::parse("[keys.direct]\nclose = \"c\"\n").unwrap();
+        let plain_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE);
+        assert_eq!(c.keys.direct.action(&plain_c), Some(Command::Close));
+        assert_eq!(c.keys.commands.action(&plain_c), Some(Command::NewTab));
     }
 
     #[test]
@@ -521,14 +623,14 @@ mod tests {
     #[test]
     fn floats_come_from_their_table_and_may_not_take_a_command_key() {
         assert_eq!(Config::default().floats, Floats::default());
-        let c = Config::parse("[floats]\nwidth = 60\ng = \"\"\nT = \"htop\"\n").unwrap();
+        let c = Config::parse("[floats]\nwidth = 60\nG = \"\"\nT = \"htop\"\n").unwrap();
         assert_eq!(c.floats.width, 60);
         assert_eq!(c.floats.list.len(), 1);
         assert_eq!(c.floats.list[0].command, "htop");
         let err = |t: &str| format!("{:#}", Config::parse(t).unwrap_err());
         assert!(err("[floats]\nn = \"htop\"\n").contains("bound to next_tab"));
-        assert!(err("[keys.commands]\nhelp = \"g\"\n").contains("\"g\" is also bound to help"));
-        assert!(Config::parse("[keys.commands]\nhelp = \"g\"\n[floats]\ng = \"\"\n").is_ok());
+        assert!(err("[keys.commands]\nhelp = \"G\"\n").contains("\"G\" is also bound to help"));
+        assert!(Config::parse("[keys.commands]\nhelp = \"G\"\n[floats]\nG = \"\"\n").is_ok());
         assert!(err("[keys]\nprefix = \"C-g\"\n[floats]\nC-g = \"x\"\n").contains("prefix key"));
     }
 

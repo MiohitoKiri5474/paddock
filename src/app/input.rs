@@ -24,12 +24,22 @@ impl App {
                 self.naming_key(target, line, back, key);
                 Ok(Flow::Continue)
             }
+            Mode::Finder { finder, back } => {
+                self.finder_key(finder, back, key);
+                Ok(Flow::Continue)
+            }
             // `y` closes; any other key keeps it, and is not passed on.
             Mode::ConfirmClose { target, back, .. } => {
                 if key.code == KeyCode::Char('y') {
                     self.report(|app| app.close_now(&target));
                 }
                 self.mode = Mode::back_to(back);
+                Ok(Flow::Continue)
+            }
+            // Typing the filter takes the whole keyboard, the prefix
+            // included, as naming does.
+            Mode::Dashboard(d) if d.filter.typing => {
+                self.dashboard_key(d, key);
                 Ok(Flow::Continue)
             }
             Mode::Dashboard(d) => {
@@ -87,10 +97,17 @@ impl App {
         self.float_pane().or_else(|| self.current_pane())
     }
 
-    /// A key while the focused pane (or the float shown) has the keyboard.
+    /// A key while the focused pane (or the float shown) has the keyboard:
+    /// a direct chord is a command, unless a float shows (it gets every
+    /// key but the prefix).
     fn normal_key(&mut self, key: KeyEvent) -> Result<Flow> {
         match self.prefix.handle(key) {
             KeyAction::Forward(key) => {
+                if self.float_pane().is_none() {
+                    if let Some(c) = self.prefix.direct(&key) {
+                        return self.command(c);
+                    }
+                }
                 let Some(pane) = self.typing_pane() else {
                     return Ok(Flow::Continue);
                 };
@@ -158,6 +175,7 @@ impl App {
             }
             Command::NextAttention => self.next_attention(),
             Command::Dashboard => self.toggle_dashboard(),
+            Command::Finder => self.open_finder(),
             Command::ToggleFloat(i) => {
                 // The float takes the keyboard from any panel.
                 self.mode = Mode::Normal;
@@ -213,9 +231,16 @@ impl App {
             let d = d.clone();
             return self.dashboard_paste(&d, text);
         }
-        if let Mode::Naming { line, .. } = &mut self.mode {
-            line.insert(text);
-            return Ok(());
+        match &mut self.mode {
+            Mode::Naming { line, .. } => {
+                line.insert(text);
+                return Ok(());
+            }
+            Mode::Finder { finder, .. } => {
+                finder.edited(|line| line.insert(text));
+                return Ok(());
+            }
+            _ => {}
         }
         match self.mode {
             Mode::Help => self.mode = Mode::Normal,

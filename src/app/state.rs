@@ -1,10 +1,11 @@
 //! What the running app holds: the spaces (tmux sessions, ADR 0006),
 //! each with its tabs (windows) and splits (panes) as tmux has them, a
 //! terminal per pane, the Claude sessions in them, and what the keyboard is
-//! doing (typing into the focused pane, naming, reading help).
+//! doing (typing into the focused pane, naming, finding, reading help).
 
 use super::attention::Attention;
 use super::dashboard::Dashboard;
+use super::finder::Finder;
 use super::floats::Shown;
 use super::mouse::Press;
 use super::pages::Pages;
@@ -64,6 +65,12 @@ pub enum Mode {
     /// Asking before deleting a worktree space with its worktree and
     /// branch.
     ConfirmDelete(DeleteQuestion),
+    /// The finder is open; `back` is the panel it was opened from, to
+    /// return to on `Esc`.
+    Finder {
+        finder: Finder,
+        back: Option<Panel>,
+    },
 }
 
 /// A panel that had the keyboard when the prompt opened, and gets it back
@@ -96,51 +103,55 @@ impl Mode {
         }
     }
 
-    /// While the prompt popup is open, where it gives the keyboard back:
-    /// the panel it was asked from, if any; `None` while no prompt is
-    /// open. Every prompt mode is listed here and in [`Self::prompt_back_mut`]
-    /// only.
-    fn prompt_back(&self) -> Option<&Option<Panel>> {
+    /// While a box over the screen that gives the keyboard back is open
+    /// (the prompt popup or the finder), the panel it was opened from, if
+    /// any; `None` while none is open. Every such mode is listed here and
+    /// in [`Self::overlay_back_mut`] only.
+    fn overlay_back(&self) -> Option<&Option<Panel>> {
         match self {
             Mode::Naming { back, .. }
             | Mode::ConfirmClose { back, .. }
             | Mode::OpenWorktree(WorktreeList { back, .. })
-            | Mode::ConfirmDelete(DeleteQuestion { back, .. }) => Some(back),
+            | Mode::ConfirmDelete(DeleteQuestion { back, .. })
+            | Mode::Finder { back, .. } => Some(back),
             Mode::Normal | Mode::Help | Mode::Sidebar(_) | Mode::Dashboard(_) => None,
         }
     }
 
-    /// [`Self::prompt_back`], to change it.
-    fn prompt_back_mut(&mut self) -> Option<&mut Option<Panel>> {
+    /// [`Self::overlay_back`], to change it.
+    fn overlay_back_mut(&mut self) -> Option<&mut Option<Panel>> {
         match self {
             Mode::Naming { back, .. }
             | Mode::ConfirmClose { back, .. }
             | Mode::OpenWorktree(WorktreeList { back, .. })
-            | Mode::ConfirmDelete(DeleteQuestion { back, .. }) => Some(back),
+            | Mode::ConfirmDelete(DeleteQuestion { back, .. })
+            | Mode::Finder { back, .. } => Some(back),
             Mode::Normal | Mode::Help | Mode::Sidebar(_) | Mode::Dashboard(_) => None,
         }
     }
 
-    /// The panel the open prompt returns to, if any.
+    /// The panel the open prompt (or finder) returns to, if any.
     pub fn back_panel(&self) -> Option<&Panel> {
-        self.prompt_back()?.as_ref()
+        self.overlay_back()?.as_ref()
     }
 
-    /// The panel the open prompt returns to, to change it in place.
+    /// The panel the open prompt (or finder) returns to, to change it in
+    /// place.
     pub fn back_panel_mut(&mut self) -> Option<&mut Panel> {
-        self.prompt_back_mut()?.as_mut()
+        self.overlay_back_mut()?.as_mut()
     }
 
     /// Whether the prompt popup is open: every key and click goes to it.
+    /// The finder has keys, clicks and paste of its own.
     pub fn is_prompt(&self) -> bool {
-        self.prompt_back().is_some()
+        self.overlay_back().is_some() && !matches!(self, Mode::Finder { .. })
     }
 
-    /// Close the open prompt as `Esc` would: the mode that gives the
-    /// keyboard back to the panel it was asked from. `None`, changing
-    /// nothing, if no prompt is open.
+    /// Close the open prompt (or finder) as `Esc` would: the mode that
+    /// gives the keyboard back to the panel it was opened from. `None`,
+    /// changing nothing, if none is open.
     pub fn cancel_prompt(&mut self) -> Option<Self> {
-        let back = self.prompt_back_mut()?.take();
+        let back = self.overlay_back_mut()?.take();
         Some(Mode::back_to(back))
     }
 }
@@ -302,6 +313,7 @@ impl App {
             prefix: PrefixKeys::new(
                 config.prefix,
                 config.keys.commands.clone(),
+                config.keys.direct.clone(),
                 config.floats.list.iter().map(|f| f.key).collect(),
             ),
             prefix_name: config.prefix.name(),

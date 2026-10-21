@@ -3,6 +3,7 @@
 //! wheel and programs' mouse reports go to the pane under the pointer;
 //! dragging selects text and releasing copies it. While a float is shown,
 //! the mouse reaches only the float; a click outside it does nothing.
+//! While the finder is open, see `finder.rs`.
 
 use super::state::{App, Mode, TAB_BAR_ROWS};
 use crate::input::{route_mouse, MouseAction};
@@ -34,8 +35,10 @@ impl App {
         if self.mode.is_prompt() {
             return Ok(self.prompt_mouse(m));
         }
-        if matches!(self.mode, Mode::Help | Mode::Dashboard(_)) {
-            return Ok(false);
+        match self.mode {
+            Mode::Finder { .. } => return Ok(self.finder_mouse(m)),
+            Mode::Help | Mode::Dashboard(_) => return Ok(false),
+            _ => {}
         }
         match m.kind {
             MouseEventKind::Down(_) => self.press(m),

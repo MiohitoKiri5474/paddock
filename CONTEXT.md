@@ -33,6 +33,10 @@ _Avoid_: popup (that is the prompt), overlay
 **Session view**:
 The main area, showing the current tab's terminals.
 
+**Finder**:
+A box opened by the prefix and `g` with a text field and, under it, every space, tab and agent that fuzzy-matches the text, best first; `Enter` shows the one selected. It is a mode of the app, like naming, not a float.
+_Avoid_: picker, palette, goto, switcher
+
 **Dashboard**:
 An overlay with the task tree, full details and a live preview of the selected row.
 _Avoid_: overview screen
@@ -101,6 +105,16 @@ _Avoid_: clone, duplicate
 **Detach**:
 Leave paddock while every terminal keeps running.
 _Avoid_: quit, exit
+
+### Keys
+
+**Prefix**:
+The key (`C-a` unless configured) that makes the next key a paddock command instead of input for the terminal. Pressed twice, it goes to the terminal.
+_Avoid_: shortcut, hotkey
+
+**Direct chord**:
+One key combination that runs a paddock command without the prefix, such as `C-l` to focus the terminal on the right. It works while a terminal has the keyboard, and goes to the program in a float.
+_Avoid_: shortcut, hotkey
 
 ### Git
 

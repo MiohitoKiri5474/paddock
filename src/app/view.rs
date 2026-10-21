@@ -15,26 +15,26 @@ use std::borrow::Cow;
 /// What a tab running Claude is called while the user has not named it.
 const CLAUDE: &str = "claude";
 
-/// The home directory, for writing paths with `~`.
-pub(super) struct Home {
+/// The home directory, for showing paths with `~`.
+pub(super) struct HomePaths {
     home: String,
     /// tmux reports directories with symlinks resolved (`/tmp` is
     /// `/private/tmp` on macOS), so home may be written either way.
-    real: String,
+    real_home: String,
 }
 
-impl Home {
-    pub fn from_env() -> Self {
+impl HomePaths {
+    pub(super) fn new() -> Self {
         let home = std::env::var("HOME").unwrap_or_default();
-        let real = crate::git::resolved(&home);
-        Self { home, real }
+        let real_home = crate::git::resolved(&home);
+        Self { home, real_home }
     }
 
-    /// `path` with the home directory written `~`.
-    pub fn show(&self, path: &str) -> String {
+    /// `path` with home, written either way, as `~`.
+    pub(super) fn show(&self, path: &str) -> String {
         let short = tilde(path, &self.home);
         if short == path {
-            tilde(path, &self.real)
+            tilde(path, &self.real_home)
         } else {
             short
         }
@@ -47,22 +47,36 @@ impl App {
     /// read) in sidebar order, worktree spaces under their repository, with
     /// a header for a repository whose main checkout has no space.
     pub(super) fn sidebar_spaces(&self, rows: &[Row]) -> Vec<Entry> {
-        let home = Home::from_env();
+        let lines = self.space_lines(rows);
         self.space_entries()
             .into_iter()
             .map(|entry| match entry {
                 SpaceEntry::RepoHeader(name) => Entry::RepoHeader(name),
-                SpaceEntry::Space { index, linked } => {
-                    let space = &self.spaces[index];
-                    let place = self.places.get(&space.id);
-                    Entry::Space(SpaceLine {
-                        name: space.name().to_string(),
-                        state: most_urgent(rows, |r| r.space == space.id),
-                        current: index == self.current,
-                        path: place.map(|p| home.show(&p.path)),
-                        branch: place.and_then(|p| p.branch.clone()),
-                        linked,
-                    })
+                SpaceEntry::Space { index, linked } => Entry::Space(SpaceLine {
+                    linked,
+                    ..lines[index].clone()
+                }),
+            })
+            .collect()
+    }
+
+    /// Each space as the sidebar draws it, in the spaces' own order (not
+    /// grouped): its name, the most urgent state of its agents, whether it
+    /// is current, and its directory and branch once read.
+    pub(super) fn space_lines(&self, rows: &[Row]) -> Vec<SpaceLine> {
+        let home = HomePaths::new();
+        self.spaces
+            .iter()
+            .enumerate()
+            .map(|(i, space)| {
+                let place = self.places.get(&space.id);
+                SpaceLine {
+                    name: space.name().to_string(),
+                    state: most_urgent(rows, |r| r.space == space.id),
+                    current: i == self.current,
+                    path: place.map(|p| home.show(&p.path)),
+                    branch: place.and_then(|p| p.branch.clone()),
+                    linked: false,
                 }
             })
             .collect()
@@ -76,23 +90,23 @@ impl App {
             .map(|r| AgentLine {
                 label: r.label.clone(),
                 state: r.state,
-                place: self.place_of(r).unwrap_or_default(),
+                place: self.place_of(r, " · ").unwrap_or_default(),
                 current: self.is_current_pane(&r.pane),
             })
             .collect()
     }
 
-    /// Where row `r` runs, as `space · tab`.
-    fn place_of(&self, r: &Row) -> Option<String> {
+    /// Where row `r` runs: its space and tab, `sep` between them.
+    pub(super) fn place_of(&self, r: &Row, sep: &str) -> Option<String> {
         let space = self.spaces.iter().find(|i| i.id == r.space)?;
         let w = space.windows().iter().find(|w| w.id == r.window)?;
-        Some(format!("{} · {}", space.name(), self.tab_name(w)))
+        Some(format!("{}{sep}{}", space.name(), self.tab_name(w)))
     }
 
     /// A tab's name as shown: tmux's, except that a tab tmux names (not
     /// renamed by the user) whose focused pane runs Claude is called
     /// `claude`, whatever process name tmux sees.
-    fn tab_name(&self, w: &Window) -> String {
+    pub(super) fn tab_name(&self, w: &Window) -> String {
         let claude = self.session_in(&w.active).is_some_and(|s| {
             matches!(
                 s.state,
