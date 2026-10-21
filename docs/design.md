@@ -51,7 +51,7 @@ Not in scope for now: agents other than Claude Code, Linux, remote machines, a s
 - A session row is a terminal where Claude runs or ran. Its label is the Claude session name if set, else the tab name if the user gave one, else the directory name.
 - Task rows are the main agent's branch plus each subagent's branch, labelled with the subagent's task description.
 - Plain shells and the default branch get no row.
-- A blank line parts two sessions. Session rows and the main agent's branch rows can be selected; subagents' rows cannot, and go with the line above them: moving skips them, scrolling keeps them in sight with that line, and dismissing a session dismisses them with it.
+- Everything under a session belongs to it: a session and its task rows form a block, with a blank line between two blocks. Only sessions are selected: moving skips task rows, the whole selected block gets the selection's background (each line keeps its own colours as text), scrolling keeps the whole block in sight where it fits, and every key acts on the session; dismissing it dismisses its task rows with it.
 - Rows stay until dismissed (`D`).
 - External sessions appear dimmed in a group at the bottom (v1.2).
 

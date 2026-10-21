@@ -28,22 +28,13 @@ pub struct RowId {
     pub branch: Option<String>,
 }
 
-/// Every row line of `rows` the dashboard can select, in display order:
-/// session rows and their branch task rows. Subagents' task rows are left
-/// out; they go with the line above them.
+/// The lines of `rows` the dashboard can select, in display order: the
+/// session rows. Task rows belong to their session and are not selected.
 pub fn row_ids(rows: &[Row]) -> Vec<RowId> {
     rows.iter()
-        .flat_map(|r| {
-            let id = |branch| RowId {
-                pane: r.pane.clone(),
-                branch,
-            };
-            let branches = r
-                .tasks
-                .iter()
-                .filter(|t| t.subagent.is_none())
-                .map(move |t| id(Some(t.branch.clone())));
-            std::iter::once(id(None)).chain(branches)
+        .map(|r| RowId {
+            pane: r.pane.clone(),
+            branch: None,
         })
         .collect()
 }
@@ -398,7 +389,7 @@ mod tests {
     }
 
     #[test]
-    fn row_ids_follow_the_rows_without_subagents() {
+    fn row_ids_are_the_session_rows_only() {
         let task = |branch: &str| TaskRow {
             branch: branch.into(),
             cwd: "/r".into(),
@@ -430,14 +421,6 @@ mod tests {
             pane: pane.into(),
             branch: branch.map(str::to_string),
         };
-        assert_eq!(
-            row_ids(&rows),
-            [
-                id("%1", None),
-                id("%1", Some("a")),
-                id("%1", Some("b")),
-                id("%2", None)
-            ]
-        );
+        assert_eq!(row_ids(&rows), [id("%1", None), id("%2", None)]);
     }
 }

@@ -25,6 +25,8 @@ const LIST_SHARE_PERCENT: u32 = 40;
 const MIN_LIST: u16 = 5;
 /// The list's title line and its column header, above its lines.
 const LIST_HEADS: u16 = 2;
+/// The selected session block's background.
+const SELECTED: Color = Color::Indexed(237);
 /// The key line under the preview.
 const KEYS_HEIGHT: u16 = 1;
 /// The preview's height at least: its title and one line of the terminal.
@@ -84,10 +86,17 @@ pub fn lines(rows: &[Row]) -> Vec<Line<'_>> {
         .collect()
 }
 
-/// Whether `line` is a subagent's task row, which is never selected: it
-/// goes with the line above it.
-fn is_subagent(line: &Line) -> bool {
-    line.is_some_and(|(_, task)| task.is_some_and(|t| t.subagent.is_some()))
+/// Whether `line` is a task row, which is never selected: it belongs to
+/// its session, whose block it is part of.
+fn is_task(line: &Line) -> bool {
+    line.is_some_and(|(_, task)| task.is_some())
+}
+
+/// `style` on the selection's background. A background of its own (a
+/// waiting row's) becomes its text colour, so the state still shows.
+fn selected(style: Style) -> Style {
+    let fg = style.bg.or(style.fg);
+    Style { fg, ..style }.bg(SELECTED)
 }
 
 /// Where the dashboard's parts go, top to bottom.
@@ -179,7 +188,8 @@ fn cells(view: &View, row: &Row, task: Option<&TaskRow>) -> (table::Cells, Style
 }
 
 /// The title, the column header (dim), then the lines in sight as a table,
-/// scrolled to keep the selected line in sight with the subagents under it.
+/// scrolled to keep the selected session's block in sight, on the
+/// selection's background.
 fn render_list(view: &View, area: Rect, buf: &mut Buffer) {
     if area.height == 0 || area.width == 0 {
         return;
@@ -188,20 +198,18 @@ fn render_list(view: &View, area: Rect, buf: &mut Buffer) {
     render_title(area, buf);
     let lines = lines(view.rows);
     let picked = lines.iter().position(|l| {
-        let Some((row, task)) = l else {
-            return false;
-        };
-        view.selected.is_some_and(|s| {
-            s.pane == row.pane && s.branch.as_deref() == task.map(|t| t.branch.as_str())
-        }) && !is_subagent(l)
+        l.is_some_and(|(row, task)| {
+            task.is_none() && view.selected.is_some_and(|s| s.pane == row.pane)
+        })
     });
-    // Keep the selected line on screen with the subagents under it, the
-    // selected line first if they do not all fit.
+    // The selected session's block: its line and its task rows.
+    let block = picked.map_or(0..0, |p| {
+        p..p + 1 + lines[p + 1..].iter().take_while(|l| is_task(l)).count()
+    });
+    // Keep the whole block on screen, its session line first if it does not
+    // all fit.
     let room = usize::from(area.height.saturating_sub(LIST_HEADS));
-    let skip = picked.map_or(0, |p| {
-        let subagents = lines[p + 1..].iter().take_while(|l| is_subagent(l)).count();
-        (p + 1 + subagents).saturating_sub(room).min(p)
-    });
+    let skip = block.end.saturating_sub(room).min(block.start);
     let shown: Vec<(usize, Option<(table::Cells, Style)>)> = lines
         .iter()
         .enumerate()
@@ -227,8 +235,8 @@ fn render_list(view: &View, area: Rect, buf: &mut Buffer) {
         let Some((cells, style)) = l else {
             continue;
         };
-        let style = if Some(*i) == picked {
-            style.add_modifier(Modifier::REVERSED)
+        let style = if block.contains(i) {
+            selected(*style)
         } else {
             *style
         };
@@ -451,7 +459,7 @@ mod tests {
         emu.feed(b"hello preview");
         let selected = RowId {
             pane: "%api".into(),
-            branch: Some("feat/a".into()),
+            branch: None,
         };
         let view = View {
             keys: KEYS,
@@ -474,9 +482,12 @@ mod tests {
             ]
         );
         assert!(buf[(1, 1)].modifier.contains(Modifier::DIM), "a dim header");
-        assert!(buf[(3, 3)].modifier.contains(Modifier::REVERSED));
-        assert!(!buf[(3, 2)].modifier.contains(Modifier::REVERSED));
-        assert_eq!(buf[(3, 4)].bg, Color::Yellow);
+        // The selected session's block, its task rows included, has the
+        // selection's background; a waiting row keeps its yellow as text.
+        assert_eq!([2, 3, 4].map(|y| buf[(3, y)].bg), [SELECTED; 3]);
+        assert_eq!(buf[(3, 2)].fg, Color::Green, "idle keeps its colour");
+        assert_eq!(buf[(3, 4)].fg, Color::Yellow, "waiting keeps its colour");
+        assert_ne!(buf[(1, 1)].bg, SELECTED, "not the header");
         assert!(text(&buf, 5).starts_with("─ preview: api  I to type ──"));
         assert_eq!(text(&buf, 6), "hello preview");
         assert_eq!(text(&buf, 11), " j down  k up", "the keys at the bottom");
@@ -488,6 +499,34 @@ mod tests {
         };
         let cursor = render(&typing, area, &mut Buffer::empty(area));
         assert_eq!(cursor, Some(Position::new(13, 6)));
+    }
+
+    #[test]
+    fn only_the_selected_sessions_block_is_highlighted() {
+        let area = Rect::new(0, 0, 30, 20);
+        let mut buf = Buffer::empty(area);
+        let rows = [
+            row("r0", State::Running, vec![task("b1", None), subagent("s1")]),
+            row("r1", State::Running, vec![]),
+        ];
+        let selected = RowId {
+            pane: "%r0".into(),
+            branch: None,
+        };
+        let view = View {
+            keys: KEYS,
+            rows: &rows,
+            details: &TaskDetails::new(),
+            selected: Some(&selected),
+            preview: None,
+            interactive: false,
+            now: 0,
+        };
+        render(&view, area, &mut buf);
+        assert!(text(&buf, 2).starts_with(" r0"));
+        assert!(text(&buf, 6).starts_with(" r1"));
+        let bg = |y: u16| buf[(1, y)].bg == SELECTED;
+        assert_eq!([2, 3, 4, 5, 6].map(bg), [true, true, true, false, false]);
     }
 
     #[test]
@@ -598,8 +637,7 @@ mod tests {
         assert!(text(&buf, 2).starts_with(" r2"));
         assert!(text(&buf, 3).starts_with("   s1"));
         assert!(text(&buf, 4).starts_with("   s2"));
-        // Only the selected line is highlighted, not its subagents.
-        assert!(buf[(1, 2)].modifier.contains(Modifier::REVERSED));
-        assert!(!buf[(3, 3)].modifier.contains(Modifier::REVERSED));
+        // The whole block is highlighted, subagents included.
+        assert_eq!([2, 3, 4].map(|y| buf[(1, y)].bg), [SELECTED; 3]);
     }
 }

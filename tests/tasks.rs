@@ -22,6 +22,8 @@ const SPIKE: &str = concat!(
 const OPEN: &str = "j down  k up";
 /// The dashboard's title, on its first line, right under the tab bar.
 const TITLE: &str = "dashboard";
+/// The selected session block's background.
+const SELECTED: vt100::Color = vt100::Color::Idx(237);
 
 /// A recorded main-agent payload for `cwd`; `tool` renames its tool.
 fn payload(name: &str, cwd: &Path, tool: Option<&str>) -> String {
@@ -447,22 +449,30 @@ fn has_branch(dir: &Path, branch: &str) -> bool {
 }
 
 #[test]
-fn d_dismisses_a_task_row_and_it_stays_gone_after_reopening() {
+fn j_skips_branch_rows_and_d_dismisses_them_with_the_session() {
     let sandbox = Sandbox::new();
     let dir = repo(&sandbox);
     let mut paddock = ready(&sandbox);
     work_on(&sandbox, "space-1", &dir, &["feat/one", "feat/two"]);
     wait_for_list(&mut paddock, &[&session("idle"), "feat/one", "feat/two"]);
+    // The selection covers the session's whole block, as a background.
+    let (col, row) = paddock.find("feat/two").expect("feat/two drawn");
+    let x = paddock.left() + col;
+    assert_eq!(paddock.colors(row, x).1, SELECTED);
 
+    // Task rows cannot be selected: `j` stays on the session.
     paddock.send(b"jD");
-    wait_for_list(&mut paddock, &[&session("idle"), "feat/two"]);
+    wait_for_list(&mut paddock, &[]);
     assert!(has_branch(&dir, "feat/one"), "git is untouched");
 
     let mut again = reopen(&sandbox, paddock);
-    wait_for_list(&mut again, &[&session("idle"), "feat/two"]);
-
-    again.send(b"jD");
-    wait_for_list(&mut again, &[&session("idle")]);
+    // Claude is prompted again on feat/two: only that branch comes back.
+    sandbox.hook(
+        "space-1",
+        "UserPromptSubmit",
+        &payload("UserPromptSubmit", &dir, None),
+    );
+    wait_for_list(&mut again, &[&session("running"), "feat/two"]);
 }
 
 #[test]
