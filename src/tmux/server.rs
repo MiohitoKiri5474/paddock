@@ -148,8 +148,7 @@ impl Server {
     /// the new session, and no other client's command (a structure read,
     /// `paddock worktree`) sees the session without its root.
     pub fn new_session(&self, name: &str, cwd: &Path, (cols, rows): (u16, u16)) -> Result<Session> {
-        // Not format-expanded (no `-F`): only a final `;` needs care.
-        let root = literal(&cwd.to_string_lossy());
+        let root = root_arg(cwd);
         let cwd = start_dir(cwd);
         let named = unexpanded(name);
         let (x, y) = (cols.to_string(), rows.to_string());
@@ -181,10 +180,7 @@ impl Server {
 
     /// Make `dir` session `id`'s root ([`ROOT_OPTION`]).
     pub fn set_root(&self, id: &str, dir: &Path) -> Result<()> {
-        // `set-option` does not format-expand a value without `-F`: only
-        // a final `;` needs care.
-        let dir = literal(&dir.to_string_lossy());
-        self.run(&["set-option", "-t", id, ROOT_OPTION, &dir])
+        self.run(&["set-option", "-t", id, ROOT_OPTION, &root_arg(dir)])
             .map(drop)
     }
 
@@ -368,6 +364,13 @@ impl Server {
 /// `dir` for `-c`, as an [`unexpanded`] argument.
 fn start_dir(dir: &Path) -> String {
     unexpanded(&dir.to_string_lossy())
+}
+
+/// `dir` as the value of [`ROOT_OPTION`], a [`literal`] argument:
+/// `set-option` does not format-expand a value without `-F`, so only a
+/// final `;` needs care (a `#` is stored as is).
+fn root_arg(dir: &Path) -> String {
+    literal(&dir.to_string_lossy())
 }
 
 /// `arg` for an argument tmux format-expands (a session or window name, a
