@@ -166,7 +166,7 @@ fn c_a_a_cycles_through_sessions_that_need_you() {
     paddock.wait_for_text("no session needs you");
 
     new_tab(&mut paddock, "2:home");
-    paddock.command(b"C"); // a second space, current
+    paddock.command(b"C\r"); // a second space, current
     paddock.wait_for_tabs(&["1:home"]);
     paddock.wait_for_text(PROMPT);
     let hook = |t: &str, s: &str, dir: &str, event: &str| {

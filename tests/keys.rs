@@ -45,7 +45,7 @@ fn a_remapped_sidebar_key_works_and_its_old_key_does_not() {
     let sandbox = Sandbox::new();
     sandbox.write_config("[keys.sidebar]\nup = \"K\"\n");
     let mut paddock = ready(&sandbox);
-    paddock.command(b"C");
+    paddock.command(b"C\r");
     paddock.wait_for_text(PROMPT);
     echo(&mut paddock, "in-two");
 
@@ -94,7 +94,7 @@ fn an_alt_key_warning_is_printed_again_on_leaving() {
 fn ctrl_does_not_matter_for_sidebar_keys() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
-    paddock.command(b"C");
+    paddock.command(b"C\r");
     paddock.wait_for_text(PROMPT);
 
     paddock.command(b"w");

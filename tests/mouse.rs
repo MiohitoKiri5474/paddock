@@ -91,7 +91,7 @@ fn clicking_a_space_shows_its_tabs() {
     let mut p = ready(&sandbox);
     p.command(b"c");
     p.wait_for_tabs(&["1:home", "2:home"]);
-    p.command(b"C");
+    p.command(b"C\r");
     p.wait_for_tabs(&["1:home"]);
 
     // Row 0 is the SPACES header, row 1 the first space.

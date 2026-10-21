@@ -562,6 +562,21 @@ impl Paddock {
         );
     }
 
+    /// Wait until the prompt popup shows `title` in its border and `text`
+    /// at the start of its line.
+    pub fn wait_for_popup(&self, title: &str, text: &str) {
+        let (title, line) = (format!(" {title} "), format!("│ {text}"));
+        self.wait_for(&format!("popup {title:?} with {text:?}"), |_| {
+            let s = self.full_screen();
+            s.contains(&title) && s.contains(&line)
+        });
+    }
+
+    /// Wait until the prompt popup (the only rounded box) is gone.
+    pub fn wait_for_no_popup(&self) {
+        self.wait_for("the popup gone", |_| !self.full_screen().contains('╭'));
+    }
+
     /// `C-a d`
     pub fn detach_keys(&mut self) {
         self.send(b"\x01d");

@@ -30,17 +30,31 @@ pub enum Press {
 impl App {
     /// Returns whether the screen may have changed.
     pub fn mouse(&mut self, m: MouseEvent) -> Result<bool> {
-        if matches!(
-            self.mode,
-            Mode::Help | Mode::Rename { .. } | Mode::ConfirmClose { .. } | Mode::Dashboard(_)
-        ) {
-            return Ok(false);
+        match self.mode {
+            Mode::Naming { .. } | Mode::ConfirmClose { .. } => return Ok(self.prompt_mouse(m)),
+            Mode::Help | Mode::Dashboard(_) => return Ok(false),
+            Mode::Normal | Mode::Sidebar(_) => {}
         }
         match m.kind {
             MouseEventKind::Down(_) => self.press(m),
             MouseEventKind::Drag(_) | MouseEventKind::Up(_) => self.held(m),
             _ => self.hover(m),
         }
+    }
+
+    /// The mouse while the prompt popup is open: a press outside it closes
+    /// it, as `Esc` would, giving the keyboard back to the panel it was
+    /// asked from; nothing else does anything.
+    fn prompt_mouse(&mut self, m: MouseEvent) -> bool {
+        let inside = self.prompt_area().contains(Position::new(m.column, m.row));
+        if inside || !matches!(m.kind, MouseEventKind::Down(_)) {
+            return false;
+        }
+        self.mode = match std::mem::replace(&mut self.mode, Mode::Normal) {
+            Mode::Naming { back, .. } | Mode::ConfirmClose { back, .. } => Mode::back_to(back),
+            _ => Mode::Normal,
+        };
+        true
     }
 
     fn press(&mut self, m: MouseEvent) -> Result<bool> {

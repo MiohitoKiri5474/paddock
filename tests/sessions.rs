@@ -182,7 +182,7 @@ fn agents_of_every_space_are_listed_with_their_space_and_tab() {
     new_tab(&mut paddock, "2:home");
     new_tab(&mut paddock, "3:home");
     new_tab(&mut paddock, "4:home");
-    paddock.command(b"C");
+    paddock.command(b"C\r");
     paddock.wait_for_tabs(&["1:home"]);
 
     let start = |t: &str, s: &str, dir: &str, event: &str| {
@@ -273,7 +273,7 @@ fn claude_agents_finds_sessions_no_hook_reported() {
 fn c_a_w_selects_the_current_space_and_esc_leaves_without_switching() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
-    paddock.command(b"C");
+    paddock.command(b"C\r");
     paddock.wait_for_text(PROMPT);
     paddock.type_line("echo in-two");
     paddock.wait_for_text("in-two\n");
@@ -314,7 +314,7 @@ fn b_hides_and_shows_the_sidebar() {
 fn agent_in_another_space(sandbox: &Sandbox) -> Paddock {
     let mut paddock = ready(sandbox);
     new_tab(&mut paddock, "2:home");
-    paddock.command(b"C");
+    paddock.command(b"C\r");
     paddock.wait_for_tabs(&["1:home"]);
     paddock.wait_for_text(PROMPT);
     sandbox.hook("space-1:1", "Stop", &payload("Stop"));
@@ -497,7 +497,7 @@ fn the_sidebar_never_gets_narrower_than_sixteen_or_wider_than_half() {
 fn dragging_the_border_resizes_the_sidebar() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
-    paddock.command(b"C"); // a second space, so a stray click would switch
+    paddock.command(b"C\r"); // a second space, so a stray click would switch
     paddock.wait_for_text(PROMPT);
     wait_for_width(&sandbox, harness::COLS - 32);
 
@@ -523,7 +523,7 @@ fn the_config_sets_the_starting_width() {
 fn a_click_on_the_border_without_a_drag_is_a_click_on_the_row() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
-    paddock.command(b"C");
+    paddock.command(b"C\r");
     paddock.wait_for_text(PROMPT);
     paddock.type_line("echo in-two");
     paddock.wait_for_text("in-two\n");
