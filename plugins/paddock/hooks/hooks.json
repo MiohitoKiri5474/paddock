@@ -1,0 +1,105 @@
+{
+  "description": "paddock tracks Claude Code sessions in its terminals. Each hook runs `paddock hook <event>` if paddock is on PATH, and does nothing otherwise.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v paddock >/dev/null 2>&1 || { cat >/dev/null; exit 0; }; export PADDOCK_HOOK_SOURCE=plugin; exec paddock hook SessionStart >/dev/null 2>&1"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v paddock >/dev/null 2>&1 || { cat >/dev/null; exit 0; }; export PADDOCK_HOOK_SOURCE=plugin; exec paddock hook UserPromptSubmit >/dev/null 2>&1"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v paddock >/dev/null 2>&1 || { cat >/dev/null; exit 0; }; export PADDOCK_HOOK_SOURCE=plugin; exec paddock hook PostToolUse >/dev/null 2>&1"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v paddock >/dev/null 2>&1 || { cat >/dev/null; exit 0; }; export PADDOCK_HOOK_SOURCE=plugin; exec paddock hook PreCompact >/dev/null 2>&1"
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v paddock >/dev/null 2>&1 || { cat >/dev/null; exit 0; }; export PADDOCK_HOOK_SOURCE=plugin; exec paddock hook PermissionRequest >/dev/null 2>&1"
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v paddock >/dev/null 2>&1 || { cat >/dev/null; exit 0; }; export PADDOCK_HOOK_SOURCE=plugin; exec paddock hook Notification >/dev/null 2>&1"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v paddock >/dev/null 2>&1 || { cat >/dev/null; exit 0; }; export PADDOCK_HOOK_SOURCE=plugin; exec paddock hook Stop >/dev/null 2>&1"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v paddock >/dev/null 2>&1 || { cat >/dev/null; exit 0; }; export PADDOCK_HOOK_SOURCE=plugin; exec paddock hook SessionEnd >/dev/null 2>&1"
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v paddock >/dev/null 2>&1 || { cat >/dev/null; exit 0; }; export PADDOCK_HOOK_SOURCE=plugin; exec paddock hook SubagentStart >/dev/null 2>&1"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v paddock >/dev/null 2>&1 || { cat >/dev/null; exit 0; }; export PADDOCK_HOOK_SOURCE=plugin; exec paddock hook SubagentStop >/dev/null 2>&1"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -8,7 +8,7 @@
     {
       "name": "paddock",
       "source": "./plugins/paddock",
-      "description": "Teaches Claude to manage git worktrees as paddock spaces with `paddock worktree`"
+      "description": "paddock's Claude Code hooks, and a skill that teaches Claude to manage git worktrees as paddock spaces with `paddock worktree`"
     }
   ]
 }
