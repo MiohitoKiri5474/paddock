@@ -1,7 +1,6 @@
 //! The main loop: feed terminal output, route input, redraw at most once a frame.
 
 use super::input::Flow;
-use super::rows::Row;
 use super::screen::Screen;
 use super::space::changes_structure;
 use super::state::{App, Mode, TAB_BAR_ROWS};
@@ -20,6 +19,8 @@ use std::time::{Duration, Instant};
 const FRAME: Duration = Duration::from_millis(16);
 /// Milliseconds in a second.
 const MS_PER_SEC: u64 = 1000;
+/// What tmux tells every control client when a session is made or ends.
+const SESSIONS_CHANGED: &str = "%sessions-changed";
 
 /// Tells the git thread which task rows are on screen.
 struct GitFeed {
@@ -244,6 +245,12 @@ fn handle_tmux(app: &mut App, session: &str, msg: Message) -> TmuxHandled {
         // The space's tmux session ended: its last pane exited or was closed.
         Message::Exit if app.space_ended(session) => TmuxHandled::panes_changed(Flow::Continue),
         Message::Exit => TmuxHandled::panes_changed(Flow::Quit),
+        // A session came or went on the server: one made outside paddock
+        // becomes a space (one that ended reports its own exit).
+        Message::Notification(n) if n == SESSIONS_CHANGED => {
+            app.attach_new_sessions();
+            TmuxHandled::panes_changed(Flow::Continue)
+        }
         Message::Notification(n) if changes_structure(&n) => {
             app.refresh_reported(session);
             TmuxHandled::panes_changed(Flow::Continue)
@@ -290,10 +297,10 @@ fn draw(screen: &mut Screen, app: &App) -> Result<()> {
                 width: side,
                 ..full
             };
-            let spaces = app.sidebar_spaces(&rows);
+            let entries = app.sidebar_spaces(&rows);
             let agents = app.sidebar_agents(&rows);
             let bg = app.current_space_bg;
-            sidebar::render(&spaces, &agents, selected, bg, side_area, f.buffer_mut());
+            sidebar::render(&entries, &agents, selected, bg, side_area, f.buffer_mut());
         }
         let area = Rect {
             x: full.x + side,
@@ -314,8 +321,9 @@ fn draw(screen: &mut Screen, app: &App) -> Result<()> {
         );
         let panes = app.area().intersection(full);
         let term_cursor = draw_panes(app, panes, f.buffer_mut());
-        let dash_cursor = draw_dashboard(app, &rows, panes, f.buffer_mut());
-        // Over everything but the help and the prompt, sidebar included.
+        let dash_cursor = draw_dashboard(app, panes, f.buffer_mut());
+        // Over everything but the help, the finder and the prompt, sidebar
+        // included.
         // The float shown has the keyboard, so the cursor is its own, if
         // it shows one.
         let typing_cursor = match app.float_view() {
@@ -331,11 +339,14 @@ fn draw(screen: &mut Screen, app: &App) -> Result<()> {
                 f.buffer_mut(),
             );
         }
-        let at = match app.prompt() {
-            // Over everything, sidebar included; clipped to a frame that
-            // may be smaller than the screen the app knows.
-            Some(p) => p.render(app.prompt_area().intersection(full), f.buffer_mut()),
-            None => cursor(app, dash_cursor, typing_cursor),
+        // Over everything, sidebar included; clipped to a frame that may
+        // be smaller than the screen the app knows.
+        let at = if let Some(p) = app.prompt() {
+            p.render(app.prompt_area().intersection(full), f.buffer_mut())
+        } else if let Some(v) = app.finder_view() {
+            v.render(app.finder_area().intersection(full), f.buffer_mut())
+        } else {
+            cursor(app, dash_cursor, typing_cursor)
         };
         if let Some(at) = at {
             f.set_cursor_position(at);
@@ -380,14 +391,15 @@ fn draw_panes(app: &App, area: Rect, buf: &mut Buffer) -> Option<Position> {
     cursor
 }
 
-/// The dashboard over the panes, if open. Returns the previewed pane's
-/// cursor while typing into it.
-fn draw_dashboard(app: &App, rows: &[Row], area: Rect, buf: &mut Buffer) -> Option<Position> {
+/// The dashboard over the panes, if open, listing the rows its filter
+/// keeps. Returns the cursor while typing the filter or into the preview.
+fn draw_dashboard(app: &App, area: Rect, buf: &mut Buffer) -> Option<Position> {
     let d = app.dashboard()?;
     let row = app.dashboard_row(d);
-    let keys = app.keymap.dashboard.hints().join("  ");
+    let keys = app.dashboard_keys(d);
+    let listed = app.dashboard_rows(d);
     let view = dashboard::View {
-        rows,
+        rows: &listed,
         keys: &keys,
         details: &app.task_details,
         selected: d.selected.as_ref(),
@@ -395,6 +407,7 @@ fn draw_dashboard(app: &App, rows: &[Row], area: Rect, buf: &mut Buffer) -> Opti
             .and_then(|r| app.terminals.get(&r.pane))
             .map(|t| t.emulator()),
         interactive: d.interactive,
+        filter: &d.filter,
         now: now_ms() / MS_PER_SEC,
         selection: app.current_space_bg,
     };

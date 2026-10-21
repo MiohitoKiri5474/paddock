@@ -133,6 +133,46 @@ fn o_opens_the_dashboard_and_esc_closes_it() {
 }
 
 #[test]
+fn slash_filters_the_list_enter_keeps_the_filter_and_esc_clears_it() {
+    let sandbox = Sandbox::new();
+    let mut paddock = two_tabs(&sandbox);
+    claude(&sandbox, "space-1:0", "PermissionRequest", "s1", "/w/alpha");
+    claude(&sandbox, "space-1:1", "Stop", "s2", "/w/bravo");
+    paddock.wait_for_tabs(&["1:● claude", "2:● claude"]);
+    open(&mut paddock);
+    paddock.wait_for_text(" bravo");
+
+    paddock.send(b"/");
+    paddock.wait_for_text("Enter keep  Esc clear");
+    paddock.send(b"bra");
+    paddock.wait_for("only bravo listed", |s| {
+        s.contains(" / bra") && s.contains(" bravo") && !s.contains(" alpha")
+    });
+    // The selection moved to a listed line: its preview shows.
+    paddock.wait_for_text("preview: bravo");
+    // The filter takes the prefix too: `C-a c` types `c`, opens no tab.
+    paddock.send(b"\x01c");
+    paddock.wait_for_text(" / brac");
+    assert_eq!(tabs(&sandbox), 2);
+    paddock.send(b"\x7f");
+    paddock.wait_for("the c removed", |s| !s.contains(" / brac"));
+    paddock.send(b"\r");
+    paddock.wait_for_text(OPEN);
+    paddock.wait_for("the filter kept", |s| {
+        s.contains(" / bra") && !s.contains(" alpha")
+    });
+    // Back in the list, keys act on it: `j` stays on bravo, the only line.
+    paddock.send(b"j");
+    paddock.wait_for_text("preview: bravo");
+
+    paddock.send(b"/\x1b");
+    paddock.wait_for("the filter cleared", |s| {
+        !s.contains(" / ") && s.contains(" alpha") && s.contains(" bravo")
+    });
+    paddock.wait_for_text(OPEN);
+}
+
+#[test]
 fn the_list_sits_above_the_preview_and_the_keys_at_the_bottom() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);

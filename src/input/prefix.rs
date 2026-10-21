@@ -1,5 +1,6 @@
 //! The prefix key (`C-a` unless configured): the key after it is a paddock
-//! command instead of input for the terminal.
+//! command instead of input for the terminal. Direct chords (`C-l`) are
+//! commands without it.
 
 use super::keymap::{Key, Keys};
 use crossterm::event::KeyEvent;
@@ -22,6 +23,12 @@ pub enum Command {
     Close,
     /// Continue a copy of the focused session in a new tab of its space.
     Fork,
+    /// A new worktree of the focused terminal's repository, as a new space.
+    NewWorktree,
+    /// One of the focused terminal's repository's worktrees, as a new space.
+    OpenWorktree,
+    /// Delete the current space's worktree and branch, closing the space.
+    DeleteWorktree,
     /// Split the focused terminal side by side.
     SplitColumns,
     /// Split the focused terminal top and bottom.
@@ -46,13 +53,16 @@ pub enum Command {
     NextAttention,
     /// Open or close the dashboard.
     Dashboard,
+    /// Open the finder: a box to pick a space, tab or agent by typing.
+    Finder,
     /// Show or hide float N (0-based, in `[floats]` order).
     ToggleFloat(usize),
 }
 
 impl Command {
     /// Whether a float shown stays shown through this command: those that
-    /// change neither the page under it nor who has the keyboard.
+    /// change neither the page under it nor who has the keyboard, and the
+    /// finder, which draws over it and hides it only when a row is picked.
     pub fn keeps_float(self) -> bool {
         matches!(
             self,
@@ -61,6 +71,7 @@ impl Command {
                 | Command::ToggleSidebar
                 | Command::ResizeSidebar(_)
                 | Command::ToggleFloat(_)
+                | Command::Finder
         )
     }
 }
@@ -89,6 +100,8 @@ pub const SIDEBAR_STEP: i16 = 2;
 pub struct PrefixKeys {
     prefix: Key,
     commands: Keys<Command>,
+    /// Commands on one chord, without the prefix.
+    direct: Keys<Command>,
     /// Each float's key, in `[floats]` order.
     floats: Vec<Key>,
     armed: bool,
@@ -96,14 +109,27 @@ pub struct PrefixKeys {
 
 impl PrefixKeys {
     /// The prefix `prefix`, then one of `commands`' keys or a float's key
-    /// from `floats`.
-    pub fn new(prefix: Key, commands: Keys<Command>, floats: Vec<Key>) -> Self {
+    /// from `floats`; or one of `direct`'s keys on its own.
+    pub fn new(
+        prefix: Key,
+        commands: Keys<Command>,
+        direct: Keys<Command>,
+        floats: Vec<Key>,
+    ) -> Self {
         Self {
             prefix,
             commands,
+            direct,
             floats,
             armed: false,
         }
+    }
+
+    /// The command `key` is a direct chord of, if any. For a key the
+    /// prefix did not arm: the caller decides where it would go else (a
+    /// float gets every key but the prefix).
+    pub fn direct(&self, key: &KeyEvent) -> Option<Command> {
+        self.direct.get(key).map(|(c, i)| nth_key_command(c, i))
     }
 
     /// The float whose key `key` is: exactly, else, as for commands,
@@ -141,20 +167,24 @@ impl PrefixKeys {
                 KeyAction::Command(Command::ToggleFloat(f))
             });
         };
-        // `go_to_tab`'s Nth key goes to tab N.
-        let command = if let Command::GoToTab(_) = command {
-            Command::GoToTab(i)
-        } else {
-            command
-        };
-        KeyAction::Command(command)
+        KeyAction::Command(nth_key_command(command, i))
+    }
+}
+
+/// What the `i`th key bound to `command` runs: `command` itself, except
+/// that `go_to_tab`'s Nth key goes to tab N.
+fn nth_key_command(command: Command, i: usize) -> Command {
+    if let Command::GoToTab(_) = command {
+        Command::GoToTab(i)
+    } else {
+        command
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::input::keymap::COMMAND_KEYS;
+    use crate::input::keymap::{given, COMMAND_KEYS, DIRECT_KEYS};
     use crossterm::event::{KeyCode, KeyModifiers};
 
     fn k(c: char, m: KeyModifiers) -> KeyEvent {
@@ -165,7 +195,8 @@ mod tests {
         PrefixKeys::new(
             Key::parse("C-a").unwrap(),
             Keys::defaults(&COMMAND_KEYS),
-            ["g", "C-y", "F5"]
+            Keys::defaults(&DIRECT_KEYS),
+            ["G", "C-y", "F5"]
                 .iter()
                 .map(|k| Key::parse(k).unwrap())
                 .collect(),
@@ -224,6 +255,15 @@ mod tests {
         );
         assert_eq!(after_prefix('x', none), KeyAction::Command(Command::Close));
         assert_eq!(after_prefix('f', none), KeyAction::Command(Command::Fork));
+        assert_eq!(
+            after_prefix('W', KeyModifiers::SHIFT),
+            KeyAction::Command(Command::NewWorktree)
+        );
+        assert_eq!(
+            after_prefix('O', KeyModifiers::SHIFT),
+            KeyAction::Command(Command::OpenWorktree)
+        );
+        assert_eq!(after_prefix('X', KeyModifiers::SHIFT), KeyAction::None);
         assert_eq!(
             after_prefix('|', KeyModifiers::SHIFT),
             KeyAction::Command(Command::SplitColumns)
@@ -285,32 +325,35 @@ mod tests {
             after_prefix('o', none),
             KeyAction::Command(Command::Dashboard)
         );
+        assert_eq!(after_prefix('g', none), KeyAction::Command(Command::Finder));
     }
 
     #[test]
     fn float_keys_after_the_prefix_toggle_their_float() {
         let none = KeyModifiers::NONE;
         assert_eq!(
-            after_prefix('g', none),
+            after_prefix('G', KeyModifiers::SHIFT),
             KeyAction::Command(Command::ToggleFloat(0))
         );
         assert_eq!(
             after_prefix('y', KeyModifiers::CONTROL),
             KeyAction::Command(Command::ToggleFloat(1))
         );
-        // As for commands, Shift does not matter for a named key, but `G`
-        // is another key than `g`, and Ctrl matters.
+        // As for commands, Shift does not matter for a named key, but `g`
+        // is another key than `G` (it opens the finder), and Ctrl matters.
         let mut p = ctrl_a();
         p.handle(k('a', KeyModifiers::CONTROL));
         assert_eq!(
             p.handle(KeyEvent::new(KeyCode::F(5), KeyModifiers::SHIFT)),
             KeyAction::Command(Command::ToggleFloat(2))
         );
-        assert_eq!(after_prefix('G', KeyModifiers::SHIFT), KeyAction::None);
         assert_eq!(after_prefix('y', none), KeyAction::None);
         // Without the prefix, a float's key is typed.
         let mut p = ctrl_a();
-        assert_eq!(p.handle(k('g', none)), KeyAction::Forward(k('g', none)));
+        assert_eq!(
+            p.handle(k('G', KeyModifiers::SHIFT)),
+            KeyAction::Forward(k('G', KeyModifiers::SHIFT))
+        );
     }
 
     #[test]
@@ -319,6 +362,7 @@ mod tests {
             Command::Help,
             Command::ToggleSidebar,
             Command::ToggleFloat(1),
+            Command::Finder,
         ] {
             assert!(c.keeps_float(), "{c:?}");
         }
@@ -397,10 +441,47 @@ mod tests {
     }
 
     #[test]
+    fn direct_chords_are_commands_without_the_prefix() {
+        let p = ctrl_a();
+        let ctrl = KeyModifiers::CONTROL;
+        let ctrl_alt = ctrl | KeyModifiers::ALT;
+        assert_eq!(
+            p.direct(&k('l', ctrl)),
+            Some(Command::Focus(Direction::Right))
+        );
+        assert_eq!(p.direct(&k('c', ctrl_alt)), Some(Command::NewTab));
+        // Cycling tabs has no chord by default.
+        assert_eq!(p.direct(&k(']', ctrl_alt)), None);
+        // A terminal without the kitty protocol reports Ctrl+- as Ctrl+7.
+        assert_eq!(p.direct(&k('7', ctrl)), Some(Command::SplitRows));
+        assert_eq!(p.direct(&k('\\', ctrl)), Some(Command::SplitColumns));
+        // Only the chord as bound: not the command key, not with Shift.
+        assert_eq!(p.direct(&k('l', KeyModifiers::NONE)), None);
+        assert_eq!(p.direct(&k('c', ctrl)), None);
+        let shift_right = KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT);
+        let right_only = given(&[("focus_right", &["Right"])]);
+        let (keys, _) =
+            Keys::configured(&DIRECT_KEYS, &right_only, Key::parse("C-a").unwrap()).unwrap();
+        let p = PrefixKeys::new(
+            Key::parse("C-a").unwrap(),
+            Keys::defaults(&COMMAND_KEYS),
+            keys,
+            Vec::new(),
+        );
+        assert_eq!(p.direct(&shift_right), None);
+        let right = KeyEvent::new(KeyCode::Right, KeyModifiers::NONE);
+        assert_eq!(p.direct(&right), Some(Command::Focus(Direction::Right)));
+        // `handle` is untouched by them: it still forwards the key.
+        let mut p = ctrl_a();
+        assert_eq!(p.handle(k('l', ctrl)), KeyAction::Forward(k('l', ctrl)));
+    }
+
+    #[test]
     fn any_prefix_key_works() {
         let mut p = PrefixKeys::new(
             Key::parse("C-b").unwrap(),
             Keys::defaults(&COMMAND_KEYS),
+            Keys::defaults(&DIRECT_KEYS),
             Vec::new(),
         );
         assert_eq!(

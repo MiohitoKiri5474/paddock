@@ -1,10 +1,15 @@
-//! What paddock reads from git: the branch a directory has checked out, and a
-//! branch's status (ahead/behind its upstream, uncommitted line changes).
-//! paddock only reads; it never changes a branch, the index or a working
-//! tree. Telling a squash merge writes one unreferenced commit object.
+//! What paddock reads from git: the branch a directory has checked out, a
+//! branch's status (ahead/behind its upstream, uncommitted line changes),
+//! and the repository's worktrees; and the one thing it changes: it adds
+//! and removes worktrees with their branches (ADR 0004, as amended).
+//! Nothing else touches a branch, the index or a working tree. Telling a
+//! squash merge writes one unreferenced commit object.
 
-use std::path::Path;
+use std::io::Read;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::mpsc::{self, Receiver};
+use std::time::{Duration, Instant};
 
 /// Branches taken as the default when `origin/HEAD` names none.
 const DEFAULTS: &[&str] = &["main", "master"];
@@ -20,6 +25,21 @@ const SQUASH_IDENTITY: &[(&str, &str)] = &[
 ];
 /// Untracked files larger than this (bytes) are not counted in line changes.
 const MAX_UNTRACKED: u64 = 1 << 20;
+/// How long a git read may take before it counts as failed: reads run on
+/// the key path too, and the screen waits for them.
+// ponytail: the deadlines are per git call, not per key: `x` makes several
+// reads, `C-a O` some per space, a delete several mutations, all on the UI
+// thread. The upgrade is to run deletes and mutations off it.
+const READ_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long adding or removing a worktree may take (a checkout of a big
+/// repository) before it counts as failed.
+// ponytail: a `worktree remove` killed at this deadline can leave a
+// half-deleted tree; git's own `worktree prune` cleans up after it.
+const MUTATION_TIMEOUT: Duration = Duration::from_secs(60);
+/// How an error from git missing its deadline starts.
+const LATE: &str = "git did not finish";
+/// How often to look whether git finished.
+const POLL: Duration = Duration::from_millis(5);
 
 /// A task branch's git fields, as the sidebar shows them.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -31,15 +51,47 @@ pub struct Status {
     pub changes: Option<(u32, u32)>,
 }
 
-/// `git -C dir args…`'s output, or `None` if it failed. Never prints: hooks
-/// must stay silent.
+/// `git -C dir args…`'s output, or `None` if it failed or took longer than
+/// [`READ_TIMEOUT`].
 fn git(dir: &str, args: &[&str]) -> Option<String> {
     git_with(dir, args, &[])
 }
 
 /// [`git`] with environment variables `env` set.
 fn git_with(dir: &str, args: &[&str], env: &[(&str, &str)]) -> Option<String> {
-    let out = Command::new("git")
+    run(dir, args, env, READ_TIMEOUT).ok()
+}
+
+/// Run `git -C dir args…` for a change (adding or removing a worktree,
+/// deleting a branch), waiting at most [`MUTATION_TIMEOUT`]; fails with
+/// git's reason and the command.
+fn run_mutation(dir: &str, args: &[&str]) -> Result<(), String> {
+    let mut command = git_command(dir, args, &[]);
+    // Nothing reads it: a chatty hook must not fill a pipe.
+    command.stdout(Stdio::null());
+    wait(command, MUTATION_TIMEOUT)
+        .map(drop)
+        .map_err(|e| format!("{e} (git {})", args.join(" ")))
+}
+
+/// A git read: `git -C dir args…` with environment variables `env` set,
+/// waiting at most `timeout`. Returns its stdout, or why it failed.
+fn run(
+    dir: &str,
+    args: &[&str],
+    env: &[(&str, &str)],
+    timeout: Duration,
+) -> Result<String, String> {
+    let mut command = git_command(dir, args, env);
+    command.stdout(Stdio::piped());
+    wait(command, timeout)
+}
+
+/// `git -C dir args…` with environment variables `env` set, its stderr
+/// piped for [`reason`]; the caller says where stdout goes.
+fn git_command(dir: &str, args: &[&str], env: &[(&str, &str)]) -> Command {
+    let mut command = Command::new("git");
+    command
         .arg("-C")
         .arg(dir)
         .args(args)
@@ -47,12 +99,78 @@ fn git_with(dir: &str, args: &[&str], env: &[(&str, &str)]) -> Option<String> {
         // Polling must never take the index lock from Claude's own git.
         .env("GIT_OPTIONAL_LOCKS", "0")
         .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
-    out.status
-        .success()
-        .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+        .stderr(Stdio::piped());
+    command
+}
+
+/// Every git paddock runs ends here: start `command` and wait at most
+/// `timeout` for it to exit and for its output to end, then give up (and
+/// kill git if it still runs). A process git leaves behind holding its
+/// pipes (a hook's `cmd &`) counts as not finished too. Returns stdout,
+/// or why it failed (see [`reason`]). Never prints: hooks must stay
+/// silent.
+fn wait(mut command: Command, timeout: Duration) -> Result<String, String> {
+    let late = || late_reason(timeout);
+    let mut child = command
+        .spawn()
+        .map_err(|e| format!("cannot run git: {e}"))?;
+    // Read both pipes while waiting, so a long output never stalls git.
+    let stdout = drain(child.stdout.take());
+    let stderr = drain(child.stderr.take());
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(POLL),
+            Ok(None) => {
+                // Best effort: it may have ended just now. The readers are
+                // left to end with the pipes.
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(late());
+            }
+            Err(e) => {
+                // Cannot tell whether it runs: never leave it behind.
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(e.to_string());
+            }
+        }
+    };
+    let left = || deadline.saturating_duration_since(Instant::now());
+    let out = stdout.recv_timeout(left()).map_err(|_| late())?;
+    if status.success() {
+        return Ok(out);
+    }
+    // Without its words in time, the exit status says why.
+    let said = stderr.recv_timeout(left()).unwrap_or_default();
+    Err(reason(&said).unwrap_or_else(|| status.to_string()))
+}
+
+/// Why git failed when it did not finish within `timeout`.
+pub fn late_reason(timeout: Duration) -> String {
+    format!("{LATE} in {timeout:?}")
+}
+
+/// Whether `reason`, a failure from git, is git missing its deadline (see
+/// [`late_reason`]), not git refusing. A change's reason ends with its
+/// command, so only the start counts.
+pub fn is_late(reason: &str) -> bool {
+    reason.starts_with(LATE)
+}
+
+/// Read all of `pipe` (none: nothing) on a thread of its own; the text
+/// comes on the channel once the pipe ends.
+fn drain(pipe: Option<impl Read + Send + 'static>) -> Receiver<String> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        if let Some(mut pipe) = pipe {
+            let _ = pipe.read_to_end(&mut bytes);
+        }
+        let _ = tx.send(String::from_utf8_lossy(&bytes).into_owned());
+    });
+    rx
 }
 
 /// The branch checked out in `dir`; `None` if detached or not a repository.
@@ -105,6 +223,209 @@ fn base_ref(dir: &str) -> Option<String> {
 pub fn task_branch(dir: &str) -> Option<String> {
     let branch = current_branch(dir)?;
     (default_branch(dir).as_deref() != Some(branch.as_str())).then_some(branch)
+}
+
+/// One entry of `git worktree list`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Worktree {
+    /// The working tree's directory, with links resolved (as tmux reports
+    /// a pane's directory), so it compares with a space's.
+    pub path: String,
+    /// The branch checked out there; `None` if detached.
+    pub branch: Option<String>,
+}
+
+/// Every working tree of the repository `dir` is in, the main checkout
+/// first; empty outside a repository.
+pub fn worktrees(dir: &str) -> Vec<Worktree> {
+    git(dir, &["worktree", "list", "--porcelain"])
+        .map(|out| parse_worktrees(&out))
+        .unwrap_or_default()
+        .into_iter()
+        .map(|w| Worktree {
+            path: resolved(&w.path),
+            ..w
+        })
+        .collect()
+}
+
+/// `worktree list --porcelain` output: a block per worktree, `worktree
+/// <path>` first, then `HEAD`, `branch refs/heads/<name>` or `detached`,
+/// and more attributes (`bare`, `locked`, `prunable`).
+fn parse_worktrees(out: &str) -> Vec<Worktree> {
+    out.split("\n\n")
+        .filter_map(|block| {
+            let path = block.lines().find_map(|l| l.strip_prefix("worktree "))?;
+            let branch = block
+                .lines()
+                .find_map(|l| l.strip_prefix("branch refs/heads/"))
+                .map(str::to_string);
+            Some(Worktree {
+                path: path.to_string(),
+                branch,
+            })
+        })
+        .collect()
+}
+
+/// Which working tree a directory is in: a repository's main checkout or
+/// one of its linked worktrees.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkingTree {
+    /// The working tree's top directory, links resolved.
+    pub top: String,
+    /// The repository's main checkout (the first worktree listed), links
+    /// resolved; the same as `top` unless `top` is a linked worktree.
+    pub main: String,
+}
+
+impl WorkingTree {
+    /// Whether this is a linked worktree, not the main checkout.
+    pub fn is_linked(&self) -> bool {
+        self.top != self.main
+    }
+
+    /// The repository's name: its main checkout's directory name.
+    pub fn repo(&self) -> &str {
+        dir_name(&self.main)
+    }
+}
+
+/// The last part of `path`, or all of it if it has none.
+pub fn dir_name(path: &str) -> &str {
+    Path::new(path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(path)
+}
+
+/// The working tree `dir` is in and its repository's main checkout;
+/// `None` outside a repository, or if git did not answer in time.
+pub fn working_tree(dir: &str) -> Option<WorkingTree> {
+    working_tree_in_time(dir).ok().flatten()
+}
+
+/// [`working_tree`], telling git that did not answer in time (`Err`)
+/// apart from a directory outside any repository (`Ok(None)`).
+pub fn working_tree_in_time(dir: &str) -> Result<Option<WorkingTree>, String> {
+    // A failure other than the deadline means: not a repository.
+    let read = |args: &[&str]| match run(dir, args, &[], READ_TIMEOUT) {
+        Ok(out) => Ok(Some(out)),
+        Err(e) if e.starts_with(LATE) => Err(e),
+        Err(_) => Ok(None),
+    };
+    let Some(top) = read(&["rev-parse", "--show-toplevel"])? else {
+        return Ok(None);
+    };
+    let top = top.trim();
+    let Some(list) = read(&["worktree", "list", "--porcelain"])? else {
+        return Ok(None);
+    };
+    let Some(main) = parse_worktrees(&list).into_iter().next() else {
+        return Ok(None);
+    };
+    Ok((!top.is_empty()).then(|| WorkingTree {
+        top: resolved(top),
+        main: resolved(&main.path),
+    }))
+}
+
+/// `path` with links resolved (`/tmp` is `/private/tmp` on macOS), as tmux
+/// reports a pane's directory; as given if that fails.
+pub fn resolved(path: &str) -> String {
+    std::fs::canonicalize(path)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| path.to_string())
+}
+
+/// Where a worktree of repository `repo` for `branch` goes under
+/// `directory`: `<directory>/<repo>/<branch>`, slashes in the branch
+/// written `-`.
+pub fn worktree_path(directory: &Path, repo: &str, branch: &str) -> PathBuf {
+    directory.join(repo).join(branch.replace('/', "-"))
+}
+
+/// Whether `name` may name a branch (`git check-ref-format --branch`, run
+/// in `dir`). It takes no `--`, so a name starting with `-` is refused
+/// here, as is one with `@{` (git expands it, so it is not literal).
+pub fn valid_branch(dir: &str, name: &str) -> bool {
+    !name.is_empty()
+        && !name.starts_with('-')
+        // `@{-1}` and the like pass, but git expands them: not literal.
+        && !name.contains("@{")
+        && git(dir, &["check-ref-format", "--branch", name]).is_some()
+}
+
+/// Whether branch `branch` exists in the repository `dir` is in.
+pub fn has_branch(dir: &str, branch: &str) -> bool {
+    let tip = format!("refs/heads/{branch}");
+    git(dir, &["rev-parse", "--verify", "--quiet", &tip]).is_some()
+}
+
+/// Check `branch` out in a new worktree at `path`, from the repository
+/// `repo` is in, creating the branch (from `HEAD`) if there is none.
+/// Returns whether the branch was created; fails with git's reason.
+pub fn add_worktree(repo: &str, path: &Path, branch: &str) -> Result<bool, String> {
+    let path = path.to_string_lossy();
+    let created = !has_branch(repo, branch);
+    let args: &[&str] = if created {
+        &["worktree", "add", "-b", branch, "--", &path]
+    } else {
+        &["worktree", "add", "--", &path, branch]
+    };
+    run_mutation(repo, args)?;
+    Ok(created)
+}
+
+/// Remove the worktree at `path` of the repository `repo` is in, with its
+/// ignored files; `force` discards uncommitted changes too. Fails with
+/// git's reason.
+pub fn remove_worktree(repo: &str, path: &str, force: bool) -> Result<(), String> {
+    let mut args = vec!["worktree", "remove"];
+    if force {
+        args.push("--force");
+    }
+    args.extend(["--", path]);
+    run_mutation(repo, &args)
+}
+
+/// Delete `branch` of the repository `repo` is in if git finds it merged
+/// (`branch -d`, never `-D`). Fails with git's reason.
+pub fn delete_branch(repo: &str, branch: &str) -> Result<(), String> {
+    run_mutation(repo, &["branch", "-d", "--", branch])
+}
+
+/// Whether the working tree `dir` has uncommitted changes (untracked
+/// files count). If git cannot tell, it counts as dirty: asking is safer.
+pub fn is_dirty(dir: &str) -> bool {
+    git(dir, &["status", "--porcelain"]).is_none_or(|out| !out.trim().is_empty())
+}
+
+/// Why git failed, from what it said on stderr, on one line: its `fatal:`
+/// and `error:` lines (progress such as `Preparing worktree` and `hint:`
+/// lines left out), else whatever else it said.
+fn reason(said: &str) -> Option<String> {
+    let lines: Vec<&str> = said
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    let errors: Vec<&str> = lines
+        .iter()
+        .filter_map(|l| {
+            l.strip_prefix("fatal: ")
+                .or_else(|| l.strip_prefix("error: "))
+        })
+        .collect();
+    let kept = if errors.is_empty() {
+        lines
+            .into_iter()
+            .filter(|l| !l.starts_with("hint:"))
+            .collect()
+    } else {
+        errors
+    };
+    Some(kept.join("; ")).filter(|r| !r.is_empty())
 }
 
 /// `branch`'s status, read in `dir`.
@@ -170,6 +491,14 @@ pub fn details(dir: &str, branch: &str) -> Details {
         last_commit,
         merged: !at_base && merged(dir, &base, &tip),
     }
+}
+
+/// Whether the work of `rev` (a branch's `refs/heads/…`, or `HEAD`, even
+/// detached) is in its base: merged, rebased or squashed as [`details`]
+/// tells, or at the base's tip with nothing of its own. Losing `rev`
+/// loses nothing then. Without a base, it is not.
+pub fn in_base(dir: &str, rev: &str) -> bool {
+    base_ref(dir).is_some_and(|base| merged(dir, &base, rev))
 }
 
 /// Whether branch `tip`'s work is in `base`: merged (`tip` is an ancestor),
@@ -455,6 +784,9 @@ mod tests {
         let fresh = details(s(&dir), "feat/x");
         assert_eq!(fresh.base_diff, Some(diff(0, 0, 0)));
         assert!(!fresh.merged, "a branch with no commits of its own");
+        assert!(in_base(s(&dir), "refs/heads/feat/x"), "nothing of its own");
+        assert!(in_base(s(&dir), "HEAD"));
+        assert!(!in_base(s(&dir), "refs/heads/nope"));
         std::fs::write(dir.join("f.txt"), "1\nchanged\n3\nnew\n").unwrap();
         commit(&dir, "a");
         // Uncommitted work is not part of the base diff.
@@ -464,6 +796,10 @@ mod tests {
         assert_eq!(d.base_diff, Some(diff(3, 1, 2)));
         assert!(d.last_commit.is_some_and(|t| t > 0));
         assert!(!d.merged);
+        assert!(!in_base(s(&dir), "refs/heads/feat/x"));
+        // A detached HEAD's commits count the same.
+        run(&dir, &["switch", "-q", "--detach"]);
+        assert!(!in_base(s(&dir), "HEAD"));
         assert_eq!(details(s(&dir), "nope"), Details::default());
     }
 
@@ -529,6 +865,169 @@ mod tests {
         commit(&clone, "a");
         let d = details(s(&clone), "feat/x");
         assert_eq!(d.base_diff, Some(diff(2, 0, 2)), "vs origin/trunk");
+    }
+
+    #[test]
+    fn a_read_that_takes_too_long_is_killed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = s(tmp.path());
+        let start = Instant::now();
+        // An alias that sleeps: git runs it through a shell, as the user's
+        // own aliases and hooks would.
+        let err = super::run(
+            dir,
+            &["-c", "alias.nap=!sleep 5", "nap"],
+            &[],
+            Duration::from_millis(200),
+        )
+        .unwrap_err();
+        assert!(err.contains("did not finish"), "{err}");
+        assert!(start.elapsed() < Duration::from_secs(3));
+        // git exits at once, but leaves a process holding its pipes: the
+        // deadline still holds.
+        let start = Instant::now();
+        let err = super::run(
+            dir,
+            &["-c", "alias.bg=!(sleep 3 &)", "bg"],
+            &[],
+            Duration::from_millis(200),
+        )
+        .unwrap_err();
+        assert!(err.contains("did not finish in 200ms"), "{err}");
+        assert!(start.elapsed() < Duration::from_secs(2));
+        // A mutation reads no stdout, and a successful one no stderr: it
+        // is done as soon as git is.
+        let start = Instant::now();
+        assert_eq!(
+            run_mutation(dir, &["-c", "alias.bg=!(sleep 3 &)", "bg"]),
+            Ok(())
+        );
+        assert!(start.elapsed() < Duration::from_secs(2));
+        // One in time gives its output.
+        let big = super::run(dir, &["version"], &[], READ_TIMEOUT).unwrap();
+        assert!(big.starts_with("git version"));
+    }
+
+    #[test]
+    fn git_s_reason_is_its_error_lines_on_one_line() {
+        let said =
+            "Preparing worktree (new branch 'x')\nfatal: a branch named 'x' already exists\n";
+        assert_eq!(
+            reason(said).as_deref(),
+            Some("a branch named 'x' already exists")
+        );
+        let said = "error: The branch 'y' is not fully merged.\nhint: use -D\n";
+        assert_eq!(
+            reason(said).as_deref(),
+            Some("The branch 'y' is not fully merged.")
+        );
+        assert_eq!(reason("odd\nhint: x\n").as_deref(), Some("odd"));
+        assert_eq!(reason("\n"), None);
+    }
+
+    #[test]
+    fn parses_worktree_list() {
+        let out = "worktree /r\nHEAD abc\nbranch refs/heads/main\n\n\
+                   worktree /w/feat-x\nHEAD def\nbranch refs/heads/feat/x\nlocked\n\n\
+                   worktree /w/loose\nHEAD 123\ndetached\n\n";
+        let wt = |path: &str, branch: Option<&str>| Worktree {
+            path: path.into(),
+            branch: branch.map(str::to_string),
+        };
+        assert_eq!(
+            parse_worktrees(out),
+            [
+                wt("/r", Some("main")),
+                wt("/w/feat-x", Some("feat/x")),
+                wt("/w/loose", None)
+            ]
+        );
+        assert_eq!(parse_worktrees(""), []);
+    }
+
+    #[test]
+    fn worktree_paths_go_under_the_repo_with_slashes_as_dashes() {
+        assert_eq!(
+            worktree_path(Path::new("/w"), "api", "feat/x/y"),
+            PathBuf::from("/w/api/feat-x-y")
+        );
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = s(tmp.path());
+        assert!(valid_branch(dir, "feat/x"));
+        for bad in [
+            "", "-x", "a..b", "a b", "x/", "HEAD", "a\x7fb", "@{-1}", "x@{u}",
+        ] {
+            assert!(!valid_branch(dir, bad), "{bad:?}");
+        }
+        assert_eq!(dir_name("/w/api"), "api");
+        assert_eq!(dir_name("/"), "/");
+    }
+
+    #[test]
+    fn worktrees_are_added_listed_told_apart_and_removed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = repo(tmp.path());
+        let main = resolved(s(&dir));
+        assert_eq!(worktrees(s(&dir)).len(), 1);
+        let sub = dir.join("sub").join("deeper");
+        std::fs::create_dir_all(&sub).unwrap();
+        let home = working_tree(s(&sub)).unwrap();
+        assert_eq!(
+            working_tree(s(&dir)),
+            Some(WorkingTree {
+                top: main.clone(),
+                main: main.clone()
+            })
+        );
+        assert!(!home.is_linked() && home.repo() == "repo");
+        assert_eq!(working_tree(s(tmp.path())), None, "not a repository");
+
+        let new = tmp.path().join("wt").join("repo").join("feat-x");
+        assert_eq!(add_worktree(s(&dir), &new, "feat/x"), Ok(true), "created");
+        assert_eq!(current_branch(s(&new)).as_deref(), Some("feat/x"));
+        let linked = working_tree(s(&new)).unwrap();
+        assert!(linked.is_linked());
+        assert_eq!(linked.top, resolved(s(&new)));
+        assert_eq!(linked.main, main);
+        let listed = worktrees(s(&new));
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0].path, main);
+        assert_eq!(listed[1].branch.as_deref(), Some("feat/x"));
+
+        // An existing branch is checked out as it is.
+        run(&dir, &["branch", "-q", "feat/y"]);
+        let other = tmp.path().join("wt").join("repo").join("feat-y");
+        assert_eq!(add_worktree(s(&dir), &other, "feat/y"), Ok(false));
+        // A branch checked out elsewhere, or a taken path: git's reason.
+        let err = add_worktree(s(&dir), &tmp.path().join("again"), "feat/x").unwrap_err();
+        assert!(
+            err.contains("feat/x") && err.contains("(git worktree add"),
+            "{err}"
+        );
+        let err = add_worktree(s(&dir), &other, "feat/z").unwrap_err();
+        assert!(err.contains("already exists"), "{err}");
+
+        assert!(!is_dirty(s(&new)));
+        assert!(
+            is_dirty(s(&tmp.path().join("gone"))),
+            "unknown counts as dirty"
+        );
+        std::fs::write(new.join("loose.txt"), "x\n").unwrap();
+        assert!(is_dirty(s(&new)));
+        let err = remove_worktree(s(&dir), s(&new), false).unwrap_err();
+        assert!(err.contains("(git worktree remove"), "{err}");
+        assert!(new.is_dir(), "kept");
+        assert_eq!(remove_worktree(s(&dir), s(&new), true), Ok(()));
+        assert!(!new.exists());
+        assert_eq!(delete_branch(s(&dir), "feat/x"), Ok(()));
+        assert!(!has_branch(s(&dir), "feat/x"));
+        // An unmerged branch stays (`-d`, not `-D`).
+        commit(&other, "a");
+        assert_eq!(remove_worktree(s(&dir), s(&other), false), Ok(()));
+        let err = delete_branch(s(&dir), "feat/y").unwrap_err();
+        assert!(err.contains("(git branch -d"), "{err}");
+        assert!(!other.exists() && has_branch(s(&dir), "feat/y"));
+        assert_eq!(worktrees(s(&dir)).len(), 1);
     }
 
     #[test]
