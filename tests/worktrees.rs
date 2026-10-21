@@ -11,6 +11,22 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
+const SPIKE: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/spikes/02-subagent-worktree/fixtures"
+);
+
+/// The tmux session id (`$N`) of session `name`.
+fn session_id(sandbox: &Sandbox, name: &str) -> String {
+    sandbox
+        .tmux(&["list-sessions", "-F", "#{session_id}\t#{session_name}"])
+        .lines()
+        .filter_map(|l| l.split_once('\t'))
+        .find(|(_, n)| *n == name)
+        .map(|(id, _)| id.to_string())
+        .unwrap_or_else(|| panic!("no session {name}"))
+}
+
 /// Run git in `dir`, ignoring the user's own git configuration.
 fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
@@ -355,9 +371,21 @@ fn every_space_in_the_worktree_closes_with_it() {
     wait_for_sessions(&paddock, &sandbox, &["space-1", "repo/feat/s", "space-2"]);
     wait_for_worktree_row(&paddock, "space-2");
     let path = worktree(&sandbox, "feat/s");
+    // Claude runs in the first space, not the one `x` is pressed on.
+    let first = session_id(&sandbox, "repo/feat/s");
+    let payload = std::fs::read_to_string(format!("{SPIKE}/UserPromptSubmit.json"))
+        .unwrap()
+        .replace("\"/tmp/repo\"", &format!("{:?}", path.display()));
+    sandbox.hook(&first, "UserPromptSubmit", &payload);
+    paddock.wait_for("Claude running", |_| {
+        paddock.full_screen().contains("running")
+    });
 
     x_on_current_space(&mut paddock);
     paddock.wait_for_popup("Delete worktree", "delete feat/s");
+    paddock.send(b"y");
+    paddock.wait_for_popup("Close space", "Claude is running: close? y/n");
+    assert!(path.is_dir(), "not before the answer");
     paddock.send(b"y");
 
     wait_for_sessions(&paddock, &sandbox, &["space-1"]);

@@ -36,6 +36,8 @@ const READ_TIMEOUT: Duration = Duration::from_secs(5);
 // ponytail: a `worktree remove` killed at this deadline can leave a
 // half-deleted tree; git's own `worktree prune` cleans up after it.
 const MUTATION_TIMEOUT: Duration = Duration::from_secs(60);
+/// How an error from git missing its deadline starts.
+const LATE: &str = "git did not finish";
 /// How often to look whether git finished.
 const POLL: Duration = Duration::from_millis(5);
 
@@ -108,7 +110,7 @@ fn git_command(dir: &str, args: &[&str], env: &[(&str, &str)]) -> Command {
 /// or why it failed (see [`reason`]). Never prints: hooks must stay
 /// silent.
 fn wait(mut command: Command, timeout: Duration) -> Result<String, String> {
-    let late = || format!("git did not finish in {timeout:?}");
+    let late = || format!("{LATE} in {timeout:?}");
     let mut child = command
         .spawn()
         .map_err(|e| format!("cannot run git: {e}"))?;
@@ -286,18 +288,34 @@ pub fn dir_name(path: &str) -> &str {
 }
 
 /// The working tree `dir` is in and its repository's main checkout;
-/// `None` outside a repository.
+/// `None` outside a repository, or if git did not answer in time.
 pub fn working_tree(dir: &str) -> Option<WorkingTree> {
-    let top = git(dir, &["rev-parse", "--show-toplevel"])?;
+    working_tree_in_time(dir).ok().flatten()
+}
+
+/// [`working_tree`], telling git that did not answer in time (`Err`)
+/// apart from a directory outside any repository (`Ok(None)`).
+pub fn working_tree_in_time(dir: &str) -> Result<Option<WorkingTree>, String> {
+    // A failure other than the deadline means: not a repository.
+    let read = |args: &[&str]| match run(dir, args, &[], READ_TIMEOUT) {
+        Ok(out) => Ok(Some(out)),
+        Err(e) if e.starts_with(LATE) => Err(e),
+        Err(_) => Ok(None),
+    };
+    let Some(top) = read(&["rev-parse", "--show-toplevel"])? else {
+        return Ok(None);
+    };
     let top = top.trim();
-    if top.is_empty() {
-        return None;
-    }
-    let main = worktrees(dir).into_iter().next()?.path;
-    Some(WorkingTree {
+    let Some(list) = read(&["worktree", "list", "--porcelain"])? else {
+        return Ok(None);
+    };
+    let Some(main) = parse_worktrees(&list).into_iter().next() else {
+        return Ok(None);
+    };
+    Ok((!top.is_empty()).then(|| WorkingTree {
         top: resolved(top),
-        main,
-    })
+        main: resolved(&main.path),
+    }))
 }
 
 /// `path` with links resolved (`/tmp` is `/private/tmp` on macOS), as tmux

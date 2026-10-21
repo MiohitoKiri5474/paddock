@@ -92,8 +92,14 @@ impl DeleteQuestion {
             ""
         };
         if risks.late {
+            // Detached, its commits go with the worktree.
+            let lost = if kept.is_empty() {
+                "any changes and commits"
+            } else {
+                "any changes"
+            };
             return format!(
-                "couldn't check {label} in time: delete anyway, discarding any changes?{kept} y/n"
+                "couldn't check {label} in time: delete anyway, discarding {lost}?{kept} y/n"
             );
         }
         let mut what = Vec::new();
@@ -303,7 +309,7 @@ impl App {
     /// are.
     pub(super) fn worktree_space(&self, id: &str) -> Option<WorktreeSpace> {
         let tree = self.tree_now(id)?;
-        if !tree.is_linked() || !is_ours(&self.worktrees.directory, &tree.top) {
+        if !tree.is_linked() || !is_ours(&self.worktrees.directory, &tree) {
             return None;
         }
         Some(WorktreeSpace {
@@ -315,13 +321,24 @@ impl App {
         })
     }
 
-    /// Every space whose working tree is the one at `top`, read now.
-    fn spaces_in(&self, top: &str) -> Vec<String> {
-        self.spaces
-            .iter()
-            .filter(|s| self.tree_now(&s.id).is_some_and(|t| t.top == top))
-            .map(|s| s.id.clone())
-            .collect()
+    /// Every space whose working tree is the one at `top`, read now. If
+    /// git does not answer in time for any space, it fails: a space is
+    /// never skipped unread.
+    // ponytail: a space belongs to the worktree of its first tab's first
+    // pane; a space whose other panes are in the worktree is missed.
+    fn spaces_in(&self, top: &str) -> Result<Vec<String>> {
+        let mut found = Vec::new();
+        for space in &self.spaces {
+            let Some(dir) = self.space_dir_now(&space.id) else {
+                continue;
+            };
+            let tree = git::working_tree_in_time(&dir.to_string_lossy())
+                .map_err(|_| anyhow!("couldn't read every space in time: nothing deleted"))?;
+            if tree.is_some_and(|t| t.top == top) {
+                found.push(space.id.clone());
+            }
+        }
+        Ok(found)
     }
 
     /// `delete_worktree`: ask before deleting space `id` with its worktree
@@ -377,7 +394,7 @@ impl App {
         mut target: WorktreeSpace,
         confirmed: Option<Risks>,
     ) -> Result<()> {
-        target.spaces = self.spaces_in(&target.path);
+        target.spaces = self.spaces_in(&target.path)?;
         if !target.spaces.contains(&target.space) {
             target.spaces.push(target.space.clone());
         }
@@ -476,10 +493,13 @@ fn risks_within(path: &str, limit: Duration) -> Option<Risks> {
 /// Whether the worktree at `top` is one paddock made, and so may delete:
 /// `<directory>/<repo>/<name>`, as `C-a W` lays them out, exactly. A
 /// worktree deeper down (a repository's `.claude/worktrees/agent-*` when
-/// repositories live under `directory`) is not.
-fn is_ours(directory: &Path, top: &str) -> bool {
+/// repositories live under `directory`) is not, nor one right inside its
+/// own main checkout (a repository at `<directory>/<repo>` holding one).
+fn is_ours(directory: &Path, tree: &WorkingTree) -> bool {
     let directory = git::resolved(&directory.to_string_lossy());
-    Path::new(top).parent().and_then(Path::parent) == Some(Path::new(&directory))
+    let parent = Path::new(&tree.top).parent();
+    parent.and_then(Path::parent) == Some(Path::new(&directory))
+        && parent != Some(Path::new(&tree.main))
 }
 
 /// The sidebar order of spaces whose working trees are `trees` (by space
@@ -597,13 +617,19 @@ mod tests {
     #[test]
     fn only_worktrees_laid_out_as_paddock_makes_them_are_its_own() {
         let dir = Path::new("/nonexistent/code");
-        assert!(is_ours(dir, "/nonexistent/code/repo/feat-x"));
-        assert!(!is_ours(
-            dir,
-            "/nonexistent/code/repo/.claude/worktrees/agent-x"
+        let elsewhere = "/r/repo";
+        let ours = |top: &str, main: &str| is_ours(dir, &tree(top, main));
+        assert!(ours("/nonexistent/code/repo/feat-x", elsewhere));
+        assert!(!ours(
+            "/nonexistent/code/repo/.claude/worktrees/agent-x",
+            "/nonexistent/code/repo"
         ));
-        assert!(!is_ours(dir, "/nonexistent/code/repo"), "a main checkout");
-        assert!(!is_ours(dir, "/elsewhere/repo/feat-x"));
+        assert!(!ours("/elsewhere/repo/feat-x", elsewhere));
+        // A repository at `<directory>/<repo>` with a worktree right in it.
+        assert!(!ours(
+            "/nonexistent/code/repo/feat-x",
+            "/nonexistent/code/repo"
+        ));
     }
 
     #[test]
@@ -666,7 +692,7 @@ mod tests {
         );
         assert_eq!(
             q(None, Some(Risks::unknown())),
-            "couldn't check x in time: delete anyway, discarding any changes? y/n"
+            "couldn't check x in time: delete anyway, discarding any changes and commits? y/n"
         );
     }
 }
