@@ -14,3 +14,9 @@ Why: in daily use, every task got its own worktree anyway, made by hand in anoth
 
 - **One row per agent**: stays accurate when agents share a directory, but subagents that never branch would clutter the list, and a branch that several agents work on in turn would show as several rows.
 - **paddock creates the worktrees** (first rejected: the user did not want worktree management in paddock): accepted by the amendment above, for the user's own task worktrees only.
+
+## Amendment (ticket 25): an agent can delete a worktree, without the questions
+
+`paddock worktree rm` deletes what `x` deletes, for agents and scripts, and asks nothing: it has no terminal to ask in. What `x` asks about (uncommitted changes, commits not in the base) it refuses with exit 3, naming the risk, unless an explicit flag agrees to that loss: `--discard-changes` (and only then `git worktree remove --force`) or `--discard-commits` (`branch -d` still keeps an unmerged branch). What `x` never deletes, it never deletes either, whatever the flags: the main checkout, a worktree paddock did not make, one where a Claude is running or waiting, and one the caller's own directory or terminal is in. It checks again right before removing, as `x` does, and a check that runs out of time deletes nothing.
+
+Why: the owner wants worktree management to be agent friendly, and an agent cannot answer `y/n`. The flags stand in for the second question; the answer has to be given up front and by name. The plugin's skill never pre-approves `rm`, so Claude Code still asks the user before each delete, and it tells Claude never to pass `--discard-*` without the user's say-so.

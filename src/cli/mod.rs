@@ -6,6 +6,7 @@
 //! stable shape), each error is one line on stderr, and the exit code
 //! says what kind of failure it was ([`Code`]).
 
+mod rm;
 mod worktree;
 
 use crate::worktree::{Failure, Risks};
@@ -179,7 +180,12 @@ pub fn parse(args: &[String]) -> Result<Parsed, String> {
 /// A check that ran out of time refuses first (exit 4): nothing is known.
 /// Otherwise every risk not discarded is named (exit 3). On success,
 /// returns what the delete may lose, for the re-check right before it.
-pub fn allowed(label: &str, risks: Option<&Risks>, discard: Discard) -> Result<Risks, Fail> {
+pub fn allowed(
+    label: &str,
+    risks: Option<&Risks>,
+    detached: bool,
+    discard: Discard,
+) -> Result<Risks, Fail> {
     if risks.is_some_and(|r| r.late) {
         return Err(Fail::new(
             Code::Late,
@@ -192,9 +198,18 @@ pub fn allowed(label: &str, risks: Option<&Risks>, discard: Discard) -> Result<R
             named.push("has uncommitted changes (--discard-changes loses them)".to_string());
         }
         if let (Some(base), false) = (&r.unmerged, discard.commits) {
-            named.push(format!(
-                "has commits not in {base} (--discard-commits loses them)"
-            ));
+            // A branch keeps its commits (`branch -d` keeps it); only a
+            // detached HEAD's go with the worktree.
+            named.push(if detached {
+                format!(
+                    "has commits not in {base} on a detached HEAD (--discard-commits loses them)"
+                )
+            } else {
+                format!(
+                    "has commits not in {base} (--discard-commits removes the worktree \
+                     anyway; the branch is kept)"
+                )
+            });
         }
     }
     if !named.is_empty() {
@@ -340,30 +355,38 @@ mod tests {
 
     #[test]
     fn each_risk_not_discarded_refuses_with_exit_3_naming_it() {
-        let dirty = allowed("feat/x", Some(&risks(true, None)), NONE).unwrap_err();
+        let dirty = allowed("feat/x", Some(&risks(true, None)), false, NONE).unwrap_err();
         assert_eq!(dirty.code, Code::Refused);
         assert!(dirty.message.contains("uncommitted changes"), "{dirty:?}");
         assert!(dirty.message.contains("--discard-changes"), "{dirty:?}");
-        let both = allowed("feat/x", Some(&risks(true, Some("main"))), NONE).unwrap_err();
+        let both = allowed("feat/x", Some(&risks(true, Some("main"))), false, NONE).unwrap_err();
         assert_eq!(
             both.message,
             "feat/x has uncommitted changes (--discard-changes loses them) and has \
-             commits not in main (--discard-commits loses them): nothing deleted"
+             commits not in main (--discard-commits removes the worktree anyway; the \
+             branch is kept): nothing deleted"
+        );
+        // Only a detached HEAD loses its commits with the worktree.
+        let detached = allowed("loose", Some(&risks(false, Some("main"))), true, NONE);
+        assert_eq!(
+            detached.unwrap_err().message,
+            "loose has commits not in main on a detached HEAD (--discard-commits loses \
+             them): nothing deleted"
         );
         // Discarding one risk leaves the other refused.
         let changes = Discard {
             changes: true,
             commits: false,
         };
-        let left = allowed("feat/x", Some(&risks(true, Some("main"))), changes).unwrap_err();
+        let left = allowed("feat/x", Some(&risks(true, Some("main"))), false, changes).unwrap_err();
         assert_eq!(left.code, Code::Refused);
         assert!(!left.message.contains("uncommitted"), "{left:?}");
     }
 
     #[test]
     fn discarded_or_absent_risks_go_on_and_confirm_only_what_was_given() {
-        assert_eq!(allowed("x", None, NONE), Ok(risks(false, None)));
-        let ok = allowed("x", Some(&risks(true, Some("main"))), ALL).unwrap();
+        assert_eq!(allowed("x", None, false, NONE), Ok(risks(false, None)));
+        let ok = allowed("x", Some(&risks(true, Some("main"))), false, ALL).unwrap();
         assert_eq!(ok, risks(true, Some("main")));
         // `--discard-changes` with a clean tree still allows `--force`:
         // changes made before the removal were agreed to.
@@ -371,13 +394,16 @@ mod tests {
             changes: true,
             commits: false,
         };
-        assert_eq!(allowed("x", None, changes_only), Ok(risks(true, None)));
+        assert_eq!(
+            allowed("x", None, false, changes_only),
+            Ok(risks(true, None))
+        );
     }
 
     #[test]
     fn a_risk_check_past_its_deadline_exits_4_whatever_was_discarded() {
         for discard in [NONE, ALL] {
-            let late = allowed("feat/x", Some(&Risks::unknown()), discard).unwrap_err();
+            let late = allowed("feat/x", Some(&Risks::unknown()), false, discard).unwrap_err();
             assert_eq!(late.code, Code::Late);
             assert_eq!(
                 late.message,

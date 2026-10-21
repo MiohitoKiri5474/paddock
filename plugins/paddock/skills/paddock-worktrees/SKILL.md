@@ -25,6 +25,12 @@ Otherwise, work where you are.
 
    Each row: `path`, `branch` (`null` if detached), `main`, `ours` (paddock made it), `space` (`null` if none open), `dirty`, `merged`, `agents` (states of the Claude sessions in its space).
 
+   Find the row whose `branch` is your branch:
+
+   - A row with a `space`: reuse it. Work in its `path`; skip step 2.
+   - A row with `space: null`: run `open` (step 2).
+   - No row: run `new` (step 2).
+
 2. Make it, or open the one that exists:
 
    ```sh
@@ -36,10 +42,10 @@ Otherwise, work where you are.
 
 3. Work in the returned `path`. A `cd` alone may not last to the next command: start each shell command with `cd <path> &&`, and give file tools absolute paths under `path`. Do not edit the original tree for this task.
 
-4. Delete it only when the user asks, or when its branch is merged:
+4. Delete it only when the user asks, or when its row in `paddock worktree list --json` has `"merged": true`. Run `rm` from the main checkout (the row with `"main": true`), never from inside the worktree:
 
    ```sh
-   paddock worktree rm <branch> --json
+   cd <main checkout path> && paddock worktree rm <branch> --json
    ```
 
    This closes its spaces, removes the worktree and deletes the branch with `git branch -d`. An unmerged branch is kept, with a notice on stderr. `rm` is not pre-approved: the user confirms each one.
@@ -58,6 +64,6 @@ Otherwise, work where you are.
 | 1 | usage or config error | fix the command; stderr says what is wrong |
 | 2 | git or tmux error | read git's reason on stderr; report it |
 | 3 | refused for a risk (uncommitted changes, unmerged commits, a Claude running or waiting there, not made by paddock, the main checkout, you are inside it) | stop and ask the user, quoting stderr |
-| 4 | timeout; nothing deleted | retry once, then tell the user |
+| 4 | timeout; nothing deleted by the check (a `rm` past its checks may have closed spaces) | run `paddock worktree list --json`, then retry once if the worktree is still there; else tell the user |
 
 Errors are one line on stderr.

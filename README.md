@@ -255,9 +255,10 @@ paddock worktree rm feat/x             # close its spaces, remove it, delete the
 ```
 
 - Every command takes `--json` (a stable JSON object, or an array for `list`) and `--from <dir>` (the repository of `<dir>`; the current directory's without it). `paddock worktree --help` lists them.
+- `<branch|path>` is a directory (relative to `--from`) or a branch. If it is one worktree's path and another's branch, the command refuses (exit 1) and names both: give the full path.
 - `new` checks the branch out if it exists, else creates it at the current tree's HEAD. If anything fails, nothing is left half-made. With `--json`: `{"path","branch","repo","space"}`.
 - `list --json` rows: `path`, `branch` (`null` if detached), `main`, `ours` (paddock made it), `space`, `dirty`, `merged` (into the base), `agents` (the states of the Claude sessions in its spaces).
-- `rm` refuses, naming the risk, when the worktree has uncommitted changes (unless `--discard-changes`), commits not in its base (unless `--discard-commits`; a detached HEAD's too), a Claude running or waiting in it, or when it is the main checkout, a worktree paddock did not make, or holds the caller's current directory or terminal. It removes with `git worktree remove` (`--force` only with `--discard-changes`) and deletes the branch with `git branch -d`: an unmerged branch is kept, with a notice.
+- `rm` refuses, naming the risk, when the worktree has uncommitted changes (unless `--discard-changes`), commits not in its base (unless `--discard-commits`; a detached HEAD's too), a Claude running or waiting in it (floats included), or when it is the main checkout, a worktree paddock did not make, or holds the caller's current directory or terminal. It removes with `git worktree remove` (`--force` only with `--discard-changes`) and deletes the branch with `git branch -d`: an unmerged branch is kept, with a notice.
 - Exit codes: `0` ok, `1` usage or config error, `2` git or tmux error (git's reason on stderr), `3` refused for a risk, `4` timeout (nothing deleted). Errors are one line on stderr.
 
 ## Claude Code plugin
@@ -290,6 +291,8 @@ cargo uninstall paddock             # or brew uninstall paddock, or delete the b
 ```sh
 cargo clippy --all-targets -- -D warnings
 cargo test                          # unit + end-to-end tests (real tmux on a temp socket)
+claude plugin validate --strict .   # the plugin marketplace, in full (cargo test checks the basics)
+claude plugin validate --strict plugins/paddock
 ```
 
 CI runs the unit tests on macOS and uploads a release binary when they pass. Pushing a `v*` tag that matches the version in `Cargo.toml` builds the Apple Silicon tarball and opens a draft pre-release.

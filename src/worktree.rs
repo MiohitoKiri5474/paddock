@@ -6,7 +6,7 @@
 //! command can give it an exit code; the app shows it as a notice.
 
 use crate::git::{self, WorkingTree, Worktree};
-use crate::tmux::structure::FLOAT_OPTION;
+use crate::paths::HomePaths;
 use crate::tmux::Server;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -64,7 +64,8 @@ impl std::error::Error for Failure {}
 // them) but `PathBuf` in config and `worktree_path`; one type would do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorktreeSpace {
-    pub space: String,
+    /// The space asked about (`x` on it); none from the command.
+    pub space: Option<String>,
     pub spaces: Vec<String>,
     pub path: String,
     pub branch: Option<String>,
@@ -190,33 +191,60 @@ pub fn create<T>(
     }
 }
 
-/// Space `id`'s directory: that of its first tab's first pane, else the
-/// session's start directory.
-pub fn space_dir(server: &Server, id: &str) -> Option<String> {
-    let format = format!("#{{{FLOAT_OPTION}}}\x1f#{{pane_current_path}}");
-    let pane = server
-        .run(&["list-panes", "-s", "-t", id, "-F", &format])
-        .ok()
-        .and_then(|out| first_tab_dir(&out));
-    pane.or_else(|| server.display(id, "#{session_path}").ok())
-        .filter(|p| !p.is_empty())
+/// `list-panes` format of a pane as [`parse_panes`] reads it.
+const PANE_FORMAT: &str = "#{@paddock-float}\x1f#{pane_id}\x1f#{pane_current_path}";
+
+/// One pane of a space, floats' included.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pane {
+    pub id: String,
+    /// Its shell's directory.
+    pub path: String,
+    /// It is a float's, not a tab's.
+    pub float: bool,
 }
 
-/// The first directory in `list-panes -s` output of float marker and
-/// directory, skipping floats' panes: a float is never the first tab,
-/// even when tmux lists it first.
-fn first_tab_dir(out: &str) -> Option<String> {
+/// `list-panes` output in [`PANE_FORMAT`], in tmux's order.
+fn parse_panes(out: &str) -> Vec<Pane> {
     out.lines()
-        .filter_map(|l| l.split_once('\x1f'))
-        .find(|(float, _)| float.is_empty())
-        .map(|(_, dir)| dir.to_string())
+        .filter_map(|l| {
+            let mut parts = l.splitn(3, '\x1f');
+            let float = !parts.next()?.is_empty();
+            let id = parts.next()?.to_string();
+            let path = parts.next()?.to_string();
+            Some(Pane { id, path, float })
+        })
+        .collect()
+}
+
+/// Every pane of space `id`, floats' too; none if tmux cannot say.
+pub fn panes(server: &Server, id: &str) -> Vec<Pane> {
+    server
+        .run(&["list-panes", "-s", "-t", id, "-F", PANE_FORMAT])
+        .map(|out| parse_panes(&out))
+        .unwrap_or_default()
+}
+
+/// Space `id`'s directory, read now: its first tab's first pane's (a
+/// float is never the first tab, even when tmux lists it first). The
+/// directory may have been deleted since; `None` if tmux cannot say.
+pub fn space_dir(server: &Server, id: &str) -> Option<String> {
+    first_tab_dir(&panes(server, id))
+}
+
+/// The directory of the first pane in `panes` that is not a float's.
+fn first_tab_dir(panes: &[Pane]) -> Option<String> {
+    panes
+        .iter()
+        .find(|p| !p.float)
+        .map(|p| p.path.clone())
         .filter(|dir| !dir.is_empty())
 }
 
 /// Which of spaces `ids` are in the working tree at `top`, read now: a
-/// space belongs to the worktree of its first tab's first pane. If git
-/// does not answer in time for any space, it fails: a space is never
-/// skipped unread.
+/// space belongs to the worktree of its directory ([`space_dir`]); one
+/// without a directory, or whose directory is gone, is in none. If git does not answer in time for
+/// any space, it fails: a space is never skipped unread.
 // ponytail: a space whose other panes are in the worktree is missed.
 pub fn spaces_in(server: &Server, ids: &[String], top: &str) -> Result<Vec<String>, Failure> {
     let mut found = Vec::new();
@@ -234,16 +262,25 @@ pub fn spaces_in(server: &Server, ids: &[String], top: &str) -> Result<Vec<Strin
     Ok(found)
 }
 
+/// What [`remove`] did once the worktree was gone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Removal {
+    /// `branch -d` deleted the branch (`false` if detached, or kept).
+    pub branch_deleted: bool,
+    /// Why the branch was kept, if it was: not a failure.
+    pub notice: Option<String>,
+}
+
 /// Close every space in `target`'s worktree, remove the worktree and
 /// delete its branch. Uncommitted changes go only if `confirmed` says so
 /// (`--force`); changes or commits not confirmed, found now, leave
-/// everything as it is. Returns a notice if the branch was kept (`branch
-/// -d` found it unmerged); that is not a failure.
+/// everything as it is. A branch `branch -d` finds unmerged is kept,
+/// with a notice.
 pub fn remove(
     server: &Server,
     target: &WorktreeSpace,
     confirmed: Option<&Risks>,
-) -> Result<Option<String>, Failure> {
+) -> Result<Removal, Failure> {
     let path = &target.path;
     let label = target.label();
     let force = confirmed.is_some_and(|r| r.dirty);
@@ -264,22 +301,20 @@ pub fn remove(
             .kill_session(space)
             .map_err(|e| Failure::Tmux(format!("{e:#}")))?;
     }
-    // The path first: a notice cut to the tab bar still names it.
+    // git's reason first, then what is left.
     git::remove_worktree(&target.main, path, force).map_err(|e| {
-        let late = git::is_late(&e);
-        let left = crate::app::HomePaths::new().show(path);
-        let message = format!("space closed; {left} left: {e}");
-        if late {
-            Failure::Late(message)
-        } else {
-            Failure::Git(message)
-        }
+        let left = HomePaths::new().show(path);
+        Failure::git(format!("{e}; space closed, {left} left"))
     })?;
-    Ok(target.branch.as_ref().and_then(|branch| {
+    let kept = target.branch.as_ref().and_then(|branch| {
         git::delete_branch(&target.main, branch)
             .err()
             .map(|e| format!("worktree removed; branch {branch} kept: {e}"))
-    }))
+    });
+    Ok(Removal {
+        branch_deleted: target.branch.is_some() && kept.is_none(),
+        notice: kept,
+    })
 }
 
 #[cfg(test)]
@@ -344,14 +379,17 @@ mod tests {
 
     #[test]
     fn a_space_s_directory_is_its_first_tab_s_never_a_float_s() {
-        let out = "g\x1f/w/float\n\x1f/w/tab\n\x1f/w/second\n";
-        assert_eq!(first_tab_dir(out).as_deref(), Some("/w/tab"));
-        assert_eq!(
-            first_tab_dir("\x1f/w/tab\ng\x1f/w/float\n").as_deref(),
-            Some("/w/tab")
-        );
-        assert_eq!(first_tab_dir("g\x1f/w/float\n"), None);
-        assert_eq!(first_tab_dir("\x1f\n"), None);
+        let out = "g\x1f%1\x1f/w/float\n\x1f%2\x1f/w/tab\n\x1f%3\x1f/w/second\n";
+        let panes = parse_panes(out);
+        let floats: Vec<bool> = panes.iter().map(|p| p.float).collect();
+        assert_eq!(floats, [true, false, false]);
+        assert_eq!(panes[1].id, "%2");
+        assert_eq!(first_tab_dir(&panes).as_deref(), Some("/w/tab"));
+        assert_eq!(first_tab_dir(&parse_panes("g\x1f%1\x1f/w/float\n")), None);
+        assert_eq!(first_tab_dir(&parse_panes("\x1f%1\x1f\n")), None);
+        // The format reads the float marker paddock sets.
+        let marker = format!("#{{{}}}\x1f", crate::tmux::structure::FLOAT_OPTION);
+        assert!(PANE_FORMAT.starts_with(&marker), "{PANE_FORMAT}");
     }
 
     #[test]

@@ -9,8 +9,8 @@
 
 use super::sidebar::Pick;
 use super::state::{App, CloseTarget, Mode, NameTarget, Panel};
-use super::view::HomePaths;
 use crate::git::{self, WorkingTree};
+use crate::paths::HomePaths;
 use crate::sessions::State;
 use crate::worktree::{self as shared, space_name, Risks, WorktreeSpace, RISK_DEADLINE};
 use anyhow::{bail, Result};
@@ -109,11 +109,12 @@ impl App {
     }
 
     /// Space `id`'s directory, read now (the sidebar's may be seconds
-    /// old): its first tab's first pane's.
+    /// old), as [`shared::space_dir`] reads it for every decision about
+    /// worktrees; `None` if it is gone.
     fn space_dir_now(&self, id: &str) -> Option<PathBuf> {
-        let space = self.spaces.iter().find(|s| s.id == id)?;
-        let pane = &space.windows().first()?.panes.first()?.id;
-        self.dir_of(pane)
+        shared::space_dir(&self.server, id)
+            .map(PathBuf::from)
+            .filter(|p| p.is_dir())
     }
 
     /// Space `id`'s working tree, read now.
@@ -229,7 +230,7 @@ impl App {
             return None;
         }
         Some(WorktreeSpace {
-            space: id.to_string(),
+            space: Some(id.to_string()),
             spaces: vec![id.to_string()],
             branch: git::current_branch(&tree.top),
             path: tree.top,
@@ -298,8 +299,8 @@ impl App {
         confirmed: Option<Risks>,
     ) -> Result<()> {
         target.spaces = self.spaces_in(&target.path)?;
-        if !target.spaces.contains(&target.space) {
-            target.spaces.push(target.space.clone());
+        if let Some(space) = target.space.clone().filter(|s| !target.spaces.contains(s)) {
+            target.spaces.push(space);
         }
         let busy = self
             .rows()
@@ -327,7 +328,7 @@ impl App {
         target: &WorktreeSpace,
         confirmed: Option<&Risks>,
     ) -> Result<()> {
-        if let Some(notice) = shared::remove(&self.server, target, confirmed)? {
+        if let Some(notice) = shared::remove(&self.server, target, confirmed)?.notice {
             self.notice = Some(notice);
         }
         Ok(())
@@ -446,7 +447,7 @@ mod tests {
         let q = |branch: Option<&str>, risks: Option<Risks>| {
             DeleteQuestion {
                 target: WorktreeSpace {
-                    space: "$1".into(),
+                    space: Some("$1".into()),
                     spaces: vec!["$1".into()],
                     path: "/w/repo/x".into(),
                     branch: branch.map(str::to_string),

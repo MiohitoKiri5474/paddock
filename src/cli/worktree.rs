@@ -1,17 +1,16 @@
-//! What each `paddock worktree` subcommand does, against the real git
-//! and the hidden tmux server, through the rules the app uses
-//! ([`crate::worktree`]).
+//! What `paddock worktree new|open|list` do, and what every subcommand
+//! shares: where it runs ([`Context`]), the spaces on the hidden server,
+//! and which worktree an argument names. `rm` is in [`super::rm`]. All
+//! of it goes through the rules the app uses ([`crate::worktree`]).
 
-use super::{allowed, Code, Command, Discard, Fail, Invocation};
-use crate::app::HomePaths;
+use super::{rm, Code, Command, Fail, Invocation};
 use crate::config::Config;
 use crate::git::{self, WorkingTree, Worktree};
 use crate::hooks::now_ms;
-use crate::paths::Paths;
+use crate::paths::{HomePaths, Paths};
 use crate::sessions::{agents, log, Agent, Sessions, State};
-use crate::tmux::structure::FLOAT_OPTION;
 use crate::tmux::Server;
-use crate::worktree::{self as shared, WorktreeSpace, RISK_DEADLINE};
+use crate::worktree::{self as shared, RISK_DEADLINE};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -24,32 +23,66 @@ const AGENTS_DEADLINE: Duration = Duration::from_secs(5);
 
 /// Where the command runs: the hidden server, paddock's paths, and who
 /// called it (their directory, and their tmux pane if they run in one).
-struct Context {
-    server: Server,
-    paths: Paths,
-    cwd: PathBuf,
+pub(super) struct Context {
+    pub server: Server,
+    pub paths: Paths,
+    pub cwd: PathBuf,
     /// `$TMUX` and `$TMUX_PANE`, if set.
-    tmux: Option<(String, String)>,
+    pub tmux: Option<(String, String)>,
+    /// How long `rm`'s check of what it would lose may take.
+    pub risk_deadline: Duration,
+}
+
+/// A space on the hidden server: its tmux session id and name, and its
+/// directory ([`shared::space_dir`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct Space {
+    pub id: String,
+    pub name: String,
+    pub dir: Option<String>,
+}
+
+/// The name of space `id` among `spaces`, else the id itself.
+pub(super) fn name_of<'a>(spaces: &'a [Space], id: &'a str) -> &'a str {
+    spaces
+        .iter()
+        .find(|s| s.id == id)
+        .map_or(id, |s| s.name.as_str())
+}
+
+/// The ids of `spaces`.
+pub(super) fn ids(spaces: &[Space]) -> Vec<String> {
+    spaces.iter().map(|s| s.id.clone()).collect()
 }
 
 impl Context {
+    pub fn new(paths: Paths, cwd: PathBuf, tmux: Option<(String, String)>) -> Self {
+        Self {
+            server: Server::new(paths.clone()),
+            paths,
+            cwd,
+            tmux,
+            risk_deadline: RISK_DEADLINE,
+        }
+    }
+
     fn from_env() -> Result<Self, Fail> {
         let paths = Paths::from_env().map_err(|e| Fail::new(Code::Usage, format!("{e:#}")))?;
         let cwd = std::env::current_dir()
             .map_err(|e| Fail::new(Code::Usage, format!("no current directory: {e}")))?;
         let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
         let tmux = var("TMUX").zip(var("TMUX_PANE"));
-        Ok(Self {
-            server: Server::new(paths.clone()),
-            paths,
-            cwd,
-            tmux,
-        })
+        Ok(Self::new(paths, cwd, tmux))
+    }
+
+    /// The directory `--from` names, else the current one.
+    pub fn base<'a>(&'a self, from: Option<&'a Path>) -> &'a Path {
+        from.unwrap_or(&self.cwd)
     }
 
     /// The working tree of `--from`, else of the current directory.
-    fn tree(&self, from: Option<&Path>) -> Result<WorkingTree, Fail> {
-        let dir = from.unwrap_or(&self.cwd);
+    pub fn tree(&self, from: Option<&Path>) -> Result<WorkingTree, Fail> {
+        let dir = self.base(from);
         if !dir.is_dir() {
             let msg = format!("{} is not a directory", dir.display());
             return Err(Fail::new(Code::Usage, msg));
@@ -63,14 +96,14 @@ impl Context {
     }
 
     /// The `[worktrees] directory` from paddock's config.
-    fn directory(&self) -> Result<PathBuf, Fail> {
+    pub fn directory(&self) -> Result<PathBuf, Fail> {
         Config::load(&self.paths.config_dir)
             .map(|c| c.worktrees.directory)
             .map_err(|e| Fail::new(Code::Usage, format!("{e:#}")))
     }
 
     /// The hidden server's pid; `None` if it does not run.
-    fn server_pid(&self) -> Option<u32> {
+    pub fn server_pid(&self) -> Option<u32> {
         self.server
             .run(&["display-message", "-p", "#{pid}"])
             .ok()?
@@ -79,19 +112,23 @@ impl Context {
             .ok()
     }
 
-    /// Every space (tmux session id and name) on the hidden server.
-    fn spaces(&self) -> Vec<(String, String)> {
+    /// Every space on the hidden server, oldest first.
+    pub fn spaces(&self) -> Vec<Space> {
         self.server
             .sessions()
             .into_iter()
-            .map(|s| (s.id, s.name))
+            .map(|s| Space {
+                dir: shared::space_dir(&self.server, &s.id),
+                id: s.id,
+                name: s.name,
+            })
             .collect()
     }
 
     /// Start a shell in a new space named `name` in `dir`, starting the
     /// server (with paddock's config) if it does not run. Returns the
     /// space's name as tmux gave it (it writes `.` and `:` as `_`).
-    fn new_space(&self, name: &str, dir: &Path) -> anyhow::Result<String> {
+    pub fn new_space(&self, name: &str, dir: &Path) -> anyhow::Result<String> {
         if self.server_pid().is_none() {
             self.server.write_config()?;
         }
@@ -99,17 +136,8 @@ impl Context {
         self.server.display(&session.id, "#{session_name}")
     }
 
-    /// The panes of space `id` that are not floats.
-    fn panes(&self, id: &str) -> Vec<Pane> {
-        let format = format!("#{{{FLOAT_OPTION}}}\x1f#{{pane_id}}\x1f#{{pane_current_path}}");
-        self.server
-            .run(&["list-panes", "-s", "-t", id, "-F", &format])
-            .map(|out| parse_panes(&out))
-            .unwrap_or_default()
-    }
-
     /// The caller's pane, if they run in a terminal of this server.
-    fn caller_pane(&self, pid: Option<u32>) -> Option<String> {
+    pub fn caller_pane(&self, pid: Option<u32>) -> Option<String> {
         let (tmux, pane) = self.tmux.as_ref()?;
         let (theirs, pane) = log::terminal(tmux, pane, &self.paths.socket)?;
         (Some(theirs) == pid).then_some(pane)
@@ -119,7 +147,7 @@ impl Context {
     /// the hook event log of the running server replayed, then what
     /// `claude agents --json` says, and why Claude's word is missing if it
     /// did not answer in time.
-    fn sessions(&self, pid: Option<u32>) -> (Sessions, Option<Fail>) {
+    pub fn sessions(&self, pid: Option<u32>) -> (Sessions, Option<Fail>) {
         let mut sessions = Sessions::default();
         let Some(pid) = pid else {
             return (sessions, None);
@@ -155,35 +183,14 @@ fn fetch_agents(server: &Server, limit: Duration) -> Result<Option<Vec<Agent>>, 
     })
 }
 
-/// One pane of a space.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Pane {
-    id: String,
-    path: String,
-}
-
-/// `list-panes` output of float marker, pane id and directory, without
-/// floats' panes (paddock does not follow Claude in a float).
-fn parse_panes(out: &str) -> Vec<Pane> {
-    out.lines()
-        .filter_map(|l| {
-            let mut parts = l.splitn(3, '\x1f');
-            let float = parts.next()?;
-            let id = parts.next()?.to_string();
-            let path = parts.next()?.to_string();
-            float.is_empty().then_some(Pane { id, path })
-        })
-        .collect()
-}
-
 /// Whether `dir` is `top` or inside it, links resolved, by whole path
 /// parts (`feat-xy` is not inside `feat-x`).
-fn inside(dir: &str, top: &str) -> bool {
+pub(super) fn inside(dir: &str, top: &str) -> bool {
     Path::new(&git::resolved(dir)).starts_with(git::resolved(top))
 }
 
 /// The state of the Claude in pane `pane`, unless it ended or none ran.
-fn state_in(sessions: &Sessions, pane: &str) -> Option<State> {
+pub(super) fn state_in(sessions: &Sessions, pane: &str) -> Option<State> {
     sessions.get(pane).filter(|s| !s.ended()).map(|s| s.state)
 }
 
@@ -194,7 +201,7 @@ pub fn run(i: &Invocation) -> Result<(), Fail> {
         Command::New { branch, no_space } => new(&cx, from, branch, *no_space, i.json),
         Command::Open { target } => open(&cx, from, target, i.json),
         Command::List => list(&cx, from, i.json),
-        Command::Rm { target, discard } => rm(&cx, from, target, *discard, i.json),
+        Command::Rm { target, discard } => rm::rm(&cx, from, target, *discard, i.json),
     }
 }
 
@@ -207,7 +214,7 @@ struct Made<'a> {
     space: Option<&'a str>,
 }
 
-fn print_json(value: &impl Serialize) -> Result<(), Fail> {
+pub(super) fn print_json(value: &impl Serialize) -> Result<(), Fail> {
     let text = serde_json::to_string(value).map_err(|e| Fail::new(Code::Usage, e.to_string()))?;
     println!("{text}");
     Ok(())
@@ -243,45 +250,65 @@ fn new(
 }
 
 /// The worktree of `tree`'s repository that `target` names: a directory
-/// in it (its top), else a branch checked out in it.
-fn find(tree: &WorkingTree, target: &str) -> Result<Worktree, Fail> {
+/// (relative to `base`, the `--from` directory or the current one) in
+/// it, or a branch checked out in it. If it names one worktree by path
+/// and another by branch, it names neither.
+pub(super) fn find(tree: &WorkingTree, base: &Path, target: &str) -> Result<Worktree, Fail> {
     let all = git::worktrees(&tree.main);
-    let by_path = Path::new(target)
+    let dir = base.join(target);
+    let by_path = dir
         .is_dir()
-        .then(|| git::working_tree(target))
+        .then(|| git::working_tree(&dir.to_string_lossy()))
         .flatten()
         .and_then(|t| all.iter().find(|w| w.path == t.top));
-    by_path
-        .or_else(|| all.iter().find(|w| w.branch.as_deref() == Some(target)))
-        .cloned()
-        .ok_or_else(|| {
-            let repo = tree.repo();
-            Fail::new(Code::Usage, format!("no worktree of {repo} for {target:?}"))
-        })
+    let by_branch = all.iter().find(|w| w.branch.as_deref() == Some(target));
+    pick(by_path, by_branch, tree.repo(), target)
+}
+
+/// [`find`]'s choice between the worktree `target` names as a path and
+/// the one it names as a branch.
+fn pick(
+    by_path: Option<&Worktree>,
+    by_branch: Option<&Worktree>,
+    repo: &str,
+    target: &str,
+) -> Result<Worktree, Fail> {
+    match (by_path, by_branch) {
+        (Some(p), Some(b)) if p != b => Err(Fail::new(
+            Code::Usage,
+            format!(
+                "{target:?} names two worktrees of {repo}: {} as a path and {} as a branch; \
+                 give the full path",
+                p.path, b.path
+            ),
+        )),
+        (Some(w), _) | (None, Some(w)) => Ok(w.clone()),
+        (None, None) => Err(Fail::new(
+            Code::Usage,
+            format!("no worktree of {repo} for {target:?}"),
+        )),
+    }
 }
 
 fn open(cx: &Context, from: Option<&Path>, target: &str, json: bool) -> Result<(), Fail> {
     let tree = cx.tree(from)?;
-    let w = find(&tree, target)?;
+    let w = find(&tree, cx.base(from), target)?;
     let spaces = cx.spaces();
-    let ids: Vec<String> = spaces.iter().map(|(id, _)| id.clone()).collect();
-    let open = shared::spaces_in(&cx.server, &ids, &w.path)?;
+    let open = shared::spaces_in(&cx.server, &ids(&spaces), &w.path)?;
     let repo = tree.repo();
-    let name_of = |id: &str| spaces.iter().find(|(i, _)| i == id).map(|(_, n)| n.clone());
-    let (space, made) = match open.first().and_then(|id| name_of(id)) {
-        Some(name) => (name, false),
+    let space = match open.first() {
+        Some(id) => {
+            let name = name_of(&spaces, id).to_string();
+            // A notice, not an error: the output stays the same shape.
+            eprintln!("paddock: {} already has a space: {name}", w.path);
+            name
+        }
         None => {
             let name = shared::space_name(repo, &tree.main, &w);
-            let made = cx
-                .new_space(&name, Path::new(&w.path))
-                .map_err(|e| Fail::new(Code::Git, format!("{e:#}")))?;
-            (made, true)
+            cx.new_space(&name, Path::new(&w.path))
+                .map_err(|e| Fail::new(Code::Git, format!("{e:#}")))?
         }
     };
-    if !made {
-        // A notice, not an error: the output stays the same shape.
-        eprintln!("paddock: {} already has a space: {space}", w.path);
-    }
     if json {
         return print_json(&Made {
             path: &w.path,
@@ -309,7 +336,7 @@ struct Row {
     dirty: bool,
     /// Every commit checked out there is in the base.
     merged: bool,
-    /// The states of the Claude sessions in its spaces.
+    /// The states of the Claude sessions in its spaces' tabs.
     agents: Vec<&'static str>,
 }
 
@@ -321,25 +348,24 @@ fn list(cx: &Context, from: Option<&Path>, json: bool) -> Result<(), Fail> {
     let (sessions, _) = cx.sessions(pid);
     let spaces = cx.spaces();
     // Each space's working tree, read once.
-    let placed: Vec<(String, String, Option<String>)> = spaces
+    let tops: Vec<Option<String>> = spaces
         .iter()
-        .map(|(id, name)| {
-            let top = shared::space_dir(&cx.server, id)
-                .and_then(|d| git::working_tree(&d))
-                .map(|t| t.top);
-            (id.clone(), name.clone(), top)
-        })
+        .map(|s| s.dir.as_deref().and_then(git::working_tree).map(|t| t.top))
         .collect();
     let rows: Vec<Row> = git::worktrees(&tree.main)
         .into_iter()
         .map(|w| {
-            let mine: Vec<&(String, String, Option<String>)> = placed
+            let mine: Vec<&Space> = spaces
                 .iter()
-                .filter(|(_, _, top)| top.as_deref() == Some(w.path.as_str()))
+                .zip(&tops)
+                .filter(|(_, top)| top.as_deref() == Some(w.path.as_str()))
+                .map(|(s, _)| s)
                 .collect();
+            // As the sidebar: paddock does not follow Claude in a float.
             let agents = mine
                 .iter()
-                .flat_map(|(id, _, _)| cx.panes(id))
+                .flat_map(|s| shared::panes(&cx.server, &s.id))
+                .filter(|p| !p.float)
                 .filter_map(|p| state_in(&sessions, &p.id))
                 .map(State::label)
                 .collect();
@@ -350,7 +376,7 @@ fn list(cx: &Context, from: Option<&Path>, json: bool) -> Result<(), Fail> {
             };
             Row {
                 ours: !main && shared::is_ours(&directory, &linked),
-                space: mine.first().map(|(_, name, _)| name.clone()),
+                space: mine.first().map(|s| s.name.clone()),
                 dirty: git::is_dirty(&w.path),
                 merged: main || git::in_base(&w.path, "HEAD"),
                 agents,
@@ -410,123 +436,6 @@ fn table(rows: &[Row], home: &HomePaths) -> String {
             line.join("  ").trim_end().to_string() + "\n"
         })
         .collect()
-}
-
-/// What `rm` prints with `--json`.
-#[derive(Serialize)]
-struct Removed<'a> {
-    path: &'a str,
-    branch: Option<&'a str>,
-    /// The spaces closed with it.
-    closed: Vec<String>,
-    /// Whether `branch -d` deleted the branch (it keeps an unmerged one).
-    branch_deleted: bool,
-}
-
-fn rm(
-    cx: &Context,
-    from: Option<&Path>,
-    target: &str,
-    discard: Discard,
-    json: bool,
-) -> Result<(), Fail> {
-    let tree = cx.tree(from)?;
-    let w = find(&tree, target)?;
-    let label = w
-        .branch
-        .clone()
-        .unwrap_or_else(|| git::dir_name(&w.path).to_string());
-    let refuse = |why: String| Err(Fail::new(Code::Refused, format!("{label} {why}")));
-    if w.path == tree.main {
-        return refuse("is the main checkout: paddock never deletes it".into());
-    }
-    let linked = WorkingTree {
-        top: w.path.clone(),
-        main: tree.main.clone(),
-    };
-    if !shared::is_ours(&cx.directory()?, &linked) {
-        return refuse(
-            "was not made by paddock (not under [worktrees] directory): left alone".into(),
-        );
-    }
-    let spaces = cx.spaces();
-    let ids: Vec<String> = spaces.iter().map(|(id, _)| id.clone()).collect();
-    let closing = shared::spaces_in(&cx.server, &ids, &w.path)?;
-    let pid = cx.server_pid();
-    if inside(&cx.cwd.to_string_lossy(), &w.path) {
-        return refuse("holds the current directory: run rm from outside it".into());
-    }
-    let caller = cx.caller_pane(pid);
-    if let Some(pane) = &caller {
-        let space = cx.server.display(pane, "#{session_id}").ok();
-        let path = cx.server.display(pane, "#{pane_current_path}").ok();
-        let here = space.is_some_and(|s| closing.contains(&s))
-            || path.is_some_and(|p| inside(&p, &w.path));
-        if here {
-            return refuse("holds the calling terminal: run rm from another one".into());
-        }
-    }
-    let (sessions, late) = cx.sessions(pid);
-    if let Some(late) = late {
-        return Err(late);
-    }
-    // Every pane of the spaces that close, and any pane anywhere whose
-    // directory is in the worktree.
-    let top = w.path.as_str();
-    let busy = ids
-        .iter()
-        .flat_map(|id| {
-            let closes = closing.contains(id);
-            cx.panes(id)
-                .into_iter()
-                .filter(move |p| closes || inside(&p.path, top))
-                .map(move |p| (id.clone(), p.id))
-        })
-        .find_map(|(id, pane)| match state_in(&sessions, &pane) {
-            Some(state @ (State::Running | State::Waiting)) => Some((id, state)),
-            _ => None,
-        });
-    if let Some((id, state)) = busy {
-        let name = spaces
-            .iter()
-            .find(|(i, _)| *i == id)
-            .map_or(id.as_str(), |(_, n)| n.as_str());
-        return refuse(format!(
-            "has Claude {} in space {name}: nothing deleted",
-            state.label()
-        ));
-    }
-    let confirmed = allowed(
-        &label,
-        shared::risks_within(&w.path, RISK_DEADLINE).as_ref(),
-        discard,
-    )?;
-    let target = WorktreeSpace {
-        space: closing.first().cloned().unwrap_or_default(),
-        spaces: closing.clone(),
-        path: w.path.clone(),
-        branch: w.branch.clone(),
-        main: tree.main.clone(),
-    };
-    let notice = shared::remove(&cx.server, &target, Some(&confirmed)).map_err(Fail::from)?;
-    if let Some(notice) = &notice {
-        eprintln!("paddock: {notice}");
-    }
-    let closed = closing
-        .iter()
-        .filter_map(|id| spaces.iter().find(|(i, _)| i == id))
-        .map(|(_, name)| name.clone())
-        .collect();
-    if json {
-        return print_json(&Removed {
-            path: &w.path,
-            branch: w.branch.as_deref(),
-            closed,
-            branch_deleted: w.branch.is_some() && notice.is_none(),
-        });
-    }
-    println!("{}", w.path);
-    Ok(())
 }
 
 #[cfg(test)]
@@ -605,17 +514,48 @@ mod tests {
     }
 
     #[test]
-    fn panes_of_floats_are_left_out() {
-        let out = "\x1f%1\x1f/r/a\ng\x1f%2\x1f/r/b\n\x1f%3\x1f/r/c d\n";
-        let ids: Vec<String> = parse_panes(out).into_iter().map(|p| p.id).collect();
-        assert_eq!(ids, ["%1", "%3"]);
-    }
-
-    #[test]
     fn inside_compares_whole_path_parts() {
         assert!(inside("/nonexistent/w/feat-x", "/nonexistent/w/feat-x"));
         assert!(inside("/nonexistent/w/feat-x/src", "/nonexistent/w/feat-x"));
         assert!(!inside("/nonexistent/w/feat-xy", "/nonexistent/w/feat-x"));
         assert!(!inside("/nonexistent/w", "/nonexistent/w/feat-x"));
+    }
+
+    fn wt(path: &str, branch: Option<&str>) -> Worktree {
+        Worktree {
+            path: path.into(),
+            branch: branch.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn a_name_for_two_different_worktrees_names_neither() {
+        let b = wt("/w/repo/feat-b", Some("feat/b"));
+        let dash = wt("/w/repo/x", Some("feat-b"));
+        let both = pick(Some(&b), Some(&dash), "repo", "feat-b").unwrap_err();
+        assert_eq!(both.code, Code::Usage);
+        assert!(
+            both.message.contains("/w/repo/feat-b as a path"),
+            "{both:?}"
+        );
+        assert!(both.message.contains("/w/repo/x as a branch"), "{both:?}");
+        // The same worktree both ways, or only one way: that one.
+        assert_eq!(pick(Some(&b), Some(&b), "repo", "x"), Ok(b.clone()));
+        assert_eq!(pick(Some(&b), None, "repo", "x"), Ok(b.clone()));
+        assert_eq!(pick(None, Some(&dash), "repo", "x"), Ok(dash));
+        let none = pick(None, None, "repo", "nope").unwrap_err();
+        assert_eq!(none.message, "no worktree of repo for \"nope\"");
+    }
+
+    #[test]
+    fn spaces_are_named_by_id() {
+        let spaces = [Space {
+            id: "$1".into(),
+            name: "repo/feat/x".into(),
+            dir: None,
+        }];
+        assert_eq!(name_of(&spaces, "$1"), "repo/feat/x");
+        assert_eq!(name_of(&spaces, "$9"), "$9");
+        assert_eq!(ids(&spaces), ["$1"]);
     }
 }

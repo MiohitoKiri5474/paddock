@@ -7,9 +7,9 @@
 
 use super::rows::Row;
 use super::state::{App, Mode, Panel};
-use super::view::HomePaths;
 use crate::fuzzy;
 use crate::input::line::LineEdit;
+use crate::paths::HomePaths;
 use crate::sessions::State;
 use crate::ui::finder::{self as ui, FinderLine};
 use crate::ui::sidebar::SpaceLine;

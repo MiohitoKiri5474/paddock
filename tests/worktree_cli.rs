@@ -601,3 +601,94 @@ fn help_lists_the_worktree_commands() {
     let out = sandbox.run_in(&home, &["worktree", "--help"], &[], "");
     assert!(stdout(&out).contains("4  timeout"), "{out:?}");
 }
+
+#[test]
+fn rm_counts_a_busy_claude_in_a_float_and_list_leaves_floats_out() {
+    let sandbox = Sandbox::new();
+    let dir = repo(&sandbox);
+    let out = cli(&sandbox, &dir, &["new", "feat/f"]);
+    exits(&out, 0, "");
+    let path = real(&worktree(&sandbox, "feat/f"));
+    // A float of the space, marked as paddock marks one.
+    let id = session_id(&sandbox, "repo/feat/f");
+    let target = format!("{id}:");
+    let path_arg = path.to_string_lossy();
+    sandbox.tmux(&[
+        "new-window",
+        "-d",
+        "-n",
+        "fl",
+        "-t",
+        &target,
+        "-c",
+        &path_arg,
+    ]);
+    let float = format!("{id}:fl");
+    sandbox.tmux(&["set-option", "-w", "-t", &float, "@paddock-float", "G"]);
+    let payload = std::fs::read_to_string(format!("{SPIKE}/UserPromptSubmit.json"))
+        .unwrap()
+        .replace("\"/tmp/repo\"", &format!("{:?}", path.display()));
+    sandbox.hook(&float, "UserPromptSubmit", &payload);
+
+    exits(
+        &cli(&sandbox, &dir, &["rm", "feat/f"]),
+        3,
+        "Claude running in space repo/feat/f",
+    );
+    assert!(path.is_dir());
+    assert_eq!(sandbox.session_names(), ["repo/feat/f"]);
+
+    // The sidebar does not follow Claude in a float, nor does list.
+    let out = cli(&sandbox, &dir, &["list", "--json"]);
+    exits(&out, 0, "");
+    let rows = json(&out);
+    let row = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["branch"] == "feat/f")
+        .unwrap()
+        .clone();
+    assert_eq!(row["agents"], serde_json::json!([]));
+}
+
+#[test]
+fn a_name_that_is_one_worktree_s_path_and_another_s_branch_names_neither() {
+    let sandbox = Sandbox::new();
+    let dir = repo(&sandbox);
+    // Branch feat/b's worktree sits at `<repo>/feat-b`; branch feat-b's
+    // where paddock puts it.
+    let at_b = dir.join("feat-b");
+    git(
+        &dir,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "feat/b",
+            &at_b.to_string_lossy(),
+        ],
+    );
+    let dash = made(&sandbox, &dir, "feat-b");
+    // From home, `feat-b` is a path only against `--from`.
+    let home = sandbox.path("home");
+    let from = dir.to_string_lossy();
+    for command in ["rm", "open"] {
+        let out = cli(&sandbox, &home, &[command, "feat-b", "--from", &from]);
+        exits(&out, 1, "names two worktrees");
+        let err = stderr(&out);
+        assert!(err.contains(&*real(&at_b).to_string_lossy()), "{err}");
+        assert!(err.contains(&*dash.to_string_lossy()), "{err}");
+    }
+    assert!(at_b.is_dir() && dash.is_dir());
+    assert!(sandbox.session_names().is_empty());
+    // The full path names one.
+    let out = cli(
+        &sandbox,
+        &home,
+        &["rm", &dash.to_string_lossy(), "--from", &from],
+    );
+    exits(&out, 0, "");
+    assert!(!dash.exists());
+}
