@@ -1,7 +1,6 @@
 //! The sidebar with the keyboard (`C-a s`, `C-a w`) or the mouse: moving
 //! over its spaces and agents, and acting on the one picked.
 
-use super::rows::{EXTERNAL_FORK, EXTERNAL_OPEN};
 use super::space::MIN_SIZE;
 use super::state::{App, Mode, Panel};
 use super::worktrees::SpaceEntry;
@@ -175,7 +174,9 @@ impl App {
             // An external agent cannot be shown: the sidebar keeps the
             // keyboard, with a notice.
             Some(SidebarAction::Open) if s.pick.as_ref().is_some_and(Pick::is_external) => {
-                self.notice = Some(EXTERNAL_OPEN.into());
+                if let Some(p) = &s.pick {
+                    self.open(p);
+                }
                 Mode::Sidebar(s)
             }
             Some(SidebarAction::Open) => {
@@ -212,7 +213,9 @@ impl App {
                 return;
             }
             Some(SidebarAction::Fork) if s.pick.as_ref().is_some_and(Pick::is_external) => {
-                self.notice = Some(EXTERNAL_FORK.into());
+                if let Some(pane) = self.agent_of(s.pick.as_ref()) {
+                    self.report(|app| app.fork(&pane));
+                }
                 Mode::Sidebar(s)
             }
             Some(SidebarAction::Fork) => match self.agent_of(s.pick.as_ref()) {
@@ -240,7 +243,6 @@ impl App {
                     self.select_space(i);
                 }
             }
-            Pick::Agent(pane) if is_external(pane) => self.notice = Some(EXTERNAL_OPEN.into()),
             Pick::Agent(pane) => self.jump_to(pane),
         }
     }

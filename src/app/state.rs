@@ -9,7 +9,10 @@ use super::finder::Finder;
 use super::floats::Shown;
 use super::mouse::Press;
 use super::pages::Pages;
-use super::rows::{rows, Externals, Placed, Row, RowId, TaskDetails, TaskStatus};
+use super::rows::{
+    pane_only, rows, Externals, Placed, Row, RowId, TaskDetails, TaskStatus, EXTERNAL_DIR,
+    EXTERNAL_TYPE,
+};
 use super::saved;
 use super::sidebar::clamp_width;
 use super::sidebar::Selection;
@@ -502,6 +505,7 @@ impl App {
 
     /// Pane `pane`'s shell directory, if it still exists.
     pub(super) fn dir_of(&self, pane: &str) -> Option<PathBuf> {
+        pane_only(pane, EXTERNAL_DIR).ok()?;
         self.server
             .display(pane, "#{pane_current_path}")
             .ok()
@@ -554,6 +558,7 @@ impl App {
     /// Send bytes to pane `pane`'s program, returning its view to the live
     /// screen. Every key, paste and mouse report for a pane comes here.
     pub(super) fn input(&mut self, pane: &str, bytes: &[u8]) -> Result<()> {
+        pane_only(pane, EXTERNAL_TYPE)?;
         self.note_float_input(pane);
         if let Some(t) = self.terminals.get_mut(pane) {
             t.emulator_mut().scroll_to_bottom();

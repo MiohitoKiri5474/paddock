@@ -2,10 +2,10 @@
 //! session, a tab one of its windows. paddock asks tmux to change them and
 //! reads them back when tmux reports a change.
 
-use super::rows::{EXTERNAL_CLOSE, EXTERNAL_FORK};
+use super::rows::{pane_only, EXTERNAL_CLOSE, EXTERNAL_FORK, EXTERNAL_OPEN};
 use super::space::clamp;
 use super::state::{is_session_id, next_name, App, CloseTarget, Mode, NameTarget, Renamed};
-use crate::sessions::{self, State};
+use crate::sessions::State;
 use crate::terminal::Terminal;
 use crate::tmux::server::quote;
 use anyhow::{bail, Result};
@@ -205,6 +205,10 @@ impl App {
     /// Bring pane `pane` to the screen: its space and tab become current and
     /// it gets the focus.
     pub fn jump_to(&mut self, pane: &str) {
+        if let Err(e) = pane_only(pane, EXTERNAL_OPEN) {
+            self.notice = Some(e.to_string());
+            return;
+        }
         let Some(i) = self.space_of(pane) else {
             return;
         };
@@ -271,9 +275,7 @@ impl App {
     /// tmux closes its tab with its last pane, and its space with its last
     /// tab, and reports each.
     pub fn close(&mut self, pane: &str) -> Result<()> {
-        if sessions::is_external(pane) {
-            bail!(EXTERNAL_CLOSE);
-        }
+        pane_only(pane, EXTERNAL_CLOSE)?;
         match self.session_in(pane).map(|s| s.state) {
             Some(state @ (State::Running | State::Waiting)) => {
                 self.ask_close(CloseTarget::Pane(pane.to_string()), state);
@@ -328,9 +330,7 @@ impl App {
     /// --fork-session`, typed into the new shell so the tab stays when
     /// Claude exits.
     pub fn fork(&mut self, pane: &str) -> Result<()> {
-        if sessions::is_external(pane) {
-            bail!(EXTERNAL_FORK);
-        }
+        pane_only(pane, EXTERNAL_FORK)?;
         let Some((session_id, cwd)) = self
             .session_in(pane)
             .and_then(|s| Some((s.session_id.clone()?, s.cwd.clone())))

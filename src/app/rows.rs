@@ -45,8 +45,21 @@ pub const EXTERNAL_OPEN: &str = "external: open it in its own terminal";
 pub const EXTERNAL_CLOSE: &str = "external: paddock cannot close it";
 /// What forking an external row says.
 pub const EXTERNAL_FORK: &str = "external: paddock cannot fork it";
+/// Why an external session has no directory to start a shell in.
+pub const EXTERNAL_DIR: &str = "external: no terminal directory";
 /// What typing into an external row's preview says.
 pub const EXTERNAL_TYPE: &str = "external: no screen to type into";
+
+/// Refuse `key` where a terminal is needed when it is an external session's
+/// (see [`sessions::is_external`]): paddock has none of it, so the error
+/// says `refused`. Every path that reaches a pane (jumping to it, input, its
+/// directory, close, fork) checks here, whatever handler called it.
+pub fn pane_only(key: &str, refused: &str) -> anyhow::Result<()> {
+    if sessions::is_external(key) {
+        anyhow::bail!("{refused}");
+    }
+    Ok(())
+}
 
 /// Which external sessions get rows: those heard of at most `timeout` ms
 /// before `now` (see [`Sessions::externals`]).
@@ -439,6 +452,13 @@ mod tests {
             timeout: 1_000,
         };
         assert_eq!(rows(&s, &TaskStatus::new(), panes(), Some(later)).len(), 1);
+    }
+
+    #[test]
+    fn only_panes_pass_the_pane_guard() {
+        assert!(pane_only("%3", EXTERNAL_CLOSE).is_ok());
+        let err = pane_only(&crate::sessions::external_key("e1"), EXTERNAL_CLOSE).unwrap_err();
+        assert_eq!(err.to_string(), EXTERNAL_CLOSE);
     }
 
     #[test]
