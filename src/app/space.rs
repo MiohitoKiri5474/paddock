@@ -111,14 +111,6 @@ impl Space {
         self.structure.floats.iter().find(|f| f.key == key)
     }
 
-    /// Whether pane `pane` is in one of this space's floats.
-    pub fn holds_float(&self, pane: &str) -> bool {
-        self.structure
-            .floats
-            .iter()
-            .any(|f| f.window.contains(pane))
-    }
-
     /// Write raw bytes to pane `pane` of this space.
     pub fn input(&mut self, pane: &str, bytes: &[u8]) -> Result<()> {
         self.control.send_bytes(pane, bytes)

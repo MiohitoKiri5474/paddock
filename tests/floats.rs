@@ -299,3 +299,135 @@ fn claude_in_a_float_is_not_followed() {
     let sent = sandbox.notifications();
     assert_eq!(sent.len(), 1, "{sent:?}");
 }
+
+#[test]
+fn a_float_on_the_semicolon_key_opens() {
+    let sandbox = Sandbox::new();
+    sandbox.write_config("[floats]\ng = \"\"\n\";\" = \"cat\"\n");
+    let mut paddock = sandbox.launch();
+    paddock.wait_for_text(PROMPT);
+
+    paddock.command(b";");
+    wait_shown(&paddock);
+    paddock.wait_for("a float on the server", |_| floats(&sandbox).len() == 1);
+    assert_eq!(floats(&sandbox)[0].2, ";");
+    paddock.type_line("typed-after-semicolon");
+    wait_for_full_text(&paddock, "typed-after-semicolon");
+    paddock.wait_for_tabs(&["1:home"]);
+}
+
+#[test]
+fn a_program_that_exits_at_once_gives_a_notice_and_never_a_tab() {
+    let sandbox = Sandbox::new();
+    sandbox.write_config("[floats]\ng = \"exit 3\"\n");
+    let mut paddock = sandbox.launch();
+    paddock.wait_for_text(PROMPT);
+
+    paddock.command(b"g");
+    paddock.wait_for_text("exit 3 exited at once");
+    assert!(!paddock.full_screen().contains("can't find"));
+    paddock.wait_for_tabs(&["1:home"]);
+    assert!(floats(&sandbox).is_empty());
+    paddock.type_line("echo still-in-the-shell");
+    paddock.wait_for_text("still-in-the-shell\n");
+}
+
+#[test]
+fn hooks_from_a_float_that_has_closed_are_still_left_out() {
+    let sandbox = Sandbox::new();
+    let mut paddock = ready(&sandbox);
+    let shell = tab_panes(&sandbox, "space-1").remove(0);
+    paddock.command(b"g");
+    wait_shown(&paddock);
+    let pane = wait_for_float(&paddock, &sandbox);
+    // `C-d` ends `cat`: the float closes before Claude's last hooks land.
+    paddock.send(b"\x04");
+    wait_hidden(&paddock);
+    paddock.wait_for("the float gone from tmux", |_| floats(&sandbox).is_empty());
+    // Looking at another tab, so that the first one's wait notifies.
+    paddock.command(b"c");
+    paddock.wait_for_current_tab("2:home");
+
+    let tmux = sandbox.display(&shell, "#{socket_path},#{pid},0");
+    let in_float = waiting("aaaaaaaa-2222-4333-8444-555555555555", "/w/floaty");
+    let out = sandbox.run(
+        &["hook", "PermissionRequest"],
+        &[("TMUX", &tmux), ("TMUX_PANE", &pane)],
+        &in_float,
+    );
+    assert!(out.status.success(), "hook failed: {out:?}");
+    let in_tab = waiting("bbbbbbbb-2222-4333-8444-555555555555", "/w/tabby");
+    sandbox.hook(&shell, "PermissionRequest", &in_tab);
+
+    paddock.wait_for("the tab's agent", |_| {
+        paddock.sidebar().iter().any(|l| l.contains("tabby"))
+    });
+    assert_eq!(sandbox.wait_for_notifications(1).len(), 1);
+    let sidebar = paddock.sidebar();
+    assert!(!sidebar.iter().any(|l| l.contains("floaty")), "{sidebar:?}");
+    let sent = sandbox.notifications();
+    assert_eq!(sent.len(), 1, "{sent:?}");
+}
+
+#[test]
+fn a_float_whose_key_left_the_config_is_closed_at_the_next_start() {
+    let sandbox = Sandbox::new();
+    let mut paddock = ready(&sandbox);
+    paddock.command(b"g");
+    wait_shown(&paddock);
+    wait_for_float(&paddock, &sandbox);
+    paddock.detach_keys();
+    assert!(paddock.wait_exit());
+    assert_eq!(floats(&sandbox).len(), 1, "kept while detached");
+
+    sandbox.write_config("[floats]\ng = \"\"\n");
+    let again = sandbox.launch();
+    again.wait_for_text(PROMPT);
+    again.wait_for("the orphan float closed", |_| floats(&sandbox).is_empty());
+    again.wait_for_tabs(&["1:home"]);
+    assert_eq!(tab_panes(&sandbox, "space-1").len(), 1);
+}
+
+#[test]
+fn the_tab_under_a_float_is_not_looked_at() {
+    let sandbox = Sandbox::new();
+    let mut paddock = ready(&sandbox);
+    let shell = tab_panes(&sandbox, "space-1").remove(0);
+    paddock.command(b"g");
+    wait_shown(&paddock);
+    wait_for_float(&paddock, &sandbox);
+
+    // Claude in the current tab, under the float, starts waiting.
+    let in_tab = waiting("bbbbbbbb-2222-4333-8444-555555555555", "/w/tabby");
+    sandbox.hook(&shell, "PermissionRequest", &in_tab);
+    let sent = sandbox.wait_for_notifications(1);
+    assert!(sent[0].contains("waiting"), "{sent:?}");
+}
+
+/// A float whose program asks for mouse reports (SGR) and echoes them.
+const MOUSE_CONFIG: &str = r#"[floats]
+g = "printf '\\033[?1000h\\033[?1006hready-for-mouse\\n'; exec cat"
+"#;
+
+#[test]
+fn clicks_and_the_wheel_inside_the_float_reach_its_pane() {
+    let sandbox = Sandbox::new();
+    sandbox.write_config(MOUSE_CONFIG);
+    let mut paddock = sandbox.launch();
+    paddock.wait_for_text(PROMPT);
+    let shell = tab_panes(&sandbox, "space-1").remove(0);
+
+    paddock.command(b"g");
+    let pane = wait_for_float(&paddock, &sandbox);
+    wait_for_full_text(&paddock, "ready-for-mouse");
+    // Cell (5, 2) inside the box: 1-based (6, 3) in the float's pane.
+    let (col, row) = (CORNER.0 as u16 + 1 + 5, CORNER.1 as u16 + 1 + 2);
+    paddock.click_screen(col, row);
+    paddock.send(format!("\x1b[<64;{};{}M", col + 1, row + 1).as_bytes());
+    paddock.wait_for("the reports in the float", |_| {
+        let screen = sandbox.tmux(&["capture-pane", "-p", "-t", &pane]);
+        screen.contains("<0;6;3M") && screen.contains("<64;6;3M")
+    });
+    let shell_screen = sandbox.tmux(&["capture-pane", "-p", "-t", &shell]);
+    assert!(!shell_screen.contains(";6;3"), "{shell_screen}");
+}

@@ -81,7 +81,7 @@ impl App {
         let Some(i) = self.spaces.iter().position(|it| it.id == id) else {
             return Ok(());
         };
-        let structure = self.server.structure(id)?;
+        let mut structure = self.server.structure(id)?;
         if structure.windows.is_empty() && !structure.floats.is_empty() {
             // The last tab closed and only floats keep the session: the
             // space closes with its last tab, its floats with it.
@@ -94,6 +94,7 @@ impl App {
                 self.server.select(&tab.id, None)?;
             }
         }
+        self.tidy_floats(&mut structure);
         let mut kept = Vec::new();
         for pane in structure.all_windows().flat_map(|w| &w.panes) {
             let size = clamp((pane.rect.width, pane.rect.height));

@@ -2,7 +2,7 @@
 //! command instead of input for the terminal.
 
 use super::keymap::{Key, Keys};
-use crossterm::event::{KeyEvent, KeyModifiers};
+use crossterm::event::KeyEvent;
 
 /// What paddock does for a command key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,9 +109,9 @@ impl PrefixKeys {
     /// The float whose key `key` is: exactly, else, as for commands,
     /// without Shift.
     fn float(&self, key: &KeyEvent) -> Option<usize> {
-        let key = Key::of(key);
-        let at = |k: Key| self.floats.iter().position(|f| *f == k);
-        at(key).or_else(|| at(key.without(KeyModifiers::SHIFT)))
+        Key::of(key).lookup(self.commands.ignored(), |k| {
+            self.floats.iter().position(|f| *f == k)
+        })
     }
 
     /// Whether the next key will be read as a command.

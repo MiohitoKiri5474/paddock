@@ -28,7 +28,7 @@ use crate::ui::tab_bar::TabColors;
 use anyhow::Result;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 
@@ -195,6 +195,9 @@ pub struct App {
     pub(super) floats: Floats,
     /// The float shown over the screen, if any; it has the keyboard.
     pub(super) float: Option<Shown>,
+    /// Every float pane seen, closed ones included: their late hooks are
+    /// left out too.
+    pub(super) float_panes: HashSet<String>,
 }
 
 /// The part of a screen of `(cols, rows)` that shows the current tab's
@@ -274,6 +277,7 @@ impl App {
             tab_shown: None,
             floats: config.floats.clone(),
             float: None,
+            float_panes: HashSet::new(),
         };
         app.load_dismissed();
         app.open_spaces()?;
@@ -399,8 +403,11 @@ impl App {
                 .is_ok()
         };
         let size = (self.area().width, self.area().height);
-        let (space, terminals) = Space::attach(&self.server, id, size, deliver)?;
-        self.terminals.extend(terminals);
+        let (mut space, terminals) = Space::attach(&self.server, id, size, deliver)?;
+        self.tidy_floats(&mut space.structure);
+        // Not the panes of floats just closed.
+        let kept = terminals.into_iter().filter(|(p, _)| space.holds(p));
+        self.terminals.extend(kept);
         self.spaces.push(space);
         Ok(())
     }

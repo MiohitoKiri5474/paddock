@@ -199,36 +199,55 @@ impl Server {
     /// left in the background (never the session's current window) and
     /// marked with [`structure::FLOAT_OPTION`] set to `key`. It closes
     /// when the command exits. Returns its window id.
+    ///
+    /// One tmux run makes and marks the window, so no structure read in
+    /// between sees it as a tab, and a command that exits at once still
+    /// leaves the run a success. The window is found again by a name of
+    /// its own (`set-option` after `new-window -d` would mark the
+    /// current tab), then named after its command as tabs are.
     pub fn new_float(&self, id: &str, cwd: &Path, command: &str, key: &str) -> Result<String> {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let name = format!("paddock-float-{}-{nanos}", std::process::id());
         let target = format!("{id}:");
-        let cwd = start_dir(cwd);
+        let made = format!("{id}:={name}");
+        let cwd = literal(&start_dir(cwd));
+        let (command, key) = (literal(command), literal(key));
         let args = [
             "new-window",
             "-d",
             "-P",
             "-F",
             "#{window_id}",
+            "-n",
+            &name,
             "-t",
             &target,
             "-c",
             &cwd,
-            command,
-        ];
-        let window = self.run(&args)?.trim().to_string();
-        let marked = self.run(&[
+            &command,
+            ";",
             "set-option",
             "-w",
             "-t",
-            &window,
+            &made,
             structure::FLOAT_OPTION,
-            key,
-        ]);
-        if let Err(e) = marked {
-            // Never leave it running as a tab.
-            let _ = self.run(&["kill-window", "-t", &window]);
-            return Err(e);
-        }
-        Ok(window)
+            &key,
+            ";",
+            "set-option",
+            "-w",
+            "-t",
+            &made,
+            "automatic-rename",
+            "on",
+        ];
+        Ok(self.run(&args)?.trim().to_string())
+    }
+
+    /// End window `window` and everything running in it.
+    pub fn kill_window(&self, window: &str) -> Result<()> {
+        self.run(&["kill-window", "-t", window]).map(drop)
     }
 
     /// Split pane `pane`: side by side if `columns`, else top and bottom. The
@@ -307,6 +326,16 @@ impl Server {
 /// `dir` for `-c`: tmux expands formats there, and `##` is a literal `#`.
 fn start_dir(dir: &Path) -> String {
     dir.to_string_lossy().replace('#', "##")
+}
+
+/// `arg` as one tmux argument that stays itself: tmux reads an argument
+/// ending in `;` as a command separator, and one ending in `\;` as that
+/// argument with a `;` for the `\;`.
+fn literal(arg: &str) -> String {
+    match arg.strip_suffix(';') {
+        Some(rest) => format!("{rest}\\;"),
+        None => arg.to_string(),
+    }
 }
 
 /// One tmux session: its stable id (`$N`) and its current name.
@@ -452,6 +481,45 @@ mod tests {
             got,
             ["proj", "proj", "proj", "proj", "proj", "ssh", "mosh", "vim"]
         );
+    }
+
+    #[test]
+    fn literal_keeps_a_trailing_semicolon_from_being_a_separator() {
+        assert_eq!(literal("g"), "g");
+        assert_eq!(literal("a;b"), "a;b");
+        assert_eq!(literal(";"), r"\;");
+        assert_eq!(literal("C-;"), r"C-\;");
+        assert_eq!(literal(r"find . -exec ls {} \;"), r"find . -exec ls {} \\;");
+    }
+
+    #[test]
+    fn a_float_is_made_and_marked_in_one_run_whatever_its_key_and_command() {
+        let tmp = tempfile::tempdir().unwrap();
+        let server = Server::new(Paths {
+            socket: format!("paddock-unit-floats-{}", std::process::id()),
+            state_dir: tmp.path().join("state"),
+            config_dir: tmp.path().join("config"),
+        });
+        server.write_config().unwrap();
+        let run = || -> Result<Vec<String>> {
+            let s = server.new_session("t", tmp.path(), (80, 24))?;
+            server.new_float(&s.id, tmp.path(), "sleep 30;", ";")?;
+            server.new_float(&s.id, tmp.path(), "sleep 30", "C-;")?;
+            // Exits at once: still made, no error.
+            server.new_float(&s.id, tmp.path(), "true", "x")?;
+            let format = "#{window_active} #{automatic-rename} [#{@paddock-float}]";
+            let out = server.run(&["list-windows", "-t", &s.id, "-F", format])?;
+            Ok(out.lines().map(str::to_string).collect())
+        };
+        let got = run();
+        let socket = server.run(&["display-message", "-p", "#{socket_path}"]);
+        let _ = server.run(&["kill-server"]);
+        if let Ok(socket) = socket {
+            let _ = std::fs::remove_file(socket.trim());
+        }
+        let got = got.unwrap();
+        // The tab stays current and unmarked; the floats are marked.
+        assert_eq!(got[..3], ["1 1 []", "0 1 [;]", "0 1 [C-;]"], "{got:?}");
     }
 
     #[test]

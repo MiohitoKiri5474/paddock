@@ -7,10 +7,15 @@
 
 use super::state::App;
 use crate::config::Float;
-use crate::tmux::structure::Window;
+use crate::tmux::structure::{Structure, Window};
 use crate::ui::float::{self, Float as FloatView};
 use anyhow::Result;
 use ratatui::layout::Rect;
+use std::time::{Duration, Instant};
+
+/// A float whose program ends this soon after paddock started it most
+/// likely could not run (e.g. it is not installed).
+const QUICK_EXIT: Duration = Duration::from_secs(2);
 
 /// The float shown: space `space`'s float for `[floats]` entry `index`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -19,6 +24,16 @@ pub struct Shown {
     pub space: String,
     /// Its place in `[floats]`.
     pub index: usize,
+    /// When paddock started its program, if this showing did and
+    /// nothing has been typed into it since.
+    pub started: Option<Instant>,
+}
+
+impl Shown {
+    /// Whether this is space `space`'s float for entry `index`.
+    fn is(&self, space: &str, index: usize) -> bool {
+        self.space == space && self.index == index
+    }
 }
 
 impl App {
@@ -70,11 +85,16 @@ impl App {
         let Some(float) = self.floats.list.get(index) else {
             return Ok(());
         };
-        let shown = Shown {
+        let mut shown = Shown {
             space: space.id.clone(),
             index,
+            started: None,
         };
-        if self.float.as_ref() == Some(&shown) && self.shown_float().is_some() {
+        let is_shown = self
+            .float
+            .as_ref()
+            .is_some_and(|f| f.is(&shown.space, index));
+        if is_shown && self.shown_float().is_some() {
             self.float = None;
             return Ok(());
         }
@@ -83,9 +103,15 @@ impl App {
             let command = float.command.clone();
             let dir = self.new_dir();
             self.server.new_float(&shown.space, &dir, &command, &key)?;
-            self.refresh(&shown.space)?;
+            shown.started = Some(Instant::now());
+            let id = shown.space.clone();
+            self.float = Some(shown);
+            self.refresh(&id)?;
+        } else {
+            self.float = Some(shown);
         }
-        self.float = Some(shown);
+        // Its program may have exited already.
+        self.forget_ended_float();
         self.resize_float()
     }
 
@@ -108,27 +134,47 @@ impl App {
     }
 
     /// Forget the shown float once it has closed (its program exited) or
-    /// its space has ended.
+    /// its space has ended. A program that ended right after paddock
+    /// started it, before any typing, gets a notice: it most likely could
+    /// not run.
     pub(super) fn forget_ended_float(&mut self) {
         let Some(shown) = &self.float else {
             return;
         };
+        let float = self.floats.list.get(shown.index);
         let runs = self.spaces.iter().any(|s| {
-            s.id == shown.space
-                && self
-                    .floats
-                    .list
-                    .get(shown.index)
-                    .is_some_and(|f| s.float(&f.key.name()).is_some())
+            s.id == shown.space && float.is_some_and(|f| s.float(&f.key.name()).is_some())
         });
-        if !runs {
-            self.float = None;
+        if runs {
+            return;
         }
+        let quick = shown.started.is_some_and(|t| t.elapsed() < QUICK_EXIT);
+        if let (true, Some(f)) = (quick, float) {
+            self.notice = Some(format!("{} exited at once; is it installed?", f.command));
+        }
+        self.float = None;
     }
 
-    /// Whether pane `pane` is in a float of any space: paddock does not
-    /// follow Claude there.
+    /// Whether pane `pane` is or was in a float of any space: paddock
+    /// does not follow Claude there, not even its last hooks after the
+    /// float closed.
     pub(super) fn is_float_pane(&self, pane: &str) -> bool {
-        self.spaces.iter().any(|s| s.holds_float(pane))
+        self.float_panes.contains(pane)
+    }
+
+    /// Kill the floats in `structure` whose key is no longer in
+    /// `[floats]` (nothing could show or close them), leaving them out of
+    /// it, and remember the other floats' panes.
+    pub(super) fn tidy_floats(&mut self, structure: &mut Structure) {
+        let keys: Vec<String> = self.floats.list.iter().map(|f| f.key.name()).collect();
+        let (kept, orphans): (Vec<_>, Vec<_>) = std::mem::take(&mut structure.floats)
+            .into_iter()
+            .partition(|f| keys.contains(&f.key));
+        structure.floats = kept;
+        for orphan in orphans {
+            self.report(|app| app.server.kill_window(&orphan.window.id));
+        }
+        let panes = structure.floats.iter().flat_map(|f| &f.window.panes);
+        self.float_panes.extend(panes.map(|p| p.id.clone()));
     }
 }

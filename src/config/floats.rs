@@ -12,7 +12,6 @@
 use crate::input::keymap::{Key, Keys};
 use crate::input::Command;
 use anyhow::{bail, Result};
-use crossterm::event::KeyModifiers;
 
 /// The box's width and height, in percent of the screen, by default.
 pub const DEFAULT_SIZE: u16 = 80;
@@ -107,11 +106,7 @@ impl Floats {
         for f in &self.list {
             // Commands match first, also without Shift (`S-Tab` reaches
             // `Tab`'s command), so either would hide the float.
-            let plain = f.key.without(KeyModifiers::SHIFT);
-            let bound = commands
-                .bindings()
-                .find(|(_, keys)| keys.contains(&f.key) || keys.contains(&plain));
-            if let Some((b, _)) = bound {
+            if let Some((b, _)) = commands.reached_by(f.key) {
                 bail!(
                     "[floats] {:?} is also bound to {} in [keys.commands]; \
                      unbind one, e.g. {} = \"\" in [floats]",

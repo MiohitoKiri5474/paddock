@@ -61,6 +61,16 @@ impl Key {
         Self::new(self.code, self.mods - ignored)
     }
 
+    /// Look the key up with `find`: as it is, else without the modifiers
+    /// in `ignored` (so `S-Left` reaches what `Left` is bound to).
+    pub fn lookup<T>(
+        self,
+        ignored: KeyModifiers,
+        mut find: impl FnMut(Self) -> Option<T>,
+    ) -> Option<T> {
+        find(self).or_else(|| find(self.without(ignored)))
+    }
+
     fn new(code: KeyCode, mods: KeyModifiers) -> Self {
         let ctrl = mods.contains(KeyModifiers::CONTROL);
         match code {

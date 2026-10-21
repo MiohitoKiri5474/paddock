@@ -65,31 +65,24 @@ impl App {
             }
         }
         let left = m.kind == MouseEventKind::Down(MouseButton::Left);
-        // While a float is shown, only presses inside it do anything.
-        let floating = self.float_pane().is_some();
-        let side = if floating { 0 } else { self.sidebar_width() };
-        if !floating && left && side > 0 && m.column == side - 1 {
-            // The border: dragging it resizes the sidebar.
-            self.press = Some(Press::Border {
-                row: m.row,
-                dragged: false,
-            });
-            return Ok(false);
-        }
-        if !floating && m.row < TAB_BAR_ROWS && m.column >= side {
-            return Ok(left && self.press_tab_bar(m.column - side));
-        }
-        if !floating && m.column < side {
-            return Ok(left && self.press_sidebar(m.row));
-        }
-        let Some((pane, rect)) = self.under(m.column, m.row) else {
+        let hit = if self.float_pane().is_some() {
+            // While a float is shown, only presses inside it do anything.
+            // Its pane is never focused in tmux: that would make its
+            // window the session's current one.
+            self.under(m.column, m.row)
+        } else {
+            if let Some(changed) = self.press_outside_panes(m, left) {
+                return Ok(changed);
+            }
+            let hit = self.under(m.column, m.row);
+            if let (true, Some((pane, _))) = (left, &hit) {
+                self.focus_pane(pane);
+            }
+            hit
+        };
+        let Some((pane, rect)) = hit else {
             return Ok(false);
         };
-        // A float's pane is never focused in tmux: that would make its
-        // window the session's current one.
-        if left && !floating {
-            self.focus_pane(&pane);
-        }
         let Some(t) = self.terminals.get_mut(&pane) else {
             return Ok(false);
         };
@@ -109,6 +102,27 @@ impl App {
             MouseAction::Scroll(_) | MouseAction::Ignore => {}
         }
         Ok(!left || self.settle())
+    }
+
+    /// A press on the sidebar's border, the tab bar or the sidebar: whether
+    /// the screen may have changed, or `None` if it was over the panes.
+    fn press_outside_panes(&mut self, m: MouseEvent, left: bool) -> Option<bool> {
+        let side = self.sidebar_width();
+        if left && side > 0 && m.column == side - 1 {
+            // The border: dragging it resizes the sidebar.
+            self.press = Some(Press::Border {
+                row: m.row,
+                dragged: false,
+            });
+            return Some(false);
+        }
+        if m.row < TAB_BAR_ROWS && m.column >= side {
+            return Some(left && self.press_tab_bar(m.column - side));
+        }
+        if m.column < side {
+            return Some(left && self.press_sidebar(m.row));
+        }
+        None
     }
 
     /// A left click at column `x` of the tab bar: a tab, `<`, `>` or `+`.
@@ -226,8 +240,9 @@ impl App {
     /// The wheel, and motion without a button: over the tab bar, the wheel
     /// goes to the previous or next tab; else to the pane under the pointer.
     fn hover(&mut self, m: MouseEvent) -> Result<bool> {
-        let floating = self.float_pane().is_some();
-        if !floating && m.row < TAB_BAR_ROWS && m.column >= self.sidebar_width() {
+        // While a float is shown, the wheel only reaches it.
+        let over_tab_bar = m.row < TAB_BAR_ROWS && m.column >= self.sidebar_width();
+        if over_tab_bar && self.float_pane().is_none() {
             let step: isize = match m.kind {
                 MouseEventKind::ScrollUp => -1,
                 MouseEventKind::ScrollDown => 1,

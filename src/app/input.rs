@@ -69,8 +69,16 @@ impl App {
     }
 
     /// The pane typing goes to: the float shown, else the focused pane.
-    fn typing_pane(&self) -> Option<String> {
-        self.float_pane().or_else(|| self.current_pane())
+    /// Typing into a float shows its program ran, so it quitting soon
+    /// after gives no notice.
+    fn typing_pane(&mut self) -> Option<String> {
+        let Some(pane) = self.float_pane() else {
+            return self.current_pane();
+        };
+        if let Some(shown) = &mut self.float {
+            shown.started = None;
+        }
+        Some(pane)
     }
 
     /// A key while the focused pane (or the float shown) has the keyboard.

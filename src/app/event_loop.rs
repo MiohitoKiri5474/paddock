@@ -277,9 +277,12 @@ fn draw(screen: &mut Screen, app: &App) -> Result<()> {
         let term_cursor = draw_panes(app, panes, f.buffer_mut());
         let dash_cursor = draw_dashboard(app, &rows, panes, f.buffer_mut());
         // Over everything but the help and the prompt, sidebar included.
-        let float_cursor = app
-            .float_view()
-            .map(|v| v.render(app.float_area().intersection(full), f.buffer_mut()));
+        // The float shown has the keyboard, so the cursor is its own, if
+        // it shows one.
+        let typing_cursor = match app.float_view() {
+            Some(v) => v.render(app.float_area().intersection(full), f.buffer_mut()),
+            None => term_cursor,
+        };
         if let Mode::Help = app.mode {
             help::render(
                 &app.prefix_name,
@@ -293,7 +296,7 @@ fn draw(screen: &mut Screen, app: &App) -> Result<()> {
             // Over everything, sidebar included; clipped to a frame that
             // may be smaller than the screen the app knows.
             Some(p) => p.render(app.prompt_area().intersection(full), f.buffer_mut()),
-            None => cursor(app, dash_cursor, float_cursor, term_cursor),
+            None => cursor(app, dash_cursor, typing_cursor),
         };
         if let Some(at) = at {
             f.set_cursor_position(at);
@@ -304,18 +307,13 @@ fn draw(screen: &mut Screen, app: &App) -> Result<()> {
 
 /// Where the cursor shows while the prompt is closed: in the dashboard
 /// only while typing into the preview, nowhere while the help or the
-/// sidebar has the keyboard, else in the float if one is shown
-/// (`float` is its cursor then), else in the focused pane.
-fn cursor(
-    app: &App,
-    dashboard: Option<Position>,
-    float: Option<Option<Position>>,
-    pane: Option<Position>,
-) -> Option<Position> {
+/// sidebar has the keyboard, else in the terminal typing goes to (`typing`:
+/// the float shown, else the focused pane).
+fn cursor(app: &App, dashboard: Option<Position>, typing: Option<Position>) -> Option<Position> {
     match app.mode {
         Mode::Help | Mode::Sidebar(_) => None,
         _ if app.dashboard().is_some() => dashboard,
-        _ => float.unwrap_or(pane),
+        _ => typing,
     }
 }
 
