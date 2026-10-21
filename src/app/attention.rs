@@ -183,8 +183,13 @@ pub fn next_needing<'a>(rows: &'a [Row], focused: Option<&str>) -> Option<&'a Ro
 
 impl App {
     /// Apply recorded hook events and notify about the ones that need you.
+    /// Events from floats are left out: paddock does not follow Claude there.
     pub(super) fn hooks(&mut self, records: &[HookRecord]) {
-        for r in records {
+        let followed: Vec<&HookRecord> = records
+            .iter()
+            .filter(|r| !self.is_float_pane(&r.pane))
+            .collect();
+        for r in followed {
             self.sessions.apply(r);
             let Some(alert) = self.attention.alerts.on_hook(r) else {
                 continue;

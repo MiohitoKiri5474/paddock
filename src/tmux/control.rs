@@ -80,6 +80,12 @@ impl ControlClient {
         self.send(&format!("refresh-client -C {cols}x{rows}"))
     }
 
+    /// Give window `window` a size of its own on this client, apart from
+    /// the session's (later session resizes leave it alone).
+    pub fn resize_window(&mut self, window: &str, cols: u16, rows: u16) -> Result<()> {
+        self.send(&format!("refresh-client -C {window}:{cols}x{rows}"))
+    }
+
     /// Detach; the session keeps running.
     pub fn detach(mut self) {
         // The client may already be gone; nothing to do then.

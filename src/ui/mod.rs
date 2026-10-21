@@ -1,6 +1,7 @@
 //! Drawing paddock's screen.
 
 pub mod dashboard;
+pub mod float;
 pub mod help;
 pub mod prompt;
 pub mod session_view;

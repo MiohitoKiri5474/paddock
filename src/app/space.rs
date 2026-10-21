@@ -3,7 +3,7 @@
 //! client that carries every pane's output and input.
 
 use crate::terminal::{seed, Terminal};
-use crate::tmux::structure::{Structure, Window};
+use crate::tmux::structure::{FloatWindow, Structure, Window};
 use crate::tmux::{wait_reply, ControlClient, Message, Server};
 use anyhow::Result;
 
@@ -40,9 +40,9 @@ impl Space {
         wait_reply(&rx)?;
         // Read after the resize, so the panes have their final sizes.
         let structure = server.structure(id)?;
+        // Floats too, so a hidden float's screen survives reopening.
         let panes: Vec<(&str, (u16, u16))> = structure
-            .windows
-            .iter()
+            .all_windows()
             .flat_map(|w| &w.panes)
             .map(|p| (p.id.as_str(), (p.rect.width, p.rect.height)))
             .collect();
@@ -93,11 +93,30 @@ impl Space {
         self.structure.windows.iter().position(|w| w.contains(pane))
     }
 
+    /// Every pane of the space, its floats' included.
     pub fn panes(&self) -> impl Iterator<Item = &str> {
         self.structure
-            .windows
-            .iter()
+            .all_windows()
             .flat_map(|w| w.panes.iter().map(|p| p.id.as_str()))
+    }
+
+    /// Whether pane `pane` is in this space, in a tab or a float.
+    pub fn holds(&self, pane: &str) -> bool {
+        self.panes().any(|p| p == pane)
+    }
+
+    /// The float on key `key` (as [`crate::input::keymap::Key::name`]
+    /// writes it), if it runs.
+    pub fn float(&self, key: &str) -> Option<&FloatWindow> {
+        self.structure.floats.iter().find(|f| f.key == key)
+    }
+
+    /// Whether pane `pane` is in one of this space's floats.
+    pub fn holds_float(&self, pane: &str) -> bool {
+        self.structure
+            .floats
+            .iter()
+            .any(|f| f.window.contains(pane))
     }
 
     /// Write raw bytes to pane `pane` of this space.
@@ -113,6 +132,12 @@ impl Space {
         }
         self.size = size;
         self.control.resize(size.0, size.1)
+    }
+
+    /// Show float window `window` at `size`, apart from the tabs' size.
+    pub fn resize_float(&mut self, window: &str, size: (u16, u16)) -> Result<()> {
+        let (cols, rows) = clamp(size);
+        self.control.resize_window(window, cols, rows)
     }
 
     /// Leave the space running on the hidden server.

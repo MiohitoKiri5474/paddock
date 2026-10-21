@@ -158,6 +158,11 @@ fn handle(app: &mut App, event: Event, screen: &mut Screen) -> Result<(Flow, boo
             Ok((Flow::Continue, true))
         }
         Event::Agents(taken, agents) => {
+            // Claude in a float is not followed.
+            let agents: Vec<_> = agents
+                .into_iter()
+                .filter(|a| !a.pane.as_deref().is_some_and(|p| app.is_float_pane(p)))
+                .collect();
             app.sessions.reconcile(taken, &agents);
             Ok((Flow::Continue, true))
         }
@@ -271,14 +276,24 @@ fn draw(screen: &mut Screen, app: &App) -> Result<()> {
         let panes = app.area().intersection(full);
         let term_cursor = draw_panes(app, panes, f.buffer_mut());
         let dash_cursor = draw_dashboard(app, &rows, panes, f.buffer_mut());
+        // Over everything but the help and the prompt, sidebar included.
+        let float_cursor = app
+            .float_view()
+            .map(|v| v.render(app.float_area().intersection(full), f.buffer_mut()));
         if let Mode::Help = app.mode {
-            help::render(&app.prefix_name, &app.keymap, full, f.buffer_mut());
+            help::render(
+                &app.prefix_name,
+                &app.keymap,
+                &app.floats,
+                full,
+                f.buffer_mut(),
+            );
         }
         let at = match app.prompt() {
             // Over everything, sidebar included; clipped to a frame that
             // may be smaller than the screen the app knows.
             Some(p) => p.render(app.prompt_area().intersection(full), f.buffer_mut()),
-            None => cursor(app, dash_cursor, term_cursor),
+            None => cursor(app, dash_cursor, float_cursor, term_cursor),
         };
         if let Some(at) = at {
             f.set_cursor_position(at);
@@ -289,12 +304,18 @@ fn draw(screen: &mut Screen, app: &App) -> Result<()> {
 
 /// Where the cursor shows while the prompt is closed: in the dashboard
 /// only while typing into the preview, nowhere while the help or the
-/// sidebar has the keyboard, else in the focused pane.
-fn cursor(app: &App, dashboard: Option<Position>, pane: Option<Position>) -> Option<Position> {
+/// sidebar has the keyboard, else in the float if one is shown
+/// (`float` is its cursor then), else in the focused pane.
+fn cursor(
+    app: &App,
+    dashboard: Option<Position>,
+    float: Option<Option<Position>>,
+    pane: Option<Position>,
+) -> Option<Position> {
     match app.mode {
         Mode::Help | Mode::Sidebar(_) => None,
         _ if app.dashboard().is_some() => dashboard,
-        _ => pane,
+        _ => float.unwrap_or(pane),
     }
 }
 

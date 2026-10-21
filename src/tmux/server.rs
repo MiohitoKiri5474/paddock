@@ -195,6 +195,42 @@ impl Server {
         Ok(self.run(&args)?.trim().to_string())
     }
 
+    /// Open a float in session `id`: a window running `command` in `cwd`,
+    /// left in the background (never the session's current window) and
+    /// marked with [`structure::FLOAT_OPTION`] set to `key`. It closes
+    /// when the command exits. Returns its window id.
+    pub fn new_float(&self, id: &str, cwd: &Path, command: &str, key: &str) -> Result<String> {
+        let target = format!("{id}:");
+        let cwd = start_dir(cwd);
+        let args = [
+            "new-window",
+            "-d",
+            "-P",
+            "-F",
+            "#{window_id}",
+            "-t",
+            &target,
+            "-c",
+            &cwd,
+            command,
+        ];
+        let window = self.run(&args)?.trim().to_string();
+        let marked = self.run(&[
+            "set-option",
+            "-w",
+            "-t",
+            &window,
+            structure::FLOAT_OPTION,
+            key,
+        ]);
+        if let Err(e) = marked {
+            // Never leave it running as a tab.
+            let _ = self.run(&["kill-window", "-t", &window]);
+            return Err(e);
+        }
+        Ok(window)
+    }
+
     /// Split pane `pane`: side by side if `columns`, else top and bottom. The
     /// new shell starts in `cwd` and takes the second half and the focus.
     /// Returns its pane id.

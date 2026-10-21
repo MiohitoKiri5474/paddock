@@ -49,8 +49,9 @@ impl App {
         }
     }
 
-    /// Show every space at the size of the session area; tmux resizes its
-    /// windows and reports the new layout.
+    /// Show every space at the size of the session area, and the float
+    /// shown at the inside of its box; tmux resizes the windows and
+    /// reports the new layout.
     pub(super) fn relayout(&mut self) -> Result<()> {
         let area = self.area();
         let size = clamp((area.width, area.height));
@@ -59,7 +60,7 @@ impl App {
         for space in &mut self.spaces {
             result = result.and(space.resize(size));
         }
-        result
+        result.and(self.resize_float())
     }
 
     /// After a command or click: sizes follow (the sidebar may have come,

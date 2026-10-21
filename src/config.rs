@@ -20,12 +20,21 @@
 //! [sidebar]
 //! width = 32                 # columns, until resized (then remembered)
 //!
+//! [floats]                   # the prefix, then a key, shows or hides a float
+//! width = 80                 # percent of the screen
+//! height = 80
+//! g = "lazygit"              # the default; "" removes it
+//!
 //! [notify]                   # macOS notifications, on unless set false
 //! waiting = true             # a session or one of its subagents starts waiting on you
 //! idle = true                # a main agent finishes its turn
 //! ```
 //!
 //! `paddock keys` prints every action with its default keys.
+
+mod floats;
+
+pub use floats::{Float, Floats};
 
 use crate::input::keymap::{Given, Key, Keymap, Warnings};
 use crate::ui::tab_bar::TabColors;
@@ -55,6 +64,8 @@ pub struct Config {
     pub sidebar_width: u16,
     /// Which macOS notifications to send.
     pub notify: Notify,
+    /// The floats and the size of their box.
+    pub floats: Floats,
 }
 
 /// Which macOS notifications to send; states, markers and the dashboard
@@ -88,6 +99,9 @@ struct RawConfig {
     sidebar: RawSidebar,
     #[serde(default)]
     notify: RawNotify,
+    /// `[floats]` as written; read by [`Floats::configured`].
+    #[serde(default)]
+    floats: toml::Table,
 }
 
 /// A `[notify]` table as written: a switch per kind of notification.
@@ -183,6 +197,7 @@ impl Config {
         let prefix = Key::parse_prefix(raw.keys.prefix.as_deref().unwrap_or(DEFAULT_PREFIX))?;
         let sections = [raw.keys.commands, raw.keys.sidebar, raw.keys.dashboard].map(given);
         let (keys, warnings) = Keymap::configured(prefix, sections.each_ref())?;
+        let floats = Floats::configured(&raw.floats, prefix, &keys.commands)?;
         let c = raw.colors;
         let tabs = TabColors::default();
         Ok(Self {
@@ -203,6 +218,7 @@ impl Config {
                     idle: raw.notify.idle.unwrap_or(on.idle),
                 }
             },
+            floats,
         })
     }
 }
@@ -217,6 +233,7 @@ impl Default for Config {
             tabs: TabColors::default(),
             sidebar_width: DEFAULT_SIDEBAR_WIDTH,
             notify: Notify::default(),
+            floats: Floats::default(),
         }
     }
 }
@@ -228,8 +245,9 @@ pub fn default_keys_toml() -> String {
          # (~/.config/paddock/{FILE_NAME}); \"\" unbinds an action.\n\
          # Not configurable: the prefix pressed twice sends it to the terminal,\n\
          # and Esc always leaves typing into the dashboard preview.\n\
-         [keys]\nprefix = \"{DEFAULT_PREFIX}\"\n\n{}",
-        Keymap::default().toml()
+         [keys]\nprefix = \"{DEFAULT_PREFIX}\"\n\n{}\n{}",
+        Keymap::default().toml(),
+        Floats::default().toml()
     )
 }
 
@@ -426,6 +444,20 @@ mod tests {
         let example = &configure[start..start + configure[start..].find("```").unwrap()];
         let c = Config::parse(example).unwrap();
         assert_ne!(c.keys, Keymap::default());
+    }
+
+    #[test]
+    fn floats_come_from_their_table_and_may_not_take_a_command_key() {
+        assert_eq!(Config::default().floats, Floats::default());
+        let c = Config::parse("[floats]\nwidth = 60\ng = \"\"\nT = \"htop\"\n").unwrap();
+        assert_eq!(c.floats.width, 60);
+        assert_eq!(c.floats.list.len(), 1);
+        assert_eq!(c.floats.list[0].command, "htop");
+        let err = |t: &str| format!("{:#}", Config::parse(t).unwrap_err());
+        assert!(err("[floats]\nn = \"htop\"\n").contains("bound to next_tab"));
+        assert!(err("[keys.commands]\nhelp = \"g\"\n").contains("\"g\" is also bound to help"));
+        assert!(Config::parse("[keys.commands]\nhelp = \"g\"\n[floats]\ng = \"\"\n").is_ok());
+        assert!(err("[keys]\nprefix = \"C-g\"\n[floats]\nC-g = \"x\"\n").contains("prefix key"));
     }
 
     #[test]

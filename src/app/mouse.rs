@@ -1,7 +1,8 @@
 //! The mouse: clicks focus a pane, open a space or agent, or switch
 //! tabs; the
 //! wheel and programs' mouse reports go to the pane under the pointer;
-//! dragging selects text and releasing copies it.
+//! dragging selects text and releasing copies it. While a float is shown,
+//! the mouse reaches only the float; a click outside it does nothing.
 
 use super::state::{App, Mode, TAB_BAR_ROWS};
 use crate::input::{route_mouse, MouseAction};
@@ -64,8 +65,10 @@ impl App {
             }
         }
         let left = m.kind == MouseEventKind::Down(MouseButton::Left);
-        let side = self.sidebar_width();
-        if left && side > 0 && m.column == side - 1 {
+        // While a float is shown, only presses inside it do anything.
+        let floating = self.float_pane().is_some();
+        let side = if floating { 0 } else { self.sidebar_width() };
+        if !floating && left && side > 0 && m.column == side - 1 {
             // The border: dragging it resizes the sidebar.
             self.press = Some(Press::Border {
                 row: m.row,
@@ -73,16 +76,18 @@ impl App {
             });
             return Ok(false);
         }
-        if m.row < TAB_BAR_ROWS && m.column >= side {
+        if !floating && m.row < TAB_BAR_ROWS && m.column >= side {
             return Ok(left && self.press_tab_bar(m.column - side));
         }
-        if m.column < side {
+        if !floating && m.column < side {
             return Ok(left && self.press_sidebar(m.row));
         }
         let Some((pane, rect)) = self.under(m.column, m.row) else {
             return Ok(false);
         };
-        if left {
+        // A float's pane is never focused in tmux: that would make its
+        // window the session's current one.
+        if left && !floating {
             self.focus_pane(&pane);
         }
         let Some(t) = self.terminals.get_mut(&pane) else {
@@ -221,7 +226,8 @@ impl App {
     /// The wheel, and motion without a button: over the tab bar, the wheel
     /// goes to the previous or next tab; else to the pane under the pointer.
     fn hover(&mut self, m: MouseEvent) -> Result<bool> {
-        if m.row < TAB_BAR_ROWS && m.column >= self.sidebar_width() {
+        let floating = self.float_pane().is_some();
+        if !floating && m.row < TAB_BAR_ROWS && m.column >= self.sidebar_width() {
             let step: isize = match m.kind {
                 MouseEventKind::ScrollUp => -1,
                 MouseEventKind::ScrollDown => 1,
@@ -249,16 +255,25 @@ impl App {
         Ok(true)
     }
 
-    /// The current tab's pane at a screen position, and where it is drawn.
+    /// The panes the mouse reaches, and where they are drawn: the float
+    /// shown alone, else the current tab's.
+    fn mouse_rects(&self) -> Vec<(String, Rect)> {
+        match self.float_rect() {
+            Some(float) => vec![float],
+            None => self.pane_rects(),
+        }
+    }
+
+    /// The pane at a screen position, and where it is drawn.
     fn under(&self, col: u16, row: u16) -> Option<(String, Rect)> {
-        self.pane_rects()
+        self.mouse_rects()
             .into_iter()
             .find(|(_, r)| r.contains(Position::new(col, row)))
     }
 
-    /// Where pane `pane` of the current tab is drawn.
+    /// Where pane `pane` is drawn, if the mouse reaches it.
     fn rect_of(&self, pane: &str) -> Option<Rect> {
-        self.pane_rects()
+        self.mouse_rects()
             .into_iter()
             .find(|(p, r)| p == pane && !r.is_empty())
             .map(|(_, r)| r)
