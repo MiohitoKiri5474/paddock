@@ -5,6 +5,7 @@
 mod attention;
 mod dashboard;
 mod event_loop;
+mod finder;
 mod floats;
 mod input;
 mod mouse;

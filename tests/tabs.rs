@@ -364,7 +364,7 @@ fn question_mark_shows_key_help_and_any_key_closes_it() {
         "previous tab",
         "rename tab",
         "rename space",
-        "send C-a to the terminal",
+        "C-a again sends C-a to the terminal",
     ] {
         assert!(
             paddock.full_screen().contains(line),
@@ -458,7 +458,9 @@ fn the_prefix_comes_from_the_config_file() {
     paddock.wait_for("C-a passed through", |s| s.lines().any(|l| l == "^A"));
     paddock.send(b"\x02?");
     paddock.wait_for("help", |_| {
-        paddock.full_screen().contains("send C-b to the terminal")
+        paddock
+            .full_screen()
+            .contains("C-b again sends C-b to the terminal")
     });
 }
 

@@ -46,6 +46,8 @@ pub enum Command {
     NextAttention,
     /// Open or close the dashboard.
     Dashboard,
+    /// Open the finder: a box to pick a space, tab or agent by typing.
+    Finder,
     /// Show or hide float N (0-based, in `[floats]` order).
     ToggleFloat(usize),
 }
@@ -165,7 +167,7 @@ mod tests {
         PrefixKeys::new(
             Key::parse("C-a").unwrap(),
             Keys::defaults(&COMMAND_KEYS),
-            ["g", "C-y", "F5"]
+            ["G", "C-y", "F5"]
                 .iter()
                 .map(|k| Key::parse(k).unwrap())
                 .collect(),
@@ -285,32 +287,35 @@ mod tests {
             after_prefix('o', none),
             KeyAction::Command(Command::Dashboard)
         );
+        assert_eq!(after_prefix('g', none), KeyAction::Command(Command::Finder));
     }
 
     #[test]
     fn float_keys_after_the_prefix_toggle_their_float() {
         let none = KeyModifiers::NONE;
         assert_eq!(
-            after_prefix('g', none),
+            after_prefix('G', KeyModifiers::SHIFT),
             KeyAction::Command(Command::ToggleFloat(0))
         );
         assert_eq!(
             after_prefix('y', KeyModifiers::CONTROL),
             KeyAction::Command(Command::ToggleFloat(1))
         );
-        // As for commands, Shift does not matter for a named key, but `G`
-        // is another key than `g`, and Ctrl matters.
+        // As for commands, Shift does not matter for a named key, but `g`
+        // is another key than `G` (it opens the finder), and Ctrl matters.
         let mut p = ctrl_a();
         p.handle(k('a', KeyModifiers::CONTROL));
         assert_eq!(
             p.handle(KeyEvent::new(KeyCode::F(5), KeyModifiers::SHIFT)),
             KeyAction::Command(Command::ToggleFloat(2))
         );
-        assert_eq!(after_prefix('G', KeyModifiers::SHIFT), KeyAction::None);
         assert_eq!(after_prefix('y', none), KeyAction::None);
         // Without the prefix, a float's key is typed.
         let mut p = ctrl_a();
-        assert_eq!(p.handle(k('g', none)), KeyAction::Forward(k('g', none)));
+        assert_eq!(
+            p.handle(k('G', KeyModifiers::SHIFT)),
+            KeyAction::Forward(k('G', KeyModifiers::SHIFT))
+        );
     }
 
     #[test]
@@ -328,6 +333,7 @@ mod tests {
             Command::LastPage,
             Command::NewTab,
             Command::Dashboard,
+            Command::Finder,
             Command::FocusSidebar,
             Command::NextAttention,
             Command::Close,

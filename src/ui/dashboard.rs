@@ -1,12 +1,14 @@
 //! The dashboard (`C-a o`): an overlay over the session view listing every
 //! session row with its task rows and their git details as a table on top,
 //! a live preview of the selected row's terminal below, and the keys at the
-//! bottom.
+//! bottom. While a filter is typed or holds text, it shows on a line under
+//! the title.
 
 mod table;
 
 use super::session_view;
 use crate::app::{Row, RowId, TaskDetails, TaskRow};
+use crate::input::line::LineEdit;
 use crate::sessions::{State, TaskState};
 use crate::terminal::emulator::Emulator;
 use ratatui::buffer::Buffer;
@@ -26,8 +28,10 @@ const LIST_SHARE_PERCENT: u32 = 40;
 /// the dashboard is that tall.
 const MIN_LIST: u16 = 6;
 /// The list's title line, its column header and a blank line, above its
-/// lines.
+/// lines (the filter line, when shown, adds one).
 const LIST_HEADS: u16 = 3;
+/// What the filter line starts with.
+const FILTER_MARK: &str = " / ";
 /// The blank line under the list's lines, above the preview.
 const LIST_FOOT: u16 = 1;
 /// The key line under the preview.
@@ -49,6 +53,10 @@ pub struct View<'a> {
     pub preview: Option<&'a Emulator>,
     /// Keys go to the previewed terminal.
     pub interactive: bool,
+    /// The filter, while its line shows (typed, or holding text).
+    pub filter: Option<&'a LineEdit>,
+    /// Keys type into the filter: the cursor is there.
+    pub filtering: bool,
     /// Seconds since the epoch, for commit ages.
     pub now: u64,
     /// The selected session block's background: the configured current
@@ -123,12 +131,18 @@ pub struct Layout {
     pub keys: Rect,
 }
 
-/// The dashboard's parts in `area` for a list of `lines` lines: the list as
-/// tall as its lines (one line saying there are none without any) but at
-/// most [`LIST_SHARE_PERCENT`] of the height and at least [`MIN_LIST`], the
-/// key line at the bottom, and the preview between them. On a short screen
-/// the preview goes first, then the key line.
-pub fn layout(area: Rect, lines: usize) -> Layout {
+/// The list's heads: one more with the filter line.
+fn heads(filter: bool) -> u16 {
+    LIST_HEADS + u16::from(filter)
+}
+
+/// The dashboard's parts in `area` for a list of `lines` lines (and the
+/// filter line if `filter`): the list as tall as its lines (one line
+/// saying there are none without any) but at most [`LIST_SHARE_PERCENT`]
+/// of the height and at least [`MIN_LIST`], the key line at the bottom,
+/// and the preview between them. On a short screen the preview goes
+/// first, then the key line.
+pub fn layout(area: Rect, lines: usize, filter: bool) -> Layout {
     let keys_height = if area.height > KEYS_HEIGHT {
         KEYS_HEIGHT
     } else {
@@ -139,7 +153,7 @@ pub fn layout(area: Rect, lines: usize) -> Layout {
     let cap = u16::try_from(share).unwrap_or(u16::MAX).max(MIN_LIST);
     let wanted = u16::try_from(lines.max(1))
         .unwrap_or(u16::MAX)
-        .saturating_add(LIST_HEADS + LIST_FOOT);
+        .saturating_add(heads(filter) + LIST_FOOT);
     let list = wanted.max(MIN_LIST).min(cap).min(room);
     // Too short to show any of the terminal: the list keeps that room.
     let list = if room - list < MIN_PREVIEW {
@@ -164,10 +178,11 @@ pub fn layout(area: Rect, lines: usize) -> Layout {
 /// previewed terminal while interactive.
 pub fn render(view: &View, area: Rect, buf: &mut Buffer) -> Option<Position> {
     Clear.render(area, buf);
-    let parts = layout(area, lines(view.rows).len());
-    render_list(view, parts.list, buf);
+    let parts = layout(area, lines(view.rows).len(), view.filter.is_some());
+    let filter_cursor = render_list(view, parts.list, buf);
     render_keys(view.keys, parts.keys, buf);
-    render_preview(view, parts.preview, buf)
+    let preview_cursor = render_preview(view, parts.preview, buf);
+    filter_cursor.or(preview_cursor)
 }
 
 /// The title, on the list's first line.
@@ -203,15 +218,50 @@ fn cells(view: &View, line: ListLine) -> Option<(table::Cells, Style)> {
     Some((table::task(t, details, view.now), style))
 }
 
-/// The title, the column header (dim), then the lines in sight as a table,
-/// scrolled to keep the selected session's block in sight, on the
-/// selection's background.
-fn render_list(view: &View, area: Rect, buf: &mut Buffer) {
+/// The filter line under the title: ` / ` and the text typed. Returns the
+/// cursor while typing it.
+fn render_filter(
+    filter: &LineEdit,
+    typing: bool,
+    area: Rect,
+    buf: &mut Buffer,
+) -> Option<Position> {
+    let x = area.x + u16::try_from(FILTER_MARK.len()).unwrap_or(u16::MAX);
+    let room = area.width.saturating_sub(x - area.x);
+    buf.set_stringn(
+        area.x,
+        area.y,
+        FILTER_MARK,
+        usize::from(area.width),
+        Style::default(),
+    );
+    let (shown, col) = filter.window(room);
+    buf.set_stringn(x, area.y, shown, usize::from(room), Style::default());
+    (typing && col < room).then(|| Position::new(x + col, area.y))
+}
+
+/// The title, the filter line if shown, the column header (dim), then the
+/// lines in sight as a table, scrolled to keep the selected session's
+/// block in sight, on the selection's background. Returns the cursor while
+/// typing the filter.
+fn render_list(view: &View, area: Rect, buf: &mut Buffer) -> Option<Position> {
     if area.height == 0 || area.width == 0 {
-        return;
+        return None;
     }
     let width = usize::from(area.width);
     render_title(area, buf);
+    let heads = heads(view.filter.is_some());
+    let mut cursor = None;
+    if let (Some(filter), true) = (view.filter, area.height > 1) {
+        let line = Rect {
+            y: area.y + 1,
+            height: 1,
+            ..area
+        };
+        cursor = render_filter(filter, view.filtering, line, buf);
+    }
+    // The header's row: under the title, or under the filter line.
+    let header_y = area.y + heads - 2;
     let lines = lines(view.rows);
     let picked = lines.iter().position(|l| {
         matches!(l, ListLine::Session(row) if view.selected.is_some_and(|s| s.pane == row.pane))
@@ -223,7 +273,7 @@ fn render_list(view: &View, area: Rect, buf: &mut Buffer) {
             .take_while(|l| matches!(l, ListLine::Task(..)));
         p..p + 1 + tasks.count()
     });
-    let room = usize::from(area.height.saturating_sub(LIST_HEADS + LIST_FOOT));
+    let room = usize::from(area.height.saturating_sub(heads + LIST_FOOT));
     let skip = scroll(&lines, &block, room);
     let shown: Vec<(usize, Option<(table::Cells, Style)>)> = lines
         .iter()
@@ -237,20 +287,15 @@ fn render_list(view: &View, area: Rect, buf: &mut Buffer) {
         .chain(shown.iter().filter_map(|(_, l)| l.as_ref().map(|(c, _)| c)))
         .collect();
     let widths = table::widths(&all, width);
-    if area.height > 1 {
+    if header_y < area.bottom() {
         let dim = Style::default().add_modifier(Modifier::DIM);
-        buf.set_string(
-            area.x,
-            area.y + 1,
-            table::line(&header, &widths, width),
-            dim,
-        );
+        buf.set_string(area.x, header_y, table::line(&header, &widths, width), dim);
     }
-    if lines.is_empty() && area.height > LIST_HEADS {
-        let y = area.y + LIST_HEADS;
+    if lines.is_empty() && area.height > heads {
+        let y = area.y + heads;
         buf.set_stringn(area.x, y, EMPTY, width, Style::default());
     }
-    for ((i, l), y) in shown.iter().zip(area.y + LIST_HEADS..area.bottom()) {
+    for ((i, l), y) in shown.iter().zip(area.y + heads..area.bottom()) {
         let Some((cells, style)) = l else {
             continue;
         };
@@ -262,6 +307,7 @@ fn render_list(view: &View, area: Rect, buf: &mut Buffer) {
         // `line` is exactly `width` cells: its padding carries the style.
         buf.set_string(area.x, y, table::line(cells, &widths, width), style);
     }
+    cursor
 }
 
 /// How many of `lines` to scroll past to keep `block` in `room` lines, its
@@ -398,35 +444,80 @@ mod tests {
     fn the_list_sits_on_top_sized_to_its_lines_with_the_keys_at_the_bottom() {
         let area = |height| Rect::new(0, 1, 80, height);
         assert_eq!(
-            layout(area(40), 7),
+            layout(area(40), 7, false),
             stacked(11, 28, 1),
             "the title, the header, seven lines and blank lines around them"
         );
-        assert_eq!(layout(area(40), 50), stacked(16, 23, 1), "capped at 40%");
         assert_eq!(
-            layout(area(40), 1),
+            layout(area(40), 50, false),
+            stacked(16, 23, 1),
+            "capped at 40%"
+        );
+        assert_eq!(
+            layout(area(40), 1, false),
             stacked(6, 33, 1),
             "a few rows at least"
         );
         assert_eq!(
-            layout(area(40), 0),
+            layout(area(40), 0, false),
             stacked(6, 33, 1),
             "the line saying there are none"
         );
     }
 
     #[test]
+    fn the_filter_line_takes_a_row_under_the_title() {
+        let area = Rect::new(0, 1, 80, 40);
+        assert_eq!(layout(area, 7, true), stacked(12, 27, 1));
+        let mut buf = Buffer::empty(area);
+        let rows = [row("api", State::Idle, vec![])];
+        let filter = LineEdit::new("ap");
+        let view = View {
+            keys: KEYS,
+            rows: &rows,
+            details: &TaskDetails::new(),
+            selected: None,
+            preview: None,
+            interactive: false,
+            filter: Some(&filter),
+            filtering: true,
+            now: 0,
+            selection: SELECTED,
+        };
+        let cursor = render(&view, area, &mut buf);
+        assert_eq!(text(&buf, 1), " dashboard");
+        assert_eq!(text(&buf, 2), " / ap");
+        assert!(text(&buf, 3).starts_with(" NAME"), "the header moved down");
+        assert_eq!(text(&buf, 4), "");
+        assert!(text(&buf, 5).starts_with(" api"));
+        assert_eq!(cursor, Some(Position::new(5, 2)), "typing the filter");
+        let kept = View {
+            filtering: false,
+            ..view
+        };
+        assert_eq!(render(&kept, area, &mut buf), None, "the filter kept");
+    }
+
+    #[test]
     fn a_short_dashboard_loses_its_preview_before_its_list() {
         let area = |height| Rect::new(0, 1, 80, height);
-        assert_eq!(layout(area(10), 9), stacked(6, 3, 1), "the minimum wins");
         assert_eq!(
-            layout(area(8), 9),
+            layout(area(10), 9, false),
+            stacked(6, 3, 1),
+            "the minimum wins"
+        );
+        assert_eq!(
+            layout(area(8), 9, false),
             stacked(7, 0, 1),
             "no room for a bordered terminal line: the list keeps it"
         );
-        assert_eq!(layout(area(3), 9), stacked(2, 0, 1));
-        assert_eq!(layout(area(1), 9), stacked(1, 0, 0), "only the title");
-        assert_eq!(layout(area(0), 9), stacked(0, 0, 0));
+        assert_eq!(layout(area(3), 9, false), stacked(2, 0, 1));
+        assert_eq!(
+            layout(area(1), 9, false),
+            stacked(1, 0, 0),
+            "only the title"
+        );
+        assert_eq!(layout(area(0), 9, false), stacked(0, 0, 0));
     }
 
     #[test]
@@ -487,6 +578,8 @@ mod tests {
             selected: Some(&selected),
             preview: Some(&emu),
             interactive: false,
+            filter: None,
+            filtering: false,
             now: 0,
             selection: SELECTED,
         };
@@ -545,6 +638,8 @@ mod tests {
             selected: Some(&selected),
             preview: None,
             interactive: false,
+            filter: None,
+            filtering: false,
             now: 0,
             selection: SELECTED,
         };
@@ -570,6 +665,8 @@ mod tests {
             selected: Some(&selected),
             preview: None,
             interactive: false,
+            filter: None,
+            filtering: false,
             now: 0,
             selection: SELECTED,
         };
@@ -588,6 +685,8 @@ mod tests {
             selected: None,
             preview: None,
             interactive: false,
+            filter: None,
+            filtering: false,
             now: 0,
             selection: SELECTED,
         };
@@ -613,6 +712,8 @@ mod tests {
             selected: Some(&selected),
             preview: None,
             interactive: false,
+            filter: None,
+            filtering: false,
             now: 0,
             selection: SELECTED,
         };
@@ -657,6 +758,8 @@ mod tests {
             selected: Some(&selected),
             preview: None,
             interactive: false,
+            filter: None,
+            filtering: false,
             now: 0,
             selection: SELECTED,
         };
@@ -688,6 +791,8 @@ mod tests {
             selected: Some(&selected),
             preview: None,
             interactive: false,
+            filter: None,
+            filtering: false,
             now: 0,
             selection: SELECTED,
         };
