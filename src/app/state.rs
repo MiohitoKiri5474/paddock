@@ -343,11 +343,12 @@ impl App {
         rows(&self.sessions, &self.task_status, self.placed())
     }
 
-    /// Dismiss a row: it leaves the rows, and stays gone after reopening,
-    /// until Claude reports on it again. Git and terminals are untouched.
+    /// Dismiss a session row: it leaves the rows, and stays gone after
+    /// reopening, until Claude reports on it again. Git and terminals are
+    /// untouched. Task rows are no longer dismissed alone, but task
+    /// dismissals saved before still load and apply.
     pub fn dismiss(&mut self, id: &RowId) -> Result<()> {
-        self.sessions
-            .dismiss(&id.pane, id.branch.as_deref(), now_ms());
+        self.sessions.dismiss(&id.pane, None, now_ms());
         let shown: Vec<(String, String)> = self
             .rows()
             .into_iter()

@@ -244,11 +244,8 @@ impl App {
 mod tests {
     use super::*;
 
-    fn id(pane: &str, branch: Option<&str>) -> RowId {
-        RowId {
-            pane: pane.into(),
-            branch: branch.map(str::to_string),
-        }
+    fn id(pane: &str) -> RowId {
+        RowId { pane: pane.into() }
     }
 
     fn at(selected: Option<RowId>, index: usize) -> Dashboard {
@@ -261,8 +258,8 @@ mod tests {
 
     #[test]
     fn a_selection_whose_line_went_away_moves_to_the_nearest_line() {
-        let ids = [id("%1", None), id("%1", Some("a")), id("%2", None)];
-        let gone = id("%9", None);
+        let ids = [id("%1"), id("%2"), id("%3")];
+        let gone = id("%9");
         let anchored = |d: Dashboard| d.anchored(&ids);
         assert_eq!(
             anchored(at(Some(ids[2].clone()), 0)),

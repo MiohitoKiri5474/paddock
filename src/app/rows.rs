@@ -21,11 +21,11 @@ pub struct Row {
     pub closed: bool,
 }
 
-/// A row line: pane `pane`'s session row, or its task row on `branch`.
+/// A selectable line: pane `pane`'s session row. Task rows belong to
+/// their session and are not selected.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RowId {
     pub pane: String,
-    pub branch: Option<String>,
 }
 
 /// The lines of `rows` the dashboard can select, in display order: the
@@ -34,7 +34,6 @@ pub fn row_ids(rows: &[Row]) -> Vec<RowId> {
     rows.iter()
         .map(|r| RowId {
             pane: r.pane.clone(),
-            branch: None,
         })
         .collect()
 }
@@ -417,10 +416,7 @@ mod tests {
             row("%1", vec![task("a"), sub, task("b")]),
             row("%2", vec![]),
         ];
-        let id = |pane: &str, branch: Option<&str>| RowId {
-            pane: pane.into(),
-            branch: branch.map(str::to_string),
-        };
-        assert_eq!(row_ids(&rows), [id("%1", None), id("%2", None)]);
+        let id = |pane: &str| RowId { pane: pane.into() };
+        assert_eq!(row_ids(&rows), [id("%1"), id("%2")]);
     }
 }

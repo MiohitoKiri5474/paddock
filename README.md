@@ -81,12 +81,12 @@ In the dashboard (`[keys.dashboard]`):
 
 | Key | Action | Name |
 |---|---|---|
-| `j` `Down` | next row | `down` |
-| `k` `Up` | previous row | `up` |
-| `Enter` | jump to the row's terminal | `open` |
-| `D` | dismiss the row | `dismiss` |
-| `x` | close the row's terminal | `close` |
-| `f` | fork the row's Claude session | `fork` |
+| `j` `Down` | next session | `down` |
+| `k` `Up` | previous session | `up` |
+| `Enter` | jump to the session's terminal | `open` |
+| `D` | dismiss the session | `dismiss` |
+| `x` | close the session's terminal | `close` |
+| `f` | fork the Claude session | `fork` |
 | `I` | type into the previewed terminal (Esc leaves) | `interact` |
 | `Esc` | close the dashboard | `back` |
 

@@ -75,33 +75,35 @@ fn task_style(state: TaskState) -> Style {
     }
 }
 
-/// A list line: a session row, or one of its task rows; `None` is the blank
-/// line between two sessions.
-pub type Line<'a> = Option<(&'a Row, Option<&'a TaskRow>)>;
+/// A line of the list.
+#[derive(Debug, Clone, Copy)]
+pub enum ListLine<'a> {
+    /// The blank line between two sessions.
+    Blank,
+    /// A session row, the start of its block.
+    Session(&'a Row),
+    /// One of the session above's task rows, in its block; never selected
+    /// itself.
+    Task(&'a TaskRow),
+}
 
 /// The dashboard's lines in order: each session row, then its task rows,
 /// with a blank line between two sessions.
-pub fn lines(rows: &[Row]) -> Vec<Line<'_>> {
+pub fn lines(rows: &[Row]) -> Vec<ListLine<'_>> {
     rows.iter()
         .enumerate()
         .flat_map(|(i, r)| {
-            let blank = (i > 0).then_some(None);
-            let session = std::iter::once(Some((r, None)));
-            let tasks = r.tasks.iter().map(move |t| Some((r, Some(t))));
+            let blank = (i > 0).then_some(ListLine::Blank);
+            let session = std::iter::once(ListLine::Session(r));
+            let tasks = r.tasks.iter().map(ListLine::Task);
             blank.into_iter().chain(session).chain(tasks)
         })
         .collect()
 }
 
-/// Whether `line` is a task row, which is never selected: it belongs to
-/// its session, whose block it is part of.
-fn is_task(line: &Line) -> bool {
-    line.is_some_and(|(_, task)| task.is_some())
-}
-
 /// `style` on the selection's background `bg`. A background of its own (a
 /// waiting row's) becomes its text colour, so the state still shows.
-fn selected(style: Style, bg: Color) -> Style {
+fn on_selection(style: Style, bg: Color) -> Style {
     let fg = style.bg.or(style.fg);
     Style { fg, ..style }.bg(bg)
 }
@@ -181,17 +183,20 @@ fn render_keys(keys: &str, area: Rect, buf: &mut Buffer) {
     buf.set_stringn(area.x, area.y, text, usize::from(area.width), dim);
 }
 
-/// A list line's cells and style: a session row's, or a task row's.
-fn cells(view: &View, row: &Row, task: Option<&TaskRow>) -> (table::Cells, Style) {
-    let Some(t) = task else {
-        return (table::session(row), style(row.state));
+/// A list line's cells and style: a session row's, or a task row's; none
+/// for a blank line.
+fn cells(view: &View, line: ListLine) -> Option<(table::Cells, Style)> {
+    let t = match line {
+        ListLine::Blank => return None,
+        ListLine::Session(row) => return Some((table::session(row), style(row.state))),
+        ListLine::Task(t) => t,
     };
     let details = view.details.get(&(t.cwd.clone(), t.branch.clone()));
     let style = t
         .subagent
         .as_ref()
         .map_or(Style::default(), |s| task_style(s.state));
-    (table::task(t, details, view.now), style)
+    Some((table::task(t, details, view.now), style))
 }
 
 /// The title, the column header (dim), then the lines in sight as a table,
@@ -205,24 +210,23 @@ fn render_list(view: &View, area: Rect, buf: &mut Buffer) {
     render_title(area, buf);
     let lines = lines(view.rows);
     let picked = lines.iter().position(|l| {
-        l.is_some_and(|(row, task)| {
-            task.is_none() && view.selected.is_some_and(|s| s.pane == row.pane)
-        })
+        matches!(l, ListLine::Session(row) if view.selected.is_some_and(|s| s.pane == row.pane))
     });
     // The selected session's block: its line and its task rows.
     let block = picked.map_or(0..0, |p| {
-        p..p + 1 + lines[p + 1..].iter().take_while(|l| is_task(l)).count()
+        let tasks = lines[p + 1..]
+            .iter()
+            .take_while(|l| matches!(l, ListLine::Task(..)));
+        p..p + 1 + tasks.count()
     });
-    // Keep the whole block on screen, its session line first if it does not
-    // all fit.
     let room = usize::from(area.height.saturating_sub(LIST_HEADS + LIST_FOOT));
-    let skip = block.end.saturating_sub(room).min(block.start);
+    let skip = scroll(&lines, &block, room);
     let shown: Vec<(usize, Option<(table::Cells, Style)>)> = lines
         .iter()
         .enumerate()
         .skip(skip)
         .take(room)
-        .map(|(i, l)| (i, l.map(|(row, task)| cells(view, row, task))))
+        .map(|(i, &l)| (i, cells(view, l)))
         .collect();
     let header = table::header();
     let all: Vec<&table::Cells> = std::iter::once(&header)
@@ -231,8 +235,12 @@ fn render_list(view: &View, area: Rect, buf: &mut Buffer) {
     let widths = table::widths(&all, width);
     if area.height > 1 {
         let dim = Style::default().add_modifier(Modifier::DIM);
-        let text = table::line(&header, &widths, width);
-        buf.set_stringn(area.x, area.y + 1, text, width, dim);
+        buf.set_string(
+            area.x,
+            area.y + 1,
+            table::line(&header, &widths, width),
+            dim,
+        );
     }
     if lines.is_empty() && area.height > LIST_HEADS {
         let y = area.y + LIST_HEADS;
@@ -243,12 +251,23 @@ fn render_list(view: &View, area: Rect, buf: &mut Buffer) {
             continue;
         };
         let style = if block.contains(i) {
-            selected(*style, view.selection)
+            on_selection(*style, view.selection)
         } else {
             *style
         };
-        buf.set_stringn(area.x, y, table::line(cells, &widths, width), width, style);
+        // `line` is exactly `width` cells: its padding carries the style.
+        buf.set_string(area.x, y, table::line(cells, &widths, width), style);
     }
+}
+
+/// How many of `lines` to scroll past to keep `block` in `room` lines, its
+/// session line first if it does not all fit. The top line is always a
+/// session's, never a blank line or another session's task rows.
+fn scroll(lines: &[ListLine], block: &std::ops::Range<usize>, room: usize) -> usize {
+    let least = block.end.saturating_sub(room).min(block.start);
+    (least..block.start)
+        .find(|&i| matches!(lines[i], ListLine::Session(_)))
+        .unwrap_or(block.start)
 }
 
 /// The selected row's terminal in a rounded border, its title in the top
@@ -351,22 +370,15 @@ mod tests {
             row("i", State::Idle, vec![]),
             row("r", State::Running, vec![]),
         ];
-        let got: Vec<Option<(&str, Option<&str>)>> = lines(&rows)
+        let got: Vec<String> = lines(&rows)
             .into_iter()
-            .map(|l| l.map(|(r, t)| (r.label.as_str(), t.map(|t| t.branch.as_str()))))
+            .map(|l| match l {
+                ListLine::Blank => String::new(),
+                ListLine::Session(r) => r.label.clone(),
+                ListLine::Task(t) => format!("  {}", t.branch),
+            })
             .collect();
-        assert_eq!(
-            got,
-            [
-                Some(("w", None)),
-                Some(("w", Some("a"))),
-                Some(("w", Some("b"))),
-                None,
-                Some(("i", None)),
-                None,
-                Some(("r", None)),
-            ]
-        );
+        assert_eq!(got, ["w", "  a", "  b", "", "i", "", "r"]);
     }
 
     /// A layout of `list`, `preview` and `keys` rows stacked from row 1 of
@@ -464,7 +476,6 @@ mod tests {
         emu.feed(b"hello preview");
         let selected = RowId {
             pane: "%api".into(),
-            branch: None,
         };
         let view = View {
             keys: KEYS,
@@ -523,10 +534,7 @@ mod tests {
             row("r0", State::Running, vec![task("b1", None), subagent("s1")]),
             row("r1", State::Running, vec![]),
         ];
-        let selected = RowId {
-            pane: "%r0".into(),
-            branch: None,
-        };
+        let selected = RowId { pane: "%r0".into() };
         let view = View {
             keys: KEYS,
             rows: &rows,
@@ -551,7 +559,6 @@ mod tests {
         let rows = [row("gone", State::Stopped, vec![])];
         let selected = RowId {
             pane: "%gone".into(),
-            branch: None,
         };
         let view = View {
             keys: KEYS,
@@ -595,10 +602,7 @@ mod tests {
         let rows: Vec<Row> = (0..6)
             .map(|i| row(&format!("r{i}"), State::Running, vec![]))
             .collect();
-        let selected = RowId {
-            pane: "%r5".into(),
-            branch: None,
-        };
+        let selected = RowId { pane: "%r5".into() };
         let view = View {
             keys: KEYS,
             rows: &rows,
@@ -611,10 +615,12 @@ mod tests {
         };
         render(&view, area, &mut buf);
         // The list is capped at eight rows: four lines between its heads and
-        // its foot, a blank one between two sessions.
-        assert!(text(&buf, 4).starts_with(" r4"));
-        assert_eq!(text(&buf, 5), "");
-        assert!(text(&buf, 6).starts_with(" r5"));
+        // its foot, a blank one between two sessions. A session line is on
+        // top, not the blank line above it.
+        assert!(text(&buf, 3).starts_with(" r4"));
+        assert_eq!(text(&buf, 4), "");
+        assert!(text(&buf, 5).starts_with(" r5"));
+        assert_eq!(text(&buf, 6), "");
         assert_eq!(text(&buf, 7), "", "a blank line above the preview");
         assert!(text(&buf, 8).starts_with("╭ r5: no terminal"));
     }
@@ -640,10 +646,7 @@ mod tests {
             row("r1", State::Running, vec![]),
             row("r2", State::Running, vec![subagent("s1"), subagent("s2")]),
         ];
-        let selected = RowId {
-            pane: "%r2".into(),
-            branch: None,
-        };
+        let selected = RowId { pane: "%r2".into() };
         let view = View {
             keys: KEYS,
             rows: &rows,
@@ -655,10 +658,40 @@ mod tests {
             selection: SELECTED,
         };
         render(&view, area, &mut buf);
-        assert!(text(&buf, 4).starts_with(" r2"));
-        assert!(text(&buf, 5).starts_with("   s1"));
-        assert!(text(&buf, 6).starts_with("   s2"));
+        assert!(text(&buf, 3).starts_with(" r2"));
+        assert!(text(&buf, 4).starts_with("   s1"));
+        assert!(text(&buf, 5).starts_with("   s2"));
         // The whole block is highlighted, subagents included.
-        assert_eq!([4, 5, 6].map(|y| buf[(1, y)].bg), [SELECTED; 3]);
+        assert_eq!([3, 4, 5].map(|y| buf[(1, y)].bg), [SELECTED; 3]);
+    }
+
+    #[test]
+    fn the_list_never_starts_with_another_sessions_task_rows() {
+        let area = Rect::new(0, 0, 30, 20);
+        let mut buf = Buffer::empty(area);
+        let rows = [
+            row(
+                "r0",
+                State::Running,
+                vec![subagent("a"), subagent("b"), subagent("c")],
+            ),
+            row("r1", State::Running, vec![]),
+        ];
+        let selected = RowId { pane: "%r1".into() };
+        let view = View {
+            keys: KEYS,
+            rows: &rows,
+            details: &TaskDetails::new(),
+            selected: Some(&selected),
+            preview: None,
+            interactive: false,
+            now: 0,
+            selection: SELECTED,
+        };
+        render(&view, area, &mut buf);
+        // Four lines of room: r0's block does not fit whole with r1's, so
+        // r1 is on top rather than r0's last task rows.
+        assert!(text(&buf, 3).starts_with(" r1"));
+        assert_eq!([4, 5, 6].map(|y| text(&buf, y)), ["", "", ""]);
     }
 }

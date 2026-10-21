@@ -3,8 +3,10 @@
 
 use crate::app::{Row, TaskRow};
 use crate::git::{age, Details};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-/// The columns, left to right.
+/// The columns, left to right: declared in [`COLUMNS`]' order, which
+/// [`Column::index`] relies on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Column {
     /// The session's label, or a task's indented under it.
@@ -88,7 +90,7 @@ impl Column {
 
     /// The column's place, left to right.
     fn index(self) -> usize {
-        COLUMNS.iter().position(|&c| c == self).unwrap_or_default()
+        self as usize
     }
 }
 
@@ -136,22 +138,30 @@ pub fn task(task: &TaskRow, details: Option<&Details>, now: u64) -> Cells {
     let commit = details
         .and_then(|d| d.last_commit)
         .map(|t| age(now.saturating_sub(t)));
-    [
-        Some(format!("{TASK_INDENT}{name}")),
-        task.subagent.as_ref().map(|s| s.state.label().to_string()),
-        Some(arrows),
-        changes,
-        base.map(|b| format!("+{} −{}", b.added, b.removed)),
-        base.map(|b| b.files.to_string()),
-        commit,
-        details.filter(|d| d.merged).map(|_| MERGED.to_string()),
-    ]
-    .map(Option::unwrap_or_default)
+    let mut cells = Cells::default();
+    cells[Column::Name.index()] = format!("{TASK_INDENT}{name}");
+    cells[Column::State.index()] = task
+        .subagent
+        .as_ref()
+        .map(|s| s.state.label().to_string())
+        .unwrap_or_default();
+    cells[Column::AheadBehind.index()] = arrows;
+    cells[Column::Changes.index()] = changes.unwrap_or_default();
+    if let Some(b) = base {
+        cells[Column::Base.index()] = format!("+{} −{}", b.added, b.removed);
+        cells[Column::Files.index()] = b.files.to_string();
+    }
+    cells[Column::Age.index()] = commit.unwrap_or_default();
+    if details.is_some_and(|d| d.merged) {
+        cells[Column::Merged.index()] = MERGED.to_string();
+    }
+    cells
 }
 
-/// How many cells `text` takes.
-fn len(text: &str) -> usize {
-    text.chars().count()
+/// How many terminal cells `text` takes: two for a wide character (CJK,
+/// most emoji).
+fn cell_width(text: &str) -> usize {
+    text.width()
 }
 
 /// The columns' widths for `lines` (the header included) in `width`
@@ -159,7 +169,13 @@ fn len(text: &str) -> usize {
 /// rest. Columns go in [`DROP_ORDER`] until the name has
 /// [`NAME_WANTED`] cells, or all it needs.
 pub fn widths(lines: &[&Cells], width: usize) -> Widths {
-    let widest = |c: Column| lines.iter().map(|l| len(&l[c.index()])).max().unwrap_or(0);
+    let widest = |c: Column| {
+        lines
+            .iter()
+            .map(|l| cell_width(&l[c.index()]))
+            .max()
+            .unwrap_or(0)
+    };
     let fitted = COLUMNS.map(|c| widest(c).min(CELL_CAP));
     let name_wanted = widest(Column::Name).min(NAME_WANTED);
     let room = |dropped: &[Column]| {
@@ -185,14 +201,23 @@ pub fn widths(lines: &[&Cells], width: usize) -> Widths {
 /// `text` in exactly `width` cells: cut with [`ELLIPSIS`] if longer, else
 /// padded on the left if `right`, on the right otherwise.
 fn fit(text: &str, width: usize, right: bool) -> String {
-    let n = len(text);
+    let n = cell_width(text);
     if n > width {
-        let kept: String = text.chars().take(width.saturating_sub(1)).collect();
-        return if width == 0 {
-            String::new()
-        } else {
-            format!("{kept}{ELLIPSIS}")
-        };
+        if width == 0 {
+            return String::new();
+        }
+        let room = width - ELLIPSIS.width().unwrap_or(1);
+        let mut used = 0;
+        let kept: String = text
+            .chars()
+            .take_while(|c| {
+                used += c.width().unwrap_or(0);
+                used <= room
+            })
+            .collect();
+        // A wide character that did not fit leaves a cell: pad it.
+        let pad = " ".repeat(room - cell_width(&kept));
+        return format!("{kept}{ELLIPSIS}{pad}");
     }
     let pad = " ".repeat(width - n);
     if right {
@@ -319,6 +344,40 @@ mod tests {
                 "   feat/b             +30 −144",
             ]
         );
+    }
+
+    #[test]
+    fn every_column_is_at_its_place_in_columns() {
+        assert!(COLUMNS.iter().enumerate().all(|(i, c)| c.index() == i));
+    }
+
+    /// Where `needle` starts in `text`, in cells.
+    fn cell_at(text: &str, needle: &str) -> usize {
+        cell_width(&text[..text.find(needle).expect("in the line")])
+    }
+
+    #[test]
+    fn wide_names_keep_the_columns_aligned() {
+        let head = header();
+        let cjk = cells("修正バグ", &[(Column::State, "idle")]);
+        let emoji = cells("🚀 ship", &[(Column::State, "done")]);
+        let plain = cells("api", &[(Column::State, "running")]);
+        let lines = [&head, &cjk, &emoji, &plain];
+        let w = widths(&lines, 80);
+        let laid: Vec<String> = lines.iter().map(|l| line(l, &w, 80)).collect();
+        let state = cell_at(&laid[0], "STATE");
+        assert_eq!(cell_at(&laid[1], "idle"), state, "CJK");
+        assert_eq!(cell_at(&laid[2], "done"), state, "emoji");
+        assert_eq!(cell_at(&laid[3], "running"), state);
+        assert!(laid.iter().all(|l| cell_width(l) == 80), "every line fills");
+    }
+
+    #[test]
+    fn wide_text_is_cut_by_cells() {
+        assert_eq!(fit("修正バグ", 4, false), "修… ");
+        assert_eq!(fit("修正バグ", 5, false), "修正…");
+        assert_eq!(fit("修正", 6, true), "  修正");
+        assert_eq!(cell_width("修正バグ"), 8);
     }
 
     #[test]
