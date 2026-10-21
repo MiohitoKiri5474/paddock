@@ -298,6 +298,32 @@ fn external_false_hides_the_group_and_its_notifications() {
     assert!(sandbox.notifications().is_empty());
 }
 
+#[test]
+fn worktree_keys_on_an_external_agent_are_refused() {
+    let sandbox = Sandbox::new();
+    // The focused terminal sits in a repository: `W` must not fall back
+    // to it for an external agent.
+    let web = web_repo(&sandbox);
+    let mut paddock = ready(&sandbox);
+    paddock.type_line(&format!("cd {}", web.display()));
+    outside(&sandbox, "Stop", "e1", "/w/elsewhere");
+    wait_anywhere(&paddock, "EXTERNAL");
+    paddock.command(b"s");
+    paddock.send(b"j");
+    for key in [b"W", b"o"] {
+        paddock.send(key);
+        wait_anywhere(&paddock, "external: no terminal directory");
+        assert!(!paddock.full_screen().contains("New worktree"));
+        assert!(!paddock.full_screen().contains("Open worktree"));
+        // Another key clears the notice for the next round.
+        paddock.send(b"k");
+        paddock.wait_for("the notice cleared", |_| {
+            !paddock.full_screen().contains("no terminal directory")
+        });
+        paddock.send(b"j");
+    }
+}
+
 /// Whether the sidebar still shows `line` after a moment.
 fn still_shows(paddock: &Paddock, line: &str) -> bool {
     std::thread::sleep(std::time::Duration::from_millis(400));

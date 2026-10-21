@@ -503,21 +503,24 @@ impl App {
         Ok(())
     }
 
-    /// Pane `pane`'s shell directory, if it still exists.
-    pub(super) fn dir_of(&self, pane: &str) -> Option<PathBuf> {
-        pane_only(pane, EXTERNAL_DIR).ok()?;
-        self.server
+    /// Pane `pane`'s shell directory, if it still exists. An external
+    /// session has none: refused.
+    pub(super) fn dir_of(&self, pane: &str) -> Result<Option<PathBuf>> {
+        pane_only(pane, EXTERNAL_DIR)?;
+        Ok(self
+            .server
             .display(pane, "#{pane_current_path}")
             .ok()
             .map(PathBuf::from)
-            .filter(|p| p.is_dir())
+            .filter(|p| p.is_dir()))
     }
 
     /// Where a new shell starts: the focused pane's directory, else the
     /// directory paddock started in.
     pub(super) fn new_dir(&self) -> PathBuf {
+        // The focused terminal is a pane, never an external session.
         self.current_pane()
-            .and_then(|p| self.dir_of(&p))
+            .and_then(|p| self.dir_of(&p).ok().flatten())
             .unwrap_or_else(|| self.start_dir.clone())
     }
 

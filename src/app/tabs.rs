@@ -345,11 +345,10 @@ impl App {
         let Some(i) = self.space_of(pane) else {
             bail!("that terminal is closed");
         };
-        let dir = cwd
-            .map(PathBuf::from)
-            .filter(|p| p.is_dir())
-            .or_else(|| self.dir_of(pane))
-            .unwrap_or_else(|| self.start_dir.clone());
+        let dir = match cwd.map(PathBuf::from).filter(|p| p.is_dir()) {
+            Some(dir) => dir,
+            None => self.dir_of(pane)?.unwrap_or_else(|| self.start_dir.clone()),
+        };
         let id = self.spaces[i].id.clone();
         let new = self.open_tab(&id, dir)?;
         self.current = i;
