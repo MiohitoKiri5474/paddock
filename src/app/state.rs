@@ -432,6 +432,13 @@ impl App {
         Some(self.current_space()?.current_window()?.active.clone())
     }
 
+    /// Whether pane `pane` is the focused terminal of the page shown now.
+    pub(super) fn is_focused(&self, pane: &str) -> bool {
+        self.current_space()
+            .and_then(|i| i.current_window())
+            .is_some_and(|w| w.active == pane)
+    }
+
     /// Send bytes to pane `pane`'s program, returning its view to the live
     /// screen.
     pub(super) fn input(&mut self, pane: &str, bytes: &[u8]) -> Result<()> {

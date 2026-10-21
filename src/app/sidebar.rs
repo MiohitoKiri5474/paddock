@@ -109,13 +109,14 @@ impl App {
     pub(super) fn focus_sidebar(&mut self, on_space: bool) {
         self.sidebar_hidden = false;
         let picks = self.sidebar_picks();
-        let focused_agent = self
-            .current_pane()
-            .and_then(|pane| picks.iter().position(|p| *p == Pick::Agent(pane.clone())));
-        let index = match focused_agent {
-            Some(i) if !on_space => i,
-            _ => self.current,
+        let focused_agent = if on_space {
+            None
+        } else {
+            picks
+                .iter()
+                .position(|p| matches!(p, Pick::Agent(pane) if self.is_focused(pane)))
         };
+        let index = focused_agent.unwrap_or(self.current);
         self.mode = Mode::Sidebar(Selection {
             pick: picks.get(index).cloned(),
             index,

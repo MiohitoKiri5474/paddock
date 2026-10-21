@@ -27,6 +27,9 @@ pub const SIDEBAR: u16 = 32;
 /// defaults).
 const TAB: vt100::Color = vt100::Color::Idx(237);
 const CURRENT_TAB: vt100::Color = vt100::Color::Idx(4);
+/// Background of the current space and the current agent in the sidebar
+/// (paddock's default).
+pub const CURRENT_ITEM: vt100::Color = vt100::Color::Idx(236);
 /// The sidebar's title, in its first row.
 const SIDEBAR_TITLE: &str = " SPACES";
 const SOCKET: &str = "paddock-test";

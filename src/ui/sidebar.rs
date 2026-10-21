@@ -17,10 +17,10 @@
 //! A space's dot shows the most urgent state of the agents in it (none
 //! without agents); its second line, dim, shows its directory and the git
 //! branch checked out there. The current space has its own background
-//! over both lines. An agent's
-//! second line is dim and names its space and tab; the current agent (the
-//! one in the focused terminal) has the current space's background too. While the sidebar has the
-//! keyboard, the selected space or agent is drawn reversed.
+//! over both lines. An agent's second line is dim and names its space and
+//! tab; the current agent (the one in the focused terminal) has the
+//! current space's background too. While the sidebar has the keyboard,
+//! the selected space or agent is drawn reversed.
 
 use super::STATE_DOT;
 use crate::sessions::State;

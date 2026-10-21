@@ -8,7 +8,7 @@
 
 mod harness;
 
-use harness::{Paddock, Sandbox, PROMPT};
+use harness::{Paddock, Sandbox, CURRENT_ITEM, PROMPT};
 use serde_json::{json, Value};
 
 const SPIKE: &str = concat!(
@@ -395,9 +395,14 @@ fn the_focused_agent_has_the_current_background() {
     let paddock = focused_agent_second(&sandbox);
 
     // Rows: 1-2 space-1, 4 AGENTS, 5-6 first, 7 blank, 8-9 here.
-    let grey = vt100::Color::Idx(236);
-    paddock.wait_for("here highlighted", |_| paddock.colors(8, 5).1 == grey);
-    assert_eq!(paddock.colors(9, 20).1, grey, "across both its lines");
+    paddock.wait_for("here highlighted", |_| {
+        paddock.colors(8, 5).1 == CURRENT_ITEM
+    });
+    assert_eq!(
+        paddock.colors(9, 20).1,
+        CURRENT_ITEM,
+        "across both its lines"
+    );
     assert_eq!(
         paddock.colors(7, 5).1,
         vt100::Color::Default,

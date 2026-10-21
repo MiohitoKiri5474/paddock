@@ -57,14 +57,13 @@ impl App {
     /// Each agent: its label, state, its space and tab, and whether it is
     /// in the focused terminal.
     pub(super) fn sidebar_agents(&self, rows: &[Row]) -> Vec<AgentLine> {
-        let focused = self.current_pane();
         self.agents(rows)
             .into_iter()
             .map(|r| AgentLine {
                 label: r.label.clone(),
                 state: r.state,
                 place: self.place_of(r).unwrap_or_default(),
-                current: focused.as_ref() == Some(&r.pane),
+                current: self.is_focused(&r.pane),
             })
             .collect()
     }

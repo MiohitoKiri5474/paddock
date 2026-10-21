@@ -209,9 +209,10 @@ impl App {
         }
     }
 
-    /// Whether you are looking at the terminal with pane `pane`.
+    /// Whether you are looking at the terminal with pane `pane`: it is
+    /// focused and paddock's window has the focus.
     fn focused_on(&self, pane: &str) -> bool {
-        self.attention.window_focused && self.current_pane().is_some_and(|p| p == pane)
+        self.attention.window_focused && self.is_focused(pane)
     }
 
     fn notify(&mut self, pane: &str, alert: Alert) {
