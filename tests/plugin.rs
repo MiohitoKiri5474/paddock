@@ -174,18 +174,32 @@ impl Sandbox {
 
     /// `program args`, with `stdin`, as if in a terminal of paddock's server.
     fn run(&self, program: &str, args: &[&str], stdin: &str) -> std::process::Output {
+        self.run_where(true, program, args, stdin)
+    }
+
+    /// [`Self::run`], in a terminal of paddock's server if `inside`, else
+    /// outside any tmux (an external session).
+    fn run_where(
+        &self,
+        inside: bool,
+        program: &str,
+        args: &[&str],
+        stdin: &str,
+    ) -> std::process::Output {
         use std::io::Write;
         let path = format!("{}:/usr/bin:/bin", self.path("bin").display());
-        let mut child = std::process::Command::new(program)
-            .args(args)
-            .env_clear()
+        let mut cmd = std::process::Command::new(program);
+        cmd.args(args).env_clear();
+        if inside {
+            cmd.env("TMUX", format!("/nowhere/{SOCKET},{SERVER_PID},0"))
+                .env("TMUX_PANE", "%7");
+        }
+        let mut child = cmd
             .env("HOME", self.path("home"))
             .env("PATH", path)
             .env("XDG_STATE_HOME", self.path("state"))
             .env("XDG_CONFIG_HOME", self.path("home/.config"))
             .env("PADDOCK_TMUX_SOCKET", SOCKET)
-            .env("TMUX", format!("/nowhere/{SOCKET},{SERVER_PID},0"))
-            .env("TMUX_PANE", "%7")
             .current_dir(self.path("work"))
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
@@ -203,7 +217,12 @@ impl Sandbox {
     /// stdin. It must exit 0 and print nothing: stdout of `SessionStart` and
     /// `UserPromptSubmit` reaches Claude's context.
     fn fire(&self, command: &str) {
-        let out = self.run("/bin/sh", &["-c", command], PAYLOAD);
+        self.fire_where(true, command);
+    }
+
+    /// [`Self::fire`], in paddock's terminal if `inside`, else outside it.
+    fn fire_where(&self, inside: bool, command: &str) {
+        let out = self.run_where(inside, "/bin/sh", &["-c", command], PAYLOAD);
         assert!(out.status.success(), "{command}: {out:?}");
         assert!(out.stdout.is_empty(), "{command}: {out:?}");
         assert!(out.stderr.is_empty(), "{command}: {out:?}");
@@ -211,9 +230,12 @@ impl Sandbox {
 
     /// The events recorded, in order.
     fn events(&self) -> Vec<String> {
-        let log = self
-            .path("state/paddock/events")
-            .join(format!("{SERVER_PID}.jsonl"));
+        self.events_in(&format!("{SERVER_PID}.jsonl"))
+    }
+
+    /// The events recorded in the log named `name`, in order.
+    fn events_in(&self, name: &str) -> Vec<String> {
+        let log = self.path("state/paddock/events").join(name);
         let Ok(body) = std::fs::read_to_string(&log) else {
             return Vec::new();
         };
@@ -293,6 +315,22 @@ fn the_plugin_and_settings_hooks_together_record_every_event_once() {
         sandbox.fire(second);
     }
     assert_eq!(sandbox.events(), events_of(&from_plugin));
+}
+
+#[test]
+fn external_events_are_recorded_once_with_both_sources_installed() {
+    let sandbox = Sandbox::new();
+    sandbox.add_paddock();
+    let out = sandbox.run(PADDOCK, &["hooks", "install"], "");
+    assert!(out.status.success(), "{out:?}");
+    let from_settings = hook_commands(&read_json(&sandbox.settings()));
+    let from_plugin = hook_commands(&plugin_hooks());
+    for ((_, s), (_, p)) in from_settings.iter().zip(&from_plugin) {
+        sandbox.fire_where(false, p);
+        sandbox.fire_where(false, s);
+    }
+    assert_eq!(sandbox.events_in("external.jsonl"), events_of(&from_plugin));
+    assert!(sandbox.events().is_empty(), "not the server's log");
 }
 
 #[test]

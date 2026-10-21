@@ -10,7 +10,7 @@ use super::state::{App, Mode};
 use super::Event;
 use crate::config::Notify;
 use crate::hooks::now_ms;
-use crate::sessions::{self, state_after, HookRecord, State};
+use crate::sessions::{self, is_external, state_after, HookRecord, State};
 use std::collections::HashMap;
 use std::io::Read;
 use std::process::{Child, Command, Stdio};
@@ -174,8 +174,12 @@ impl Attention {
 
 /// The row after the focused terminal's among those waiting or idle, in
 /// sidebar order and wrapping around; the first one if it is not among them.
+/// External sessions are skipped: there is no terminal to jump to.
 pub fn next_needing<'a>(rows: &'a [Row], focused: Option<&str>) -> Option<&'a Row> {
-    let needy: Vec<&Row> = rows.iter().filter(|r| r.state.needs_you()).collect();
+    let needy: Vec<&Row> = rows
+        .iter()
+        .filter(|r| r.state.needs_you() && !r.external)
+        .collect();
     let at = needy.iter().position(|r| Some(r.pane.as_str()) == focused);
     let next = at.map_or(0, |i| (i + 1) % needy.len());
     needy.get(next).copied()
@@ -196,7 +200,11 @@ impl App {
             };
             // `[notify]` turns off only the notification: `sessions.apply`
             // above has already updated the state, markers and dashboard.
+            // A hidden External group (`[dashboard] external = false`)
+            // notifies of nothing either.
+            let hidden = is_external(&r.pane) && !self.external.shown;
             if !self.attention.notify.allows(alert)
+                || hidden
                 || r.ts < self.attention.started
                 || self.focused_on(&r.pane)
             {
@@ -489,7 +497,21 @@ mod tests {
             label: pane.into(),
             state,
             tasks: Vec::new(),
+            external: false,
         }
+    }
+
+    #[test]
+    fn next_needing_skips_external_sessions() {
+        let ext = Row {
+            external: true,
+            ..row("e", State::Waiting)
+        };
+        let rows = [ext.clone(), row("i", State::Idle)];
+        let next = |focused| next_needing(&rows, focused).map(|r| r.pane.as_str());
+        assert_eq!(next(None), Some("i"));
+        assert_eq!(next(Some("i")), Some("i"));
+        assert!(next_needing(&[ext], None).is_none());
     }
 
     #[test]

@@ -177,6 +177,8 @@ fn handle(
                 .filter(|a| !a.pane.as_deref().is_some_and(|p| app.is_float_pane(p)))
                 .collect();
             app.sessions.reconcile(taken, &agents);
+            // External sessions gone quiet leave (their rows already did).
+            app.sessions.prune_externals(taken, app.external.timeout);
             Ok((Flow::Continue, true))
         }
         Event::Git(read) => {

@@ -4,6 +4,10 @@
 //! Terminals are keyed by tmux pane id (`%N`). Each terminal shows its latest
 //! conversation only: an event from a new session id replaces the old one,
 //! keeping only the terminal's task rows.
+//!
+//! An external session (Claude running outside paddock's terminals) has no
+//! pane: it is keyed by [`external_key`] of its session id instead, so the
+//! same folding, dismissing and alerting apply to it.
 
 pub mod agents;
 pub mod dismissed;
@@ -68,11 +72,29 @@ impl State {
     }
 }
 
+/// What an external session's key starts with: never a tmux pane id (`%N`).
+const EXTERNAL: &str = "ext:";
+
+/// The key of the external session with id `session_id`.
+pub fn external_key(session_id: &str) -> String {
+    format!("{EXTERNAL}{session_id}")
+}
+
+/// Whether `key` is an external session's (see [`external_key`]), not a
+/// pane's.
+pub fn is_external(key: &str) -> bool {
+    key.starts_with(EXTERNAL)
+}
+
 /// One hook event as `paddock hook` records it: only the fields paddock uses,
 /// never the whole payload (tool responses can be huge).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HookRecord {
     pub event: String,
+    /// The tmux pane (`%N`) the hook ran in. An external session's record
+    /// has none in the log (the field is left out); once read, it carries
+    /// the session's [`external_key`] here.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub pane: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
@@ -232,6 +254,10 @@ pub struct Session {
     pub tasks: Vec<Task>,
     /// When a hook event last set the state (ms since the epoch).
     pub hooked: Option<u64>,
+    /// When paddock last heard of it (ms since the epoch): its last hook
+    /// event, or the last `claude agents --json` snapshot listing it. An
+    /// external session quiet for longer than its timeout is gone.
+    pub alive: u64,
     /// Subagents seen, in the order they reached their current branch.
     subagents: Vec<Subagent>,
 }
@@ -251,6 +277,7 @@ impl Session {
             updated: 0,
             tasks: Vec::new(),
             hooked: None,
+            alive: 0,
             subagents: Vec::new(),
         }
     }
@@ -487,6 +514,10 @@ impl Sessions {
 
     /// Apply one recorded hook event.
     pub fn apply(&mut self, r: &HookRecord) {
+        // A session seen in a terminal (resumed in paddock) is not external.
+        if let (false, Some(id)) = (is_external(&r.pane), &r.session_id) {
+            self.forget_external(id);
+        }
         if !self.fold(r) {
             return;
         }
@@ -519,11 +550,20 @@ impl Sessions {
         if s.ended() && !restarts(r) {
             return false;
         }
+        s.alive = s.alive.max(r.ts);
         // A subagent's directory is its worktree, not the session's.
         if r.cwd.is_some() && r.agent_id.is_none() {
             s.cwd.clone_from(&r.cwd);
         }
-        if let Some(state) = state_after(r) {
+        // An external session is keyed by its id: after `/clear` the new
+        // conversation is another session, so this one ends.
+        let external_end = is_external(&r.pane) && r.event == "SessionEnd" && r.agent_id.is_none();
+        let state = if external_end {
+            Some(State::Stopped)
+        } else {
+            state_after(r)
+        };
+        if let Some(state) = state {
             s.state = match state {
                 // A finished turn is done until you look at it (see
                 // `Sessions::see`); later idle reminders keep it done.
@@ -563,11 +603,17 @@ impl Sessions {
             let known = self
                 .by_pane
                 .iter()
-                .find(|(_, s)| s.session_id.as_deref() == Some(a.session_id.as_str()))
+                .find(|(p, s)| {
+                    !is_external(p) && s.session_id.as_deref() == Some(a.session_id.as_str())
+                })
                 .map(|(p, _)| p.clone());
-            let Some(pane) = known.or_else(|| a.pane.clone()) else {
-                continue;
-            };
+            // A session in no terminal of paddock's is external.
+            let pane = known
+                .or_else(|| a.pane.clone())
+                .unwrap_or_else(|| external_key(&a.session_id));
+            if !is_external(&pane) {
+                self.forget_external(&a.session_id);
+            }
             let found = !self.by_pane.contains_key(&pane);
             let s = self
                 .by_pane
@@ -578,6 +624,9 @@ impl Sessions {
             // listing it lags behind.
             if same && s.ended() {
                 continue;
+            }
+            if same {
+                s.alive = s.alive.max(taken);
             }
             let fresh_hook = same && s.hooked.is_some_and(|h| taken <= h + HOOK_GRACE);
             if taken <= s.updated || fresh_hook {
@@ -599,11 +648,45 @@ impl Sessions {
                 s.state = state;
             }
             s.updated = taken;
+            s.alive = s.alive.max(taken);
             // A conversation no hook reported counts as an event of its row.
             if found || !same {
                 self.touch(&pane, None, taken);
             }
         }
+    }
+
+    /// Drop the external session with id `session_id`: it runs in a
+    /// terminal of paddock's now.
+    fn forget_external(&mut self, session_id: &str) {
+        let key = external_key(session_id);
+        if self.by_pane.remove(&key).is_some() {
+            self.seen.retain(|(k, _), _| *k != key);
+        }
+    }
+
+    /// The keys of the external sessions to show at `now`: those
+    /// [`Sessions::shown`] shows, heard of (see [`Session::alive`]) at most
+    /// `timeout` ms ago. A session killed without a `SessionEnd` leaves
+    /// this way.
+    pub fn externals(&self, now: u64, timeout: u64) -> Vec<&str> {
+        self.by_pane
+            .iter()
+            .filter(|(k, s)| is_external(k) && now <= s.alive.saturating_add(timeout))
+            .filter(|(k, _)| self.shown(k).is_some())
+            .map(|(k, _)| k.as_str())
+            .collect()
+    }
+
+    /// Forget external sessions quiet for longer than `timeout` ms at
+    /// `now`, ended or not, so they do not pile up. An ended one is kept
+    /// until then, so hooks landing after its `SessionEnd` stay ignored.
+    pub fn prune_externals(&mut self, now: u64, timeout: u64) {
+        let quiet = |s: &Session| now > s.alive.saturating_add(timeout);
+        self.by_pane.retain(|k, s| !(is_external(k) && quiet(s)));
+        let kept = &self.by_pane;
+        self.seen
+            .retain(|(k, _), _| !is_external(k) || kept.contains_key(k));
     }
 }
 
@@ -1262,5 +1345,138 @@ mod tests {
         assert_eq!(label(&s, Some("build")), "fix-login");
         s.name = Some(String::new());
         assert_eq!(label(&s, None), "api");
+    }
+
+    /// An external session's event, keyed as the app reads it.
+    fn ext(event: &str, session: &str, ts: u64) -> HookRecord {
+        HookRecord {
+            event: event.into(),
+            pane: external_key(session),
+            session_id: Some(session.into()),
+            cwd: Some("/w/api".into()),
+            ts,
+            ..Default::default()
+        }
+    }
+
+    const MIN: u64 = 60_000;
+
+    #[test]
+    fn external_keys_never_look_like_panes() {
+        assert!(is_external(&external_key(S1)));
+        assert!(!is_external("%1"));
+        assert!(!is_external(""));
+    }
+
+    #[test]
+    fn external_sessions_fold_like_terminals_keyed_by_session_id() {
+        let mut s = Sessions::default();
+        s.apply(&ext("SessionStart", "e1", 1));
+        s.apply(&ext("UserPromptSubmit", "e2", 2));
+        s.apply(&HookRecord {
+            branch: Some("feat/x".into()),
+            ..ext("PermissionRequest", "e1", 3)
+        });
+        let e1 = s.get(&external_key("e1")).unwrap();
+        assert_eq!(e1.state, State::Waiting);
+        assert_eq!(e1.alive, 3);
+        assert_eq!(tasks_of(&s, &external_key("e1")), [("feat/x", "/w/api")]);
+        assert_eq!(s.get(&external_key("e2")).unwrap().state, State::Running);
+        let mut shown = s.externals(3, 10 * MIN);
+        shown.sort_unstable();
+        assert_eq!(shown, [external_key("e1"), external_key("e2")]);
+    }
+
+    fn tasks_of<'a>(s: &'a Sessions, key: &str) -> Vec<(&'a str, &'a str)> {
+        s.get(key)
+            .unwrap()
+            .tasks
+            .iter()
+            .map(|t| (t.branch.as_str(), t.cwd.as_str()))
+            .collect()
+    }
+
+    #[test]
+    fn an_external_session_ends_on_any_session_end_even_clear() {
+        let mut s = Sessions::default();
+        s.apply(&ext("SessionStart", "e1", 1));
+        s.apply(&HookRecord {
+            reason: Some(CLEAR.into()),
+            ..ext("SessionEnd", "e1", 2)
+        });
+        assert!(s.get(&external_key("e1")).unwrap().ended());
+        assert!(s.externals(2, 10 * MIN).is_empty());
+        // A late hook of the ended session stays ignored.
+        s.apply(&ext("PostToolUse", "e1", 3));
+        assert!(s.externals(3, 10 * MIN).is_empty());
+    }
+
+    #[test]
+    fn a_quiet_external_session_leaves_after_the_timeout() {
+        let mut s = Sessions::default();
+        s.apply(&ext("Stop", "e1", 1));
+        assert_eq!(s.externals(1 + 10 * MIN, 10 * MIN).len(), 1);
+        assert!(s.externals(2 + 10 * MIN, 10 * MIN).is_empty());
+        // Listed by `claude agents --json`, it is still alive.
+        s.reconcile(5 * MIN, &[agent("e1", "idle", None)]);
+        assert_eq!(s.externals(14 * MIN, 10 * MIN).len(), 1);
+        assert!(s.externals(16 * MIN, 10 * MIN).is_empty());
+        s.prune_externals(14 * MIN, 10 * MIN);
+        assert!(
+            s.get(&external_key("e1")).is_some(),
+            "not quiet long enough"
+        );
+        s.prune_externals(16 * MIN, 10 * MIN);
+        assert!(s.get(&external_key("e1")).is_none());
+    }
+
+    #[test]
+    fn snapshots_find_sessions_outside_paddock_as_external() {
+        let mut s = Sessions::default();
+        s.reconcile(
+            10,
+            &[Agent {
+                name: Some("fix-login".into()),
+                ..agent("e1", "busy", None)
+            }],
+        );
+        let e1 = s.get(&external_key("e1")).unwrap();
+        assert_eq!((e1.state, e1.alive), (State::Running, 10));
+        assert_eq!(label(e1, None), "fix-login");
+        assert_eq!(s.externals(10, MIN), [external_key("e1")]);
+        // A hook of the same session updates the same row.
+        s.apply(&ext("PermissionRequest", "e1", 20));
+        assert_eq!(s.get(&external_key("e1")).unwrap().state, State::Waiting);
+    }
+
+    #[test]
+    fn a_session_seen_in_a_terminal_is_no_longer_external() {
+        let mut s = Sessions::default();
+        s.apply(&ext("Stop", S1, 1));
+        // Resumed in a paddock terminal: its hooks name the pane.
+        s.apply(&rec("SessionStart", 2));
+        assert!(s.get(&external_key(S1)).is_none());
+        assert!(s.externals(2, MIN).is_empty());
+        // A snapshot finding it in a pane does the same.
+        s.apply(&ext("Stop", "e2", 3));
+        s.reconcile(4, &[agent("e2", "busy", Some("%2"))]);
+        assert!(s.get(&external_key("e2")).is_none());
+        assert_eq!(s.get("%2").unwrap().state, State::Running);
+        // And a snapshot without a pane keeps updating the pane's session.
+        s.reconcile(10_000, &[agent(S1, "busy", None)]);
+        assert_eq!(state(&s), State::Running);
+        assert!(s.get(&external_key(S1)).is_none());
+    }
+
+    #[test]
+    fn a_dismissed_external_session_stays_hidden_until_its_next_event() {
+        let mut s = Sessions::default();
+        s.apply(&ext("Stop", "e1", 1));
+        s.dismiss(&external_key("e1"), None, 2);
+        assert!(s.externals(2, MIN).is_empty());
+        s.reconcile(3, &[agent("e1", "idle", None)]);
+        assert!(s.externals(3, MIN).is_empty(), "still the same session");
+        s.apply(&ext("UserPromptSubmit", "e1", 4));
+        assert_eq!(s.externals(4, MIN).len(), 1);
     }
 }

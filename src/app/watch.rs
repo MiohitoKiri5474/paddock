@@ -1,7 +1,8 @@
 //! Background threads that feed session information into the event loop:
-//! new lines of the hook event log, `claude agents --json` snapshots, and the
-//! git status of task rows on screen (and their details while the dashboard
-//! is open), and each space's directory and branch.
+//! new lines of the hook event logs (this server's and the external one),
+//! `claude agents --json` snapshots, the git status of task rows on screen
+//! (and their details while the dashboard is open), and each space's
+//! directory and branch.
 
 use super::Event;
 use crate::git;
@@ -68,9 +69,25 @@ pub fn start(server: &Server, state_dir: &Path, tx: &Sender<Event>) -> Result<Se
         .parse()
         .context("cannot read the tmux server's pid")?;
     let mut reader = log::Reader::new(log::path(state_dir, pid));
+    // Every Claude on the machine appends to the external log: trim it
+    // before replaying it. Failing that, it is read whole.
+    let external = log::external_path(state_dir);
+    let _ = log::compact(
+        &external,
+        log::EXTERNAL_MAX_BYTES,
+        now_ms(),
+        log::EXTERNAL_KEEP_MS,
+    );
+    let mut external = log::Reader::new(external);
     let events = tx.clone();
     std::thread::spawn(move || loop {
-        let records = reader.read_new();
+        let mut records = reader.read_new();
+        records.extend(
+            external
+                .read_new()
+                .into_iter()
+                .filter_map(log::keyed_external),
+        );
         if !records.is_empty() && events.send(Event::Hooks(records)).is_err() {
             break;
         }

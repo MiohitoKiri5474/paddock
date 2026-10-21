@@ -237,8 +237,9 @@ pub fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// `paddock hook <event>`: record the event if it comes from one of
-/// paddock's terminals. Never prints, never fails: Claude would show the
+/// `paddock hook <event>`: record the event, in its server's log if it
+/// comes from one of paddock's terminals, else in the external log (it runs
+/// for every Claude on the machine, so that stays one append). Never prints, never fails: Claude would show the
 /// output to the model, or block on a failing hook.
 pub fn hook(event: &str) -> ! {
     std::panic::set_hook(Box::new(|_| {}));
@@ -256,15 +257,26 @@ fn record(event: &str) -> Result<()> {
     std::io::stdin().read_to_string(&mut payload)?;
     let var = |k: &str| std::env::var(k).ok();
     let text = |k: &str| var(k).unwrap_or_default();
-    let paths = Paths::resolve(var)?;
-    let Some((pid, pane)) = log::terminal(&text("TMUX"), &text("TMUX_PANE"), &paths.socket) else {
-        return Ok(()); // not in paddock: an external session
-    };
-    let settings = settings_path(var).ok().and_then(|p| read_settings(&p));
-    if !should_record(&text(SOURCE_VAR), settings.as_ref(), event) {
-        return Ok(()); // settings.json's paddock hook records this one
+    // Before anything else, for paddock's terminals and external sessions
+    // alike. Only the plugin's hook reads the settings, to defer to them.
+    let source = text(SOURCE_VAR);
+    if source == PLUGIN_SOURCE {
+        let settings = settings_path(var).ok().and_then(|p| read_settings(&p));
+        if !should_record(&source, settings.as_ref(), event) {
+            return Ok(()); // settings.json's paddock hook records this one
+        }
     }
+    let paths = Paths::resolve(var)?;
+    // Outside paddock's terminals, an external session: kept by session
+    // id, in a log of its own.
+    let (log_path, pane) = match log::terminal(&text("TMUX"), &text("TMUX_PANE"), &paths.socket) {
+        Some((pid, pane)) => (log::path(&paths.state_dir, pid), pane),
+        None => (log::external_path(&paths.state_dir), String::new()),
+    };
     let mut r = log::record(event, &pane, &payload, now_ms());
+    if pane.is_empty() && r.session_id.is_none() {
+        return Ok(()); // an external event that cannot be kept apart
+    }
     if sessions::needs_branch(&r) {
         r.branch = r.cwd.as_deref().and_then(git::task_branch);
         if let (Some(id), None) = (&r.agent_id, &r.description) {
@@ -275,7 +287,7 @@ fn record(event: &str) -> Result<()> {
                 .and_then(|t| log::meta_description(t, id));
         }
     }
-    log::append(&log::path(&paths.state_dir, pid), &r)
+    log::append(&log_path, &r)
 }
 
 /// Best effort: hooks have nowhere else to report.

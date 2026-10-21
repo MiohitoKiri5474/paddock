@@ -9,7 +9,7 @@ use super::finder::Finder;
 use super::floats::Shown;
 use super::mouse::Press;
 use super::pages::Pages;
-use super::rows::{rows, Placed, Row, RowId, TaskDetails, TaskStatus};
+use super::rows::{rows, Externals, Placed, Row, RowId, TaskDetails, TaskStatus};
 use super::saved;
 use super::sidebar::clamp_width;
 use super::sidebar::Selection;
@@ -17,7 +17,7 @@ use super::space::Space;
 use super::watch::Place;
 use super::worktrees::{DeleteQuestion, WorktreeList};
 use super::Event;
-use crate::config::{Config, Floats, Worktrees};
+use crate::config::{Config, External, Floats, Worktrees};
 use crate::git::WorkingTree;
 use crate::hooks::now_ms;
 use crate::input::keymap::Keymap;
@@ -261,6 +261,8 @@ pub struct App {
     pub(super) float_panes: HashSet<String>,
     /// Where new worktrees are checked out.
     pub(super) worktrees: Worktrees,
+    /// Whether and how long external sessions are listed (`[dashboard]`).
+    pub(super) external: External,
 }
 
 /// The part of a screen of `(cols, rows)` that shows the current tab's
@@ -343,6 +345,7 @@ impl App {
             float: None,
             float_panes: HashSet::new(),
             worktrees: config.worktrees.clone(),
+            external: config.external,
         };
         app.load_dismissed();
         app.open_spaces()?;
@@ -418,9 +421,23 @@ impl App {
         })
     }
 
-    /// The Claude session rows, in display order.
+    /// The Claude session rows, in display order: the external group last,
+    /// unless `[dashboard] external` hides it.
     pub fn rows(&self) -> Vec<Row> {
-        rows(&self.sessions, &self.task_status, self.placed())
+        rows(
+            &self.sessions,
+            &self.task_status,
+            self.placed(),
+            self.external_rows(),
+        )
+    }
+
+    /// Which external sessions get rows now, if any.
+    pub(super) fn external_rows(&self) -> Option<Externals> {
+        self.external.shown.then(|| Externals {
+            now: now_ms(),
+            timeout: self.external.timeout,
+        })
     }
 
     /// Dismiss a session row: it leaves the rows, and stays gone after

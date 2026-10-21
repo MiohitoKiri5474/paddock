@@ -2,7 +2,8 @@
 //! session row with its task rows and their git details as a table on top,
 //! a live preview of the selected row's terminal below, and the keys at the
 //! bottom. While a filter is typed or holds text, it shows on a line under
-//! the title.
+//! the title. External sessions (Claude outside paddock's terminals) come
+//! last, dim, under an `external` line; their preview has no screen.
 
 mod table;
 
@@ -20,6 +21,10 @@ use ratatui::widgets::{Block, BorderType, Clear, Widget};
 pub const TITLE: &str = "dashboard";
 /// The list's only line without rows.
 const EMPTY: &str = " no Claude sessions yet";
+/// The line over the external sessions.
+const EXTERNAL_GROUP: &str = " external";
+/// What an external session's preview says: paddock has no terminal of it.
+const NO_SCREEN: &str = "external session: no screen";
 /// The list's share of the dashboard's height at most, in percent, unless
 /// that is below [`MIN_LIST`].
 const LIST_SHARE_PERCENT: u32 = 40;
@@ -91,23 +96,37 @@ pub enum ListLine<'a> {
     Blank,
     /// A session row, the start of its block.
     Session(&'a Row),
-    /// One of the session above's task rows, in its block; never selected
+    /// One of a session row's task rows, in its block; never selected
     /// itself.
-    Task(&'a TaskRow),
+    Task(&'a Row, &'a TaskRow),
+    /// The line over the external sessions (they come last).
+    External,
 }
 
 /// The dashboard's lines in order: each session row, then its task rows,
-/// with a blank line between two sessions.
+/// with a blank line between two sessions, and the [`ListLine::External`]
+/// line before the first external session.
 pub fn lines(rows: &[Row]) -> Vec<ListLine<'_>> {
     rows.iter()
         .enumerate()
         .flat_map(|(i, r)| {
             let blank = (i > 0).then_some(ListLine::Blank);
+            let first_external = r.external && (i == 0 || !rows[i - 1].external);
+            let group = first_external.then_some(ListLine::External);
             let session = std::iter::once(ListLine::Session(r));
-            let tasks = r.tasks.iter().map(ListLine::Task);
-            blank.into_iter().chain(session).chain(tasks)
+            let tasks = r.tasks.iter().map(move |t| ListLine::Task(r, t));
+            blank.into_iter().chain(group).chain(session).chain(tasks)
         })
         .collect()
+}
+
+/// `style`, dimmed for an external session's lines.
+fn dim_if(external: bool, style: Style) -> Style {
+    if external {
+        style.add_modifier(Modifier::DIM)
+    } else {
+        style
+    }
 }
 
 /// `style` on the selection's background `bg`. A background of its own (a
@@ -203,17 +222,23 @@ fn render_keys(keys: &str, area: Rect, buf: &mut Buffer) {
 /// A list line's cells and style: a session row's, or a task row's; none
 /// for a blank line.
 fn cells(view: &View, line: ListLine) -> Option<(table::Cells, Style)> {
-    let t = match line {
-        ListLine::Blank => return None,
-        ListLine::Session(row) => return Some((table::session(row), style(row.state))),
-        ListLine::Task(t) => t,
+    let (row, t) = match line {
+        ListLine::Blank | ListLine::External => return None,
+        ListLine::Session(row) => {
+            let style = dim_if(row.external, style(row.state));
+            return Some((table::session(row), style));
+        }
+        ListLine::Task(row, t) => (row, t),
     };
     let details = view.details.get(&(t.cwd.clone(), t.branch.clone()));
     let style = t
         .subagent
         .as_ref()
         .map_or(Style::default(), |s| task_style(s.state));
-    Some((table::task(t, details, view.now), style))
+    Some((
+        table::task(t, details, view.now),
+        dim_if(row.external, style),
+    ))
 }
 
 /// The filter line under the title: ` / ` and the text typed. Returns the
@@ -289,6 +314,11 @@ fn render_list(view: &View, area: Rect, buf: &mut Buffer) -> Option<Position> {
         buf.set_stringn(area.x, y, EMPTY, width, Style::default());
     }
     for ((i, l), y) in shown.iter().zip(area.y + heads..area.bottom()) {
+        if matches!(lines[*i], ListLine::External) {
+            let dim = Style::default().add_modifier(Modifier::DIM | Modifier::BOLD);
+            buf.set_stringn(area.x, y, EXTERNAL_GROUP, width, dim);
+            continue;
+        }
         let Some((cells, style)) = l else {
             continue;
         };
@@ -305,11 +335,12 @@ fn render_list(view: &View, area: Rect, buf: &mut Buffer) -> Option<Position> {
 
 /// How many of `lines` to scroll past to keep `block` in `room` lines, its
 /// session line first if it does not all fit. The top line is always a
-/// session's, never a blank line or another session's task rows.
+/// session's (or the external line), never a blank line or another
+/// session's task rows.
 fn scroll(lines: &[ListLine], block: &std::ops::Range<usize>, room: usize) -> usize {
     let least = block.end.saturating_sub(room).min(block.start);
     (least..block.start)
-        .find(|&i| matches!(lines[i], ListLine::Session(_)))
+        .find(|&i| matches!(lines[i], ListLine::Session(_) | ListLine::External))
         .unwrap_or(block.start)
 }
 
@@ -320,11 +351,23 @@ fn render_preview(view: &View, area: Rect, buf: &mut Buffer) -> Option<Position>
     if area.height < MIN_PREVIEW || area.width < 2 * BORDER {
         return None;
     }
-    let label = view
+    let row = view
         .selected
-        .and_then(|s| view.rows.iter().find(|r| r.pane == s.pane))
-        .map(|r| r.label.as_str());
+        .and_then(|s| view.rows.iter().find(|r| r.pane == s.pane));
+    let label = row.map(|r| r.label.as_str());
     let plain = Style::default();
+    if let Some(r) = row.filter(|r| r.external) {
+        let block = Block::bordered()
+            .border_type(BorderType::Rounded)
+            .title(Span::styled(format!(" {} ", r.label), plain));
+        let inner = block.inner(area);
+        block.render(area, buf);
+        if inner.height > 0 {
+            let dim = plain.add_modifier(Modifier::DIM);
+            buf.set_stringn(inner.x, inner.y, NO_SCREEN, usize::from(inner.width), dim);
+        }
+        return None;
+    }
     let (title, title_style) = match (label, view.preview, view.interactive) {
         // No rows: nothing to preview.
         (None, _, _) => (String::new(), plain),
@@ -385,7 +428,54 @@ mod tests {
             label: label.into(),
             state,
             tasks,
+            external: false,
         }
+    }
+
+    #[test]
+    fn external_sessions_come_dim_under_their_line_with_no_screen() {
+        let area = Rect::new(0, 0, 50, 30);
+        let mut buf = Buffer::empty(area);
+        let ext = Row {
+            pane: "ext:e1".into(),
+            space: String::new(),
+            window: String::new(),
+            external: true,
+            ..row("web", State::Waiting, vec![task("feat/x", None)])
+        };
+        let rows = [row("api", State::Idle, vec![]), ext];
+        let selected = RowId {
+            pane: "ext:e1".into(),
+        };
+        let view = View {
+            keys: KEYS,
+            rows: &rows,
+            details: &TaskDetails::new(),
+            selected: Some(&selected),
+            preview: None,
+            interactive: false,
+            filter: &DashboardFilter::default(),
+            now: 0,
+            selection: SELECTED,
+        };
+        render(&view, area, &mut buf);
+        let screen: Vec<String> = (0..30).map(|y| text(&buf, y)).collect();
+        let at = |s: &str| screen.iter().position(|l| l.starts_with(s));
+        let group = at(" external").unwrap_or_else(|| panic!("{screen:#?}"));
+        assert!(at(" api").unwrap() < group, "{screen:#?}");
+        let web = at(" web").expect("web");
+        assert_eq!(web, group + 1);
+        assert!(screen[web + 1].contains("feat/x"));
+        let y = u16::try_from(web).unwrap();
+        assert!(buf[(1, y)].modifier.contains(Modifier::DIM), "dim");
+        let api = u16::try_from(at(" api").unwrap()).unwrap();
+        assert!(!buf[(1, api)].modifier.contains(Modifier::DIM));
+        let preview = at("╭ web ─").expect("preview titled web");
+        assert!(
+            screen[preview + 1].contains(NO_SCREEN),
+            "{}",
+            screen[preview + 1]
+        );
     }
 
     fn task(branch: &str, status: Option<Status>) -> TaskRow {
@@ -417,7 +507,8 @@ mod tests {
             .map(|l| match l {
                 ListLine::Blank => String::new(),
                 ListLine::Session(r) => r.label.clone(),
-                ListLine::Task(t) => format!("  {}", t.branch),
+                ListLine::Task(_, t) => format!("  {}", t.branch),
+                ListLine::External => "external".into(),
             })
             .collect();
         assert_eq!(got, ["w", "  a", "  b", "", "i", "", "r"]);

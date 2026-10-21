@@ -196,10 +196,7 @@ fn tab_place(
 
 /// The branch row `r`'s main agent works on, if known.
 fn main_branch(r: &Row) -> Option<String> {
-    r.tasks
-        .iter()
-        .find(|t| t.subagent.is_none())
-        .map(|t| t.branch.clone())
+    r.main_branch().map(str::to_string)
 }
 
 impl App {
@@ -214,7 +211,7 @@ impl App {
     }
 
     /// The finder's rows as things are now: every space, every tab, then
-    /// every agent.
+    /// every agent (but external sessions).
     pub(super) fn finder_rows(&self) -> Vec<FinderRow> {
         let rows = self.rows();
         let home = HomePaths::new();
@@ -251,7 +248,9 @@ impl App {
                 });
             }
         }
-        out.extend(rows.iter().map(|r| self.agent_row(r, &home)));
+        // External sessions have nothing to show: the finder leaves them out.
+        let agents = rows.iter().filter(|r| !r.external);
+        out.extend(agents.map(|r| self.agent_row(r, &home)));
         out
     }
 

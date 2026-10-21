@@ -636,6 +636,12 @@ impl Paddock {
         parser.screen().cell(row, col).is_some_and(|c| c.inverse())
     }
 
+    /// Whether the cell at screen (row, col), 0-based, is drawn dim.
+    pub fn dim(&self, row: u16, col: u16) -> bool {
+        let parser = self.screen.lock().expect("screen lock");
+        parser.screen().cell(row, col).is_some_and(|c| c.dim())
+    }
+
     /// Foreground and background colour of the cell at (row, col), 0-based.
     pub fn colors(&self, row: u16, col: u16) -> (vt100::Color, vt100::Color) {
         let parser = self.screen.lock().expect("screen lock");

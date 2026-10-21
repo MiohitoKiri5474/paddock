@@ -3,6 +3,10 @@
 //! spaces' and tabs' states, the sidebar's agents, `C-a a` and the
 //! dashboard. A session that ended (its pane closed, or Claude quit) has no
 //! row.
+//!
+//! External sessions (Claude outside paddock's terminals) come last, in
+//! their own group: they have no pane, space or tab, so nothing can jump
+//! to, close, fork or type into them.
 
 use crate::git::{Details, Status};
 use crate::sessions::{self, Sessions, State, SubagentTask, Task, TaskState};
@@ -11,14 +15,45 @@ use std::collections::HashMap;
 /// One Claude session, in the pane it runs in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Row {
+    /// The pane's id; an external session's key (see
+    /// [`sessions::external_key`]).
     pub pane: String,
-    /// The pane's space (tmux session id).
+    /// The pane's space (tmux session id); empty for an external session.
     pub space: String,
-    /// The pane's tab (tmux window id).
+    /// The pane's tab (tmux window id); empty for an external session.
     pub window: String,
     pub label: String,
     pub state: State,
     pub tasks: Vec<TaskRow>,
+    /// Claude runs outside paddock's terminals: no screen, nothing to jump to.
+    pub external: bool,
+}
+
+impl Row {
+    /// The branch the main agent works on, if any: its own task row's.
+    pub fn main_branch(&self) -> Option<&str> {
+        self.tasks
+            .iter()
+            .find(|t| t.subagent.is_none())
+            .map(|t| t.branch.as_str())
+    }
+}
+
+/// What `Enter` on an external row says instead of jumping.
+pub const EXTERNAL_OPEN: &str = "external: open it in its own terminal";
+/// What closing an external row says.
+pub const EXTERNAL_CLOSE: &str = "external: paddock cannot close it";
+/// What forking an external row says.
+pub const EXTERNAL_FORK: &str = "external: paddock cannot fork it";
+/// What typing into an external row's preview says.
+pub const EXTERNAL_TYPE: &str = "external: no screen to type into";
+
+/// Which external sessions get rows: those heard of at most `timeout` ms
+/// before `now` (see [`Sessions::externals`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Externals {
+    pub now: u64,
+    pub timeout: u64,
 }
 
 /// A selectable line: pane `pane`'s session row. Task rows belong to
@@ -115,10 +150,13 @@ fn task_rows(tasks: Vec<&Task>, status: &TaskStatus, session: State) -> Vec<Task
 /// and tab, each with its task rows sorted by state. Sessions that ended
 /// or were dismissed get none (see [`Sessions::shown`]); nor do sessions of
 /// panes not given: their terminal was closed, so they ended with it.
+/// Then, if `externals` is given, the external sessions' rows, sorted by
+/// state, then label.
 pub fn rows<'a>(
     sessions: &Sessions,
     status: &TaskStatus,
     panes: impl IntoIterator<Item = Placed<'a>>,
+    externals: Option<Externals>,
 ) -> Vec<Row> {
     let mut rows: Vec<((usize, usize), Row)> = panes
         .into_iter()
@@ -131,12 +169,42 @@ pub fn rows<'a>(
                 label: sessions::label(s, p.tab_name),
                 state: s.state,
                 tasks: task_rows(tasks, status, s.state),
+                external: false,
             };
             Some((p.order, row))
         })
         .collect();
     rows.sort_by_key(|(order, r)| (r.state.rank(), *order));
-    rows.into_iter().map(|(_, r)| r).collect()
+    let mut out: Vec<Row> = rows.into_iter().map(|(_, r)| r).collect();
+    if let Some(e) = externals {
+        out.extend(external_rows(sessions, status, e));
+    }
+    out
+}
+
+/// The external sessions' rows, sorted by state, then label (then key, so
+/// the order holds still).
+fn external_rows(sessions: &Sessions, status: &TaskStatus, e: Externals) -> Vec<Row> {
+    let mut rows: Vec<Row> = sessions
+        .externals(e.now, e.timeout)
+        .into_iter()
+        .filter_map(|key| {
+            let (s, tasks) = sessions.shown(key)?;
+            Some(Row {
+                pane: key.to_string(),
+                space: String::new(),
+                window: String::new(),
+                label: sessions::label(s, None),
+                state: s.state,
+                tasks: task_rows(tasks, status, s.state),
+                external: true,
+            })
+        })
+        .collect();
+    rows.sort_by(|a, b| {
+        (a.state.rank(), &a.label, &a.pane).cmp(&(b.state.rank(), &b.label, &b.pane))
+    });
+    rows
 }
 
 /// The most urgent state of the rows `matching`, if any.
@@ -221,11 +289,16 @@ mod tests {
         };
         s.apply(&record("PostToolUse", Some("a1"), "fix/a"));
         s.apply(&record("PermissionRequest", None, "feat/main"));
-        let got: Vec<String> = rows(&s, &TaskStatus::new(), [placed("$1", "@1", (0, 0), "%1")])[0]
-            .tasks
-            .iter()
-            .map(|t| t.branch.clone())
-            .collect();
+        let got: Vec<String> = rows(
+            &s,
+            &TaskStatus::new(),
+            [placed("$1", "@1", (0, 0), "%1")],
+            None,
+        )[0]
+        .tasks
+        .iter()
+        .map(|t| t.branch.clone())
+        .collect();
         assert_eq!(got, ["feat/main", "fix/a"], "waiting before running");
     }
 
@@ -268,7 +341,7 @@ mod tests {
             placed("$3", "@6", (2, 1), "%6"),
             placed("$3", "@7", (2, 2), "%8"),
         ];
-        let got: Vec<(String, String, String, State)> = rows(&s, &TaskStatus::new(), panes)
+        let got: Vec<(String, String, String, State)> = rows(&s, &TaskStatus::new(), panes, None)
             .into_iter()
             .map(|r| (r.label, r.space, r.window, r.state))
             .collect();
@@ -299,16 +372,73 @@ mod tests {
             ..Default::default()
         };
         let labels = |s: &Sessions| -> Vec<(String, State)> {
-            rows(s, &TaskStatus::new(), [placed("$1", "@1", (0, 0), "%1")])
-                .into_iter()
-                .map(|r| (r.label, r.state))
-                .collect()
+            rows(
+                s,
+                &TaskStatus::new(),
+                [placed("$1", "@1", (0, 0), "%1")],
+                None,
+            )
+            .into_iter()
+            .map(|r| (r.label, r.state))
+            .collect()
         };
         s.apply(&record("Stop", "s1", 1));
         s.apply(&record("SessionEnd", "s1", 2));
         assert_eq!(labels(&s), []);
         s.apply(&record("SessionStart", "s2", 3));
         assert_eq!(labels(&s), [("a".to_string(), State::Idle)]);
+    }
+
+    #[test]
+    fn external_rows_come_last_sorted_by_state_and_only_when_asked() {
+        use crate::sessions::{external_key, HookRecord};
+        let mut s = Sessions::default();
+        let record = |event: &str, pane: String, session: &str, cwd: &str| HookRecord {
+            event: event.into(),
+            pane,
+            session_id: Some(session.into()),
+            cwd: Some(cwd.into()),
+            branch: Some("feat/x".into()),
+            ts: 1,
+            ..Default::default()
+        };
+        s.apply(&record("UserPromptSubmit", "%1".into(), "p1", "/w/mine"));
+        s.apply(&record("Stop", external_key("e1"), "e1", "/w/web"));
+        s.apply(&record(
+            "PermissionRequest",
+            external_key("e2"),
+            "e2",
+            "/w/api",
+        ));
+        let panes = || [placed("$1", "@1", (0, 0), "%1")];
+        let shown = |r: Vec<Row>| -> Vec<(String, State, bool, String)> {
+            r.into_iter()
+                .map(|r| (r.label, r.state, r.external, r.space))
+                .collect()
+        };
+        let externals = Externals {
+            now: 2,
+            timeout: 1_000,
+        };
+        let got = shown(rows(&s, &TaskStatus::new(), panes(), Some(externals)));
+        let want = [
+            ("mine", State::Running, false, "$1"),
+            ("api", State::Waiting, true, ""),
+            ("web", State::Done, true, ""),
+        ];
+        let want: Vec<(String, State, bool, String)> = want
+            .iter()
+            .map(|&(l, st, e, sp)| (l.into(), st, e, sp.into()))
+            .collect();
+        assert_eq!(got, want);
+        let all = rows(&s, &TaskStatus::new(), panes(), Some(externals));
+        assert_eq!(all[1].main_branch(), Some("feat/x"));
+        assert_eq!(rows(&s, &TaskStatus::new(), panes(), None).len(), 1);
+        let later = Externals {
+            now: 5_000,
+            timeout: 1_000,
+        };
+        assert_eq!(rows(&s, &TaskStatus::new(), panes(), Some(later)).len(), 1);
     }
 
     #[test]
@@ -320,6 +450,7 @@ mod tests {
             label: String::new(),
             state,
             tasks: Vec::new(),
+            external: false,
         };
         let rows = [
             row("$1", State::Running),
@@ -351,7 +482,7 @@ mod tests {
             (("/r".to_string(), "feat/a".to_string()), read),
             (("/r".to_string(), "feat/b".to_string()), Status::default()),
         ]);
-        let got = &rows(&s, &status, [placed("$1", "@1", (0, 0), "%1")])[0].tasks;
+        let got = &rows(&s, &status, [placed("$1", "@1", (0, 0), "%1")], None)[0].tasks;
         let want = [
             TaskRow {
                 branch: "feat/a".into(),
@@ -392,6 +523,7 @@ mod tests {
             label: String::new(),
             state: State::Idle,
             tasks,
+            external: false,
         };
         let rows = [
             row("%1", vec![task("a"), sub, task("b")]),

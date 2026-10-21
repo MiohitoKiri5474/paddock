@@ -2,8 +2,13 @@
 //! record per line. Hooks append with a single `write` each, so parallel
 //! hooks never interleave. One file per server, because tmux reuses pane ids
 //! after the server restarts.
+//!
+//! Events of external sessions (Claude outside paddock's terminals) have no
+//! server: they go to `<state>/events/external.jsonl`, without a pane. The
+//! app compacts that file when it opens, since every Claude on the machine
+//! appends to it.
 
-use super::HookRecord;
+use super::{external_key, HookRecord};
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -11,6 +16,52 @@ use std::path::{Path, PathBuf};
 
 pub fn path(state_dir: &Path, server_pid: u32) -> PathBuf {
     state_dir.join("events").join(format!("{server_pid}.jsonl"))
+}
+
+/// The log of external sessions' events.
+pub fn external_path(state_dir: &Path) -> PathBuf {
+    state_dir.join("events").join("external.jsonl")
+}
+
+/// An external session's record as the app folds it: keyed by the
+/// session's [`external_key`]. `None` for one without a session id, or
+/// with a pane (it belongs in a server's log).
+pub fn keyed_external(r: HookRecord) -> Option<HookRecord> {
+    if !r.pane.is_empty() {
+        return None;
+    }
+    let pane = external_key(r.session_id.as_deref()?);
+    Some(HookRecord { pane, ..r })
+}
+
+/// How big the external log may grow before [`compact`] trims it.
+pub const EXTERNAL_MAX_BYTES: u64 = 4 << 20;
+
+/// How long (ms) [`compact`] keeps records.
+pub const EXTERNAL_KEEP_MS: u64 = 24 * 60 * 60 * 1000;
+
+/// Keep only the records of the last `keep` ms before `now` in the log at
+/// `path`, once it is bigger than `max` bytes. The kept lines replace the
+/// file in one rename; a hook appending meanwhile may lose its line, which
+/// the next hook or `claude agents --json` makes up for.
+pub fn compact(path: &Path, max: u64, now: u64, keep: u64) -> Result<()> {
+    match std::fs::metadata(path) {
+        Ok(m) if m.len() > max => {}
+        _ => return Ok(()),
+    }
+    let text = std::fs::read(path).with_context(|| format!("cannot read {}", path.display()))?;
+    let since = now.saturating_sub(keep);
+    let mut kept = Vec::new();
+    for line in text.split(|&b| b == b'\n') {
+        let recent = serde_json::from_slice::<HookRecord>(line).is_ok_and(|r| r.ts >= since);
+        if recent {
+            kept.extend_from_slice(line);
+            kept.push(b'\n');
+        }
+    }
+    let tmp = path.with_extension("jsonl.tmp");
+    std::fs::write(&tmp, kept).with_context(|| format!("cannot write {}", tmp.display()))?;
+    std::fs::rename(&tmp, path).with_context(|| format!("cannot replace {}", path.display()))
 }
 
 /// The terminal a hook runs in, from `$TMUX` (`socket,pid,index`) and
@@ -142,6 +193,74 @@ mod tests {
         assert_eq!(terminal(t, "", "paddock"), None);
         assert_eq!(terminal("", "%3", "paddock"), None);
         assert_eq!(terminal("garbage", "%3", "paddock"), None);
+    }
+
+    #[test]
+    fn an_external_record_has_no_pane_and_is_keyed_by_its_session_once_read() {
+        let r = record("Stop", "", r#"{"session_id":"e1","cwd":"/w"}"#, 5);
+        let line = serde_json::to_string(&r).unwrap();
+        assert!(!line.contains("pane"), "{line}");
+        let back: HookRecord = serde_json::from_str(&line).unwrap();
+        assert_eq!(back, r);
+        let keyed = keyed_external(back).unwrap();
+        assert_eq!(keyed.pane, external_key("e1"));
+        assert_eq!(keyed.cwd.as_deref(), Some("/w"));
+        assert_eq!(keyed_external(record("Stop", "", "{}", 5)), None, "no id");
+        assert_eq!(
+            keyed_external(record("Stop", "%1", r#"{"session_id":"e1"}"#, 5)),
+            None,
+            "a terminal's"
+        );
+    }
+
+    #[test]
+    fn old_log_lines_read_as_before() {
+        let line = r#"{"event":"Stop","pane":"%3","session_id":"s","cwd":"/r","ts":9}"#;
+        let r: HookRecord = serde_json::from_str(line).unwrap();
+        assert_eq!(r.pane, "%3");
+        assert_eq!(serde_json::to_string(&r).unwrap(), line, "written the same");
+    }
+
+    #[test]
+    fn external_events_are_appended_and_replayed() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = external_path(dir.path());
+        assert_eq!(p, dir.path().join("events/external.jsonl"));
+        append(&p, &record("SessionStart", "", r#"{"session_id":"e1"}"#, 1)).unwrap();
+        append(&p, &record("Stop", "", r#"{"session_id":"e1"}"#, 2)).unwrap();
+        let got: Vec<(String, String)> = Reader::new(p)
+            .read_new()
+            .into_iter()
+            .filter_map(keyed_external)
+            .map(|r| (r.event, r.pane))
+            .collect();
+        let key = external_key("e1");
+        assert_eq!(
+            got,
+            [("SessionStart".into(), key.clone()), ("Stop".into(), key)]
+        );
+    }
+
+    #[test]
+    fn compacting_keeps_recent_records_once_the_log_is_big() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = external_path(dir.path());
+        for ts in [1, 50, 100] {
+            append(&p, &record("Stop", "", r#"{"session_id":"e1"}"#, ts)).unwrap();
+        }
+        let mut f = std::fs::OpenOptions::new().append(true).open(&p).unwrap();
+        f.write_all(b"garbage\n").unwrap();
+        let before = std::fs::read(&p).unwrap();
+        compact(&p, 1 << 20, 100, 60).unwrap();
+        assert_eq!(std::fs::read(&p).unwrap(), before, "small: untouched");
+        compact(&p, 10, 100, 60).unwrap();
+        let ts: Vec<u64> = Reader::new(p.clone())
+            .read_new()
+            .iter()
+            .map(|r| r.ts)
+            .collect();
+        assert_eq!(ts, [50, 100]);
+        compact(&dir.path().join("none.jsonl"), 0, 1, 1).unwrap();
     }
 
     #[test]

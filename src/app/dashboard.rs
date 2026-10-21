@@ -8,7 +8,9 @@
 //! session through the same dismiss, close, fork and jump as the rest of
 //! the app.
 
-use super::rows::{row_ids, Row, RowId};
+use super::rows::{
+    row_ids, Row, RowId, EXTERNAL_CLOSE, EXTERNAL_FORK, EXTERNAL_OPEN, EXTERNAL_TYPE,
+};
 use super::state::{App, Mode, Panel};
 use super::watch::Watched;
 use crate::fuzzy;
@@ -286,6 +288,18 @@ impl App {
         let Some(row) = self.dashboard_row(&d) else {
             return Mode::Dashboard(d);
         };
+        // An external session has no terminal in paddock: refuse, and stay.
+        if row.external {
+            let notice = match action {
+                DashboardAction::Open => EXTERNAL_OPEN,
+                DashboardAction::Close => EXTERNAL_CLOSE,
+                DashboardAction::Fork => EXTERNAL_FORK,
+                DashboardAction::Interact => EXTERNAL_TYPE,
+                _ => return Mode::Dashboard(d),
+            };
+            self.notice = Some(notice.into());
+            return Mode::Dashboard(d);
+        }
         match action {
             DashboardAction::Open => {
                 self.jump_to(&row.pane);
@@ -371,6 +385,7 @@ mod tests {
                 status: None,
                 subagent: None,
             }],
+            external: false,
         };
         let rows = || {
             vec![
