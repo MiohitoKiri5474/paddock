@@ -373,6 +373,9 @@ mod tests {
         assert!(is_ours("paddock hook Stop"));
     }
 
+    /// The plugin hooks' `timeout`, in seconds.
+    const PLUGIN_TIMEOUT_S: u64 = 10;
+
     /// The plugin's command for `event`: quiet and exit 0 when `paddock` is
     /// not on PATH (stdin drained), nothing printed when it is.
     fn plugin_command(event: &str) -> String {
@@ -395,6 +398,12 @@ mod tests {
             let mut groups = settings["hooks"][event].clone();
             for g in groups.as_array_mut().unwrap() {
                 g["hooks"][0]["command"] = Value::String(plugin_command(event));
+                // A hung `paddock` stalls Claude 10 s at most (default 600).
+                // SessionEnd keeps Claude's 1.5 s budget, which a longer
+                // timeout would raise.
+                if *event != "SessionEnd" {
+                    g["hooks"][0]["timeout"] = json!(PLUGIN_TIMEOUT_S);
+                }
             }
             expected.insert((*event).to_string(), groups);
         }

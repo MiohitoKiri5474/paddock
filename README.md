@@ -71,7 +71,7 @@ Both at once records each event once, as long as the `paddock` on your `PATH` is
 
 ### Move from `hooks install` to the plugin
 
-1. Get the plugin with its hooks. If you have the plugin already (an earlier one has no hooks), update it from your shell:
+1. Upgrade paddock first (`brew upgrade paddock`, or reinstall it the way you installed it), so the `paddock` on `PATH` knows the plugin's hooks. Then get the plugin with its hooks. If you have the plugin already (an earlier one has no hooks), update it from your shell:
 
    ```sh
    claude plugin marketplace update paddock
@@ -79,8 +79,8 @@ Both at once records each event once, as long as the `paddock` on your `PATH` is
    ```
 
    Otherwise install it (see [Connect Claude Code](#connect-claude-code)).
-2. Restart running Claude sessions. Both sets of hooks now run, and each event is still recorded once.
-3. Remove the settings hooks, then restart running Claude sessions again:
+2. Restart running Claude sessions, or run `/reload-plugins` in each; that loads the updated plugin, hooks included. Both sets of hooks now run, and each event is still recorded once.
+3. Remove the settings hooks, then restart running Claude sessions (`/reload-plugins` does not reload settings hooks):
 
    ```sh
    paddock hooks uninstall             # removes only paddock's hooks from ~/.claude/settings.json

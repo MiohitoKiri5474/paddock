@@ -6,7 +6,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "command -v paddock >/dev/null 2>&1 || { cat >/dev/null; exit 0; }; export PADDOCK_HOOK_SOURCE=plugin; paddock hook SessionStart >/dev/null 2>&1 || true"
+            "command": "command -v paddock >/dev/null 2>&1 || { cat >/dev/null; exit 0; }; export PADDOCK_HOOK_SOURCE=plugin; paddock hook SessionStart >/dev/null 2>&1 || true",
+            "timeout": 10
           }
         ]
       }
@@ -16,7 +17,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "command -v paddock >/dev/null 2>&1 || { cat >/dev/null; exit 0; }; export PADDOCK_HOOK_SOURCE=plugin; paddock hook UserPromptSubmit >/dev/null 2>&1 || true"
+            "command": "command -v paddock >/dev/null 2>&1 || { cat >/dev/null; exit 0; }; export PADDOCK_HOOK_SOURCE=plugin; paddock hook UserPromptSubmit >/dev/null 2>&1 || true",
+            "timeout": 10
           }
         ]
       }
@@ -26,7 +28,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "command -v paddock >/dev/null 2>&1 || { cat >/dev/null; exit 0; }; export PADDOCK_HOOK_SOURCE=plugin; paddock hook PostToolUse >/dev/null 2>&1 || true"
+            "command": "command -v paddock >/dev/null 2>&1 || { cat >/dev/null; exit 0; }; export PADDOCK_HOOK_SOURCE=plugin; paddock hook PostToolUse >/dev/null 2>&1 || true",
+            "timeout": 10
           }
         ]
       }
@@ -36,7 +39,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "command -v paddock >/dev/null 2>&1 || { cat >/dev/null; exit 0; }; export PADDOCK_HOOK_SOURCE=plugin; paddock hook PreCompact >/dev/null 2>&1 || true"
+            "command": "command -v paddock >/dev/null 2>&1 || { cat >/dev/null; exit 0; }; export PADDOCK_HOOK_SOURCE=plugin; paddock hook PreCompact >/dev/null 2>&1 || true",
+            "timeout": 10
           }
         ]
       }
@@ -46,7 +50,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "command -v paddock >/dev/null 2>&1 || { cat >/dev/null; exit 0; }; export PADDOCK_HOOK_SOURCE=plugin; paddock hook PermissionRequest >/dev/null 2>&1 || true"
+            "command": "command -v paddock >/dev/null 2>&1 || { cat >/dev/null; exit 0; }; export PADDOCK_HOOK_SOURCE=plugin; paddock hook PermissionRequest >/dev/null 2>&1 || true",
+            "timeout": 10
           }
         ]
       }
@@ -56,7 +61,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "command -v paddock >/dev/null 2>&1 || { cat >/dev/null; exit 0; }; export PADDOCK_HOOK_SOURCE=plugin; paddock hook Notification >/dev/null 2>&1 || true"
+            "command": "command -v paddock >/dev/null 2>&1 || { cat >/dev/null; exit 0; }; export PADDOCK_HOOK_SOURCE=plugin; paddock hook Notification >/dev/null 2>&1 || true",
+            "timeout": 10
           }
         ]
       }
@@ -66,7 +72,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "command -v paddock >/dev/null 2>&1 || { cat >/dev/null; exit 0; }; export PADDOCK_HOOK_SOURCE=plugin; paddock hook Stop >/dev/null 2>&1 || true"
+            "command": "command -v paddock >/dev/null 2>&1 || { cat >/dev/null; exit 0; }; export PADDOCK_HOOK_SOURCE=plugin; paddock hook Stop >/dev/null 2>&1 || true",
+            "timeout": 10
           }
         ]
       }
@@ -86,7 +93,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "command -v paddock >/dev/null 2>&1 || { cat >/dev/null; exit 0; }; export PADDOCK_HOOK_SOURCE=plugin; paddock hook SubagentStart >/dev/null 2>&1 || true"
+            "command": "command -v paddock >/dev/null 2>&1 || { cat >/dev/null; exit 0; }; export PADDOCK_HOOK_SOURCE=plugin; paddock hook SubagentStart >/dev/null 2>&1 || true",
+            "timeout": 10
           }
         ]
       }
@@ -96,7 +104,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "command -v paddock >/dev/null 2>&1 || { cat >/dev/null; exit 0; }; export PADDOCK_HOOK_SOURCE=plugin; paddock hook SubagentStop >/dev/null 2>&1 || true"
+            "command": "command -v paddock >/dev/null 2>&1 || { cat >/dev/null; exit 0; }; export PADDOCK_HOOK_SOURCE=plugin; paddock hook SubagentStop >/dev/null 2>&1 || true",
+            "timeout": 10
           }
         ]
       }
