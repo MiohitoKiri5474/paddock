@@ -64,11 +64,28 @@ fn task_style(state: TaskState) -> Style {
     }
 }
 
-/// The dashboard's lines in order: each session row, then its task rows.
-pub fn lines(rows: &[Row]) -> Vec<(&Row, Option<&TaskRow>)> {
+/// A list line: a session row, or one of its task rows; `None` is the blank
+/// line between two sessions.
+pub type Line<'a> = Option<(&'a Row, Option<&'a TaskRow>)>;
+
+/// The dashboard's lines in order: each session row, then its task rows,
+/// with a blank line between two sessions.
+pub fn lines(rows: &[Row]) -> Vec<Line<'_>> {
     rows.iter()
-        .flat_map(|r| std::iter::once((r, None)).chain(r.tasks.iter().map(move |t| (r, Some(t)))))
+        .enumerate()
+        .flat_map(|(i, r)| {
+            let blank = (i > 0).then_some(None);
+            let session = std::iter::once(Some((r, None)));
+            let tasks = r.tasks.iter().map(move |t| Some((r, Some(t))));
+            blank.into_iter().chain(session).chain(tasks)
+        })
         .collect()
+}
+
+/// Whether `line` is a subagent's task row, which is never selected: it
+/// goes with the line above it.
+fn is_subagent(line: &Line) -> bool {
+    line.is_some_and(|(_, task)| task.is_some_and(|t| t.subagent.is_some()))
 }
 
 /// A task's fields: ahead/behind and uncommitted line changes, then its base
@@ -236,20 +253,30 @@ fn render_list(view: &View, area: Rect, buf: &mut Buffer) {
     if lines.is_empty() && area.height > 1 {
         buf.set_stringn(area.x, area.y + 1, EMPTY, width, Style::default());
     }
-    let picked = lines.iter().position(|(row, task)| {
+    let picked = lines.iter().position(|l| {
+        let Some((row, task)) = l else {
+            return false;
+        };
         view.selected.is_some_and(|s| {
             s.pane == row.pane && s.branch.as_deref() == task.map(|t| t.branch.as_str())
-        })
+        }) && !is_subagent(l)
     });
-    // Keep the selected line on screen.
+    // Keep the selected line on screen with the subagents under it, the
+    // selected line first if they do not all fit.
     let room = usize::from(area.height - 1);
-    let skip = picked.map_or(0, |p| (p + 1).saturating_sub(room));
-    for ((i, (row, task)), y) in lines
+    let skip = picked.map_or(0, |p| {
+        let subagents = lines[p + 1..].iter().take_while(|l| is_subagent(l)).count();
+        (p + 1 + subagents).saturating_sub(room).min(p)
+    });
+    for ((i, l), y) in lines
         .iter()
         .enumerate()
         .skip(skip)
         .zip(area.y + 1..area.bottom())
     {
+        let Some((row, task)) = l else {
+            continue;
+        };
         let (text, style) = line(view, row, *task, width);
         let style = if Some(i) == picked {
             style.add_modifier(Modifier::REVERSED)
@@ -409,18 +436,27 @@ mod tests {
     }
 
     #[test]
-    fn lines_follow_rows_each_with_its_tasks() {
+    fn lines_follow_rows_each_with_its_tasks_and_a_blank_line_between() {
         let rows = [
             row("w", State::Waiting, vec![task("a", None), task("b", None)]),
             row("i", State::Idle, vec![]),
+            row("r", State::Running, vec![]),
         ];
-        let got: Vec<(&str, Option<&str>)> = lines(&rows)
+        let got: Vec<Option<(&str, Option<&str>)>> = lines(&rows)
             .into_iter()
-            .map(|(r, t)| (r.label.as_str(), t.map(|t| t.branch.as_str())))
+            .map(|l| l.map(|(r, t)| (r.label.as_str(), t.map(|t| t.branch.as_str()))))
             .collect();
         assert_eq!(
             got,
-            [("w", None), ("w", Some("a")), ("w", Some("b")), ("i", None)]
+            [
+                Some(("w", None)),
+                Some(("w", Some("a"))),
+                Some(("w", Some("b"))),
+                None,
+                Some(("i", None)),
+                None,
+                Some(("r", None)),
+            ]
         );
     }
 
@@ -622,9 +658,54 @@ mod tests {
             now: 0,
         };
         render(&view, area, &mut buf);
-        // The list is capped at four rows: three lines below its title.
-        assert!(text(&buf, 1).starts_with(" r3"));
+        // The list is capped at four rows: three lines below its title, a
+        // blank one between two sessions.
+        assert!(text(&buf, 1).starts_with(" r4"));
+        assert_eq!(text(&buf, 2), "");
         assert!(text(&buf, 3).starts_with(" r5"));
         assert!(text(&buf, 4).starts_with("─ r5: no terminal"));
+    }
+
+    /// A subagent's task row on `branch`.
+    fn subagent(branch: &str) -> TaskRow {
+        TaskRow {
+            subagent: Some(SubagentTask {
+                agent_id: branch.into(),
+                description: None,
+                state: TaskState::Running,
+            }),
+            ..task(branch, None)
+        }
+    }
+
+    #[test]
+    fn the_selected_line_scrolls_into_sight_with_its_subagents() {
+        let area = Rect::new(0, 0, 30, 10);
+        let mut buf = Buffer::empty(area);
+        let rows = [
+            row("r0", State::Running, vec![]),
+            row("r1", State::Running, vec![]),
+            row("r2", State::Running, vec![subagent("s1"), subagent("s2")]),
+        ];
+        let selected = RowId {
+            pane: "%r2".into(),
+            branch: None,
+        };
+        let view = View {
+            keys: KEYS,
+            rows: &rows,
+            details: &TaskDetails::new(),
+            selected: Some(&selected),
+            preview: None,
+            interactive: false,
+            now: 0,
+        };
+        render(&view, area, &mut buf);
+        assert!(text(&buf, 1).starts_with(" r2"));
+        assert!(text(&buf, 2).starts_with("   s1"));
+        assert!(text(&buf, 3).starts_with("   s2"));
+        // Only the selected line is highlighted, not its subagents.
+        assert!(buf[(1, 1)].modifier.contains(Modifier::REVERSED));
+        assert!(!buf[(3, 2)].modifier.contains(Modifier::REVERSED));
     }
 }

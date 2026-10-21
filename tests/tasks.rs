@@ -84,8 +84,9 @@ fn list(paddock: &Paddock) -> Vec<String> {
     }
     rows.iter()
         .skip(2)
-        .take_while(|r| !r.is_empty() && !r.starts_with('─'))
-        .filter(|r| !r.contains("no Claude sessions yet"))
+        .take_while(|r| !r.starts_with('─'))
+        // Blank lines part the sessions, and fill the list's minimum height.
+        .filter(|r| !r.is_empty() && !r.contains("no Claude sessions yet"))
         .map(|r| r.split_whitespace().collect::<Vec<_>>().join(" "))
         .collect()
 }
@@ -519,7 +520,7 @@ fn a_new_conversation_in_the_same_terminal_keeps_its_task_rows() {
 }
 
 #[test]
-fn a_dismissed_subagent_task_row_stays_gone_after_reopening() {
+fn j_skips_subagent_rows_and_d_on_the_session_takes_them_along() {
     let sandbox = Sandbox::new();
     let dir = repo(&sandbox);
     write_meta(&sandbox);
@@ -535,10 +536,13 @@ fn a_dismissed_subagent_task_row_stays_gone_after_reopening() {
     hook("SubagentStop-subagent", "SubagentStop");
     wait_for_list(&mut paddock, &[&session("running"), &sub(FIX_A, "done")]);
 
+    // The subagent's row cannot be selected: `j` stays on the session,
+    // and `D` dismisses the session with its subagent.
     paddock.send(b"jD");
-    wait_for_list(&mut paddock, &[&session("running")]);
+    wait_for_list(&mut paddock, &[]);
 
     let mut again = reopen(&sandbox, paddock);
     hook("Stop", "Stop");
+    // Back, but its subagent dismissed with it stays gone.
     wait_for_list(&mut again, &[&session("idle")]);
 }

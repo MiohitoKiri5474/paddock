@@ -165,6 +165,15 @@ fn j_and_k_move_and_enter_jumps_to_the_rows_terminal() {
 
     open(&mut paddock);
     paddock.wait_for_text("preview: alpha");
+    // A blank line parts the two sessions.
+    let rows = paddock.rows();
+    let at = |label: &str| {
+        rows.iter()
+            .position(|r| r.starts_with(&format!(" {label}")))
+    };
+    let (alpha, bravo) = (at("alpha"), at("bravo"));
+    assert_eq!(bravo, alpha.map(|a| a + 2), "{}", rows.join("\n"));
+    assert_eq!(rows[alpha.unwrap_or_default() + 1], "");
     paddock.send(b"j");
     paddock.wait_for_text("preview: bravo");
     paddock.send(b"k");

@@ -28,7 +28,9 @@ pub struct RowId {
     pub branch: Option<String>,
 }
 
-/// Every row line of `rows`, in display order.
+/// Every row line of `rows` the dashboard can select, in display order:
+/// session rows and their branch task rows. Subagents' task rows are left
+/// out; they go with the line above them.
 pub fn row_ids(rows: &[Row]) -> Vec<RowId> {
     rows.iter()
         .flat_map(|r| {
@@ -36,7 +38,12 @@ pub fn row_ids(rows: &[Row]) -> Vec<RowId> {
                 pane: r.pane.clone(),
                 branch,
             };
-            std::iter::once(id(None)).chain(r.tasks.iter().map(move |t| id(Some(t.branch.clone()))))
+            let branches = r
+                .tasks
+                .iter()
+                .filter(|t| t.subagent.is_none())
+                .map(move |t| id(Some(t.branch.clone())));
+            std::iter::once(id(None)).chain(branches)
         })
         .collect()
 }
@@ -391,12 +398,20 @@ mod tests {
     }
 
     #[test]
-    fn row_ids_follow_the_rows() {
+    fn row_ids_follow_the_rows_without_subagents() {
         let task = |branch: &str| TaskRow {
             branch: branch.into(),
             cwd: "/r".into(),
             status: None,
             subagent: None,
+        };
+        let sub = TaskRow {
+            subagent: Some(SubagentTask {
+                agent_id: "a1".into(),
+                description: None,
+                state: TaskState::Running,
+            }),
+            ..task("fix/s")
         };
         let row = |pane: &str, tasks| Row {
             pane: pane.into(),
@@ -407,7 +422,10 @@ mod tests {
             tasks,
             closed: false,
         };
-        let rows = [row("%1", vec![task("a"), task("b")]), row("%2", vec![])];
+        let rows = [
+            row("%1", vec![task("a"), sub, task("b")]),
+            row("%2", vec![]),
+        ];
         let id = |pane: &str, branch: Option<&str>| RowId {
             pane: pane.into(),
             branch: branch.map(str::to_string),
