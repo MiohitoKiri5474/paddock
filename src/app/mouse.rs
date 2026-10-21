@@ -34,13 +34,8 @@ impl App {
         if self.mode.is_prompt() {
             return Ok(self.prompt_mouse(m));
         }
-        match self.mode {
-            Mode::Help | Mode::Dashboard(_) => return Ok(false),
-            Mode::Normal | Mode::Sidebar(_) => {}
-            Mode::Naming { .. }
-            | Mode::ConfirmClose { .. }
-            | Mode::OpenWorktree { .. }
-            | Mode::ConfirmDelete { .. } => unreachable!("the prompt took it"),
+        if matches!(self.mode, Mode::Help | Mode::Dashboard(_)) {
+            return Ok(false);
         }
         match m.kind {
             MouseEventKind::Down(_) => self.press(m),
@@ -57,13 +52,9 @@ impl App {
         if inside || !matches!(m.kind, MouseEventKind::Down(_)) {
             return false;
         }
-        self.mode = match std::mem::replace(&mut self.mode, Mode::Normal) {
-            Mode::Naming { back, .. }
-            | Mode::ConfirmClose { back, .. }
-            | Mode::OpenWorktree { back, .. }
-            | Mode::ConfirmDelete { back, .. } => Mode::back_to(back),
-            _ => Mode::Normal,
-        };
+        if let Some(back) = self.mode.cancel_prompt() {
+            self.mode = back;
+        }
         true
     }
 

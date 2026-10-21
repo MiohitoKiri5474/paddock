@@ -2,17 +2,19 @@
 //! out in a new worktree and opens a space named `<repo>/<branch>` in it,
 //! `C-a O` opens a space for a worktree that has none, and `x` on a
 //! worktree space in the sidebar deletes the space with its worktree and
-//! branch. The sidebar lists worktree spaces under their repository's
-//! main-checkout space.
+//! branch. Only worktrees under `[worktrees] directory` are deleted;
+//! others (such as Claude's own agent worktrees) are only closed. The
+//! sidebar lists worktree spaces under their repository's main-checkout
+//! space.
 
 use super::sidebar::Pick;
-use super::state::{App, CloseTarget, Mode, NameTarget};
+use super::state::{App, CloseTarget, Mode, NameTarget, Panel};
 use super::view::Home;
-use crate::git::{self, Checkout, Worktree};
+use crate::git::{self, WorkingTree, Worktree};
 use crate::sessions::State;
 use anyhow::{anyhow, bail, Result};
 use crossterm::event::{KeyCode, KeyEvent};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// A worktree space, as deleting it needs: its tmux session, its
 /// worktree's directory and branch (`None` if detached), and the
@@ -26,9 +28,53 @@ pub struct WorktreeSpace {
 }
 
 impl WorktreeSpace {
-    /// What the questions call it: its branch, else its directory.
+    /// What the questions call it: its branch, else (detached) its directory's name.
     pub fn label(&self) -> &str {
-        self.branch.as_deref().unwrap_or(&self.path)
+        self.branch
+            .as_deref()
+            .unwrap_or_else(|| git::dir_name(&self.path))
+    }
+}
+
+/// What deleting a worktree would lose, beyond its ignored files.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Risks {
+    /// Uncommitted changes (untracked files count).
+    pub dirty: bool,
+    /// The base's name, if commits checked out there are not in it.
+    pub unmerged: Option<String>,
+}
+
+/// The delete question: about `target`; the second time, `risks` holds
+/// what would be lost; `back` is the panel asked from, to return to.
+pub struct DeleteQuestion {
+    pub target: WorktreeSpace,
+    pub risks: Option<Risks>,
+    pub back: Option<Panel>,
+}
+
+impl DeleteQuestion {
+    /// The question as the prompt shows it.
+    pub fn text(&self) -> String {
+        let label = self.target.label();
+        let Some(risks) = &self.risks else {
+            return format!("delete {label} and its worktree (ignored files too)? y/n");
+        };
+        let mut what = Vec::new();
+        if risks.dirty {
+            what.push("has uncommitted changes".to_string());
+        }
+        match (&risks.unmerged, &self.target.branch) {
+            (Some(base), Some(_)) => what.push(format!("is not merged into {base}")),
+            (Some(base), None) => what.push(format!("has commits not in {base}")),
+            (None, _) => {}
+        }
+        let what = what.join(" and ");
+        if risks.unmerged.is_some() && self.target.branch.is_some() {
+            format!("{label} {what}: remove the worktree anyway? (the branch is kept) y/n")
+        } else {
+            format!("{label} {what}: delete anyway? y/n")
+        }
     }
 }
 
@@ -41,6 +87,14 @@ pub struct Choice {
     pub line: String,
 }
 
+/// The open list: the worktrees offered, the line the cursor is on, and
+/// the panel asked from, to return to.
+pub struct WorktreeList {
+    pub candidates: Vec<Choice>,
+    pub selected: usize,
+    pub back: Option<Panel>,
+}
+
 /// How SPACES lists the spaces: a space in a repository's main checkout
 /// (or outside any), then the spaces in that repository's linked
 /// worktrees; the worktree spaces of a repository whose main checkout
@@ -50,8 +104,8 @@ pub enum SpaceEntry {
     /// The space at this index in the app's spaces, and whether it is in
     /// a linked worktree.
     Space { index: usize, linked: bool },
-    /// A repository's name.
-    Repo(String),
+    /// The header over a repository's worktree spaces: its name.
+    RepoHeader(String),
 }
 
 /// The name a space in worktree `w` of repository `repo` gets:
@@ -61,105 +115,106 @@ fn space_name(repo: &str, main: &str, w: &Worktree) -> String {
     if w.path == main {
         return repo.to_string();
     }
-    let dir = std::path::Path::new(&w.path)
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| w.path.clone());
-    format!("{repo}/{}", w.branch.as_deref().unwrap_or(&dir))
+    let name = w
+        .branch
+        .as_deref()
+        .unwrap_or_else(|| git::dir_name(&w.path));
+    format!("{repo}/{name}")
 }
 
 impl App {
     /// The directory an action on `pick` starts from: the space's, or the
-    /// agent's pane's; without a pick, the focused terminal's.
+    /// agent's pane's; without a pick, the focused terminal's. Read now.
     fn dir_for(&self, pick: Option<&Pick>) -> PathBuf {
         match pick {
-            Some(Pick::Space(id)) => self.space_dir(id),
+            Some(Pick::Space(id)) => self.space_dir_now(id),
             Some(Pick::Agent(pane)) => self.dir_of(pane),
             None => None,
         }
         .unwrap_or_else(|| self.new_dir())
     }
 
-    /// Space `id`'s directory: as read for the sidebar, else its first
-    /// tab's first pane's now.
-    fn space_dir(&self, id: &str) -> Option<PathBuf> {
-        if let Some(place) = self.places.get(id) {
-            return Some(PathBuf::from(&place.path));
-        }
+    /// Space `id`'s directory, read now (the sidebar's may be seconds
+    /// old): its first tab's first pane's.
+    fn space_dir_now(&self, id: &str) -> Option<PathBuf> {
         let space = self.spaces.iter().find(|s| s.id == id)?;
         let pane = &space.windows().first()?.panes.first()?.id;
         self.dir_of(pane)
     }
 
-    /// The repository the directory of `pick` (see [`Self::dir_for`]) is
-    /// in, as a notice if none.
-    fn checkout_for(&mut self, pick: Option<&Pick>) -> Option<Checkout> {
+    /// Space `id`'s working tree, read now.
+    fn tree_now(&self, id: &str) -> Option<WorkingTree> {
+        git::working_tree(&self.space_dir_now(id)?.to_string_lossy())
+    }
+
+    /// The working tree the directory of `pick` (see [`Self::dir_for`]) is
+    /// in, or a notice if none.
+    fn tree_for(&mut self, pick: Option<&Pick>) -> Option<WorkingTree> {
         let dir = self.dir_for(pick);
-        let checkout = git::checkout(&dir.to_string_lossy());
-        if checkout.is_none() {
+        let tree = git::working_tree(&dir.to_string_lossy());
+        if tree.is_none() {
             self.notice = Some(format!("{} is not in a git repository", dir.display()));
         }
-        checkout
+        tree
     }
 
-    /// `C-a W` (or `W` on a space in the sidebar): ask for a branch name
-    /// to check out in a new worktree of the repository.
+    /// `C-a W` (or `W` in the sidebar): ask for a branch name to check out
+    /// in a new worktree of the repository.
     pub(super) fn start_new_worktree(&mut self, pick: Option<&Pick>) {
-        if let Some(checkout) = self.checkout_for(pick) {
-            self.start_naming(NameTarget::NewWorktree(checkout));
+        if let Some(tree) = self.tree_for(pick) {
+            self.start_naming(NameTarget::NewWorktree(tree));
         }
     }
 
-    /// Check `branch` out in a new worktree of `checkout`'s repository
+    /// Check `branch` out in a new worktree of `tree`'s repository
     /// (`<directory>/<repo>/<branch>`, creating the branch if there is
     /// none) and open a space named `<repo>/<branch>` in it. Nothing is
     /// left half-made: if the space fails, the worktree goes again, and
     /// the branch too if it was made for it.
-    pub fn new_worktree(&mut self, checkout: &Checkout, branch: &str) -> Result<()> {
+    pub fn new_worktree(&mut self, tree: &WorkingTree, branch: &str) -> Result<()> {
         let branch = branch.trim();
-        if !git::valid_branch(branch) {
+        if !git::valid_branch(&tree.top, branch) {
             bail!("{branch:?} is not a valid branch name");
         }
-        let repo = checkout.repo();
+        let repo = tree.repo();
         let path = git::worktree_path(&self.worktrees.directory, repo, branch);
         if path.exists() {
             bail!("{} exists", path.display());
         }
         // From the focused working tree: a new branch starts at its HEAD.
-        let created = git::add_worktree(&checkout.top, &path, branch).map_err(|e| anyhow!(e))?;
+        let created = git::add_worktree(&tree.top, &path, branch).map_err(|e| anyhow!(e))?;
         let name = format!("{repo}/{branch}");
         if let Err(e) = self.new_space_in(&name, path.clone()) {
-            let _ = git::remove_worktree(
-                &checkout.main,
-                &path.to_string_lossy(),
-                created.then_some(branch),
-                true,
-            );
+            // Best effort: it was made a moment ago, with nothing in it.
+            let _ = git::remove_worktree(&tree.main, &path.to_string_lossy(), true);
+            if created {
+                let _ = git::delete_branch(&tree.main, branch);
+            }
             return Err(e);
         }
         Ok(())
     }
 
-    /// `C-a O` (or `o` on a space in the sidebar): list the repository's
-    /// worktrees that have no space, to open one. A panel with the
-    /// keyboard gets it back when the list closes.
+    /// `C-a O` (or `o` in the sidebar): list the repository's worktrees
+    /// that no space is in now, to open one. A panel with the keyboard
+    /// gets it back when the list closes.
     pub(super) fn start_open_worktree(&mut self, pick: Option<&Pick>) {
-        let Some(checkout) = self.checkout_for(pick) else {
+        let Some(tree) = self.tree_for(pick) else {
             return;
         };
         let home = Home::from_env();
-        let repo = checkout.repo();
-        let taken: Vec<&str> = self
+        let repo = tree.repo();
+        let taken: Vec<String> = self
             .spaces
             .iter()
-            .filter_map(|s| self.places.get(&s.id)?.checkout.as_ref())
-            .map(|c| c.top.as_str())
+            .filter_map(|s| self.tree_now(&s.id))
+            .map(|t| t.top)
             .collect();
-        let candidates: Vec<Choice> = git::worktrees(&checkout.main)
+        let candidates: Vec<Choice> = git::worktrees(&tree.main)
             .into_iter()
-            .filter(|w| !taken.contains(&w.path.as_str()))
+            .filter(|w| !taken.contains(&w.path))
             .map(|w| {
-                let name = space_name(repo, &checkout.main, &w);
+                let name = space_name(repo, &tree.main, &w);
                 let line = format!("{name}  {}", home.show(&w.path));
                 Choice {
                     name,
@@ -173,120 +228,112 @@ impl App {
             return;
         }
         let back = std::mem::replace(&mut self.mode, Mode::Normal).into_panel();
-        self.mode = Mode::OpenWorktree {
+        self.mode = Mode::OpenWorktree(WorktreeList {
             candidates,
             selected: 0,
             back,
-        };
+        });
     }
 
     /// A key while the list of worktrees is open: `j`/`k` (or arrows)
     /// move, `Enter` opens a space for the selected one, `Esc` closes the
     /// list. These keys are fixed, like the prompt's.
-    pub(super) fn open_worktree_key(
-        &mut self,
-        candidates: Vec<Choice>,
-        selected: usize,
-        back: Option<super::state::Panel>,
-        key: KeyEvent,
-    ) {
-        let last = candidates.len().saturating_sub(1);
+    pub(super) fn open_worktree_key(&mut self, list: WorktreeList, key: KeyEvent) {
+        let last = list.candidates.len().saturating_sub(1);
         let selected = match key.code {
             KeyCode::Esc => {
-                self.mode = Mode::back_to(back);
+                self.mode = Mode::back_to(list.back);
                 return;
             }
             KeyCode::Enter => {
-                self.mode = Mode::back_to(back);
-                if let Some(c) = candidates.get(selected) {
+                self.mode = Mode::back_to(list.back);
+                if let Some(c) = list.candidates.get(list.selected) {
                     let dir = PathBuf::from(&c.path);
                     self.report(|app| app.new_space_in(&c.name, dir));
                     self.relayout_and_save();
                 }
                 return;
             }
-            KeyCode::Char('j') | KeyCode::Down => (selected + 1).min(last),
-            KeyCode::Char('k') | KeyCode::Up => selected.saturating_sub(1),
-            _ => selected,
+            KeyCode::Char('j') | KeyCode::Down => (list.selected + 1).min(last),
+            KeyCode::Char('k') | KeyCode::Up => list.selected.saturating_sub(1),
+            _ => list.selected,
         };
-        self.mode = Mode::OpenWorktree {
-            candidates,
-            selected,
-            back,
-        };
+        self.mode = Mode::OpenWorktree(WorktreeList { selected, ..list });
     }
 
-    /// Space `id` as a worktree space, if its directory is a linked
-    /// worktree (once read); the main checkout is never one.
+    /// Whether `top` is a worktree paddock may delete: under `[worktrees]
+    /// directory`, where `C-a W` makes them.
+    fn is_ours(&self, top: &str) -> bool {
+        let directory = git::resolved(&self.worktrees.directory.to_string_lossy());
+        Path::new(top).starts_with(directory)
+    }
+
+    /// Space `id` as a worktree space paddock may delete, read now: its
+    /// directory is in a linked worktree under `[worktrees] directory`.
+    /// The main checkout, and worktrees elsewhere (Claude's own), never
+    /// are.
     pub(super) fn worktree_space(&self, id: &str) -> Option<WorktreeSpace> {
-        let checkout = self.places.get(id)?.checkout.as_ref()?;
-        if !checkout.is_linked() {
+        let tree = self.tree_now(id)?;
+        if !tree.is_linked() || !self.is_ours(&tree.top) {
             return None;
         }
         Some(WorktreeSpace {
             space: id.to_string(),
-            path: checkout.top.clone(),
-            branch: git::current_branch(&checkout.top),
-            main: checkout.main.clone(),
+            branch: git::current_branch(&tree.top),
+            path: tree.top,
+            main: tree.main,
         })
     }
 
-    /// `x` on a worktree space in the sidebar, or `delete_worktree`: ask
-    /// before deleting space `id` with its worktree and branch. A panel
-    /// with the keyboard gets it back after.
+    /// `delete_worktree`: ask before deleting space `id` with its worktree
+    /// and branch, if it is a worktree space; else say why not.
     pub(super) fn delete_worktree(&mut self, id: &str) -> Result<()> {
-        let Some(target) = self.worktree_space(id) else {
-            bail!("not a worktree space: the main checkout stays");
-        };
+        match self.worktree_space(id) {
+            Some(target) => {
+                self.ask_delete(target);
+                Ok(())
+            }
+            None => bail!(
+                "not a worktree space: the main checkout and worktrees outside \
+                 [worktrees] directory stay"
+            ),
+        }
+    }
+
+    /// Ask before deleting `target`. A panel with the keyboard gets it
+    /// back after.
+    pub(super) fn ask_delete(&mut self, target: WorktreeSpace) {
         let back = std::mem::replace(&mut self.mode, Mode::Normal).into_panel();
-        self.mode = Mode::ConfirmDelete {
+        self.mode = Mode::ConfirmDelete(DeleteQuestion {
             target,
-            risk: None,
+            risks: None,
             back,
-        };
-        Ok(())
+        });
     }
 
     /// `y` to a delete question. The first time, work that would be lost
-    /// (uncommitted changes, or a branch not in its base) is asked about
-    /// again, naming it; else the space, worktree and branch go.
-    pub(super) fn confirm_delete(
-        &mut self,
-        target: WorktreeSpace,
-        risk: Option<String>,
-        back: Option<super::state::Panel>,
-    ) {
-        if risk.is_none() {
-            if let Some(risk) = self.delete_risk(&target) {
-                self.mode = Mode::ConfirmDelete {
-                    target,
-                    risk: Some(risk),
-                    back,
-                };
+    /// (uncommitted changes, commits not in the base) is asked about
+    /// again, naming all of it; else the space, worktree and branch go.
+    pub(super) fn confirm_delete(&mut self, q: DeleteQuestion) {
+        if q.risks.is_none() {
+            if let Some(risks) = delete_risks(&q.target) {
+                self.mode = Mode::ConfirmDelete(DeleteQuestion {
+                    risks: Some(risks),
+                    ..q
+                });
                 return;
             }
         }
-        self.mode = Mode::back_to(back);
-        let force = risk.is_some();
+        self.mode = Mode::back_to(q.back);
+        // Uncommitted changes are discarded only once the user said so.
+        let force = q.risks.is_some_and(|r| r.dirty);
+        let target = q.target;
         self.report(|app| app.delete_worktree_space(target, force));
     }
 
-    /// What deleting `target` would lose, if anything.
-    fn delete_risk(&self, target: &WorktreeSpace) -> Option<String> {
-        if git::is_dirty(&target.path) {
-            return Some(format!("{} has uncommitted changes", target.label()));
-        }
-        let branch = target.branch.as_deref()?;
-        if git::in_base(&target.main, branch) {
-            return None;
-        }
-        let base = git::default_branch(&target.main).unwrap_or_else(|| "its base".into());
-        Some(format!("{branch} is not merged into {base}"))
-    }
-
     /// Delete `target`: close its space, asking first if Claude is running
-    /// or waiting in it (as `close` does), then remove the worktree
-    /// (`force`: with its uncommitted changes) and delete the branch.
+    /// or waiting in it (as `close` does), then remove the worktree and
+    /// delete the branch.
     fn delete_worktree_space(&mut self, target: WorktreeSpace, force: bool) -> Result<()> {
         let busy = self
             .rows()
@@ -303,42 +350,69 @@ impl App {
         }
     }
 
-    /// Close `target`'s space, then remove its worktree and delete its
-    /// branch (`branch -d`: one not in its base stays, and git says so).
+    /// Close `target`'s space, remove its worktree (`force`: with its
+    /// uncommitted changes) and delete its branch. A worktree that has
+    /// changes the user was not asked about (they came after the question)
+    /// is left whole. A branch git does not find merged is kept, with a
+    /// notice.
     pub(super) fn remove_worktree_space(
         &mut self,
         target: &WorktreeSpace,
         force: bool,
     ) -> Result<()> {
+        let path = &target.path;
+        if !force && git::is_dirty(path) {
+            bail!(
+                "{} has uncommitted changes now: nothing deleted",
+                target.label()
+            );
+        }
         self.server.kill_session(&target.space)?;
-        git::remove_worktree(&target.main, &target.path, target.branch.as_deref(), force)
-            .map_err(|e| anyhow!(e))
+        git::remove_worktree(&target.main, path, force)
+            .map_err(|e| anyhow!("{e}: the space is closed, but {path} was left"))?;
+        if let Some(branch) = &target.branch {
+            if let Err(e) = git::delete_branch(&target.main, branch) {
+                self.notice = Some(format!("worktree removed; branch {branch} kept: {e}"));
+            }
+        }
+        Ok(())
     }
 
-    /// The spaces in sidebar order (see [`SpaceEntry`]).
+    /// The spaces in sidebar order (see [`SpaceEntry`]), from the working
+    /// trees read in the background.
     pub(super) fn space_entries(&self) -> Vec<SpaceEntry> {
-        let checkouts: Vec<Option<&Checkout>> = self
+        let trees: Vec<Option<&WorkingTree>> = self
             .spaces
             .iter()
-            .map(|s| self.places.get(&s.id)?.checkout.as_ref())
+            .map(|s| self.places.get(&s.id)?.tree.as_ref())
             .collect();
-        group(&checkouts)
+        group(&trees)
     }
 }
 
-/// The sidebar order of spaces whose working trees are `checkouts` (by
-/// space index; `None` outside a repository, or not read yet): see
+/// What deleting `target` would lose, if anything: uncommitted changes,
+/// and commits checked out there that are not in the base (a branch's or
+/// a detached HEAD's).
+fn delete_risks(target: &WorktreeSpace) -> Option<Risks> {
+    let dirty = git::is_dirty(&target.path);
+    let unmerged = (!git::in_base(&target.path, "HEAD"))
+        .then(|| git::default_branch(&target.path).unwrap_or_else(|| "its base".into()));
+    (dirty || unmerged.is_some()).then_some(Risks { dirty, unmerged })
+}
+
+/// The sidebar order of spaces whose working trees are `trees` (by space
+/// index; `None` outside a repository, or not read yet): see
 /// [`SpaceEntry`].
-fn group(checkouts: &[Option<&Checkout>]) -> Vec<SpaceEntry> {
-    let linked: Vec<usize> = (0..checkouts.len())
-        .filter(|&i| checkouts[i].is_some_and(Checkout::is_linked))
+fn group(trees: &[Option<&WorkingTree>]) -> Vec<SpaceEntry> {
+    let linked: Vec<usize> = (0..trees.len())
+        .filter(|&i| trees[i].is_some_and(WorkingTree::is_linked))
         .collect();
-    let mut placed = vec![false; checkouts.len()];
+    let mut placed = vec![false; trees.len()];
     let mut out = Vec::new();
     // A repository's worktree spaces, in order, under its main checkout.
     let under = |main: &str, out: &mut Vec<SpaceEntry>, placed: &mut Vec<bool>| {
         for &j in &linked {
-            if !placed[j] && checkouts[j].is_some_and(|c| c.main == main) {
+            if !placed[j] && trees[j].is_some_and(|t| t.main == main) {
                 placed[j] = true;
                 out.push(SpaceEntry::Space {
                     index: j,
@@ -347,22 +421,22 @@ fn group(checkouts: &[Option<&Checkout>]) -> Vec<SpaceEntry> {
             }
         }
     };
-    for i in (0..checkouts.len()).filter(|i| !linked.contains(i)) {
+    for i in (0..trees.len()).filter(|i| !linked.contains(i)) {
         out.push(SpaceEntry::Space {
             index: i,
             linked: false,
         });
-        if let Some(c) = checkouts[i] {
-            under(&c.main, &mut out, &mut placed);
+        if let Some(t) = trees[i] {
+            under(&t.main, &mut out, &mut placed);
         }
     }
     for &j in &linked {
         if placed[j] {
             continue;
         }
-        if let Some(c) = checkouts[j] {
-            out.push(SpaceEntry::Repo(c.repo().to_string()));
-            under(&c.main, &mut out, &mut placed);
+        if let Some(t) = trees[j] {
+            out.push(SpaceEntry::RepoHeader(t.repo().to_string()));
+            under(&t.main, &mut out, &mut placed);
         }
     }
     out
@@ -372,8 +446,8 @@ fn group(checkouts: &[Option<&Checkout>]) -> Vec<SpaceEntry> {
 mod tests {
     use super::*;
 
-    fn checkout(top: &str, main: &str) -> Checkout {
-        Checkout {
+    fn tree(top: &str, main: &str) -> WorkingTree {
+        WorkingTree {
             top: top.into(),
             main: main.into(),
         }
@@ -381,10 +455,10 @@ mod tests {
 
     #[test]
     fn worktree_spaces_follow_their_repository_s_space_or_get_a_header() {
-        let api = checkout("/r/api", "/r/api");
-        let api_x = checkout("/w/api/feat-x", "/r/api");
-        let api_y = checkout("/w/api/feat-y", "/r/api");
-        let pad_z = checkout("/w/paddock/feat-z", "/r/paddock");
+        let api = tree("/r/api", "/r/api");
+        let api_x = tree("/w/api/feat-x", "/r/api");
+        let api_y = tree("/w/api/feat-y", "/r/api");
+        let pad_z = tree("/w/paddock/feat-z", "/r/paddock");
         let space = |index, linked| SpaceEntry::Space { index, linked };
         // Spaces: a worktree of api, a plain directory, paddock's
         // worktree, api's main checkout, another worktree of api, one not
@@ -405,7 +479,7 @@ mod tests {
                 space(0, true),
                 space(4, true),
                 space(5, false),
-                SpaceEntry::Repo("paddock".into()),
+                SpaceEntry::RepoHeader("paddock".into()),
                 space(2, true),
             ]
         );
@@ -435,6 +509,50 @@ mod tests {
         assert_eq!(
             space_name("api", "/r/api", &wt("/w/api/loose", None)),
             "api/loose"
+        );
+    }
+
+    #[test]
+    fn the_delete_question_names_every_risk() {
+        let q = |branch: Option<&str>, risks: Option<Risks>| {
+            DeleteQuestion {
+                target: WorktreeSpace {
+                    space: "$1".into(),
+                    path: "/w/repo/x".into(),
+                    branch: branch.map(str::to_string),
+                    main: "/r/repo".into(),
+                },
+                risks,
+                back: None,
+            }
+            .text()
+        };
+        let risks = |dirty, unmerged: Option<&str>| {
+            Some(Risks {
+                dirty,
+                unmerged: unmerged.map(str::to_string),
+            })
+        };
+        assert_eq!(
+            q(Some("feat/x"), None),
+            "delete feat/x and its worktree (ignored files too)? y/n"
+        );
+        assert_eq!(
+            q(Some("feat/x"), risks(true, None)),
+            "feat/x has uncommitted changes: delete anyway? y/n"
+        );
+        assert_eq!(
+            q(Some("feat/x"), risks(false, Some("main"))),
+            "feat/x is not merged into main: remove the worktree anyway? (the branch is kept) y/n"
+        );
+        assert_eq!(
+            q(Some("feat/x"), risks(true, Some("main"))),
+            "feat/x has uncommitted changes and is not merged into main: \
+             remove the worktree anyway? (the branch is kept) y/n"
+        );
+        assert_eq!(
+            q(None, risks(false, Some("main"))),
+            "x has commits not in main: delete anyway? y/n"
         );
     }
 }

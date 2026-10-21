@@ -105,7 +105,7 @@ _Avoid_: quit, exit
 ### Git
 
 **Worktree**:
-A git working tree linked to a repository, checked out on its own branch in its own directory. paddock makes one with `C-a W` (under `[worktrees] directory`), opens one with `C-a O`, and deletes one with `x` on its space; a space in a worktree is listed under its repository's main checkout.
+A git working tree linked to a repository, checked out on its own branch in its own directory. paddock makes one with `C-a W` (under `[worktrees] directory`), opens one with `C-a O`, and deletes one it made (under that directory) with `x` on its space; a space in a worktree is listed under its repository's main checkout.
 _Avoid_: checkout (for a linked one), clone
 
 **Main checkout**:

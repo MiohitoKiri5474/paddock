@@ -26,9 +26,7 @@ pub(super) struct Home {
 impl Home {
     pub fn from_env() -> Self {
         let home = std::env::var("HOME").unwrap_or_default();
-        let real = std::fs::canonicalize(&home)
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|_| home.clone());
+        let real = crate::git::resolved(&home);
         Self { home, real }
     }
 
@@ -53,7 +51,7 @@ impl App {
         self.space_entries()
             .into_iter()
             .map(|entry| match entry {
-                SpaceEntry::Repo(name) => Entry::Repo(name),
+                SpaceEntry::RepoHeader(name) => Entry::RepoHeader(name),
                 SpaceEntry::Space { index, linked } => {
                     let space = &self.spaces[index];
                     let place = self.places.get(&space.id);
@@ -146,24 +144,14 @@ impl App {
                 self.close_title(target),
                 Body::Message(format!("Claude is {}: close? y/n", state.label())),
             ),
-            Mode::OpenWorktree {
-                candidates,
-                selected,
-                ..
-            } => (
+            Mode::OpenWorktree(list) => (
                 " Open worktree ",
                 Body::List {
-                    items: candidates.iter().map(|c| c.line.clone()).collect(),
-                    selected: *selected,
+                    items: list.candidates.iter().map(|c| c.line.clone()).collect(),
+                    selected: list.selected,
                 },
             ),
-            Mode::ConfirmDelete { target, risk, .. } => (
-                " Delete worktree ",
-                Body::Message(match risk {
-                    None => format!("delete {} and its worktree? y/n", target.label()),
-                    Some(risk) => format!("{risk}: delete anyway? y/n"),
-                }),
-            ),
+            Mode::ConfirmDelete(q) => (" Delete worktree ", Body::Message(q.text())),
             _ => return None,
         };
         Some(Prompt {

@@ -200,6 +200,30 @@ fn c_a_o_lists_worktrees_without_a_space_and_opens_one() {
     paddock.wait_for_text("every worktree of repo has a space");
 }
 
+/// Wait until the whole screen (the popup is centred over the sidebar too)
+/// shows every one of `parts`.
+fn wait_for_all(paddock: &Paddock, parts: &[&str]) {
+    paddock.wait_for(&format!("{parts:?}"), |_| {
+        let s = paddock.full_screen();
+        parts.iter().all(|p| s.contains(p))
+    });
+}
+
+/// `x` on the current space, from the sidebar (`C-a w` puts it there).
+fn x_on_current_space(paddock: &mut Paddock) {
+    paddock.command(b"w");
+    paddock.send(b"x");
+}
+
+/// Open the only worktree `C-a O` lists, named `name`, and wait for its
+/// space in the sidebar.
+fn open_listed(paddock: &mut Paddock, name: &str) {
+    paddock.command(b"O");
+    paddock.wait_for_popup("Open worktree", name);
+    paddock.send(b"\r");
+    wait_for_worktree_row(paddock, name);
+}
+
 #[test]
 fn x_on_a_clean_merged_worktree_space_deletes_it_after_one_yes() {
     let sandbox = Sandbox::new();
@@ -209,17 +233,19 @@ fn x_on_a_clean_merged_worktree_space_deletes_it_after_one_yes() {
     wait_for_worktree_row(&paddock, "repo/feat/d");
     let path = worktree(&sandbox, "feat/d");
 
-    // The sidebar on the current space: the new one.
-    paddock.command(b"w");
-    paddock.send(b"x");
-    paddock.wait_for_popup("Delete worktree", "delete feat/d and its worktree? y/n");
+    // `n` cancels: nothing is deleted, nor is the space closed.
+    x_on_current_space(&mut paddock);
+    paddock.wait_for_popup(
+        "Delete worktree",
+        "delete feat/d and its worktree (ignored files too)? y/n",
+    );
     paddock.send(b"n");
     paddock.wait_for_no_popup();
     std::thread::sleep(Duration::from_millis(200));
     assert!(path.is_dir() && has_branch(&dir, "feat/d"), "kept");
+    assert_eq!(sandbox.session_names(), ["space-1", "repo/feat/d"]);
 
-    paddock.command(b"w");
-    paddock.send(b"x");
+    x_on_current_space(&mut paddock);
     paddock.wait_for_popup("Delete worktree", "delete feat/d");
     paddock.send(b"y");
 
@@ -240,8 +266,7 @@ fn x_on_a_dirty_worktree_space_asks_again_naming_the_risk() {
     let path = worktree(&sandbox, "feat/e");
     std::fs::write(path.join("loose.txt"), "work\n").unwrap();
 
-    paddock.command(b"w");
-    paddock.send(b"x");
+    x_on_current_space(&mut paddock);
     paddock.wait_for_popup("Delete worktree", "delete feat/e");
     paddock.send(b"y");
     paddock.wait_for_popup(
@@ -258,7 +283,7 @@ fn x_on_a_dirty_worktree_space_asks_again_naming_the_risk() {
 }
 
 #[test]
-fn an_unmerged_branch_is_named_and_kept_by_branch_d() {
+fn a_dirty_unmerged_worktree_names_both_risks_and_the_branch_is_kept() {
     let sandbox = Sandbox::new();
     let dir = repo(&sandbox);
     let mut paddock = in_repo(&sandbox, &dir);
@@ -266,22 +291,103 @@ fn an_unmerged_branch_is_named_and_kept_by_branch_d() {
     wait_for_worktree_row(&paddock, "repo/feat/u");
     let path = worktree(&sandbox, "feat/u");
     commit(&path, "work");
+    std::fs::write(path.join("loose.txt"), "work\n").unwrap();
 
-    paddock.command(b"w");
-    paddock.send(b"x");
+    x_on_current_space(&mut paddock);
     paddock.wait_for_popup("Delete worktree", "delete feat/u");
     paddock.send(b"y");
-    paddock.wait_for_popup(
-        "Delete worktree",
-        "feat/u is not merged into main: delete anyway? y/n",
+    // Wrapped over two lines of the box.
+    wait_for_all(
+        &paddock,
+        &[
+            "feat/u has uncommitted changes and is not merged into main:",
+            "(the branch is kept) y/n",
+        ],
     );
     paddock.send(b"y");
 
     wait_for_sessions(&paddock, &sandbox, &["space-1"]);
     paddock.wait_for("the worktree gone", |_| !path.exists());
-    // `branch -d`, never `-D`: git keeps the branch, and says so.
-    paddock.wait_for_text("not fully merged");
+    // `branch -d`, never `-D`: git keeps the branch, and a notice says so.
+    paddock.wait_for_text("branch feat/u kept");
     assert!(has_branch(&dir, "feat/u"));
+}
+
+#[test]
+fn changes_made_after_the_question_are_never_forced_away() {
+    let sandbox = Sandbox::new();
+    let dir = repo(&sandbox);
+    let mut paddock = in_repo(&sandbox, &dir);
+    new_worktree(&mut paddock, "feat/r");
+    wait_for_worktree_row(&paddock, "repo/feat/r");
+    let path = worktree(&sandbox, "feat/r");
+    commit(&path, "work");
+
+    x_on_current_space(&mut paddock);
+    paddock.wait_for_popup("Delete worktree", "delete feat/r");
+    paddock.send(b"y");
+    wait_for_all(&paddock, &["feat/r is not merged into main"]);
+    // The question was only about the branch; new work comes in now.
+    std::fs::write(path.join("late.txt"), "work\n").unwrap();
+    paddock.send(b"y");
+
+    paddock.wait_for_text("feat/r has uncommitted changes now: nothing deleted");
+    assert!(path.join("late.txt").is_file());
+    assert_eq!(sandbox.session_names(), ["space-1", "repo/feat/r"]);
+}
+
+#[test]
+fn a_detached_worktree_with_its_own_commits_asks_again() {
+    let sandbox = Sandbox::new();
+    let dir = repo(&sandbox);
+    let path = worktree(&sandbox, "loose");
+    git(
+        &dir,
+        &["worktree", "add", "-q", "--detach", &path.to_string_lossy()],
+    );
+    commit(&path, "detached-work");
+    let mut paddock = in_repo(&sandbox, &dir);
+    open_listed(&mut paddock, "repo/loose");
+
+    x_on_current_space(&mut paddock);
+    paddock.wait_for_popup("Delete worktree", "delete loose and its worktree");
+    paddock.send(b"y");
+    paddock.wait_for_popup(
+        "Delete worktree",
+        "loose has commits not in main: delete anyway? y/n",
+    );
+    paddock.send(b"y");
+
+    wait_for_sessions(&paddock, &sandbox, &["space-1"]);
+    paddock.wait_for("the worktree gone", |_| !path.exists());
+}
+
+#[test]
+fn x_on_a_worktree_space_paddock_did_not_make_only_closes_it() {
+    let sandbox = Sandbox::new();
+    let dir = repo(&sandbox);
+    // As Claude's worktree isolation makes them: inside the repository.
+    let agent = dir.join(".claude/worktrees/agent-a1");
+    git(
+        &dir,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "worktree-agent-a1",
+            &agent.to_string_lossy(),
+        ],
+    );
+    let mut paddock = in_repo(&sandbox, &dir);
+    open_listed(&mut paddock, "repo/worktree-agent-a1");
+
+    x_on_current_space(&mut paddock);
+
+    wait_for_sessions(&paddock, &sandbox, &["space-1"]);
+    assert!(!paddock.full_screen().contains(" Delete worktree "));
+    assert!(agent.is_dir(), "the worktree stays");
+    assert!(has_branch(&dir, "worktree-agent-a1"), "so does its branch");
 }
 
 #[test]
@@ -292,9 +398,20 @@ fn the_main_checkout_is_never_deleted() {
     let mut paddock = in_repo(&sandbox, &dir);
 
     paddock.command(b"X");
-    paddock.wait_for_text("the main checkout stays");
+    paddock.wait_for_text("not a worktree space");
     std::thread::sleep(Duration::from_millis(200));
     assert_eq!(sandbox.session_names(), ["space-1"]);
-    assert!(dir.join(".git").is_dir());
     assert!(!paddock.full_screen().contains(" Delete worktree "));
+
+    // Sidebar `x` on a space in the main checkout closes it, as before.
+    paddock.command(b"C");
+    paddock.wait_for_popup("New space", "space-2");
+    paddock.send(b"\r");
+    wait_for_sessions(&paddock, &sandbox, &["space-1", "space-2"]);
+    paddock.wait_for_text(PROMPT);
+    x_on_current_space(&mut paddock);
+    wait_for_sessions(&paddock, &sandbox, &["space-1"]);
+    assert!(!paddock.full_screen().contains(" Delete worktree "));
+    assert!(dir.join(".git").is_dir());
+    assert_eq!(git(&dir, &["branch", "--show-current"]), "main");
 }

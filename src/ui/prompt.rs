@@ -20,6 +20,8 @@ use ratatui::widgets::{Block, BorderType, Clear, Widget};
 const WIDTH: u16 = 40;
 /// The width of a box holding a list (paths need the room).
 const LIST_WIDTH: u16 = 60;
+/// The widest a question's box gets; a longer question wraps.
+const MESSAGE_WIDTH: u16 = 64;
 /// Borders and one line.
 const HEIGHT: u16 = 3;
 /// Blank columns between the border and the text, each side.
@@ -50,6 +52,37 @@ pub struct Prompt<'a> {
 /// wide or as wide as the screen if narrower.
 pub fn area(screen: Rect) -> Rect {
     sized(screen, WIDTH, 1)
+}
+
+/// `text` in lines of at most `width` characters, broken between words
+/// (a word too long for a line is cut); at least one line.
+fn wrap(text: &str, width: u16) -> Vec<String> {
+    let width = usize::from(width.max(1));
+    let mut lines = vec![String::new()];
+    for word in text.split(' ') {
+        let mut word: Vec<char> = word.chars().collect();
+        loop {
+            let line = lines.last_mut().expect("never empty");
+            let used = line.chars().count();
+            let gap = usize::from(used > 0);
+            if used + gap + word.len() <= width {
+                if gap == 1 {
+                    line.push(' ');
+                }
+                line.extend(word);
+                break;
+            }
+            if used > 0 {
+                lines.push(String::new());
+                continue;
+            }
+            let rest = word.split_off(width);
+            line.extend(word);
+            word = rest;
+            lines.push(String::new());
+        }
+    }
+    lines
 }
 
 /// Where a box `width` wide holding `lines` lines goes on a screen
@@ -83,7 +116,13 @@ impl Prompt<'_> {
             Body::Input(_) => area(screen),
             Body::Message(m) => {
                 let needed = u16::try_from(m.chars().count()).unwrap_or(u16::MAX);
-                sized(screen, WIDTH.max(needed.saturating_add(2 * PAD + 2)), 1)
+                let width = needed
+                    .saturating_add(2 * PAD + 2)
+                    .clamp(WIDTH, MESSAGE_WIDTH)
+                    .min(screen.width);
+                let inner = width.saturating_sub(2 * PAD + 2);
+                let lines = u16::try_from(wrap(m, inner).len()).unwrap_or(u16::MAX);
+                sized(screen, width, lines)
             }
             Body::List { items, .. } => {
                 let lines = u16::try_from(items.len().max(1)).unwrap_or(u16::MAX);
@@ -110,7 +149,9 @@ impl Prompt<'_> {
         let width = usize::from(text.width);
         match &self.body {
             Body::Message(m) => {
-                buf.set_stringn(text.x, text.y, m, width, Style::default());
+                for (line, y) in wrap(m, text.width).iter().zip(text.y..text.bottom()) {
+                    buf.set_stringn(text.x, y, line, width, Style::default());
+                }
                 None
             }
             Body::Input(line) => {
@@ -242,6 +283,25 @@ mod tests {
             accent: Color::Blue,
         };
         assert_eq!(long.area(screen).width, 54);
+        // Longer still, it wraps between words in a box at most 64 wide.
+        let longer = Prompt {
+            title: " x ",
+            body: Body::Message(format!("{} {}: y/n", "b".repeat(40), "c".repeat(30))),
+            accent: Color::Blue,
+        };
+        let popup = longer.area(screen);
+        assert_eq!((popup.width, popup.height), (64, 4));
+        let mut buf = Buffer::empty(screen);
+        longer.render(popup, &mut buf);
+        let shown = rows(&buf);
+        assert!(
+            shown[3].contains(&format!("│ {} ", "b".repeat(40))),
+            "{shown:#?}"
+        );
+        assert!(shown[4].contains(&format!("│ {}: y/n", "c".repeat(30))));
+        assert_eq!(wrap("abcdef", 4), ["abcd", "ef"]);
+        assert_eq!(wrap("", 4), [""]);
+        assert_eq!(wrap("ab cd", 5), ["ab cd"]);
         let empty = Prompt {
             title: " x ",
             body: Body::List {

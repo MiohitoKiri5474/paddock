@@ -42,7 +42,7 @@ pub struct Place {
     pub branch: Option<String>,
     /// The working tree and its repository's main checkout; `None`
     /// outside a git repository.
-    pub checkout: Option<git::Checkout>,
+    pub tree: Option<git::WorkingTree>,
 }
 
 /// Space `id`'s directory: that of its first tab's first pane, else the
@@ -75,15 +75,8 @@ fn places(server: &Server, spaces: &[String]) -> Vec<(String, Place)> {
         .filter_map(|id| {
             let path = space_dir(server, id)?;
             let branch = git::head(&path);
-            let checkout = git::checkout(&path);
-            Some((
-                id.clone(),
-                Place {
-                    path,
-                    branch,
-                    checkout,
-                },
-            ))
+            let tree = git::working_tree(&path);
+            Some((id.clone(), Place { path, branch, tree }))
         })
         .collect()
 }

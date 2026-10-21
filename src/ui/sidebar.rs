@@ -72,7 +72,7 @@ pub struct SpaceLine {
 pub enum Entry {
     Space(SpaceLine),
     /// The repository's name.
-    Repo(String),
+    RepoHeader(String),
 }
 
 /// One agent (main Claude session) as the sidebar draws it.
@@ -95,7 +95,7 @@ pub enum Line {
     /// A space's second line: its directory and branch.
     SpacePlace(usize),
     /// A repository's header over its worktree spaces.
-    Repo(usize),
+    RepoHeader(usize),
     /// An agent's first line: dot, label and state.
     Agent(usize),
     /// An agent's second line: its space and tab.
@@ -109,7 +109,7 @@ pub fn pick(line: Line, spaces: usize) -> Option<usize> {
     match line {
         Line::Space(i) | Line::SpacePlace(i) => Some(i),
         Line::Agent(i) | Line::AgentPlace(i) => Some(spaces + i),
-        Line::Header(_) | Line::Repo(_) | Line::Blank => None,
+        Line::Header(_) | Line::RepoHeader(_) | Line::Blank => None,
     }
 }
 
@@ -125,8 +125,8 @@ pub fn lines(entries: &[Entry], agents: usize) -> Vec<Line> {
                 out.extend([Line::Space(spaces), Line::SpacePlace(spaces)]);
                 spaces += 1;
             }
-            Entry::Repo(_) => {
-                out.push(Line::Repo(repos));
+            Entry::RepoHeader(_) => {
+                out.push(Line::RepoHeader(repos));
                 repos += 1;
             }
         }
@@ -187,13 +187,13 @@ pub fn render(
             .iter()
             .filter_map(|e| match e {
                 Entry::Space(s) => Some(s),
-                Entry::Repo(_) => None,
+                Entry::RepoHeader(_) => None,
             })
             .collect(),
         repos: entries
             .iter()
             .filter_map(|e| match e {
-                Entry::Repo(name) => Some(name.as_str()),
+                Entry::RepoHeader(name) => Some(name.as_str()),
                 Entry::Space(_) => None,
             })
             .collect(),
@@ -227,7 +227,7 @@ impl Sidebar<'_> {
         let current = match line {
             Line::Space(i) | Line::SpacePlace(i) => self.spaces[i].current,
             Line::Agent(i) | Line::AgentPlace(i) => self.agents[i].current,
-            Line::Header(_) | Line::Repo(_) | Line::Blank => false,
+            Line::Header(_) | Line::RepoHeader(_) | Line::Blank => false,
         };
         if current {
             base = base.bg(self.current_bg);
@@ -255,7 +255,7 @@ impl Sidebar<'_> {
             Line::Header(title) => {
                 put(dot_x, title, dim.add_modifier(Modifier::BOLD));
             }
-            Line::Repo(i) => {
+            Line::RepoHeader(i) => {
                 put(name_x, self.repos[i], dim);
             }
             Line::Space(i) => {
@@ -526,7 +526,7 @@ mod tests {
                 ..space("api", None, true)
             }),
             Entry::Space(linked("api/feat/x", "feat/x")),
-            Entry::Repo("paddock".into()),
+            Entry::RepoHeader("paddock".into()),
             Entry::Space(linked("paddock/feat/y", "feat/y")),
         ];
         let agents = [agent("x", State::Waiting, "api/feat/x · claude")];

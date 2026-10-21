@@ -40,20 +40,17 @@ impl App {
                 let kept = Mode::Sidebar(selected.clone());
                 self.panel_key(key, kept, |app, key| app.sidebar_key(selected, key))
             }
-            Mode::OpenWorktree {
-                candidates,
-                selected,
-                back,
-            } => {
-                self.open_worktree_key(candidates, selected, back, key);
+            Mode::OpenWorktree(list) => {
+                self.open_worktree_key(list, key);
                 Ok(Flow::Continue)
             }
-            // `y` goes on; any other key keeps it, and is not passed on.
-            Mode::ConfirmDelete { target, risk, back } => {
+            // `y` goes on; any other key cancels the delete (nothing is
+            // deleted), and is not passed on.
+            Mode::ConfirmDelete(q) => {
                 if key.code == KeyCode::Char('y') {
-                    self.confirm_delete(target, risk, back);
+                    self.confirm_delete(q);
                 } else {
-                    self.mode = Mode::back_to(back);
+                    self.mode = Mode::back_to(q.back);
                 }
                 Ok(Flow::Continue)
             }
@@ -216,14 +213,12 @@ impl App {
             let d = d.clone();
             return self.dashboard_paste(&d, text);
         }
-        match &mut self.mode {
-            Mode::Naming { line, .. } => line.insert(text),
+        if let Mode::Naming { line, .. } = &mut self.mode {
+            line.insert(text);
+            return Ok(());
+        }
+        match self.mode {
             Mode::Help => self.mode = Mode::Normal,
-            Mode::Sidebar(_)
-            | Mode::ConfirmClose { .. }
-            | Mode::Dashboard(_)
-            | Mode::OpenWorktree { .. }
-            | Mode::ConfirmDelete { .. } => {}
             Mode::Normal => {
                 let Some(pane) = self.typing_pane() else {
                     return Ok(());
@@ -234,6 +229,8 @@ impl App {
                     .is_some_and(|t| t.emulator().modes().bracketed_paste);
                 self.input(&pane, &encode_paste(text, bracketed))?;
             }
+            // The other prompts and the sidebar take no paste.
+            _ => {}
         }
         Ok(())
     }

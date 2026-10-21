@@ -109,7 +109,7 @@ impl App {
         let rows = self.rows();
         let spaces = self.space_entries().into_iter().filter_map(|e| match e {
             SpaceEntry::Space { index, .. } => Some(Pick::Space(self.spaces[index].id.clone())),
-            SpaceEntry::Repo(_) => None,
+            SpaceEntry::RepoHeader(_) => None,
         });
         let agents = rows.iter().map(|r| Pick::Agent(r.pane.clone()));
         spaces.chain(agents).collect()
@@ -172,10 +172,13 @@ impl App {
                 // Asking takes the keyboard; otherwise the sidebar keeps it.
                 self.mode = Mode::Sidebar(s.clone());
                 match &s.pick {
-                    Some(Pick::Space(id)) if self.worktree_space(id).is_some() => {
-                        self.report(|app| app.delete_worktree(id));
-                    }
-                    Some(Pick::Space(id)) => self.report(|app| app.close_space(id)),
+                    // A worktree space paddock made is deleted (asking);
+                    // any other space is closed. Read now, not from the
+                    // sidebar's last read.
+                    Some(Pick::Space(id)) => match self.worktree_space(id) {
+                        Some(target) => self.ask_delete(target),
+                        None => self.report(|app| app.close_space(id)),
+                    },
                     Some(Pick::Agent(pane)) => self.report(|app| app.close(pane)),
                     None => {}
                 }

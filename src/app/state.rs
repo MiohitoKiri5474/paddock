@@ -14,10 +14,10 @@ use super::sidebar::clamp_width;
 use super::sidebar::Selection;
 use super::space::Space;
 use super::watch::Place;
-use super::worktrees::{Choice, WorktreeSpace};
+use super::worktrees::{DeleteQuestion, WorktreeList, WorktreeSpace};
 use super::Event;
 use crate::config::{Config, Floats, Worktrees};
-use crate::git::Checkout;
+use crate::git::WorkingTree;
 use crate::hooks::now_ms;
 use crate::input::keymap::Keymap;
 use crate::input::line::LineEdit;
@@ -58,22 +58,12 @@ pub enum Mode {
     },
     /// The dashboard is open.
     Dashboard(Dashboard),
-    /// The prompt lists `candidates` (the repository's worktrees without
-    /// a space) to open one; `selected` is the line the cursor is on.
-    /// `back` is the panel asked from, to return to.
-    OpenWorktree {
-        candidates: Vec<Choice>,
-        selected: usize,
-        back: Option<Panel>,
-    },
-    /// Asking before deleting `target` with its worktree and branch; the
-    /// second time, `risk` names what would be lost. `back` is the panel
-    /// asked from, to return to.
-    ConfirmDelete {
-        target: WorktreeSpace,
-        risk: Option<String>,
-        back: Option<Panel>,
-    },
+    /// The prompt lists the repository's worktrees without a space, to
+    /// open one.
+    OpenWorktree(WorktreeList),
+    /// Asking before deleting a worktree space with its worktree and
+    /// branch.
+    ConfirmDelete(DeleteQuestion),
 }
 
 /// A panel that had the keyboard when the prompt opened, and gets it back
@@ -106,37 +96,52 @@ impl Mode {
         }
     }
 
-    /// The panel the open prompt returns to, if any.
-    pub fn back_panel(&self) -> Option<&Panel> {
+    /// While the prompt popup is open, where it gives the keyboard back:
+    /// the panel it was asked from, if any; `None` while no prompt is
+    /// open. Every prompt mode is listed here and in [`Self::prompt_back_mut`]
+    /// only.
+    fn prompt_back(&self) -> Option<&Option<Panel>> {
         match self {
             Mode::Naming { back, .. }
             | Mode::ConfirmClose { back, .. }
-            | Mode::OpenWorktree { back, .. }
-            | Mode::ConfirmDelete { back, .. } => back.as_ref(),
-            _ => None,
+            | Mode::OpenWorktree(WorktreeList { back, .. })
+            | Mode::ConfirmDelete(DeleteQuestion { back, .. }) => Some(back),
+            Mode::Normal | Mode::Help | Mode::Sidebar(_) | Mode::Dashboard(_) => None,
         }
+    }
+
+    /// [`Self::prompt_back`], to change it.
+    fn prompt_back_mut(&mut self) -> Option<&mut Option<Panel>> {
+        match self {
+            Mode::Naming { back, .. }
+            | Mode::ConfirmClose { back, .. }
+            | Mode::OpenWorktree(WorktreeList { back, .. })
+            | Mode::ConfirmDelete(DeleteQuestion { back, .. }) => Some(back),
+            Mode::Normal | Mode::Help | Mode::Sidebar(_) | Mode::Dashboard(_) => None,
+        }
+    }
+
+    /// The panel the open prompt returns to, if any.
+    pub fn back_panel(&self) -> Option<&Panel> {
+        self.prompt_back()?.as_ref()
     }
 
     /// The panel the open prompt returns to, to change it in place.
     pub fn back_panel_mut(&mut self) -> Option<&mut Panel> {
-        match self {
-            Mode::Naming { back, .. }
-            | Mode::ConfirmClose { back, .. }
-            | Mode::OpenWorktree { back, .. }
-            | Mode::ConfirmDelete { back, .. } => back.as_mut(),
-            _ => None,
-        }
+        self.prompt_back_mut()?.as_mut()
     }
 
     /// Whether the prompt popup is open: every key and click goes to it.
     pub fn is_prompt(&self) -> bool {
-        matches!(
-            self,
-            Mode::Naming { .. }
-                | Mode::ConfirmClose { .. }
-                | Mode::OpenWorktree { .. }
-                | Mode::ConfirmDelete { .. }
-        )
+        self.prompt_back().is_some()
+    }
+
+    /// Close the open prompt as `Esc` would: the mode that gives the
+    /// keyboard back to the panel it was asked from. `None`, changing
+    /// nothing, if no prompt is open.
+    pub fn cancel_prompt(&mut self) -> Option<Self> {
+        let back = self.prompt_back_mut()?.take();
+        Some(Mode::back_to(back))
     }
 }
 
@@ -148,7 +153,7 @@ pub enum NameTarget {
     /// A new space.
     NewSpace,
     /// A branch to check out in a new worktree of this repository.
-    NewWorktree(Checkout),
+    NewWorktree(WorkingTree),
 }
 
 /// What a rename is for.
@@ -180,7 +185,7 @@ pub enum CloseTarget {
     /// A whole space (`$N`) with all its tabs.
     Space(String),
     /// A worktree space, whose worktree and branch go with it (`force`:
-    /// with its uncommitted changes).
+    /// with its uncommitted changes, which the user was asked about).
     Worktree { target: WorktreeSpace, force: bool },
 }
 
