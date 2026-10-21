@@ -7,7 +7,7 @@ Design: [docs/design.md](docs/design.md). Glossary: [CONTEXT.md](CONTEXT.md). De
 ## Requirements
 
 - macOS (the release binary is for Apple Silicon only)
-- tmux (tested with 3.8): `brew install tmux`
+- tmux (tested with 3.8): `brew install tmux` (Homebrew installs it with paddock)
 - Claude Code (for session tracking)
 - Rust 1.85+, only to build from source
 
@@ -15,19 +15,22 @@ Design: [docs/design.md](docs/design.md). Glossary: [CONTEXT.md](CONTEXT.md). De
 
 Pick one of these, then install the hooks (below).
 
-**Release tarball** (Apple Silicon). Download `paddock-v0.0.1-aarch64-apple-darwin.tar.gz` from [Releases](https://github.com/MiohitoKiri5474/paddock/releases), then:
+**Homebrew** (recommended; installs tmux too):
 
 ```sh
+brew install MiohitoKiri5474/paddock/paddock
+```
+
+If an earlier `brew install` failed while tapping, run `brew untap miohitokiri5474/paddock` first. Upgrade with `brew upgrade paddock`.
+
+**Release tarball** (Apple Silicon). Download `paddock-v0.0.1-aarch64-apple-darwin.tar.gz` and its `.sha256` from [Releases](https://github.com/MiohitoKiri5474/paddock/releases), then:
+
+```sh
+shasum -a 256 -c paddock-v0.0.1-aarch64-apple-darwin.tar.gz.sha256
 tar xzf paddock-v0.0.1-aarch64-apple-darwin.tar.gz
 xattr -d com.apple.quarantine paddock   # unsigned binary: lets Gatekeeper run it ("No such xattr" is fine)
 sudo mkdir -p /usr/local/bin             # missing on a fresh Apple Silicon Mac
 sudo mv paddock /usr/local/bin/         # or anywhere on your PATH
-```
-
-**Homebrew** (installs tmux too; the tap is published alongside each release, starting with v0.0.1):
-
-```sh
-brew install MiohitoKiri5474/paddock/paddock
 ```
 
 **Cargo**, from a tag:
@@ -35,6 +38,8 @@ brew install MiohitoKiri5474/paddock/paddock
 ```sh
 cargo install --git https://github.com/MiohitoKiri5474/paddock --tag v0.0.1 --locked
 ```
+
+If it fails with `failed to authenticate when downloading repository: git@github.com:…` (your git config rewrites GitHub URLs to SSH), let cargo use the `git` command: prefix the command with `CARGO_NET_GIT_FETCH_WITH_CLI=true`, or set `git-fetch-with-cli = true` under `[net]` in `~/.cargo/config.toml`.
 
 **From source**, in a clone:
 
@@ -49,7 +54,22 @@ cp ~/.claude/settings.json ~/.claude/settings.json.bak
 paddock hooks install               # adds paddock's hooks to ~/.claude/settings.json
 ```
 
-`hooks install` keeps other hooks (for example Supacode's), removes the old tmux-claude-session-manager hooks, and records the binary's full path, so install from a stable location. Re-run it after upgrading paddock.
+`hooks install` keeps other hooks (for example Supacode's), removes the old tmux-claude-session-manager hooks, and records the binary's full path, so install from a stable location. Re-run it after upgrading paddock or moving its binary.
+
+### Switch install method
+
+The hooks point at the old binary by its full path, so remove them with it before it goes, then install them again with the new one. For example, from Cargo to Homebrew:
+
+```sh
+# Detach paddock first (C-a d); your terminals keep running in tmux.
+~/.cargo/bin/paddock hooks uninstall
+cargo uninstall paddock
+brew install MiohitoKiri5474/paddock/paddock
+hash -r && which paddock            # /opt/homebrew/bin/paddock
+paddock hooks install
+```
+
+Restart running Claude sessions so they use the new hooks. Config and state are kept.
 
 ## Use
 
