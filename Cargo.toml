@@ -1,6 +1,6 @@
 [package]
 name = "paddock"
-version = "0.0.2"
+version = "0.0.3"
 edition = "2021"
 rust-version = "1.85"
 description = "A terminal workspace for running Claude Code"
