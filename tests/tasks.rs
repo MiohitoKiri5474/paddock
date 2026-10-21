@@ -18,8 +18,10 @@ const SPIKE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/spikes/02-subagent-worktree/fixtures"
 );
-/// The dashboard's title line, as drawn while it is open.
-const OPEN: &str = "dashboard  j down  k up";
+/// The start of the dashboard's key line, as drawn while it is open.
+const OPEN: &str = "j down  k up";
+/// The dashboard's title, on its first line, right under the tab bar.
+const TITLE: &str = "dashboard";
 
 /// A recorded main-agent payload for `cwd`; `tool` renames its tool.
 fn payload(name: &str, cwd: &Path, tool: Option<&str>) -> String {
@@ -77,7 +79,7 @@ fn ready(sandbox: &Sandbox) -> Paddock {
 /// The dashboard's list lines, spaces collapsed; empty while it is closed.
 fn list(paddock: &Paddock) -> Vec<String> {
     let rows = paddock.rows();
-    if !rows.get(1).is_some_and(|r| r.contains(OPEN)) {
+    if rows.get(1).is_none_or(|r| r.trim() != TITLE) {
         return Vec::new();
     }
     rows.iter()

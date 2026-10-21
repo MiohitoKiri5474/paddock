@@ -15,8 +15,8 @@ const SPIKE: &str = concat!(
 );
 const OURS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/hooks");
 const SESSION: &str = "11111111-2222-4333-8444-555555555555";
-/// The dashboard's title line, as drawn while it is open.
-const OPEN: &str = "dashboard  j down  k up";
+/// The start of the dashboard's key line, as drawn while it is open.
+const OPEN: &str = "j down  k up";
 /// The preview's title while keys go to the terminal.
 const TYPING: &str = "typing into";
 const ASK: &str = "close? y/n";
@@ -130,6 +130,28 @@ fn o_opens_the_dashboard_and_esc_closes_it() {
     open(&mut paddock);
     paddock.command(b"o");
     paddock.wait_for("the dashboard closed again", |s| !s.contains(OPEN));
+}
+
+#[test]
+fn the_list_sits_above_the_preview_and_the_keys_at_the_bottom() {
+    let sandbox = Sandbox::new();
+    let mut paddock = ready(&sandbox);
+    claude(&sandbox, "space-1:0", "Stop", "s1", "/w/repo");
+    wait_anywhere(&paddock, "idle");
+    open(&mut paddock);
+    paddock.wait_for_text("preview: repo");
+
+    let rows = paddock.rows();
+    let at = |what: &str| {
+        rows.iter()
+            .position(|r| r.contains(what))
+            .unwrap_or_else(|| panic!("{what} not drawn:\n{}", rows.join("\n")))
+    };
+    let (title, row, preview) = (at(" dashboard"), at(" repo"), at("preview: repo"));
+    assert_eq!(title, 1, "right under the tab bar");
+    assert!(title < row && row < preview, "{}", rows.join("\n"));
+    let last = rows.last().expect("rows drawn");
+    assert!(last.starts_with(&format!(" {OPEN}")), "{}", rows.join("\n"));
 }
 
 #[test]

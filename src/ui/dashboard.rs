@@ -1,6 +1,6 @@
 //! The dashboard (`C-a o`): an overlay over the session view listing every
-//! session row with its task rows and their git details, beside or above a
-//! live, read-only preview of the selected row's terminal.
+//! session row with its task rows and their git details, on top, a live
+//! preview of the selected row's terminal below, and the keys at the bottom.
 
 use super::session_view;
 use crate::app::{Row, RowId, TaskDetails, TaskRow};
@@ -15,13 +15,24 @@ use ratatui::widgets::{Clear, Widget};
 pub const TITLE: &str = "dashboard";
 /// The list's only line without rows.
 const EMPTY: &str = " no Claude sessions yet";
-/// From this width on, the preview sits beside the list instead of below it.
-const SIDE_BY_SIDE: u16 = 140;
+/// The list's share of the dashboard's height at most, in percent, unless
+/// that is below [`MIN_LIST`].
+const LIST_SHARE_PERCENT: u32 = 40;
+/// The list's height at least (its title and a few lines), while the
+/// dashboard is that tall.
+const MIN_LIST: u16 = 4;
+/// The list's title line, above its lines.
+const LIST_TITLE: u16 = 1;
+/// The key line under the preview.
+const KEYS_HEIGHT: u16 = 1;
+/// The preview's height at least: its title and one line of the terminal.
+/// A preview shorter than that is given to the list.
+const MIN_PREVIEW: u16 = 2;
 
 /// What the dashboard shows.
 pub struct View<'a> {
     pub rows: &'a [Row],
-    /// The keys, shown after the title.
+    /// The keys, shown on the dashboard's last line.
     pub keys: &'a str,
     pub details: &'a TaskDetails,
     pub selected: Option<&'a RowId>,
@@ -118,63 +129,79 @@ fn spread(indent: usize, left: &str, right: &str, width: usize) -> String {
     text.chars().take(width).collect()
 }
 
-/// The list's area and the preview's, with one line or column between them.
-pub fn split(area: Rect) -> (Rect, Rect) {
-    if area.width >= SIDE_BY_SIDE {
-        let list = area.width / 2;
-        let preview = Rect {
-            x: area.x + list + 1,
-            width: area.width - list - 1,
-            ..area
-        };
-        return (
-            Rect {
-                width: list,
-                ..area
-            },
-            preview,
-        );
-    }
-    let list = area.height / 2;
-    let preview = Rect {
-        y: area.y + list,
-        height: area.height - list,
+/// Where the dashboard's parts go, top to bottom.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Layout {
+    /// The title, then the rows.
+    pub list: Rect,
+    /// The preview's title, then the selected row's terminal.
+    pub preview: Rect,
+    /// The key line, at the bottom.
+    pub keys: Rect,
+}
+
+/// The dashboard's parts in `area` for a list of `lines` lines: the list as
+/// tall as its lines (one line saying there are none without any) but at
+/// most [`LIST_SHARE_PERCENT`] of the height and at least [`MIN_LIST`], the
+/// key line at the bottom, and the preview between them. On a short screen
+/// the preview goes first, then the key line.
+pub fn layout(area: Rect, lines: usize) -> Layout {
+    let keys_height = if area.height > KEYS_HEIGHT {
+        KEYS_HEIGHT
+    } else {
+        0
+    };
+    let room = area.height - keys_height;
+    let share = u32::from(area.height) * LIST_SHARE_PERCENT / 100;
+    let cap = u16::try_from(share).unwrap_or(u16::MAX).max(MIN_LIST);
+    let wanted = u16::try_from(lines.max(1))
+        .unwrap_or(u16::MAX)
+        .saturating_add(LIST_TITLE);
+    let list = wanted.max(MIN_LIST).min(cap).min(room);
+    // Too short to show any of the terminal: the list keeps that room.
+    let list = if room - list < MIN_PREVIEW {
+        room
+    } else {
+        list
+    };
+    let preview = room - list;
+    let at = |y: u16, height: u16| Rect {
+        y: area.y + y,
+        height,
         ..area
     };
-    (
-        Rect {
-            height: list,
-            ..area
-        },
-        preview,
-    )
+    Layout {
+        list: at(0, list),
+        preview: at(list, preview),
+        keys: at(list + preview, keys_height),
+    }
 }
 
 /// Draw the dashboard over `area`. Returns where the cursor goes: in the
 /// previewed terminal while interactive.
 pub fn render(view: &View, area: Rect, buf: &mut Buffer) -> Option<Position> {
     Clear.render(area, buf);
-    let (list, preview) = split(area);
-    render_list(view, list, buf);
-    if preview.x > list.right() {
-        for y in area.top()..area.bottom() {
-            buf.set_string(list.right(), y, "│", Style::default());
-        }
-    }
-    render_preview(view, preview, buf)
+    let parts = layout(area, lines(view.rows).len());
+    render_list(view, parts.list, buf);
+    render_keys(view.keys, parts.keys, buf);
+    render_preview(view, parts.preview, buf)
 }
 
-/// The title and the keys, on the list's first line.
-fn render_title(keys: &str, area: Rect, buf: &mut Buffer) {
+/// The title, on the list's first line.
+fn render_title(area: Rect, buf: &mut Buffer) {
     let bold = Style::default().add_modifier(Modifier::BOLD);
     let title = format!(" {TITLE}");
     buf.set_stringn(area.x, area.y, &title, usize::from(area.width), bold);
-    let keys_at = u16::try_from(title.len() + 2).unwrap_or(u16::MAX);
-    if keys_at < area.width {
-        let dim = Style::default().add_modifier(Modifier::DIM);
-        let room = usize::from(area.width - keys_at);
-        buf.set_stringn(area.x + keys_at, area.y, keys, room, dim);
+}
+
+/// The keys, dim, on the dashboard's last line.
+fn render_keys(keys: &str, area: Rect, buf: &mut Buffer) {
+    if area.height == 0 || area.width == 0 {
+        return;
     }
+    let dim = Style::default().add_modifier(Modifier::DIM);
+    let text = format!(" {keys}");
+    buf.set_stringn(area.x, area.y, text, usize::from(area.width), dim);
 }
 
 /// A list line's text, `width` cells, and style: a session row's label and
@@ -204,7 +231,7 @@ fn render_list(view: &View, area: Rect, buf: &mut Buffer) {
         return;
     }
     let width = usize::from(area.width);
-    render_title(view.keys, area, buf);
+    render_title(area, buf);
     let lines = lines(view.rows);
     if lines.is_empty() && area.height > 1 {
         buf.set_stringn(area.x, area.y + 1, EMPTY, width, Style::default());
@@ -397,16 +424,49 @@ mod tests {
         );
     }
 
+    /// A layout of `list`, `preview` and `keys` rows stacked from row 1 of
+    /// an area 80 columns wide.
+    fn stacked(list: u16, preview: u16, keys: u16) -> Layout {
+        Layout {
+            list: Rect::new(0, 1, 80, list),
+            preview: Rect::new(0, 1 + list, 80, preview),
+            keys: Rect::new(0, 1 + list + preview, 80, keys),
+        }
+    }
+
     #[test]
-    fn the_preview_goes_below_the_list_unless_the_area_is_wide() {
+    fn the_list_sits_on_top_sized_to_its_lines_with_the_keys_at_the_bottom() {
+        let area = |height| Rect::new(0, 1, 80, height);
         assert_eq!(
-            split(Rect::new(24, 1, 76, 29)),
-            (Rect::new(24, 1, 76, 14), Rect::new(24, 15, 76, 15))
+            layout(area(40), 7),
+            stacked(8, 31, 1),
+            "the title and seven lines"
+        );
+        assert_eq!(layout(area(40), 50), stacked(16, 23, 1), "capped at 40%");
+        assert_eq!(
+            layout(area(40), 1),
+            stacked(4, 35, 1),
+            "a few rows at least"
         );
         assert_eq!(
-            split(Rect::new(0, 1, 160, 40)),
-            (Rect::new(0, 1, 80, 40), Rect::new(81, 1, 79, 40))
+            layout(area(40), 0),
+            stacked(4, 35, 1),
+            "the line saying there are none"
         );
+    }
+
+    #[test]
+    fn a_short_dashboard_loses_its_preview_before_its_list() {
+        let area = |height| Rect::new(0, 1, 80, height);
+        assert_eq!(layout(area(8), 9), stacked(4, 3, 1), "the minimum wins");
+        assert_eq!(
+            layout(area(6), 9),
+            stacked(5, 0, 1),
+            "no room for a terminal line: the list keeps it"
+        );
+        assert_eq!(layout(area(3), 9), stacked(2, 0, 1));
+        assert_eq!(layout(area(1), 9), stacked(1, 0, 0), "only the title");
+        assert_eq!(layout(area(0), 9), stacked(0, 0, 0));
     }
 
     #[test]
@@ -471,7 +531,7 @@ mod tests {
             now: 0,
         };
         assert_eq!(render(&view, area, &mut buf), None);
-        assert!(text(&buf, 0).starts_with(" dashboard  j down  k up"));
+        assert_eq!(text(&buf, 0), " dashboard");
         assert_eq!(
             text(&buf, 1),
             " api                                                   idle"
@@ -487,20 +547,22 @@ mod tests {
         assert!(buf[(3, 2)].modifier.contains(Modifier::REVERSED));
         assert!(!buf[(3, 1)].modifier.contains(Modifier::REVERSED));
         assert_eq!(buf[(3, 3)].bg, Color::Yellow);
-        assert!(text(&buf, 6).starts_with("─ preview: api  I to type ──"));
-        assert_eq!(text(&buf, 7), "hello preview");
+        assert!(text(&buf, 4).starts_with("─ preview: api  I to type ──"));
+        assert_eq!(text(&buf, 5), "hello preview");
+        assert_eq!(text(&buf, 11), " j down  k up", "the keys at the bottom");
+        assert!(buf[(1, 11)].modifier.contains(Modifier::DIM));
 
         let typing = View {
             interactive: true,
             ..view
         };
         let cursor = render(&typing, area, &mut Buffer::empty(area));
-        assert_eq!(cursor, Some(Position::new(13, 7)));
+        assert_eq!(cursor, Some(Position::new(13, 5)));
     }
 
     #[test]
     fn a_closed_rows_preview_says_it_has_no_terminal() {
-        let area = Rect::new(0, 0, 40, 6);
+        let area = Rect::new(0, 0, 40, 8);
         let mut buf = Buffer::empty(area);
         let rows = [row("gone", State::Stopped, vec![])];
         let selected = RowId {
@@ -517,12 +579,12 @@ mod tests {
             now: 0,
         };
         render(&view, area, &mut buf);
-        assert!(text(&buf, 3).starts_with("─ gone: no terminal ─"));
+        assert!(text(&buf, 4).starts_with("─ gone: no terminal ─"));
     }
 
     #[test]
     fn without_rows_it_says_there_are_no_sessions() {
-        let area = Rect::new(0, 0, 40, 6);
+        let area = Rect::new(0, 0, 40, 8);
         let mut buf = Buffer::empty(area);
         let view = View {
             keys: KEYS,
@@ -535,12 +597,13 @@ mod tests {
         };
         render(&view, area, &mut buf);
         assert_eq!(text(&buf, 1), " no Claude sessions yet");
-        assert_eq!(text(&buf, 3), "─".repeat(40));
+        assert_eq!(text(&buf, 4), "─".repeat(40));
+        assert_eq!(text(&buf, 7), " j down  k up");
     }
 
     #[test]
     fn the_selected_line_scrolls_into_sight() {
-        let area = Rect::new(0, 0, 30, 6);
+        let area = Rect::new(0, 0, 30, 10);
         let mut buf = Buffer::empty(area);
         let rows: Vec<Row> = (0..6)
             .map(|i| row(&format!("r{i}"), State::Running, vec![]))
@@ -559,8 +622,9 @@ mod tests {
             now: 0,
         };
         render(&view, area, &mut buf);
-        // Two lines for the list below its title.
-        assert!(text(&buf, 1).starts_with(" r4"));
-        assert!(text(&buf, 2).starts_with(" r5"));
+        // The list is capped at four rows: three lines below its title.
+        assert!(text(&buf, 1).starts_with(" r3"));
+        assert!(text(&buf, 3).starts_with(" r5"));
+        assert!(text(&buf, 4).starts_with("─ r5: no terminal"));
     }
 }
