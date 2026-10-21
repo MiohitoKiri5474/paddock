@@ -122,22 +122,6 @@ The finder (`C-a g`) opens a box framed like the prompts: a text field on top an
 
 Floats (`[floats]`): `C-a G` shows lazygit in a box over the whole screen, sidebar included, framed like the prompts and titled with its command; `C-a G` again hides it and the program keeps running, so showing it again brings back the same program and state. When the program exits, the float closes, and the next `C-a G` starts it again. Each space has its own float per key, started in the focused terminal's directory; it lives in the space's tmux session (so it survives detaching) but is never a tab, never in `C-a Tab`'s history, and paddock does not follow Claude in it. One float shows at a time. While it shows, every key, paste and mouse event inside it goes to it, except the prefix: `C-a` commands still work, and one that changes the page or gives the sidebar or dashboard the keyboard hides the float first. A click outside it does nothing. A float whose key you remove from `[floats]` is closed, with its program, the next time paddock opens. Floats are tmux windows, so `tmux -L paddock attach` lists them next to the tabs.
 
-#### Direct
-
-Some commands also fire on one chord, no prefix (`[keys.direct]`), whenever a terminal has the keyboard: not in the sidebar, the dashboard, a prompt, the finder or a float (a float gets every key but the prefix). Any action from the table above can be bound here; by default:
-
-| Key | Action | Name |
-|---|---|---|
-| `C-M-c` | new tab in this space | `new_tab` |
-| `C-\` | split side by side | `split_right` |
-| `C--` | split top and bottom | `split_down` |
-| `C-h` | focus left | `focus_left` |
-| `C-j` | focus down | `focus_down` |
-| `C-k` | focus up | `focus_up` |
-| `C-l` | focus right | `focus_right` |
-
-`C-h`, `C-j`, `C-k` and `C-l` are Backspace, Enter, clear and kill-line in many programs, and paddock takes them: a notice at start says so until you set `[keys.direct]` yourself (even empty, or to the same chords; `focus_left = ""` gives `C-h` back to the terminal). `C-M-c` needs a terminal that sends Alt, and paddock gives no warning about it (see [Configure](#configure)). Next and previous tab have no chord by default (`C-a n`, `C-a p`); `C-M-[` would reach paddock only under the kitty keyboard protocol (elsewhere it is two `Esc`). A direct chord matches exactly as bound (not with an extra Shift), and may be the same key as a `[keys.commands]` one, since those need the prefix first. The help (`C-a ?`) shows each command's chord after it in brackets.
-
 In the sidebar (`[keys.sidebar]`; prefix commands work too):
 
 | Key | Action | Name |
@@ -166,6 +150,22 @@ In the dashboard (`[keys.dashboard]`):
 While typing into the preview, every key goes to the terminal except `Esc`, which only leaves and is never passed on; this is fixed, so a remap can never trap you there. `/` opens a one-line filter under the dashboard's title: the list keeps only the blocks whose session name, branch or state fuzzy-match what you type; `Enter` keeps the filter and returns the keys to the list, `Esc` clears it and leaves the filter line. Task rows show line changes, ahead/behind, the diff and changed files against the base branch (`origin/HEAD`, else `main`/`master`), the last commit's age, and `merged` once the branch is in its base. Prompt editing (`Enter`, `Esc`, `Left`/`Right`, `Home`/`End`, `Backspace`/`Delete`, `C-u` (clear), `C-w` (delete word)), the dashboard filter's keys (the same editing; `Enter` keeps, `Esc` clears) and the `y` that confirms a close are fixed too.
 
 Mouse: click to focus a split, switch tabs (`+` after the tabs opens one, `<`/`>` scroll a full bar), or open a space or agent; the wheel over the tab bar switches tabs; wheel scrolls history; drag selects and copies (hold Shift over programs that use the mouse).
+
+#### Direct
+
+Some commands also fire on one chord, no prefix (`[keys.direct]`), whenever a terminal has the keyboard: not in the sidebar, the dashboard, a prompt, the finder or a float (a float gets every key but the prefix). Any action from the prefix table can be bound here; by default:
+
+| Key | Action | Name |
+|---|---|---|
+| `C-M-c` | new tab in this space | `new_tab` |
+| `C-\` | split side by side | `split_right` |
+| `C--` | split top and bottom | `split_down` |
+| `C-h` | focus left | `focus_left` |
+| `C-j` | focus down | `focus_down` |
+| `C-k` | focus up | `focus_up` |
+| `C-l` | focus right | `focus_right` |
+
+`C-h`, `C-j`, `C-k` and `C-l` are Backspace, Enter, clear and kill-line in many programs, and paddock takes them: a notice at start says so until you set `[keys.direct]` yourself (even empty, or to the same chords; `focus_left = ""` gives `C-h` back to the terminal). `C-M-c` needs a terminal that sends Alt, and paddock gives no warning about it (see [Configure](#configure)). Next and previous tab have no chord by default (`C-a n`, `C-a p`); `C-M-[` would reach paddock only under the kitty keyboard protocol (elsewhere it is two `Esc`). A direct chord matches exactly as bound (not with an extra Shift), and may be the same key as a `[keys.commands]` one, since those need the prefix first. The help (`C-a ?`) shows each command's chord after it in brackets.
 
 ## Configure
 
