@@ -106,10 +106,19 @@ pub struct HookRecord {
 /// the same Claude at once, so the terminal's session goes on.
 pub const CLEAR: &str = "clear";
 
+/// The `SessionStart` source of a compaction: the conversation goes on.
+const COMPACT: &str = "compact";
+
+/// Whether `r` is Claude starting a conversation (startup, resume,
+/// `/clear`), not going on with one (compaction).
+fn restarts(r: &HookRecord) -> bool {
+    r.event == "SessionStart" && r.source.as_deref() != Some(COMPACT)
+}
+
 /// The session state an event leads to, if it changes it.
 pub fn state_after(r: &HookRecord) -> Option<State> {
     let state = match r.event.as_str() {
-        "SessionStart" if r.source.as_deref() == Some("compact") => State::Running,
+        "SessionStart" if r.source.as_deref() == Some(COMPACT) => State::Running,
         "SessionStart" | "Stop" => State::Idle,
         "UserPromptSubmit" | "PreCompact" | "PostToolUse" => State::Running,
         "PermissionRequest" => State::Waiting,
@@ -228,6 +237,11 @@ pub struct Session {
 }
 
 impl Session {
+    /// Whether Claude quit: the session ended, so it has no row.
+    pub fn ended(&self) -> bool {
+        self.state == State::Stopped
+    }
+
     fn new(session_id: Option<String>) -> Self {
         Self {
             session_id,
@@ -309,10 +323,16 @@ impl Session {
             .and_then(|a| a.branch.clone())
     }
 
-    /// The same terminal's next conversation: only the task rows carry over.
+    /// The same terminal's next conversation: only the task rows carry
+    /// over, and only if Claude goes on (`/clear`). After Claude quit, a new
+    /// Claude starts with none.
     fn next(&mut self, session_id: Option<String>) {
         self.stop_subagents();
-        let tasks = std::mem::take(&mut self.tasks);
+        let tasks = if self.ended() {
+            Vec::new()
+        } else {
+            std::mem::take(&mut self.tasks)
+        };
         *self = Session {
             tasks,
             ..Session::new(session_id)
@@ -401,10 +421,11 @@ impl Sessions {
     /// is dismissed. A dismissed row stays hidden until an event about it
     /// newer than the dismissal (a dismissed session row hides its task rows
     /// too), so replaying the event log keeps it hidden. An ended session
-    /// stays hidden until a new one starts in the same terminal.
+    /// stays hidden until a new one starts in the same terminal, or Claude
+    /// resumes it (see [`Sessions::fold`]).
     pub fn shown(&self, pane: &str) -> Option<(&Session, Vec<&Task>)> {
         let s = self.by_pane.get(pane)?;
-        if s.state == State::Stopped {
+        if s.ended() {
             return None;
         }
         let key = |branch: Option<&str>| (pane.to_string(), branch.map(str::to_string));
@@ -492,10 +513,10 @@ impl Sessions {
         if r.session_id.is_some() && r.session_id != s.session_id {
             s.next(r.session_id.clone());
         }
-        // A session that ended never runs again: a subagent's or a tool's
-        // hook landing after `SessionEnd` lags behind. Only a `SessionStart`
-        // (a resume) brings it back.
-        if s.state == State::Stopped && r.event != "SessionStart" {
+        // Hooks landing after `SessionEnd` (a subagent's, a tool's, a late
+        // compaction's) lag behind and are ignored. Only Claude starting
+        // the same conversation again (a resume) brings it back.
+        if s.ended() && !restarts(r) {
             return false;
         }
         // A subagent's directory is its worktree, not the session's.
@@ -555,7 +576,7 @@ impl Sessions {
             let same = s.session_id.as_deref() == Some(a.session_id.as_str());
             // A session that ended never runs again: a snapshot still
             // listing it lags behind.
-            if same && s.state == State::Stopped {
+            if same && s.ended() {
                 continue;
             }
             let fresh_hook = same && s.hooked.is_some_and(|h| taken <= h + HOOK_GRACE);
@@ -1088,12 +1109,14 @@ mod tests {
         // it back.
         s.reconcile(10_000, &[agent(S1, "idle", Some("%1"))]);
         assert_eq!(shown(&s), None);
-        // A new Claude in the same terminal is shown, with its tasks.
+        // A new Claude in the same terminal is shown, without the ended
+        // session's tasks.
         s.apply(&HookRecord {
             session_id: Some("newer".into()),
             ..rec("SessionStart", 10_001)
         });
-        assert_eq!(shown(&s), Some(vec!["feat/a"]));
+        assert_eq!(shown(&s), Some(vec![]));
+        assert!(tasks(&s).is_empty());
     }
 
     #[test]
@@ -1106,8 +1129,14 @@ mod tests {
         assert_eq!(state(&s), State::Stopped);
         assert_eq!(shown(&s), None);
         assert_eq!(tasks(&s), [("feat/a", "/r")]);
+        // A late compaction does not bring it back.
+        s.apply(&HookRecord {
+            source: Some(COMPACT.into()),
+            ..rec("SessionStart", 5)
+        });
+        assert_eq!(shown(&s), None);
         // Claude resuming the same conversation brings it back.
-        s.apply(&rec("SessionStart", 5));
+        s.apply(&rec("SessionStart", 6));
         assert_eq!(state(&s), State::Idle);
         assert_eq!(shown(&s), Some(vec!["feat/a"]));
     }

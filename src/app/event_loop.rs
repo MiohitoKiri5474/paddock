@@ -159,9 +159,9 @@ fn handle(
 ) -> Result<(Flow, bool)> {
     match event {
         Event::Tmux { session, msg } => {
-            let (flow, changed, panes_changed) = handle_tmux(app, &session, msg);
-            effects.rows_may_move = panes_changed;
-            Ok((flow, changed))
+            let done = handle_tmux(app, &session, msg);
+            effects.rows_may_move = done.panes_changed;
+            Ok((done.flow, done.changed))
         }
         Event::Input(input) => handle_input(app, input, screen),
         Event::Detach => Ok((Flow::Quit, true)),
@@ -194,9 +194,29 @@ fn handle(
     }
 }
 
-/// A control message from space `session`'s client. Returns whether to go
-/// on, whether the screen may have changed and whether the panes changed.
-fn handle_tmux(app: &mut App, session: &str, msg: Message) -> (Flow, bool, bool) {
+/// What handling a tmux control message did.
+struct TmuxHandled {
+    /// Whether to go on.
+    flow: Flow,
+    /// Whether the screen may have changed.
+    changed: bool,
+    /// Whether the panes changed, which may move rows (see [`EventEffects`]).
+    panes_changed: bool,
+}
+
+impl TmuxHandled {
+    /// The panes changed: everything may have.
+    fn panes_changed(flow: Flow) -> Self {
+        Self {
+            flow,
+            changed: true,
+            panes_changed: true,
+        }
+    }
+}
+
+/// A control message from space `session`'s client.
+fn handle_tmux(app: &mut App, session: &str, msg: Message) -> TmuxHandled {
     match msg {
         Message::Output { pane, data } => {
             let unseen = !app.terminals.contains_key(&pane);
@@ -210,20 +230,24 @@ fn handle_tmux(app: &mut App, session: &str, msg: Message) -> (Flow, bool, bool)
             if let Some(t) = app.terminals.get_mut(&pane) {
                 t.output(&data);
             }
-            (
-                Flow::Continue,
-                app.shows(&pane) || app.shows_in_preview(&pane),
-                unseen,
-            )
+            TmuxHandled {
+                flow: Flow::Continue,
+                changed: app.shows(&pane) || app.shows_in_preview(&pane),
+                panes_changed: unseen,
+            }
         }
         // The space's tmux session ended: its last pane exited or was closed.
-        Message::Exit if app.space_ended(session) => (Flow::Continue, true, true),
-        Message::Exit => (Flow::Quit, true, true),
+        Message::Exit if app.space_ended(session) => TmuxHandled::panes_changed(Flow::Continue),
+        Message::Exit => TmuxHandled::panes_changed(Flow::Quit),
         Message::Notification(n) if changes_structure(&n) => {
             app.refresh_reported(session);
-            (Flow::Continue, true, true)
+            TmuxHandled::panes_changed(Flow::Continue)
         }
-        Message::Notification(_) | Message::Reply { .. } => (Flow::Continue, false, false),
+        Message::Notification(_) | Message::Reply { .. } => TmuxHandled {
+            flow: Flow::Continue,
+            changed: false,
+            panes_changed: false,
+        },
     }
 }
 
