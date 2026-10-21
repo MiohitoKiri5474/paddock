@@ -283,15 +283,16 @@ impl Sidebar<'_> {
             }
             Line::Agent(i) => {
                 let a = &self.agents[i];
-                let name = if a.external { dim } else { Style::default() };
-                put(dot_x, STATE_DOT, dot(a.state));
+                // An external session is dim all along: dot, label, state.
+                let faded = |style: Style| if a.external { style.patch(dim) } else { style };
+                put(dot_x, STATE_DOT, faded(dot(a.state)));
                 let state = a.state.label();
                 let width = u16::try_from(state.chars().count()).unwrap_or(0);
                 let state_x = end.saturating_sub(width).max(name_x);
                 let room = usize::from(state_x.saturating_sub(name_x + 1));
                 let label: String = a.label.chars().take(room).collect();
-                put(name_x, &label, name);
-                put(state_x, state, highlight(a.state));
+                put(name_x, &label, faded(Style::default()));
+                put(state_x, state, faded(highlight(a.state)));
             }
             Line::SpacePlace(i) => {
                 let s = &self.spaces[i];
@@ -662,8 +663,11 @@ mod tests {
         let buf = draw(&[space("a", Some(State::Running), false)], &agents, None);
         assert_eq!(text(&buf, 8).trim_end_matches([' ', '│']), " EXTERNAL");
         assert!(text(&buf, 9).starts_with(" ● web"), "{}", text(&buf, 9));
-        assert!(buf[(3, 9)].modifier.contains(Modifier::DIM), "dim label");
-        assert!(!buf[(3, 5)].modifier.contains(Modifier::DIM));
+        // The whole line is dim: dot, label and state word.
+        for x in [1, 3, 16] {
+            assert!(buf[(x, 9)].modifier.contains(Modifier::DIM), "dim at {x}");
+            assert!(!buf[(x, 5)].modifier.contains(Modifier::DIM), "{x}");
+        }
         assert_eq!(text(&buf, 10).trim_end_matches([' ', '│']), "   feat/x");
         assert!(buf[(3, 10)].modifier.contains(Modifier::DIM));
     }
