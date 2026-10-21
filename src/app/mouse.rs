@@ -80,9 +80,7 @@ impl App {
                 return Some(false)
             }
             MouseEventKind::Down(_) | MouseEventKind::Drag(_) | MouseEventKind::Up(_) => {
-                if let Mode::Copy(copy) = std::mem::replace(&mut self.mode, Mode::Normal) {
-                    self.leave_copy(&copy);
-                }
+                self.end_copy();
                 return None;
             }
         };

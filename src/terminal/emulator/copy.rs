@@ -8,7 +8,7 @@ use crate::terminal::search;
 use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Column, Line, Point, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
-use alacritty_terminal::term::cell::Flags;
+use alacritty_terminal::term::cell::{Cell as GridCell, Flags};
 use alacritty_terminal::vi_mode::{ViModeCursor, ViMotion};
 
 /// A cell of the grid: `line` counts from the live screen's top row (0),
@@ -178,15 +178,14 @@ impl Emulator {
     }
 
     fn is_spacer(&self, spot: Spot) -> bool {
-        let flags = self.term.grid()[spot.point()].flags;
-        flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+        is_spacer(&self.term.grid()[spot.point()])
     }
 
     /// Select from `anchor` to `cursor`, both cells included, in either
-    /// direction; whole lines if `lines`.
-    pub fn select_between(&mut self, anchor: Spot, cursor: Spot, lines: bool) {
+    /// direction; the lines they are on if `whole_lines`.
+    pub fn select_between(&mut self, anchor: Spot, cursor: Spot, whole_lines: bool) {
         let (anchor, cursor) = (self.clamped(anchor), self.clamped(cursor));
-        let selection = if lines {
+        let selection = if whole_lines {
             let mut s = Selection::new(SelectionType::Lines, anchor.point(), Side::Left);
             s.update(cursor.point(), Side::Right);
             s
@@ -216,10 +215,7 @@ impl Emulator {
             let row = &grid[Line(line)];
             for col in 0..=last.0 {
                 let cell = &row[Column(col)];
-                if cell
-                    .flags
-                    .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
-                {
+                if is_spacer(cell) {
                     continue;
                 }
                 text.push(cell.c);
@@ -228,15 +224,29 @@ impl Emulator {
             if row[last].flags.contains(Flags::WRAPLINE) {
                 continue;
             }
-            found.extend(search::find(&text, query).into_iter().map(|i| Found {
-                start: spots[i],
-                end: spots[i + len - 1],
+            found.extend(search::find(&text, query).into_iter().map(|i| {
+                // A match ending on a wide character ends on its second half.
+                let mut end = spots[i + len - 1];
+                if grid[end.point()].flags.contains(Flags::WIDE_CHAR) {
+                    end.col += 1;
+                }
+                Found {
+                    start: spots[i],
+                    end,
+                }
             }));
             text.clear();
             spots.clear();
         }
         found
     }
+}
+
+/// Whether `cell` is the second half of a wide character, or the empty
+/// cell before one wrapped onto the next row: no character of its own.
+fn is_spacer(cell: &GridCell) -> bool {
+    cell.flags
+        .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
 }
 
 #[cfg(test)]
@@ -395,6 +405,23 @@ mod tests {
         e.feed("\r\n漢err".as_bytes());
         let wide = e.find("err");
         assert_eq!(wide.last().map(|f| f.start), Some(Spot::new(1, 2)));
+    }
+
+    #[test]
+    fn a_match_ending_on_a_wide_character_covers_both_its_halves() {
+        let e = grid(10, 1, &["a漢字b"]);
+        let found = e.find("a漢");
+        assert_eq!(
+            found,
+            [Found {
+                start: Spot::new(0, 0),
+                end: Spot::new(0, 2)
+            }]
+        );
+        let wide = e.find("字");
+        assert_eq!(wide[0].start, Spot::new(0, 3));
+        assert!(wide[0].contains(Spot::new(0, 4)), "its second half");
+        assert!(!wide[0].contains(Spot::new(0, 5)));
     }
 
     #[test]

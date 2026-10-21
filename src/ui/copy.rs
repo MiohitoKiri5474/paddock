@@ -17,7 +17,7 @@ use ratatui::style::{Modifier, Style};
 
 /// The copy-mode line.
 pub enum Status<'a> {
-    /// Where the cursor is (` COPY  line N/M`, the match), and key hints
+    /// Where the cursor is (` COPY  line N/M `, the match), and key hints
     /// shown on the right as far as they fit.
     Info { left: String, hints: &'a [String] },
     /// The search being typed, after its key (`/` or `?`).
@@ -161,6 +161,27 @@ mod tests {
         }
         assert_ne!(buf[(2, 0)].bg, MATCH_BG);
         assert_eq!(buf[(0, 2)].bg, MATCH_BG);
+    }
+
+    #[test]
+    fn a_wide_character_in_a_match_is_coloured_whole() {
+        let e = emulator("x漢y");
+        let found = e.find("漢");
+        let view = CopyView {
+            cursor: Spot::new(0, 0),
+            found: &found,
+            status: Status::Info {
+                left: String::new(),
+                hints: &[],
+            },
+        };
+        let area = Rect::new(0, 0, 30, 4);
+        let mut buf = Buffer::empty(area);
+        view.render(&e, area, &mut buf);
+        for x in [1, 2] {
+            assert_eq!(buf[(x, 0)].bg, MATCH_BG, "column {x}");
+        }
+        assert_ne!(buf[(3, 0)].bg, MATCH_BG);
     }
 
     #[test]

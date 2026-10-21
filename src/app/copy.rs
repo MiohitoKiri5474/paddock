@@ -33,14 +33,22 @@ pub struct CopyMode {
     /// Its pane.
     pub pane: String,
     pub cursor: Spot,
-    /// Where the selection started, and whether it takes whole lines.
-    pub anchor: Option<(Spot, bool)>,
+    /// Where the selection started, while selecting.
+    pub anchor: Option<Anchor>,
     /// The last search.
     pub search: Option<Search>,
     /// The search being typed, if the prompt is open.
     pub typing: Option<Typing>,
     /// The status line's key hints, from the keys as configured.
     pub hints: Vec<String>,
+}
+
+/// Where a selection started, and whether it takes whole lines (`V`) or
+/// characters (`v`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Anchor {
+    pub spot: Spot,
+    pub whole_lines: bool,
 }
 
 /// A search typed in copy mode.
@@ -60,6 +68,16 @@ pub struct Typing {
     pub forward: bool,
 }
 
+impl Typing {
+    /// An empty search prompt, searching `forward` (down) or back (up).
+    fn new(forward: bool) -> Self {
+        Self {
+            line: LineEdit::default(),
+            forward,
+        }
+    }
+}
+
 impl CopyMode {
     /// What the status line shows: the search being typed, else where the
     /// cursor is and the keys.
@@ -69,10 +87,10 @@ impl CopyMode {
             return Status::Prompt { key, line: &t.line };
         }
         let (n, total) = emu.line_number(self.cursor);
-        let mut left = format!(" COPY  line {n}/{total}");
+        let mut left = format!(" COPY  line {n}/{total} ");
         if let Some(s) = &self.search {
             let i = s.current.map_or(0, |i| i + 1);
-            left.push_str(&format!("  match {i}/{}", s.found.len()));
+            left.push_str(&format!(" match {i}/{} ", s.found.len()));
         }
         Status::Info {
             left,
@@ -107,10 +125,7 @@ impl App {
             cursor,
             anchor: None,
             search: None,
-            typing: search.then(|| Typing {
-                line: LineEdit::default(),
-                forward: false,
-            }),
+            typing: search.then(|| Typing::new(false)),
             hints: self.keymap.copy.hints_for(HINTS),
         });
     }
@@ -127,6 +142,14 @@ impl App {
         }
     }
 
+    /// End copy mode, if on: leave it in its terminal and give the keyboard
+    /// back to the panes.
+    pub(super) fn end_copy(&mut self) {
+        if let Mode::Copy(copy) = std::mem::replace(&mut self.mode, Mode::Normal) {
+            self.leave_copy(&copy);
+        }
+    }
+
     /// After any event: copy mode ends by itself when its terminal closed,
     /// is no longer on screen (another tab, the float hidden), or went on
     /// by itself (resized, or holding too much output), with a notice.
@@ -139,9 +162,7 @@ impl App {
         if paused && self.shows(&pane) {
             return;
         }
-        if let Mode::Copy(copy) = std::mem::replace(&mut self.mode, Mode::Normal) {
-            self.leave_copy(&copy);
-        }
+        self.end_copy();
         let went_on = self.terminals.get_mut(&pane).and_then(|t| t.take_went_on());
         self.notice = match went_on {
             Some(WentOn::Overflowed) => {
@@ -163,12 +184,7 @@ impl App {
         }
         match self.prefix.handle(key) {
             KeyAction::Command(Command::CopyMode) | KeyAction::None => {}
-            KeyAction::Command(Command::Search) => {
-                copy.typing = Some(Typing {
-                    line: LineEdit::default(),
-                    forward: false,
-                });
-            }
+            KeyAction::Command(Command::Search) => copy.typing = Some(Typing::new(false)),
             KeyAction::Command(c) => {
                 self.leave_copy(&copy);
                 return self.command(c);
@@ -214,12 +230,7 @@ impl App {
                 self.leave_copy(&copy);
                 return Flow::Continue;
             }
-            CopyAction::Search { forward } => {
-                copy.typing = Some(Typing {
-                    line: LineEdit::default(),
-                    forward,
-                });
-            }
+            CopyAction::Search { forward } => copy.typing = Some(Typing::new(forward)),
             CopyAction::NextMatch | CopyAction::PreviousMatch => {
                 if let Some(forward) = copy.search.as_ref().map(|s| s.forward) {
                     let same = action == CopyAction::NextMatch;
@@ -286,9 +297,7 @@ impl App {
         };
         let emu = t.emulator_mut();
         emu.reveal(copy.cursor);
-        if let Some((anchor, lines)) = copy.anchor {
-            emu.select_between(anchor, copy.cursor, lines);
-        }
+        reselect(copy, emu);
     }
 
     /// The wheel in copy mode, over its terminal: the view scrolls by
@@ -303,9 +312,7 @@ impl App {
         };
         let emu = t.emulator_mut();
         copy.cursor = emu.wheel(copy.cursor, lines);
-        if let Some((anchor, whole)) = copy.anchor {
-            emu.select_between(anchor, copy.cursor, whole);
-        }
+        reselect(copy, emu);
     }
 
     /// Copy mode's view for pane `pane`, if it is the one in copy mode.
@@ -328,15 +335,25 @@ impl App {
     }
 }
 
-/// `v` (characters) or `V` (`lines`): start selecting at the cursor; the
-/// same again stops, the other kind switches to it.
-fn toggle_selection(copy: &mut CopyMode, emu: &mut Emulator, lines: bool) {
+/// `v` (characters) or `V` (`whole_lines`): start selecting at the cursor;
+/// the same again stops, the other kind switches to it.
+fn toggle_selection(copy: &mut CopyMode, emu: &mut Emulator, whole_lines: bool) {
     copy.anchor = match copy.anchor {
-        Some((_, kind)) if kind == lines => None,
-        Some((anchor, _)) => Some((anchor, lines)),
-        None => Some((copy.cursor, lines)),
+        Some(a) if a.whole_lines == whole_lines => None,
+        Some(a) => Some(Anchor { whole_lines, ..a }),
+        None => Some(Anchor {
+            spot: copy.cursor,
+            whole_lines,
+        }),
     };
     if copy.anchor.is_none() {
         emu.clear_selection();
+    }
+}
+
+/// Select again from the anchor, while selecting, to where the cursor is.
+fn reselect(copy: &CopyMode, emu: &mut Emulator) {
+    if let Some(a) = copy.anchor {
+        emu.select_between(a.spot, copy.cursor, a.whole_lines);
     }
 }

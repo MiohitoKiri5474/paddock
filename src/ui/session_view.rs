@@ -62,6 +62,11 @@ pub fn cells_marked(
             let c = emu.cell(row, x);
             if c.spacer {
                 // Covered by the wide character to its left; ratatui skips it.
+                // A match's colours still cover both its halves.
+                if marked(row, x) {
+                    let cell = &mut buf[(area.x + x, area.y + y)];
+                    cell.set_style(Style::default().fg(MATCH_FG).bg(MATCH_BG));
+                }
                 continue;
             }
             let mut m = Modifier::empty();
