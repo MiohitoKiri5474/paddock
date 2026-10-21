@@ -246,10 +246,10 @@ impl App {
 
     /// An external session has no tab to look at: its finished turn turns
     /// idle once you look at its row instead, selected in the dashboard, or
-    /// in AGENTS while the sidebar has the keyboard (with the outer window
-    /// focused).
+    /// in AGENTS while the sidebar has the keyboard, with the outer window
+    /// focused and no float over it (as [`Self::looking_at_tab`] asks).
     pub(super) fn see_selected_external(&mut self) {
-        if !self.attention.window_focused {
+        if !self.looking_at_tab() {
             return;
         }
         let key = match &self.mode {
