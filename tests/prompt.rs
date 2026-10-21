@@ -6,7 +6,7 @@ mod harness;
 use harness::{Paddock, Sandbox, PROMPT};
 use std::time::Duration;
 
-/// The dashboard's title line, as drawn while it is open.
+/// The start of the dashboard's key line, as drawn while it is open.
 const DASHBOARD: &str = "j down  k up";
 
 fn ready(sandbox: &Sandbox) -> Paddock {

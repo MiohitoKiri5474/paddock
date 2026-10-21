@@ -3,10 +3,11 @@
 
 use crate::app::{Row, TaskRow};
 use crate::git::{age, Details};
+use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// The columns, left to right: declared in [`COLUMNS`]' order, which
-/// [`Column::index`] relies on.
+/// [`Column::index`] and [`SPECS`] rely on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Column {
     /// The session's label, or a task's indented under it.
@@ -40,6 +41,48 @@ const COLUMNS: [Column; COUNT] = [
     Column::Age,
     Column::Merged,
 ];
+/// What a column shows and how.
+struct Spec {
+    /// The column's header.
+    header: &'static str,
+    /// Whether values sit at the column's right edge: numbers do.
+    right_aligned: bool,
+}
+/// Each column's [`Spec`], in [`COLUMNS`]' order.
+const SPECS: [Spec; COUNT] = [
+    Spec {
+        header: "NAME",
+        right_aligned: false,
+    },
+    Spec {
+        header: "STATE",
+        right_aligned: false,
+    },
+    Spec {
+        header: "↑↓",
+        right_aligned: true,
+    },
+    Spec {
+        header: "CHANGES",
+        right_aligned: true,
+    },
+    Spec {
+        header: "BASE",
+        right_aligned: true,
+    },
+    Spec {
+        header: "FILES",
+        right_aligned: true,
+    },
+    Spec {
+        header: "AGE",
+        right_aligned: true,
+    },
+    Spec {
+        header: "MERGED",
+        right_aligned: false,
+    },
+];
 /// The columns dropped, in this order, while the name does not fit. Name
 /// and state always stay.
 const DROP_ORDER: [Column; 6] = [
@@ -66,31 +109,14 @@ const ELLIPSIS: char = '…';
 const MERGED: &str = "✓";
 
 impl Column {
-    /// The column's header.
-    fn header(self) -> &'static str {
-        match self {
-            Column::Name => "NAME",
-            Column::State => "STATE",
-            Column::AheadBehind => "↑↓",
-            Column::Changes => "CHANGES",
-            Column::Base => "BASE",
-            Column::Files => "FILES",
-            Column::Age => "AGE",
-            Column::Merged => "MERGED",
-        }
-    }
-
-    /// Whether values sit at the column's right edge: numbers do.
-    fn right_aligned(self) -> bool {
-        matches!(
-            self,
-            Column::AheadBehind | Column::Changes | Column::Base | Column::Files | Column::Age
-        )
-    }
-
     /// The column's place, left to right.
     fn index(self) -> usize {
         self as usize
+    }
+
+    /// The column's header and alignment.
+    fn spec(self) -> &'static Spec {
+        &SPECS[self.index()]
     }
 }
 
@@ -102,7 +128,7 @@ pub type Widths = [Option<usize>; COUNT];
 
 /// The header line's cells.
 pub fn header() -> Cells {
-    COLUMNS.map(|c| c.header().to_string())
+    COLUMNS.map(|c| c.spec().header.to_string())
 }
 
 /// A session row's cells: its label and state.
@@ -158,21 +184,15 @@ pub fn task(task: &TaskRow, details: Option<&Details>, now: u64) -> Cells {
     cells
 }
 
-/// How many terminal cells `text` takes: two for a wide character (CJK,
-/// most emoji).
-fn cell_width(text: &str) -> usize {
-    text.width()
-}
-
 /// The columns' widths for `lines` (the header included) in `width`
-/// cells: each fits its widest value, at most [`CELL_CAP`], the name the
+/// terminal cells (two for a wide character: CJK, most emoji): each fits its widest value, at most [`CELL_CAP`], the name the
 /// rest. Columns go in [`DROP_ORDER`] until the name has
 /// [`NAME_WANTED`] cells, or all it needs.
 pub fn widths(lines: &[&Cells], width: usize) -> Widths {
     let widest = |c: Column| {
         lines
             .iter()
-            .map(|l| cell_width(&l[c.index()]))
+            .map(|l| l[c.index()].width())
             .max()
             .unwrap_or(0)
     };
@@ -199,27 +219,28 @@ pub fn widths(lines: &[&Cells], width: usize) -> Widths {
 }
 
 /// `text` in exactly `width` cells: cut with [`ELLIPSIS`] if longer, else
-/// padded on the left if `right`, on the right otherwise.
+/// padded on the left if `right`, on the right otherwise. Text is cut
+/// between grapheme clusters, each cut measured as a whole string, so an
+/// emoji with VS16 or a ZWJ sequence is kept whole or dropped whole.
 fn fit(text: &str, width: usize, right: bool) -> String {
-    let n = cell_width(text);
+    let n = text.width();
     if n > width {
         if width == 0 {
             return String::new();
         }
-        let room = width - ELLIPSIS.width().unwrap_or(1);
-        let mut used = 0;
-        let kept: String = text
-            .chars()
-            .take_while(|c| {
-                used += c.width().unwrap_or(0);
-                used <= room
-            })
-            .collect();
-        // A wide character that did not fit leaves a cell: pad it.
-        let pad = " ".repeat(room - cell_width(&kept));
+        let room = width.saturating_sub(ELLIPSIS.width().unwrap_or(1));
+        let end = text
+            .grapheme_indices(true)
+            .map(|(i, g)| i + g.len())
+            .take_while(|&end| text[..end].width() <= room)
+            .last()
+            .unwrap_or(0);
+        let kept = &text[..end];
+        // A wide grapheme that did not fit leaves a cell: pad it.
+        let pad = " ".repeat(room.saturating_sub(kept.width()));
         return format!("{kept}{ELLIPSIS}{pad}");
     }
-    let pad = " ".repeat(width - n);
+    let pad = " ".repeat(width.saturating_sub(n));
     if right {
         format!("{pad}{text}")
     } else {
@@ -231,7 +252,9 @@ fn fit(text: &str, width: usize, right: bool) -> String {
 pub fn line(cells: &Cells, widths: &Widths, width: usize) -> String {
     let shown: Vec<String> = COLUMNS
         .iter()
-        .filter_map(|&c| widths[c.index()].map(|w| fit(&cells[c.index()], w, c.right_aligned())))
+        .filter_map(|&c| {
+            widths[c.index()].map(|w| fit(&cells[c.index()], w, c.spec().right_aligned))
+        })
         .collect();
     let text = format!("{}{}", " ".repeat(MARGIN), shown.join(&" ".repeat(GAP)));
     fit(&text, width, false)
@@ -353,7 +376,7 @@ mod tests {
 
     /// Where `needle` starts in `text`, in cells.
     fn cell_at(text: &str, needle: &str) -> usize {
-        cell_width(&text[..text.find(needle).expect("in the line")])
+        text[..text.find(needle).expect("in the line")].width()
     }
 
     #[test]
@@ -369,7 +392,7 @@ mod tests {
         assert_eq!(cell_at(&laid[1], "idle"), state, "CJK");
         assert_eq!(cell_at(&laid[2], "done"), state, "emoji");
         assert_eq!(cell_at(&laid[3], "running"), state);
-        assert!(laid.iter().all(|l| cell_width(l) == 80), "every line fills");
+        assert!(laid.iter().all(|l| l.width() == 80), "every line fills");
     }
 
     #[test]
@@ -377,7 +400,21 @@ mod tests {
         assert_eq!(fit("修正バグ", 4, false), "修… ");
         assert_eq!(fit("修正バグ", 5, false), "修正…");
         assert_eq!(fit("修正", 6, true), "  修正");
-        assert_eq!(cell_width("修正バグ"), 8);
+        assert_eq!("修正バグ".width(), 8);
+        // VS16 makes `❤` two cells wide; counting it one character at a
+        // time would keep `❤️x` (3 cells) in 2 and underflow.
+        assert_eq!(fit("❤️xyz", 3, false), "❤️…");
+        assert_eq!(fit("✔️ ship", 4, false), "✔️ …");
+        // A ZWJ family is one grapheme: kept whole or not at all.
+        assert_eq!(fit("👨‍👩‍👧 home", 4, false), "👨‍👩‍👧 …");
+        assert_eq!(fit("👨‍👩‍👧 home", 2, false), "… ");
+        for text in ["❤️xyz", "✔️ ship", "👨‍👩‍👧 home", "a❤️b✔️c👨‍👩‍👧d", "修正バグ"]
+        {
+            for width in 0..=text.width() + 1 {
+                let got = fit(text, width, false);
+                assert_eq!(got.width(), width, "{text:?} in {width}");
+            }
+        }
     }
 
     #[test]
@@ -390,7 +427,7 @@ mod tests {
             COLUMNS
                 .iter()
                 .filter(|c| w[c.index()].is_some())
-                .map(|c| c.header())
+                .map(|c| c.spec().header)
                 .collect::<Vec<_>>()
         };
         assert_eq!(shown(100).len(), COUNT, "all fit");

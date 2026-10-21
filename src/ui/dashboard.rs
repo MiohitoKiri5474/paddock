@@ -15,6 +15,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
 use ratatui::widgets::{Block, BorderType, Clear, Widget};
 
+/// The dashboard's name, bold on the list's first line.
 pub const TITLE: &str = "dashboard";
 /// The list's only line without rows.
 const EMPTY: &str = " no Claude sessions yet";
@@ -67,6 +68,8 @@ fn style(state: State) -> Style {
     }
 }
 
+/// How a subagent's state stands out, as a session's would: strongly
+/// while waiting, softly once done.
 fn task_style(state: TaskState) -> Style {
     match state {
         TaskState::Waiting => style(State::Waiting),
@@ -113,7 +116,8 @@ fn on_selection(style: Style, bg: Color) -> Style {
 pub struct Layout {
     /// The title, then the rows.
     pub list: Rect,
-    /// The preview's title, then the selected row's terminal.
+    /// The selected session's terminal in a border, its title in the top
+    /// border.
     pub preview: Rect,
     /// The key line, at the bottom.
     pub keys: Rect,
