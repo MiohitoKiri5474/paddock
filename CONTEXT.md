@@ -37,6 +37,10 @@ The main area, showing the current tab's terminals.
 A box opened by the prefix and `g` with a text field and, under it, every space, tab and agent that fuzzy-matches the text, best first; `Enter` shows the one selected. It is a mode of the app, like naming, not a float.
 _Avoid_: picker, palette, goto, switcher
 
+**Copy mode**:
+A mode of one terminal, opened by the prefix and `[`, where its view stops following output and keys move a cursor over its history and screen to select, copy and search; leaving shows what came meanwhile. It is a mode of the app, like the finder.
+_Avoid_: scroll mode, vi mode
+
 **Dashboard**:
 An overlay with the task tree, full details and a live preview of the selected row.
 _Avoid_: overview screen
