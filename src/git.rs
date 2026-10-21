@@ -110,7 +110,7 @@ fn git_command(dir: &str, args: &[&str], env: &[(&str, &str)]) -> Command {
 /// or why it failed (see [`reason`]). Never prints: hooks must stay
 /// silent.
 fn wait(mut command: Command, timeout: Duration) -> Result<String, String> {
-    let late = || format!("{LATE} in {timeout:?}");
+    let late = || late_reason(timeout);
     let mut child = command
         .spawn()
         .map_err(|e| format!("cannot run git: {e}"))?;
@@ -145,6 +145,18 @@ fn wait(mut command: Command, timeout: Duration) -> Result<String, String> {
     // Without its words in time, the exit status says why.
     let said = stderr.recv_timeout(left()).unwrap_or_default();
     Err(reason(&said).unwrap_or_else(|| status.to_string()))
+}
+
+/// Why git failed when it did not finish within `timeout`.
+pub fn late_reason(timeout: Duration) -> String {
+    format!("{LATE} in {timeout:?}")
+}
+
+/// Whether `reason`, a failure from git, is git missing its deadline (see
+/// [`late_reason`]), not git refusing. A change's reason ends with its
+/// command, so only the start counts.
+pub fn is_late(reason: &str) -> bool {
+    reason.starts_with(LATE)
 }
 
 /// Read all of `pipe` (none: nothing) on a thread of its own; the text

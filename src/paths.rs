@@ -1,5 +1,6 @@
 //! Where paddock keeps things, with environment overrides so tests (and a
-//! second copy of paddock) never share state with the real one.
+//! second copy of paddock) never share state with the real one; and how
+//! paths under home are shown (`~`).
 //!
 //! - `PADDOCK_TMUX_SOCKET`: name of the hidden server's socket (`tmux -L`), default `paddock`.
 //! - `XDG_STATE_HOME`: state lives in `$XDG_STATE_HOME/paddock`, default `~/.local/state/paddock`.
@@ -51,6 +52,42 @@ impl Paths {
     }
 }
 
+/// The home directory, for showing paths with `~`.
+pub struct HomePaths {
+    home: String,
+    /// tmux reports directories with symlinks resolved (`/tmp` is
+    /// `/private/tmp` on macOS), so home may be written either way.
+    real_home: String,
+}
+
+impl HomePaths {
+    pub fn new() -> Self {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let real_home = crate::git::resolved(&home);
+        Self { home, real_home }
+    }
+
+    /// `path` with home, written either way, as `~`.
+    pub fn show(&self, path: &str) -> String {
+        let short = tilde(path, &self.home);
+        if short == path {
+            tilde(path, &self.real_home)
+        } else {
+            short
+        }
+    }
+}
+
+/// `path` with the home directory `home` written `~`.
+pub fn tilde(path: &str, home: &str) -> String {
+    match path.strip_prefix(home) {
+        Some(rest) if !home.is_empty() && (rest.is_empty() || rest.starts_with('/')) => {
+            format!("~{rest}")
+        }
+        _ => path.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -98,5 +135,13 @@ mod tests {
             ("XDG_CONFIG_HOME", "/c"),
         ]));
         assert!(p.is_ok());
+    }
+
+    #[test]
+    fn home_is_written_as_a_tilde() {
+        assert_eq!(tilde("/Users/me/project/api", "/Users/me"), "~/project/api");
+        assert_eq!(tilde("/Users/me", "/Users/me"), "~");
+        assert_eq!(tilde("/Users/meg/x", "/Users/me"), "/Users/meg/x");
+        assert_eq!(tilde("/tmp", ""), "/tmp");
     }
 }

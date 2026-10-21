@@ -292,16 +292,6 @@ impl Sidebar<'_> {
     }
 }
 
-/// `path` with the home directory `home` written `~`.
-pub fn tilde(path: &str, home: &str) -> String {
-    match path.strip_prefix(home) {
-        Some(rest) if !home.is_empty() && (rest.is_empty() || rest.starts_with('/')) => {
-            format!("~{rest}")
-        }
-        _ => path.to_string(),
-    }
-}
-
 /// A space's directory and branch in `width` cells: `path  branch`. Too
 /// long, the path loses its start first (`…ject/api`), then the branch its
 /// end (`feat/lo…`).
@@ -617,14 +607,6 @@ mod tests {
         assert_eq!(text(&buf, 1), "   new                 │");
         assert_eq!(text(&buf, 2), "                       │", "kept, empty");
         assert!(!buf[(3, 2)].modifier.contains(Modifier::DIM));
-    }
-
-    #[test]
-    fn home_is_written_as_a_tilde() {
-        assert_eq!(tilde("/Users/me/project/api", "/Users/me"), "~/project/api");
-        assert_eq!(tilde("/Users/me", "/Users/me"), "~");
-        assert_eq!(tilde("/Users/meg/x", "/Users/me"), "/Users/meg/x");
-        assert_eq!(tilde("/tmp", ""), "/tmp");
     }
 
     #[test]

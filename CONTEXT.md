@@ -119,7 +119,7 @@ _Avoid_: shortcut, hotkey
 ### Git
 
 **Worktree**:
-A git working tree linked to a repository, checked out on its own branch in its own directory. paddock makes one with `C-a W` (under `[worktrees] directory`), opens one with `C-a O`, and deletes one it made (under that directory) with `x` on its space; a space in a worktree is listed under its repository's main checkout.
+A git working tree linked to a repository, checked out on its own branch in its own directory. paddock makes one with `C-a W` (under `[worktrees] directory`), opens one with `C-a O`, and deletes one it made (under that directory) with `x` on its space; a space in a worktree is listed under its repository's main checkout. `paddock worktree new|open|list|rm` does the same without the UI, for agents and scripts.
 _Avoid_: checkout (for a linked one), clone
 
 **Main checkout**:

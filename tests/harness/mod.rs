@@ -248,9 +248,24 @@ impl Sandbox {
     /// Run the paddock binary with these arguments, environment and stdin,
     /// outside any terminal (as Claude Code runs a hook).
     pub fn run(&self, args: &[&str], env: &[(&str, &str)], stdin: &str) -> std::process::Output {
+        self.run_in(&self.path("home"), args, env, stdin)
+    }
+
+    /// [`Self::run`] in directory `dir`. Never the test's own directory:
+    /// that is paddock's repository, which a `worktree` command would change.
+    pub fn run_in(
+        &self,
+        dir: &std::path::Path,
+        args: &[&str],
+        env: &[(&str, &str)],
+        stdin: &str,
+    ) -> std::process::Output {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_paddock"));
         cmd.env_clear()
             .envs(self.env().into_iter().filter(|(k, _)| k != "TMUX"))
+            // Only the sandbox's git configuration (its home has none).
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .current_dir(dir)
             .envs(env.iter().copied())
             .args(args)
             .stdin(std::process::Stdio::piped())

@@ -19,6 +19,8 @@ use std::time::{Duration, Instant};
 const FRAME: Duration = Duration::from_millis(16);
 /// Milliseconds in a second.
 const MS_PER_SEC: u64 = 1000;
+/// What tmux tells every control client when a session is made or ends.
+const SESSIONS_CHANGED: &str = "%sessions-changed";
 
 /// Tells the git thread which task rows are on screen.
 struct GitFeed {
@@ -243,6 +245,12 @@ fn handle_tmux(app: &mut App, session: &str, msg: Message) -> TmuxHandled {
         // The space's tmux session ended: its last pane exited or was closed.
         Message::Exit if app.space_ended(session) => TmuxHandled::panes_changed(Flow::Continue),
         Message::Exit => TmuxHandled::panes_changed(Flow::Quit),
+        // A session came or went on the server: one made outside paddock
+        // becomes a space (one that ended reports its own exit).
+        Message::Notification(n) if n == SESSIONS_CHANGED => {
+            app.attach_new_sessions();
+            TmuxHandled::panes_changed(Flow::Continue)
+        }
         Message::Notification(n) if changes_structure(&n) => {
             app.refresh_reported(session);
             TmuxHandled::panes_changed(Flow::Continue)

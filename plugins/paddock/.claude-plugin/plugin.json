@@ -1,0 +1,12 @@
+{
+  "name": "paddock",
+  "version": "0.0.2",
+  "description": "Manage git worktrees as paddock spaces with the `paddock worktree` command",
+  "author": {
+    "name": "MiohitoKiri5474"
+  },
+  "homepage": "https://github.com/MiohitoKiri5474/paddock",
+  "repository": "https://github.com/MiohitoKiri5474/paddock",
+  "license": "MIT",
+  "keywords": ["paddock", "worktree", "git", "tmux"]
+}

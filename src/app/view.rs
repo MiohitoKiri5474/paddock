@@ -4,42 +4,17 @@
 use super::rows::{most_urgent, Row};
 use super::state::{App, CloseTarget, Mode};
 use super::worktrees::SpaceEntry;
+use crate::paths::HomePaths;
 use crate::sessions::State;
 use crate::tmux::structure::Window;
 use crate::ui::prompt::{self, Body, Prompt};
-use crate::ui::sidebar::{tilde, AgentLine, Entry, SpaceLine};
+use crate::ui::sidebar::{AgentLine, Entry, SpaceLine};
 use crate::ui::tab_bar::{self, Tab, TabBar};
 use ratatui::layout::Rect;
 use std::borrow::Cow;
 
 /// What a tab running Claude is called while the user has not named it.
 const CLAUDE: &str = "claude";
-
-/// The home directory, for showing paths with `~`.
-pub(super) struct HomePaths {
-    home: String,
-    /// tmux reports directories with symlinks resolved (`/tmp` is
-    /// `/private/tmp` on macOS), so home may be written either way.
-    real_home: String,
-}
-
-impl HomePaths {
-    pub(super) fn new() -> Self {
-        let home = std::env::var("HOME").unwrap_or_default();
-        let real_home = crate::git::resolved(&home);
-        Self { home, real_home }
-    }
-
-    /// `path` with home, written either way, as `~`.
-    pub(super) fn show(&self, path: &str) -> String {
-        let short = tilde(path, &self.home);
-        if short == path {
-            tilde(path, &self.real_home)
-        } else {
-            short
-        }
-    }
-}
 
 impl App {
     /// SPACES as drawn: each space (its name, the most urgent state of its
