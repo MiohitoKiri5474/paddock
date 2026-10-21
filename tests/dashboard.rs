@@ -15,8 +15,8 @@ const SPIKE: &str = concat!(
 );
 const OURS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/hooks");
 const SESSION: &str = "11111111-2222-4333-8444-555555555555";
-/// The dashboard's title line, as drawn while it is open.
-const OPEN: &str = "dashboard  j down  k up";
+/// The start of the dashboard's key line, as drawn while it is open.
+const OPEN: &str = "j down  k up";
 /// The preview's title while keys go to the terminal.
 const TYPING: &str = "typing into";
 const ASK: &str = "close? y/n";
@@ -133,6 +133,36 @@ fn o_opens_the_dashboard_and_esc_closes_it() {
 }
 
 #[test]
+fn the_list_sits_above_the_preview_and_the_keys_at_the_bottom() {
+    let sandbox = Sandbox::new();
+    let mut paddock = ready(&sandbox);
+    claude(&sandbox, "space-1:0", "Stop", "s1", "/w/repo");
+    wait_anywhere(&paddock, "idle");
+    open(&mut paddock);
+    paddock.wait_for_text("preview: repo");
+
+    let rows = paddock.rows();
+    let at = |what: &str| {
+        rows.iter()
+            .position(|r| r.contains(what))
+            .unwrap_or_else(|| panic!("{what} not drawn:\n{}", rows.join("\n")))
+    };
+    let (title, row, preview) = (at(" dashboard"), at(" repo"), at("preview: repo"));
+    assert_eq!(title, 1, "right under the tab bar");
+    let screen = rows.join("\n");
+    // The title, the column header, a blank line, then the rows.
+    assert_eq!(row, title + 3, "{screen}");
+    assert_eq!(rows[title + 2], "", "{screen}");
+    // A blank line, then the preview in a border, its title in the top one.
+    assert!(row < preview, "{screen}");
+    assert_eq!(rows[preview - 1], "", "{screen}");
+    assert!(rows[preview].starts_with("╭ preview: repo"), "{screen}");
+    let (last, above) = (rows.len() - 1, rows.len() - 2);
+    assert!(rows[above].starts_with("╰─"), "{screen}");
+    assert!(rows[last].starts_with(&format!(" {OPEN}")), "{screen}");
+}
+
+#[test]
 fn j_and_k_move_and_enter_jumps_to_the_rows_terminal() {
     let sandbox = Sandbox::new();
     let mut paddock = two_tabs(&sandbox);
@@ -143,6 +173,15 @@ fn j_and_k_move_and_enter_jumps_to_the_rows_terminal() {
 
     open(&mut paddock);
     paddock.wait_for_text("preview: alpha");
+    // A blank line parts the two sessions.
+    let rows = paddock.rows();
+    let at = |label: &str| {
+        rows.iter()
+            .position(|r| r.starts_with(&format!(" {label}")))
+    };
+    let (alpha, bravo) = (at("alpha"), at("bravo"));
+    assert_eq!(bravo, alpha.map(|a| a + 2), "{}", rows.join("\n"));
+    assert_eq!(rows[alpha.unwrap_or_default() + 1], "");
     paddock.send(b"j");
     paddock.wait_for_text("preview: bravo");
     paddock.send(b"k");
@@ -325,6 +364,16 @@ fn f_forks_the_selected_session() {
     paddock.wait_for("the dashboard closed", |s| !s.contains(OPEN));
 }
 
+/// The list line of the task row on `branch` in `screen`, spaces collapsed;
+/// empty if not drawn.
+fn task_line(screen: &str, branch: &str) -> String {
+    screen
+        .lines()
+        .map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "))
+        .find(|l| l.starts_with(branch))
+        .unwrap_or_default()
+}
+
 #[test]
 fn task_rows_show_base_diff_files_age_and_merged() {
     let sandbox = Sandbox::new();
@@ -343,12 +392,14 @@ fn task_rows_show_base_diff_files_age_and_merged() {
 
     open(&mut paddock);
     paddock.wait_for_text("feat/x");
-    paddock.wait_for_text("base +1 −0  1 file  now");
-    assert!(!paddock.screen().contains("merged"));
+    // BASE, FILES and AGE, in their columns.
+    paddock.wait_for("feat/x's fields", |s| {
+        task_line(s, "feat/x") == "feat/x +1 −0 1 now"
+    });
 
     git(&dir, &["switch", "-q", "main"]);
     commit(&dir, "b");
     git(&dir, &["merge", "-q", "--no-edit", "feat/x"]);
     // No hook: the dashboard's own refresh picks this up.
-    paddock.wait_for_text("merged");
+    paddock.wait_for("feat/x merged", |s| task_line(s, "feat/x").ends_with(" ✓"));
 }

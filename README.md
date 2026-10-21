@@ -81,12 +81,12 @@ In the dashboard (`[keys.dashboard]`):
 
 | Key | Action | Name |
 |---|---|---|
-| `j` `Down` | next row | `down` |
-| `k` `Up` | previous row | `up` |
-| `Enter` | jump to the row's terminal | `open` |
-| `D` | dismiss the row | `dismiss` |
-| `x` | close the row's terminal | `close` |
-| `f` | fork the row's Claude session | `fork` |
+| `j` `Down` | next session | `down` |
+| `k` `Up` | previous session | `up` |
+| `Enter` | jump to the session's terminal | `open` |
+| `D` | dismiss the session | `dismiss` |
+| `x` | close the session's terminal | `close` |
+| `f` | fork the Claude session | `fork` |
 | `I` | type into the previewed terminal (Esc leaves) | `interact` |
 | `Esc` | close the dashboard | `back` |
 
@@ -115,7 +115,7 @@ back = ["Esc", "q"]
 interact = "i"
 
 [colors]
-current_space = 236       # the current space's and agent's background: 256-colour index or "#rrggbb" (also read as current_item)
+current_space = 236       # the current space's and agent's background, and the dashboard selection's: 256-colour index or "#rrggbb" (also read as current_item)
 tab_bar = 235             # the tab bar's row
 tab = 237                 # a tab that is not current
 tab_current = 4           # the current tab and the popup border (default: the terminal's blue)

@@ -1,27 +1,47 @@
 //! The dashboard (`C-a o`): an overlay over the session view listing every
-//! session row with its task rows and their git details, beside or above a
-//! live, read-only preview of the selected row's terminal.
+//! session row with its task rows and their git details as a table on top,
+//! a live preview of the selected row's terminal below, and the keys at the
+//! bottom.
+
+mod table;
 
 use super::session_view;
 use crate::app::{Row, RowId, TaskDetails, TaskRow};
-use crate::git::{age, Details};
 use crate::sessions::{State, TaskState};
 use crate::terminal::emulator::Emulator;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::widgets::{Clear, Widget};
+use ratatui::text::Span;
+use ratatui::widgets::{Block, BorderType, Clear, Widget};
 
+/// The dashboard's name, bold on the list's first line.
 pub const TITLE: &str = "dashboard";
 /// The list's only line without rows.
 const EMPTY: &str = " no Claude sessions yet";
-/// From this width on, the preview sits beside the list instead of below it.
-const SIDE_BY_SIDE: u16 = 140;
+/// The list's share of the dashboard's height at most, in percent, unless
+/// that is below [`MIN_LIST`].
+const LIST_SHARE_PERCENT: u32 = 40;
+/// The list's height at least (its heads, a few lines and its foot), while
+/// the dashboard is that tall.
+const MIN_LIST: u16 = 6;
+/// The list's title line, its column header and a blank line, above its
+/// lines.
+const LIST_HEADS: u16 = 3;
+/// The blank line under the list's lines, above the preview.
+const LIST_FOOT: u16 = 1;
+/// The key line under the preview.
+const KEYS_HEIGHT: u16 = 1;
+/// The preview's border, on each side.
+const BORDER: u16 = 1;
+/// The preview's height at least: its border around one line of the
+/// terminal. A preview shorter than that is given to the list.
+const MIN_PREVIEW: u16 = 2 * BORDER + 1;
 
 /// What the dashboard shows.
 pub struct View<'a> {
     pub rows: &'a [Row],
-    /// The keys, shown after the title.
+    /// The keys, shown on the dashboard's last line.
     pub keys: &'a str,
     pub details: &'a TaskDetails,
     pub selected: Option<&'a RowId>,
@@ -31,6 +51,9 @@ pub struct View<'a> {
     pub interactive: bool,
     /// Seconds since the epoch, for commit ages.
     pub now: u64,
+    /// The selected session block's background: the configured current
+    /// item's (`[colors] current_space`), as in the sidebar.
+    pub selection: Color,
 }
 
 /// How a row in `state` stands out: strongly while waiting, softly while idle.
@@ -45,6 +68,8 @@ fn style(state: State) -> Style {
     }
 }
 
+/// How a subagent's state stands out, as a session's would: strongly
+/// while waiting, softly once done.
 fn task_style(state: TaskState) -> Style {
     match state {
         TaskState::Waiting => style(State::Waiting),
@@ -53,218 +78,230 @@ fn task_style(state: TaskState) -> Style {
     }
 }
 
-/// The dashboard's lines in order: each session row, then its task rows.
-pub fn lines(rows: &[Row]) -> Vec<(&Row, Option<&TaskRow>)> {
+/// A line of the list.
+#[derive(Debug, Clone, Copy)]
+pub enum ListLine<'a> {
+    /// The blank line between two sessions.
+    Blank,
+    /// A session row, the start of its block.
+    Session(&'a Row),
+    /// One of the session above's task rows, in its block; never selected
+    /// itself.
+    Task(&'a TaskRow),
+}
+
+/// The dashboard's lines in order: each session row, then its task rows,
+/// with a blank line between two sessions.
+pub fn lines(rows: &[Row]) -> Vec<ListLine<'_>> {
     rows.iter()
-        .flat_map(|r| std::iter::once((r, None)).chain(r.tasks.iter().map(move |t| (r, Some(t)))))
+        .enumerate()
+        .flat_map(|(i, r)| {
+            let blank = (i > 0).then_some(ListLine::Blank);
+            let session = std::iter::once(ListLine::Session(r));
+            let tasks = r.tasks.iter().map(ListLine::Task);
+            blank.into_iter().chain(session).chain(tasks)
+        })
         .collect()
 }
 
-/// A task's fields: ahead/behind and uncommitted line changes, then its base
-/// diff and changed files, last commit age, merged badge, and a subagent's
-/// state; what is zero or unknown is left out.
-pub fn fields(task: &TaskRow, details: Option<&Details>, now: u64) -> String {
-    let status = task.status.unwrap_or_default();
-    let arrows: String = status
-        .ahead_behind
-        .map(|(ahead, behind)| [("↑", ahead), ("↓", behind)])
-        .into_iter()
-        .flatten()
-        .filter(|&(_, n)| n > 0)
-        .map(|(arrow, n)| format!("{arrow}{n}"))
-        .collect();
-    let changes = status
-        .changes
-        .filter(|&c| c != (0, 0))
-        .map(|(added, removed)| format!("+{added} −{removed}"));
-    let base = details.and_then(|d| d.base_diff).filter(|b| b.files > 0);
-    let base_diff = base.map(|b| format!("base +{} −{}", b.added, b.removed));
-    let files = base.map(|b| match b.files {
-        1 => "1 file".to_string(),
-        n => format!("{n} files"),
-    });
-    let commit = details
-        .and_then(|d| d.last_commit)
-        .map(|t| age(now.saturating_sub(t)));
-    let merged = details.filter(|d| d.merged).map(|_| "merged".to_string());
-    let state = task.subagent.as_ref().map(|s| s.state.label().to_string());
-    [
-        Some(arrows),
-        changes,
-        base_diff,
-        files,
-        commit,
-        merged,
-        state,
-    ]
-    .into_iter()
-    .flatten()
-    .filter(|p| !p.is_empty())
-    .collect::<Vec<_>>()
-    .join("  ")
+/// `style` on the selection's background `bg`. A background of its own (a
+/// waiting row's) becomes its text colour, so the state still shows.
+fn on_selection(style: Style, bg: Color) -> Style {
+    let fg = style.bg.or(style.fg);
+    Style { fg, ..style }.bg(bg)
 }
 
-/// `left` after `indent` spaces and `right` at the end, then one space:
-/// exactly `width` cells; `left` is cut to fit.
-fn spread(indent: usize, left: &str, right: &str, width: usize) -> String {
-    let right_len = right.chars().count();
-    let min_gap = usize::from(right_len > 0);
-    let left: String = left
-        .chars()
-        .take(width.saturating_sub(indent + right_len + min_gap + 1))
-        .collect();
-    let gap = width.saturating_sub(indent + left.chars().count() + right_len + 1);
-    let text = format!("{}{left}{}{right} ", " ".repeat(indent), " ".repeat(gap));
-    text.chars().take(width).collect()
+/// Where the dashboard's parts go, top to bottom.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Layout {
+    /// The title, then the rows.
+    pub list: Rect,
+    /// The selected session's terminal in a border, its title in the top
+    /// border.
+    pub preview: Rect,
+    /// The key line, at the bottom.
+    pub keys: Rect,
 }
 
-/// The list's area and the preview's, with one line or column between them.
-pub fn split(area: Rect) -> (Rect, Rect) {
-    if area.width >= SIDE_BY_SIDE {
-        let list = area.width / 2;
-        let preview = Rect {
-            x: area.x + list + 1,
-            width: area.width - list - 1,
-            ..area
-        };
-        return (
-            Rect {
-                width: list,
-                ..area
-            },
-            preview,
-        );
-    }
-    let list = area.height / 2;
-    let preview = Rect {
-        y: area.y + list,
-        height: area.height - list,
+/// The dashboard's parts in `area` for a list of `lines` lines: the list as
+/// tall as its lines (one line saying there are none without any) but at
+/// most [`LIST_SHARE_PERCENT`] of the height and at least [`MIN_LIST`], the
+/// key line at the bottom, and the preview between them. On a short screen
+/// the preview goes first, then the key line.
+pub fn layout(area: Rect, lines: usize) -> Layout {
+    let keys_height = if area.height > KEYS_HEIGHT {
+        KEYS_HEIGHT
+    } else {
+        0
+    };
+    let room = area.height - keys_height;
+    let share = u32::from(area.height) * LIST_SHARE_PERCENT / 100;
+    let cap = u16::try_from(share).unwrap_or(u16::MAX).max(MIN_LIST);
+    let wanted = u16::try_from(lines.max(1))
+        .unwrap_or(u16::MAX)
+        .saturating_add(LIST_HEADS + LIST_FOOT);
+    let list = wanted.max(MIN_LIST).min(cap).min(room);
+    // Too short to show any of the terminal: the list keeps that room.
+    let list = if room - list < MIN_PREVIEW {
+        room
+    } else {
+        list
+    };
+    let preview = room - list;
+    let at = |y: u16, height: u16| Rect {
+        y: area.y + y,
+        height,
         ..area
     };
-    (
-        Rect {
-            height: list,
-            ..area
-        },
-        preview,
-    )
+    Layout {
+        list: at(0, list),
+        preview: at(list, preview),
+        keys: at(list + preview, keys_height),
+    }
 }
 
 /// Draw the dashboard over `area`. Returns where the cursor goes: in the
 /// previewed terminal while interactive.
 pub fn render(view: &View, area: Rect, buf: &mut Buffer) -> Option<Position> {
     Clear.render(area, buf);
-    let (list, preview) = split(area);
-    render_list(view, list, buf);
-    if preview.x > list.right() {
-        for y in area.top()..area.bottom() {
-            buf.set_string(list.right(), y, "│", Style::default());
-        }
-    }
-    render_preview(view, preview, buf)
+    let parts = layout(area, lines(view.rows).len());
+    render_list(view, parts.list, buf);
+    render_keys(view.keys, parts.keys, buf);
+    render_preview(view, parts.preview, buf)
 }
 
-/// The title and the keys, on the list's first line.
-fn render_title(keys: &str, area: Rect, buf: &mut Buffer) {
+/// The title, on the list's first line.
+fn render_title(area: Rect, buf: &mut Buffer) {
     let bold = Style::default().add_modifier(Modifier::BOLD);
     let title = format!(" {TITLE}");
     buf.set_stringn(area.x, area.y, &title, usize::from(area.width), bold);
-    let keys_at = u16::try_from(title.len() + 2).unwrap_or(u16::MAX);
-    if keys_at < area.width {
-        let dim = Style::default().add_modifier(Modifier::DIM);
-        let room = usize::from(area.width - keys_at);
-        buf.set_stringn(area.x + keys_at, area.y, keys, room, dim);
-    }
 }
 
-/// A list line's text, `width` cells, and style: a session row's label and
-/// state, or a task row's label and fields.
-fn line(view: &View, row: &Row, task: Option<&TaskRow>, width: usize) -> (String, Style) {
-    let Some(t) = task else {
-        return (
-            spread(1, &row.label, row.state.label(), width),
-            style(row.state),
-        );
-    };
-    let label = match t.subagent.as_ref().and_then(|s| s.description.as_ref()) {
-        Some(d) => format!("{d} · {}", t.branch),
-        None => t.branch.clone(),
+/// The keys, dim, on the dashboard's last line.
+fn render_keys(keys: &str, area: Rect, buf: &mut Buffer) {
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+    let dim = Style::default().add_modifier(Modifier::DIM);
+    let text = format!(" {keys}");
+    buf.set_stringn(area.x, area.y, text, usize::from(area.width), dim);
+}
+
+/// A list line's cells and style: a session row's, or a task row's; none
+/// for a blank line.
+fn cells(view: &View, line: ListLine) -> Option<(table::Cells, Style)> {
+    let t = match line {
+        ListLine::Blank => return None,
+        ListLine::Session(row) => return Some((table::session(row), style(row.state))),
+        ListLine::Task(t) => t,
     };
     let details = view.details.get(&(t.cwd.clone(), t.branch.clone()));
-    let right = fields(t, details, view.now);
     let style = t
         .subagent
         .as_ref()
         .map_or(Style::default(), |s| task_style(s.state));
-    (spread(3, &label, &right, width), style)
+    Some((table::task(t, details, view.now), style))
 }
 
+/// The title, the column header (dim), then the lines in sight as a table,
+/// scrolled to keep the selected session's block in sight, on the
+/// selection's background.
 fn render_list(view: &View, area: Rect, buf: &mut Buffer) {
     if area.height == 0 || area.width == 0 {
         return;
     }
     let width = usize::from(area.width);
-    render_title(view.keys, area, buf);
+    render_title(area, buf);
     let lines = lines(view.rows);
-    if lines.is_empty() && area.height > 1 {
-        buf.set_stringn(area.x, area.y + 1, EMPTY, width, Style::default());
-    }
-    let picked = lines.iter().position(|(row, task)| {
-        view.selected.is_some_and(|s| {
-            s.pane == row.pane && s.branch.as_deref() == task.map(|t| t.branch.as_str())
-        })
+    let picked = lines.iter().position(|l| {
+        matches!(l, ListLine::Session(row) if view.selected.is_some_and(|s| s.pane == row.pane))
     });
-    // Keep the selected line on screen.
-    let room = usize::from(area.height - 1);
-    let skip = picked.map_or(0, |p| (p + 1).saturating_sub(room));
-    for ((i, (row, task)), y) in lines
+    // The selected session's block: its line and its task rows.
+    let block = picked.map_or(0..0, |p| {
+        let tasks = lines[p + 1..]
+            .iter()
+            .take_while(|l| matches!(l, ListLine::Task(..)));
+        p..p + 1 + tasks.count()
+    });
+    let room = usize::from(area.height.saturating_sub(LIST_HEADS + LIST_FOOT));
+    let skip = scroll(&lines, &block, room);
+    let shown: Vec<(usize, Option<(table::Cells, Style)>)> = lines
         .iter()
         .enumerate()
         .skip(skip)
-        .zip(area.y + 1..area.bottom())
-    {
-        let (text, style) = line(view, row, *task, width);
-        let style = if Some(i) == picked {
-            style.add_modifier(Modifier::REVERSED)
-        } else {
-            style
+        .take(room)
+        .map(|(i, &l)| (i, cells(view, l)))
+        .collect();
+    let header = table::header();
+    let all: Vec<&table::Cells> = std::iter::once(&header)
+        .chain(shown.iter().filter_map(|(_, l)| l.as_ref().map(|(c, _)| c)))
+        .collect();
+    let widths = table::widths(&all, width);
+    if area.height > 1 {
+        let dim = Style::default().add_modifier(Modifier::DIM);
+        buf.set_string(
+            area.x,
+            area.y + 1,
+            table::line(&header, &widths, width),
+            dim,
+        );
+    }
+    if lines.is_empty() && area.height > LIST_HEADS {
+        let y = area.y + LIST_HEADS;
+        buf.set_stringn(area.x, y, EMPTY, width, Style::default());
+    }
+    for ((i, l), y) in shown.iter().zip(area.y + LIST_HEADS..area.bottom()) {
+        let Some((cells, style)) = l else {
+            continue;
         };
-        buf.set_stringn(area.x, y, text, width, style);
+        let style = if block.contains(i) {
+            on_selection(*style, view.selection)
+        } else {
+            *style
+        };
+        // `line` is exactly `width` cells: its padding carries the style.
+        buf.set_string(area.x, y, table::line(cells, &widths, width), style);
     }
 }
 
-/// The selected row's terminal under a title line, its rows chosen so the
-/// last line with text (or the cursor) stays in sight.
+/// How many of `lines` to scroll past to keep `block` in `room` lines, its
+/// session line first if it does not all fit. The top line is always a
+/// session's, never a blank line or another session's task rows.
+fn scroll(lines: &[ListLine], block: &std::ops::Range<usize>, room: usize) -> usize {
+    let least = block.end.saturating_sub(room).min(block.start);
+    (least..block.start)
+        .find(|&i| matches!(lines[i], ListLine::Session(_)))
+        .unwrap_or(block.start)
+}
+
+/// The selected row's terminal in a rounded border, its title in the top
+/// border; its rows chosen so the last line with text (or the cursor) stays
+/// in sight.
 fn render_preview(view: &View, area: Rect, buf: &mut Buffer) -> Option<Position> {
-    if area.height < 2 || area.width == 0 {
+    if area.height < MIN_PREVIEW || area.width < 2 * BORDER {
         return None;
     }
-    let width = usize::from(area.width);
     let label = view
         .selected
         .and_then(|s| view.rows.iter().find(|r| r.pane == s.pane))
         .map(|r| r.label.as_str());
-    let Some(label) = label else {
+    let plain = Style::default();
+    let (title, title_style) = match (label, view.preview, view.interactive) {
         // No rows: nothing to preview.
-        buf.set_stringn(area.x, area.y, "─".repeat(width), width, Style::default());
-        return None;
-    };
-    let (title, title_style) = match (view.preview, view.interactive) {
-        (None, _) => (format!("─ {label}: no terminal "), Style::default()),
-        (Some(_), false) => (format!("─ preview: {label}  I to type "), Style::default()),
-        (Some(_), true) => (
-            format!("─ typing into {label}  Esc leaves "),
-            Style::default().add_modifier(Modifier::REVERSED),
+        (None, _, _) => (String::new(), plain),
+        (Some(label), None, _) => (format!(" {label}: no terminal "), plain),
+        (Some(label), Some(_), false) => (format!(" preview: {label}  I to type "), plain),
+        (Some(label), Some(_), true) => (
+            format!(" typing into {label}  Esc leaves "),
+            plain.add_modifier(Modifier::REVERSED),
         ),
     };
-    let title = format!("{title}{}", "─".repeat(width));
-    buf.set_stringn(area.x, area.y, title, width, title_style);
-    let emu = view.preview?;
-    let screen = Rect {
-        y: area.y + 1,
-        height: area.height - 1,
-        ..area
-    };
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .title(Span::styled(title, title_style));
+    let screen = block.inner(area);
+    block.render(area, buf);
+    let emu = view.preview.filter(|_| label.is_some())?;
     let first = first_row(emu, screen.height);
     session_view::cells(emu, first, screen, buf);
     let (row, col) = emu.cursor();
@@ -296,7 +333,9 @@ mod tests {
     use super::*;
 
     const KEYS: &str = "j down  k up";
-    use crate::git::{BaseDiff, Status};
+    /// The selection's background in these tests.
+    const SELECTED: Color = Color::Indexed(236);
+    use crate::git::{BaseDiff, Details, Status};
     use crate::sessions::SubagentTask;
 
     fn row(label: &str, state: State, tasks: Vec<TaskRow>) -> Row {
@@ -329,84 +368,66 @@ mod tests {
     }
 
     #[test]
-    fn fields_cover_status_base_diff_files_age_and_merged() {
-        let status = Status {
-            ahead_behind: Some((2, 0)),
-            changes: Some((30, 144)),
-        };
-        let details = Details {
-            base_diff: Some(BaseDiff {
-                added: 12,
-                removed: 3,
-                files: 4,
-            }),
-            last_commit: Some(1_000),
-            merged: true,
-        };
-        let t = task("feat/a", Some(status));
-        assert_eq!(
-            fields(&t, Some(&details), 1_000 + 7_200),
-            "↑2  +30 −144  base +12 −3  4 files  2h  merged"
-        );
-        let one = Details {
-            base_diff: Some(BaseDiff {
-                added: 1,
-                removed: 0,
-                files: 1,
-            }),
-            last_commit: None,
-            merged: false,
-        };
-        assert_eq!(
-            fields(&t, Some(&one), 0),
-            "↑2  +30 −144  base +1 −0  1 file"
-        );
-        let none = Details {
-            base_diff: Some(BaseDiff {
-                added: 0,
-                removed: 0,
-                files: 0,
-            }),
-            ..Details::default()
-        };
-        assert_eq!(fields(&task("b", None), Some(&none), 0), "");
-        let sub = TaskRow {
-            subagent: Some(SubagentTask {
-                agent_id: "a1".into(),
-                description: None,
-                state: TaskState::Done,
-            }),
-            ..task("c", Some(Status::default()))
-        };
-        assert_eq!(fields(&sub, None, 0), "done");
-    }
-
-    #[test]
-    fn lines_follow_rows_each_with_its_tasks() {
+    fn lines_follow_rows_each_with_its_tasks_and_a_blank_line_between() {
         let rows = [
             row("w", State::Waiting, vec![task("a", None), task("b", None)]),
             row("i", State::Idle, vec![]),
+            row("r", State::Running, vec![]),
         ];
-        let got: Vec<(&str, Option<&str>)> = lines(&rows)
+        let got: Vec<String> = lines(&rows)
             .into_iter()
-            .map(|(r, t)| (r.label.as_str(), t.map(|t| t.branch.as_str())))
+            .map(|l| match l {
+                ListLine::Blank => String::new(),
+                ListLine::Session(r) => r.label.clone(),
+                ListLine::Task(t) => format!("  {}", t.branch),
+            })
             .collect();
+        assert_eq!(got, ["w", "  a", "  b", "", "i", "", "r"]);
+    }
+
+    /// A layout of `list`, `preview` and `keys` rows stacked from row 1 of
+    /// an area 80 columns wide.
+    fn stacked(list: u16, preview: u16, keys: u16) -> Layout {
+        Layout {
+            list: Rect::new(0, 1, 80, list),
+            preview: Rect::new(0, 1 + list, 80, preview),
+            keys: Rect::new(0, 1 + list + preview, 80, keys),
+        }
+    }
+
+    #[test]
+    fn the_list_sits_on_top_sized_to_its_lines_with_the_keys_at_the_bottom() {
+        let area = |height| Rect::new(0, 1, 80, height);
         assert_eq!(
-            got,
-            [("w", None), ("w", Some("a")), ("w", Some("b")), ("i", None)]
+            layout(area(40), 7),
+            stacked(11, 28, 1),
+            "the title, the header, seven lines and blank lines around them"
+        );
+        assert_eq!(layout(area(40), 50), stacked(16, 23, 1), "capped at 40%");
+        assert_eq!(
+            layout(area(40), 1),
+            stacked(6, 33, 1),
+            "a few rows at least"
+        );
+        assert_eq!(
+            layout(area(40), 0),
+            stacked(6, 33, 1),
+            "the line saying there are none"
         );
     }
 
     #[test]
-    fn the_preview_goes_below_the_list_unless_the_area_is_wide() {
+    fn a_short_dashboard_loses_its_preview_before_its_list() {
+        let area = |height| Rect::new(0, 1, 80, height);
+        assert_eq!(layout(area(10), 9), stacked(6, 3, 1), "the minimum wins");
         assert_eq!(
-            split(Rect::new(24, 1, 76, 29)),
-            (Rect::new(24, 1, 76, 14), Rect::new(24, 15, 76, 15))
+            layout(area(8), 9),
+            stacked(7, 0, 1),
+            "no room for a bordered terminal line: the list keeps it"
         );
-        assert_eq!(
-            split(Rect::new(0, 1, 160, 40)),
-            (Rect::new(0, 1, 80, 40), Rect::new(81, 1, 79, 40))
-        );
+        assert_eq!(layout(area(3), 9), stacked(2, 0, 1));
+        assert_eq!(layout(area(1), 9), stacked(1, 0, 0), "only the title");
+        assert_eq!(layout(area(0), 9), stacked(0, 0, 0));
     }
 
     #[test]
@@ -426,7 +447,7 @@ mod tests {
 
     #[test]
     fn renders_rows_tasks_and_a_live_preview() {
-        let area = Rect::new(0, 0, 60, 12);
+        let area = Rect::new(0, 0, 80, 20);
         let mut buf = Buffer::empty(area);
         let status = Status {
             ahead_behind: None,
@@ -459,7 +480,6 @@ mod tests {
         emu.feed(b"hello preview");
         let selected = RowId {
             pane: "%api".into(),
-            branch: Some("feat/a".into()),
         };
         let view = View {
             keys: KEYS,
@@ -469,43 +489,80 @@ mod tests {
             preview: Some(&emu),
             interactive: false,
             now: 0,
+            selection: SELECTED,
         };
         assert_eq!(render(&view, area, &mut buf), None);
-        assert!(text(&buf, 0).starts_with(" dashboard  j down  k up"));
+        assert_eq!(text(&buf, 0), " dashboard");
         assert_eq!(
-            text(&buf, 1),
-            " api                                                   idle"
+            [1, 2, 3, 4, 5, 6].map(|y| text(&buf, y)),
+            [
+                " NAME             STATE    ↑↓  CHANGES   BASE  FILES  AGE  MERGED",
+                "",
+                " api              idle",
+                "   feat/a                        +3 −1  +5 −0      2       ✓",
+                "   Fix b · fix/b  waiting",
+                "",
+            ]
         );
+        assert!(buf[(1, 1)].modifier.contains(Modifier::DIM), "a dim header");
+        // The selected session's block, its task rows included, has the
+        // selection's background; a waiting row keeps its yellow as text.
+        assert_eq!([3, 4, 5].map(|y| buf[(3, y)].bg), [SELECTED; 3]);
+        assert_eq!(buf[(3, 3)].fg, Color::Green, "idle keeps its colour");
+        assert_eq!(buf[(3, 5)].fg, Color::Yellow, "waiting keeps its colour");
+        assert_ne!(buf[(1, 1)].bg, SELECTED, "not the header");
+        // The preview in a rounded border, its title in the top border.
+        assert!(text(&buf, 7).starts_with("╭ preview: api  I to type ──"));
+        assert!(text(&buf, 7).ends_with("─╮"));
         assert_eq!(
-            text(&buf, 2),
-            "   feat/a                +3 −1  base +5 −0  2 files  merged"
+            text(&buf, 8),
+            "│hello preview".to_string() + &" ".repeat(65) + "│"
         );
-        assert_eq!(
-            text(&buf, 3),
-            "   Fix b · fix/b                                    waiting"
-        );
-        assert!(buf[(3, 2)].modifier.contains(Modifier::REVERSED));
-        assert!(!buf[(3, 1)].modifier.contains(Modifier::REVERSED));
-        assert_eq!(buf[(3, 3)].bg, Color::Yellow);
-        assert!(text(&buf, 6).starts_with("─ preview: api  I to type ──"));
-        assert_eq!(text(&buf, 7), "hello preview");
+        assert!(text(&buf, 18).starts_with("╰──"));
+        assert_eq!(text(&buf, 19), " j down  k up", "the keys at the bottom");
+        assert!(buf[(1, 19)].modifier.contains(Modifier::DIM));
 
         let typing = View {
             interactive: true,
             ..view
         };
         let cursor = render(&typing, area, &mut Buffer::empty(area));
-        assert_eq!(cursor, Some(Position::new(13, 7)));
+        assert_eq!(cursor, Some(Position::new(14, 8)), "inside the border");
+    }
+
+    #[test]
+    fn only_the_selected_sessions_block_is_highlighted() {
+        let area = Rect::new(0, 0, 30, 30);
+        let mut buf = Buffer::empty(area);
+        let rows = [
+            row("r0", State::Running, vec![task("b1", None), subagent("s1")]),
+            row("r1", State::Running, vec![]),
+        ];
+        let selected = RowId { pane: "%r0".into() };
+        let view = View {
+            keys: KEYS,
+            rows: &rows,
+            details: &TaskDetails::new(),
+            selected: Some(&selected),
+            preview: None,
+            interactive: false,
+            now: 0,
+            selection: SELECTED,
+        };
+        render(&view, area, &mut buf);
+        assert!(text(&buf, 3).starts_with(" r0"));
+        assert!(text(&buf, 7).starts_with(" r1"));
+        let bg = |y: u16| buf[(1, y)].bg == SELECTED;
+        assert_eq!([3, 4, 5, 6, 7].map(bg), [true, true, true, false, false]);
     }
 
     #[test]
     fn a_closed_rows_preview_says_it_has_no_terminal() {
-        let area = Rect::new(0, 0, 40, 6);
+        let area = Rect::new(0, 0, 40, 12);
         let mut buf = Buffer::empty(area);
         let rows = [row("gone", State::Stopped, vec![])];
         let selected = RowId {
             pane: "%gone".into(),
-            branch: None,
         };
         let view = View {
             keys: KEYS,
@@ -515,14 +572,15 @@ mod tests {
             preview: None,
             interactive: false,
             now: 0,
+            selection: SELECTED,
         };
         render(&view, area, &mut buf);
-        assert!(text(&buf, 3).starts_with("─ gone: no terminal ─"));
+        assert!(text(&buf, 6).starts_with("╭ gone: no terminal ─"));
     }
 
     #[test]
     fn without_rows_it_says_there_are_no_sessions() {
-        let area = Rect::new(0, 0, 40, 6);
+        let area = Rect::new(0, 0, 40, 12);
         let mut buf = Buffer::empty(area);
         let view = View {
             keys: KEYS,
@@ -532,23 +590,23 @@ mod tests {
             preview: None,
             interactive: false,
             now: 0,
+            selection: SELECTED,
         };
         render(&view, area, &mut buf);
-        assert_eq!(text(&buf, 1), " no Claude sessions yet");
-        assert_eq!(text(&buf, 3), "─".repeat(40));
+        assert_eq!(text(&buf, 2), "");
+        assert_eq!(text(&buf, 3), " no Claude sessions yet");
+        assert_eq!(text(&buf, 6), format!("╭{}╮", "─".repeat(38)));
+        assert_eq!(text(&buf, 11), " j down  k up");
     }
 
     #[test]
     fn the_selected_line_scrolls_into_sight() {
-        let area = Rect::new(0, 0, 30, 6);
+        let area = Rect::new(0, 0, 30, 20);
         let mut buf = Buffer::empty(area);
         let rows: Vec<Row> = (0..6)
             .map(|i| row(&format!("r{i}"), State::Running, vec![]))
             .collect();
-        let selected = RowId {
-            pane: "%r5".into(),
-            branch: None,
-        };
+        let selected = RowId { pane: "%r5".into() };
         let view = View {
             keys: KEYS,
             rows: &rows,
@@ -557,10 +615,87 @@ mod tests {
             preview: None,
             interactive: false,
             now: 0,
+            selection: SELECTED,
         };
         render(&view, area, &mut buf);
-        // Two lines for the list below its title.
-        assert!(text(&buf, 1).starts_with(" r4"));
-        assert!(text(&buf, 2).starts_with(" r5"));
+        // The list is capped at eight rows: four lines between its heads and
+        // its foot, a blank one between two sessions. A session line is on
+        // top, not the blank line above it.
+        assert!(text(&buf, 3).starts_with(" r4"));
+        assert_eq!(text(&buf, 4), "");
+        assert!(text(&buf, 5).starts_with(" r5"));
+        assert_eq!(text(&buf, 6), "");
+        assert_eq!(text(&buf, 7), "", "a blank line above the preview");
+        assert!(text(&buf, 8).starts_with("╭ r5: no terminal"));
+    }
+
+    /// A subagent's task row on `branch`.
+    fn subagent(branch: &str) -> TaskRow {
+        TaskRow {
+            subagent: Some(SubagentTask {
+                agent_id: branch.into(),
+                description: None,
+                state: TaskState::Running,
+            }),
+            ..task(branch, None)
+        }
+    }
+
+    #[test]
+    fn the_selected_line_scrolls_into_sight_with_its_subagents() {
+        let area = Rect::new(0, 0, 30, 20);
+        let mut buf = Buffer::empty(area);
+        let rows = [
+            row("r0", State::Running, vec![]),
+            row("r1", State::Running, vec![]),
+            row("r2", State::Running, vec![subagent("s1"), subagent("s2")]),
+        ];
+        let selected = RowId { pane: "%r2".into() };
+        let view = View {
+            keys: KEYS,
+            rows: &rows,
+            details: &TaskDetails::new(),
+            selected: Some(&selected),
+            preview: None,
+            interactive: false,
+            now: 0,
+            selection: SELECTED,
+        };
+        render(&view, area, &mut buf);
+        assert!(text(&buf, 3).starts_with(" r2"));
+        assert!(text(&buf, 4).starts_with("   s1"));
+        assert!(text(&buf, 5).starts_with("   s2"));
+        // The whole block is highlighted, subagents included.
+        assert_eq!([3, 4, 5].map(|y| buf[(1, y)].bg), [SELECTED; 3]);
+    }
+
+    #[test]
+    fn the_list_never_starts_with_another_sessions_task_rows() {
+        let area = Rect::new(0, 0, 30, 20);
+        let mut buf = Buffer::empty(area);
+        let rows = [
+            row(
+                "r0",
+                State::Running,
+                vec![subagent("a"), subagent("b"), subagent("c")],
+            ),
+            row("r1", State::Running, vec![]),
+        ];
+        let selected = RowId { pane: "%r1".into() };
+        let view = View {
+            keys: KEYS,
+            rows: &rows,
+            details: &TaskDetails::new(),
+            selected: Some(&selected),
+            preview: None,
+            interactive: false,
+            now: 0,
+            selection: SELECTED,
+        };
+        render(&view, area, &mut buf);
+        // Four lines of room: r0's block does not fit whole with r1's, so
+        // r1 is on top rather than r0's last task rows.
+        assert!(text(&buf, 3).starts_with(" r1"));
+        assert_eq!([4, 5, 6].map(|y| text(&buf, y)), ["", "", ""]);
     }
 }
