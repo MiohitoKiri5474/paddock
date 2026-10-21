@@ -258,7 +258,7 @@ impl App {
             sidebar_wish: None,
             pages: Pages::default(),
             press: None,
-            attention: Attention::from_env(),
+            attention: Attention::from_env(config.notify),
             current_space_bg: config.current_space,
             tab_colors: config.tabs,
             tab_first: 0,

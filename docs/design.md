@@ -14,7 +14,7 @@ Not in scope for now: agents other than Claude Code, Linux, remote machines, a s
 - **Hidden tmux server** ([ADR 0001](adr/0001-tmux-as-hidden-backend.md)). `tmux -L paddock`, started with paddock's own minimal config (`escape-time 0`, `extended-keys on`, no status line, no prefix) and a clean environment (`SUPACODE_*`, `TERM_PROGRAM` and similar variables removed). The user's own tmux is never touched. Each space is a tmux session, its tabs the session's windows and its splits their panes ([ADR 0006](adr/0006-sidebar-items-are-tmux-sessions.md)), so `tmux -L paddock attach` shows the same structure.
 - **Own renderer** ([ADR 0002](adr/0002-own-renderer-via-control-mode.md)). paddock is a tmux control-mode client, one per space. Each tmux pane's raw output feeds its own terminal-emulator instance; paddock draws everything with ratatui and keeps scrollback, selection and search itself. Spike 0a picks the emulator crate. Written in Rust.
 - **One instance at a time.** A second launch offers to take over from the first.
-- **State** lives in `~/.local/state/paddock/`: the current item (tmux holds tabs, splits, sizes and focus), dismissed rows, hook events and logs. **Config** lives in `~/.config/paddock/config.toml`: prefix, keys, colours and the sidebar width.
+- **State** lives in `~/.local/state/paddock/`: the current item (tmux holds tabs, splits, sizes and focus), dismissed rows, hook events and logs. **Config** lives in `~/.config/paddock/config.toml`: prefix, keys, colours, the sidebar width and which notifications to send.
 - **Hooks.** `paddock hooks install` and `paddock hooks uninstall` edit `~/.claude/settings.json`. Supacode's hooks stay; the old tmux-claude-session-manager hooks are removed. Every hook calls `paddock hook <event>`, which finds its terminal through `$TMUX_PANE` and appends the event to the state directory, so tasks created while paddock is closed still appear. `claude agents --json` is used to discover sessions and reconcile state.
 - **Commands.** `paddock`, `paddock keys` (prints the default keys as TOML), `paddock hooks install|uninstall`, and the internal `paddock hook <event>`.
 - **Any terminal app.** Only standard VT features; truecolor with a 256-colour fallback; the UI uses the terminal's 16 ANSI colours so it follows the user's theme; copying goes through `pbcopy` and notifications through `osascript`; no key depends on Option/Alt. paddock makes no network calls.
@@ -75,7 +75,7 @@ The dashboard list is a table under a dim header: NAME (the session's label, its
 ### Attention
 
 - Waiting rows and agents get a strong highlight; done (bold) and idle ones a soft one. Tabs holding such sessions are highlighted and marked `●` too.
-- macOS notifications fire when a session starts waiting and when a main agent goes idle, but not when that terminal is already focused.
+- macOS notifications fire when a session or one of its subagents starts waiting and when a main agent goes idle (a subagent finishing never notifies), but not when that terminal is already focused. `[notify] waiting = false` or `idle = false` turns off that kind (both default to `true`); only the notification goes, while states, highlights, markers, `C-a a` and the dashboard stay as they are.
 
 ### Preview
 
