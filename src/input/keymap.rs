@@ -39,13 +39,13 @@ pub struct Section<A: 'static> {
     pub ignored: KeyModifiers,
     /// Whether the section's defaults are the table's direct chords
     /// instead of its keys.
-    pub chords: bool,
+    pub defaults_are_chords: bool,
 }
 
 impl<A> Section<A> {
     /// The default keys of `b`.
     fn default_keys(&self, b: &Binding<A>) -> &'static [&'static str] {
-        if self.chords {
+        if self.defaults_are_chords {
             b.chords
         } else {
             b.keys
@@ -58,7 +58,7 @@ pub const COMMAND_KEYS: Section<Command> = Section {
     name: "commands",
     table: COMMANDS,
     ignored: KeyModifiers::SHIFT,
-    chords: false,
+    defaults_are_chords: false,
 };
 
 /// Without the prefix, a chord matches exactly: a key not bound goes to
@@ -67,7 +67,7 @@ pub const DIRECT_KEYS: Section<Command> = Section {
     name: "direct",
     table: COMMANDS,
     ignored: KeyModifiers::NONE,
-    chords: true,
+    defaults_are_chords: true,
 };
 
 /// In the sidebar and the dashboard, Ctrl and Shift do not matter.
@@ -75,14 +75,14 @@ pub const SIDEBAR_KEYS: Section<SidebarAction> = Section {
     name: "sidebar",
     table: SIDEBAR,
     ignored: KeyModifiers::CONTROL.union(KeyModifiers::SHIFT),
-    chords: false,
+    defaults_are_chords: false,
 };
 
 pub const DASHBOARD_KEYS: Section<DashboardAction> = Section {
     name: "dashboard",
     table: DASHBOARD,
     ignored: KeyModifiers::CONTROL.union(KeyModifiers::SHIFT),
-    chords: false,
+    defaults_are_chords: false,
 };
 
 /// Direct chords that take a control character from the terminal
@@ -326,10 +326,15 @@ impl Keymap {
         let no_direct = Given::new();
         let direct_given = given.direct.as_ref().unwrap_or(&no_direct);
         let keymap = Self {
-            commands: section(&COMMAND_KEYS, &given.commands, prefix, &mut warnings)?,
-            direct: section(&DIRECT_KEYS, direct_given, prefix, &mut warnings)?,
-            sidebar: section(&SIDEBAR_KEYS, &given.sidebar, prefix, &mut warnings)?,
-            dashboard: section(&DASHBOARD_KEYS, &given.dashboard, prefix, &mut warnings)?,
+            commands: configured_section(&COMMAND_KEYS, &given.commands, prefix, &mut warnings)?,
+            direct: configured_section(&DIRECT_KEYS, direct_given, prefix, &mut warnings)?,
+            sidebar: configured_section(&SIDEBAR_KEYS, &given.sidebar, prefix, &mut warnings)?,
+            dashboard: configured_section(
+                &DASHBOARD_KEYS,
+                &given.dashboard,
+                prefix,
+                &mut warnings,
+            )?,
         };
         if given.direct.is_none() {
             warnings.extend(keymap.control_chars_warning());
@@ -386,8 +391,10 @@ impl Default for Keymap {
     }
 }
 
-/// `section` with `given`'s keys, adding its warnings to `warnings`.
-fn section<A: Copy>(
+/// The keys of `section` as `config.toml` gives them in `given` (the
+/// defaults for actions left out), as [`Keys::configured`] reads them; its
+/// warnings are added to `warnings`, so a keymap's sections share one list.
+fn configured_section<A: Copy>(
     section: &'static Section<A>,
     given: &Given,
     prefix: Key,

@@ -216,9 +216,9 @@ Once you resize the sidebar (`C-a {`, `C-a }` or dragging its border), paddock s
 - a character (`c`, `|`, `$`, `{`) or a name (`Tab`, `Enter`, `Esc`, `Space`, `Backspace`, `Delete`, `Insert`, `Home`, `End`, `PageUp`, `PageDown`, `Left`, `Down`, `Up`, `Right`, `F1`-`F12`); names in any case
 - optionally after `C-` (Ctrl), `S-` (Shift) or `M-` (Alt), in any case (`c-n` is `C-n`)
 - `C-` with a letter is the same key in either case (`C-A` is `C-a`: terminals send them alike); `C-S-` with a character is refused for the same reason
-- `C--`, `C-_` and `C-7` are one key, as are `C-\` and `C-4`, `C-]` and `C-5`, `C-^` and `C-6`: terminals send one control byte for each group, and paddock prints the first. Other Ctrl keys stay apart (`C-/`, `C-3` and `C-2` are their own keys)
+- `C--`, `C-_` and `C-7` are one key, as are `C-\` and `C-4`, `C-]` and `C-5`, `C-^` and `C-6`: terminals send one control byte for each group, and paddock prints the first. Other Ctrl keys stay apart (`C-/`, `C-3` and `C-2` are their own keys). Without the kitty protocol, Ctrl+Space and Ctrl+@ both arrive as `C-Space`, so write `C-Space` (not `C-@` or `C-2`) to bind it
 - `S-` goes with a letter (`S-a` is `A`) or a named key (`S-Tab`); for other characters write the shifted one itself (`!`, not `S-1`)
-- `M-` works, but not every terminal sends it. A key you bind with `M-` gives a warning at start and again on leaving. paddock's own keys avoid `M-`, except the direct chord `C-M-c` (new tab), and that default gives no warning: if your terminal does not send Alt, it does nothing
+- `M-` works, but not every terminal sends it. A key you bind with `M-`, other than that action's default, gives a warning at start and again on leaving. paddock's own keys avoid `M-`, except the direct chord `C-M-c` (new tab), and that default gives no warning: if your terminal does not send Alt, it does nothing
 - the prefix must be `C-` with a letter, `Space`, or one of `\ ] ^ _` (`C-_` is `C--`)
 
 After the prefix, Shift does not matter for a key bound without it (Shift+arrows move focus too); in the sidebar and the dashboard, neither do Ctrl and Shift. A key bound with the modifier wins. A direct chord matches only as bound.

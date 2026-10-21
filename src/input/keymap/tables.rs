@@ -62,8 +62,8 @@ pub enum DashboardAction {
 
 /// Keys after the prefix (`[keys.commands]`), and the direct chords some
 /// commands also have (`[keys.direct]`). `go_to_tab`'s Nth key goes to tab
-/// N: its action is completed with the key's index. Chords are Ctrl keys a
-/// shell rarely needs, with Alt only where no such Ctrl key is left.
+/// N: its action is completed with the key's index. Chords are Ctrl keys,
+/// with Alt only where no free Ctrl key is left.
 pub const COMMANDS: &[Binding<Command>] = &[
     bind("new_tab", Command::NewTab, &["c"], "new tab in this space").chords(&["C-M-c"]),
     bind("new_space", Command::NewSpace, &["C"], "new space"),
