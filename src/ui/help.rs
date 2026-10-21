@@ -32,7 +32,12 @@ const PROMPT_KEYS: [&str; 5] = [
 /// commands' and floats' keys in two columns, then the sidebar's and the
 /// dashboard's.
 pub fn lines(prefix: &str, keys: &Keymap, floats: &Floats) -> Vec<String> {
-    let mut out = vec![format!("Press {prefix}, then:"), String::new()];
+    let mut out = vec![
+        format!(
+            "Press {prefix}, then one of these ({prefix} again sends {prefix} to the terminal):"
+        ),
+        String::new(),
+    ];
     let mut cells: Vec<String> = keys
         .commands
         .bindings()
@@ -48,7 +53,6 @@ pub fn lines(prefix: &str, keys: &Keymap, floats: &Floats) -> Vec<String> {
         };
         format!("{:<LABEL$} float: {command}{cut}", f.key.name())
     }));
-    cells.push(format!("{prefix:<LABEL$} send {prefix} to the terminal"));
     out.extend(two_columns(&cells));
     out.push(String::new());
     out.extend(wrapped("Sidebar:   ", &keys.sidebar.hints()));
@@ -141,13 +145,20 @@ mod tests {
     #[test]
     fn lists_every_binding_with_the_prefix() {
         let l = lines("C-b", &Keymap::default(), &Floats::default());
-        assert_eq!(l[0], "Press C-b, then:");
+        assert!(l[0].starts_with("Press C-b, then"), "{}", l[0]);
+        assert!(
+            l[0].contains("C-b again sends C-b to the terminal"),
+            "{}",
+            l[0]
+        );
         assert!(l.iter().any(|x| x.contains("c      new tab in this space")));
         assert!(l.iter().any(|x| x.contains("1...9  go to tab")));
-        assert!(l.iter().any(|x| x.contains("send C-b to the terminal")));
-        assert!(l.iter().any(|x| x.contains("g      float: lazygit")));
+        assert!(l
+            .iter()
+            .any(|x| x.contains("g      find a space, tab or agent")));
+        assert!(l.iter().any(|x| x.contains("G      float: lazygit")));
         assert!(l.iter().any(|x| x.starts_with("Sidebar:   j down  k up")));
-        assert!(l.iter().any(|x| x.contains("I interact  Esc back")));
+        assert!(l.iter().any(|x| x.contains("I interact  / filter")));
         assert!(l
             .iter()
             .any(|x| x.starts_with("Prompts:   Enter ok  Esc cancel")));

@@ -47,6 +47,8 @@ pub enum DashboardAction {
     Close,
     Fork,
     Interact,
+    /// Type a filter for the list.
+    Filter,
     Back,
 }
 
@@ -165,6 +167,12 @@ pub const COMMANDS: &[Binding<Command>] = &[
     ),
     bind("dashboard", Command::Dashboard, &["o"], "dashboard"),
     bind(
+        "finder",
+        Command::Finder,
+        &["g"],
+        "find a space, tab or agent",
+    ),
+    bind(
         "detach",
         Command::Detach,
         &["d"],
@@ -251,6 +259,12 @@ pub const DASHBOARD: &[Binding<DashboardAction>] = &[
         DashboardAction::Interact,
         &["I"],
         "type into the previewed terminal (Esc leaves)",
+    ),
+    bind(
+        "filter",
+        DashboardAction::Filter,
+        &["/"],
+        "filter the list (Enter keeps, Esc clears)",
     ),
     bind(
         "back",

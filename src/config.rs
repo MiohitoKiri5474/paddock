@@ -23,7 +23,7 @@
 //! [floats]                   # the prefix, then a key, shows or hides a float
 //! width = 80                 # percent of the screen
 //! height = 80
-//! g = "lazygit"              # the default; "" removes it
+//! G = "lazygit"              # the default; "" removes it
 //!
 //! [notify]                   # macOS notifications, on unless set false
 //! waiting = true             # a session or one of its subagents starts waiting on you
@@ -449,14 +449,14 @@ mod tests {
     #[test]
     fn floats_come_from_their_table_and_may_not_take_a_command_key() {
         assert_eq!(Config::default().floats, Floats::default());
-        let c = Config::parse("[floats]\nwidth = 60\ng = \"\"\nT = \"htop\"\n").unwrap();
+        let c = Config::parse("[floats]\nwidth = 60\nG = \"\"\nT = \"htop\"\n").unwrap();
         assert_eq!(c.floats.width, 60);
         assert_eq!(c.floats.list.len(), 1);
         assert_eq!(c.floats.list[0].command, "htop");
         let err = |t: &str| format!("{:#}", Config::parse(t).unwrap_err());
         assert!(err("[floats]\nn = \"htop\"\n").contains("bound to next_tab"));
-        assert!(err("[keys.commands]\nhelp = \"g\"\n").contains("\"g\" is also bound to help"));
-        assert!(Config::parse("[keys.commands]\nhelp = \"g\"\n[floats]\ng = \"\"\n").is_ok());
+        assert!(err("[keys.commands]\nhelp = \"G\"\n").contains("\"G\" is also bound to help"));
+        assert!(Config::parse("[keys.commands]\nhelp = \"G\"\n[floats]\nG = \"\"\n").is_ok());
         assert!(err("[keys]\nprefix = \"C-g\"\n[floats]\nC-g = \"x\"\n").contains("prefix key"));
     }
 

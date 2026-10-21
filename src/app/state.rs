@@ -1,10 +1,11 @@
 //! What the running app holds: the spaces (tmux sessions, ADR 0006),
 //! each with its tabs (windows) and splits (panes) as tmux has them, a
 //! terminal per pane, the Claude sessions in them, and what the keyboard is
-//! doing (typing into the focused pane, naming, reading help).
+//! doing (typing into the focused pane, naming, finding, reading help).
 
 use super::attention::Attention;
 use super::dashboard::Dashboard;
+use super::finder::Finder;
 use super::floats::Shown;
 use super::mouse::Press;
 use super::pages::Pages;
@@ -56,6 +57,12 @@ pub enum Mode {
     },
     /// The dashboard is open.
     Dashboard(Dashboard),
+    /// The finder is open; `back` is the panel it was opened from, to
+    /// return to on `Esc`.
+    Finder {
+        finder: Finder,
+        back: Option<Panel>,
+    },
 }
 
 /// A panel that had the keyboard when the prompt opened, and gets it back
@@ -91,7 +98,9 @@ impl Mode {
     /// The panel the open prompt returns to, if any.
     pub fn back_panel(&self) -> Option<&Panel> {
         match self {
-            Mode::Naming { back, .. } | Mode::ConfirmClose { back, .. } => back.as_ref(),
+            Mode::Naming { back, .. }
+            | Mode::ConfirmClose { back, .. }
+            | Mode::Finder { back, .. } => back.as_ref(),
             _ => None,
         }
     }
@@ -99,7 +108,9 @@ impl Mode {
     /// The panel the open prompt returns to, to change it in place.
     pub fn back_panel_mut(&mut self) -> Option<&mut Panel> {
         match self {
-            Mode::Naming { back, .. } | Mode::ConfirmClose { back, .. } => back.as_mut(),
+            Mode::Naming { back, .. }
+            | Mode::ConfirmClose { back, .. }
+            | Mode::Finder { back, .. } => back.as_mut(),
             _ => None,
         }
     }
