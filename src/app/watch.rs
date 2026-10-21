@@ -7,13 +7,13 @@
 use super::Event;
 use crate::git;
 use crate::hooks::now_ms;
-use crate::sessions::{agents, log};
+use crate::sessions::{agents, log, HookRecord};
 use crate::tmux::Server;
 use crate::worktree::space_dir;
 use anyhow::{Context, Result};
 use std::path::Path;
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// How often to look for new hook events.
 const LOG_POLL: Duration = Duration::from_millis(200);
@@ -21,6 +21,32 @@ const LOG_POLL: Duration = Duration::from_millis(200);
 const AGENTS_POLL: Duration = Duration::from_secs(3);
 /// How often to re-read git for the task rows on screen.
 const GIT_POLL: Duration = Duration::from_secs(3);
+/// How often to look whether the external log needs trimming (a `stat`).
+const EXTERNAL_CHECK: Duration = AGENTS_POLL;
+
+/// Trim the external log (see [`log::compact`]). Returns whether it did.
+fn compact_external(path: &Path) -> Result<bool> {
+    log::compact(
+        path,
+        log::EXTERNAL_MAX_BYTES,
+        now_ms(),
+        log::EXTERNAL_KEEP_MS,
+    )
+}
+
+/// While paddock runs: once the external log passes its cap, read what
+/// `reader` has not yet, trim the log and go on from its new end. Returns
+/// the records read first, keyed, so none is skipped.
+fn trim_external(path: &Path, reader: &mut log::Reader) -> Vec<HookRecord> {
+    if !log::too_big(path, log::EXTERNAL_MAX_BYTES) {
+        return Vec::new();
+    }
+    let late = log::merged(Vec::new(), reader.read_new());
+    if let Ok(true) = compact_external(path) {
+        reader.skip_to_end();
+    }
+    late
+}
 
 /// Tasks to keep the git status of, as `(directory, branch)`.
 pub type Tasks = Vec<(String, String)>;
@@ -70,22 +96,25 @@ pub fn start(server: &Server, state_dir: &Path, tx: &Sender<Event>) -> Result<Se
         .context("cannot read the tmux server's pid")?;
     let mut reader = log::Reader::new(log::path(state_dir, pid));
     // Every Claude on the machine appends to the external log: trim it
-    // before replaying it. Failing that, it is read whole.
-    let external = log::external_path(state_dir);
-    let _ = log::compact(
-        &external,
-        log::EXTERNAL_MAX_BYTES,
-        now_ms(),
-        log::EXTERNAL_KEEP_MS,
-    );
-    let mut external = log::Reader::new(external);
+    // before replaying it, and while paddock runs. Failing that, it is read
+    // whole.
+    let external_path = log::external_path(state_dir);
+    let _ = compact_external(&external_path);
+    let mut external = log::Reader::new(external_path.clone());
     let events = tx.clone();
-    std::thread::spawn(move || loop {
-        let records = log::merged(reader.read_new(), external.read_new());
-        if !records.is_empty() && events.send(Event::Hooks(records)).is_err() {
-            break;
+    std::thread::spawn(move || {
+        let mut checked = Instant::now();
+        loop {
+            let mut records = log::merged(reader.read_new(), external.read_new());
+            if checked.elapsed() >= EXTERNAL_CHECK {
+                checked = Instant::now();
+                records.extend(trim_external(&external_path, &mut external));
+            }
+            if !records.is_empty() && events.send(Event::Hooks(records)).is_err() {
+                break;
+            }
+            std::thread::sleep(LOG_POLL);
         }
-        std::thread::sleep(LOG_POLL);
     });
 
     let agents_server = server.clone();

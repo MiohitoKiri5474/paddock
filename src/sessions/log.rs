@@ -5,8 +5,8 @@
 //!
 //! Events of external sessions (Claude outside paddock's terminals) have no
 //! server: they go to `<state>/events/external.jsonl`, without a pane. The
-//! app compacts that file when it opens, since every Claude on the machine
-//! appends to it.
+//! app compacts that file when it opens and while it runs, since every
+//! Claude on the machine appends to it.
 
 use super::{external_key, HookRecord};
 use anyhow::{bail, Context, Result};
@@ -52,28 +52,49 @@ pub const EXTERNAL_MAX_BYTES: u64 = 4 << 20;
 /// How long (ms) [`compact`] keeps records.
 pub const EXTERNAL_KEEP_MS: u64 = 24 * 60 * 60 * 1000;
 
-/// Keep only the records of the last `keep` ms before `now` in the log at
-/// `path`, once it is bigger than `max` bytes. The kept lines replace the
+/// Whether the log at `path` is bigger than `max` bytes, so [`compact`]
+/// would trim it.
+pub fn too_big(path: &Path, max: u64) -> bool {
+    std::fs::metadata(path).is_ok_and(|m| m.len() > max)
+}
+
+/// Trim the log at `path` once it is bigger than `max` bytes: keep only
+/// the records of the last `keep` ms before `now`, and of those only the
+/// newest that fit in half of `max`. The next trim is then at least half of
+/// `max` of new hooks away, however busy the last day was, so paddock never
+/// rewrites a huge file on every open or poll. The kept lines replace the
 /// file in one rename; a hook appending meanwhile may lose its line, which
-/// the next hook or `claude agents --json` makes up for.
-pub fn compact(path: &Path, max: u64, now: u64, keep: u64) -> Result<()> {
-    match std::fs::metadata(path) {
-        Ok(m) if m.len() > max => {}
-        _ => return Ok(()),
+/// the next hook or `claude agents --json` makes up for. Returns whether it
+/// trimmed.
+pub fn compact(path: &Path, max: u64, now: u64, keep: u64) -> Result<bool> {
+    if !too_big(path, max) {
+        return Ok(false);
     }
     let text = std::fs::read(path).with_context(|| format!("cannot read {}", path.display()))?;
     let since = now.saturating_sub(keep);
-    let mut kept = Vec::new();
-    for line in text.split(|&b| b == b'\n') {
-        let recent = serde_json::from_slice::<HookRecord>(line).is_ok_and(|r| r.ts >= since);
-        if recent {
-            kept.extend_from_slice(line);
-            kept.push(b'\n');
-        }
+    let recent: Vec<&[u8]> = text
+        .split(|&b| b == b'\n')
+        .filter(|l| serde_json::from_slice::<HookRecord>(l).is_ok_and(|r| r.ts >= since))
+        .collect();
+    let budget = usize::try_from(max / 2).unwrap_or(usize::MAX);
+    let mut size = 0;
+    let newest = recent
+        .iter()
+        .rev()
+        .take_while(|l| {
+            size += l.len() + 1;
+            size <= budget
+        })
+        .count();
+    let mut kept = Vec::with_capacity(size);
+    for line in &recent[recent.len() - newest..] {
+        kept.extend_from_slice(line);
+        kept.push(b'\n');
     }
     let tmp = path.with_extension("jsonl.tmp");
     std::fs::write(&tmp, kept).with_context(|| format!("cannot write {}", tmp.display()))?;
-    std::fs::rename(&tmp, path).with_context(|| format!("cannot replace {}", path.display()))
+    std::fs::rename(&tmp, path).with_context(|| format!("cannot replace {}", path.display()))?;
+    Ok(true)
 }
 
 /// The terminal a hook runs in, from `$TMUX` (`socket,pid,index`) and
@@ -171,6 +192,13 @@ impl Reader {
         }
     }
 
+    /// Go on from the end of the file as it is now: after [`compact`]
+    /// rewrote it, every record it kept was read already.
+    pub fn skip_to_end(&mut self) {
+        self.offset = std::fs::metadata(&self.path).map_or(0, |m| m.len());
+        self.partial.clear();
+    }
+
     /// Records written since the last call. A missing file has none.
     pub fn read_new(&mut self) -> Vec<HookRecord> {
         let Ok(mut f) = std::fs::File::open(&self.path) else {
@@ -253,26 +281,65 @@ mod tests {
         );
     }
 
+    /// A log of Stop records at `stamps`, and the length of one 3-digit line.
+    fn stops(p: &Path, stamps: impl IntoIterator<Item = u64>) -> u64 {
+        for ts in stamps {
+            append(p, &record("Stop", "", r#"{"session_id":"e1"}"#, ts)).unwrap();
+        }
+        let line = serde_json::to_vec(&record("Stop", "", r#"{"session_id":"e1"}"#, 100));
+        line.unwrap().len() as u64 + 1
+    }
+
+    fn stamps(p: &Path) -> Vec<u64> {
+        Reader::new(p.to_path_buf())
+            .read_new()
+            .iter()
+            .map(|r| r.ts)
+            .collect()
+    }
+
     #[test]
     fn compacting_keeps_recent_records_once_the_log_is_big() {
         let dir = tempfile::tempdir().unwrap();
         let p = external_path(dir.path());
-        for ts in [1, 50, 100] {
-            append(&p, &record("Stop", "", r#"{"session_id":"e1"}"#, ts)).unwrap();
-        }
+        // Ten old records, garbage, then two recent ones.
+        let line = stops(&p, 10..20);
         let mut f = std::fs::OpenOptions::new().append(true).open(&p).unwrap();
         f.write_all(b"garbage\n").unwrap();
+        stops(&p, [100, 101]);
         let before = std::fs::read(&p).unwrap();
-        compact(&p, 1 << 20, 100, 60).unwrap();
+        assert!(!compact(&p, 1 << 20, 101, 60).unwrap());
         assert_eq!(std::fs::read(&p).unwrap(), before, "small: untouched");
-        compact(&p, 10, 100, 60).unwrap();
-        let ts: Vec<u64> = Reader::new(p.clone())
-            .read_new()
-            .iter()
-            .map(|r| r.ts)
-            .collect();
-        assert_eq!(ts, [50, 100]);
-        compact(&dir.path().join("none.jsonl"), 0, 1, 1).unwrap();
+        assert!(compact(&p, 5 * line, 101, 60).unwrap());
+        assert_eq!(stamps(&p), [100, 101]);
+        assert!(!compact(&dir.path().join("none.jsonl"), 0, 1, 1).unwrap());
+    }
+
+    #[test]
+    fn compacting_keeps_only_the_newest_records_that_fit_in_half_the_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = external_path(dir.path());
+        // A busy day: every record is recent, and twelve lines pass the cap.
+        let line = stops(&p, 100..112);
+        assert!(compact(&p, 5 * line, 111, 1_000).unwrap());
+        assert_eq!(stamps(&p), [110, 111], "2.5 lines of room");
+        assert!(std::fs::metadata(&p).unwrap().len() <= 5 * line / 2);
+        assert!(!compact(&p, 5 * line, 111, 1_000).unwrap(), "not again");
+    }
+
+    #[test]
+    fn the_reader_goes_on_after_a_compaction() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = external_path(dir.path());
+        let line = stops(&p, 100..112);
+        let mut reader = Reader::new(p.clone());
+        assert_eq!(reader.read_new().len(), 12);
+        assert!(compact(&p, 5 * line, 111, 1_000).unwrap());
+        reader.skip_to_end();
+        assert!(reader.read_new().is_empty(), "kept records were read");
+        stops(&p, [112]);
+        let next: Vec<u64> = reader.read_new().iter().map(|r| r.ts).collect();
+        assert_eq!(next, [112]);
     }
 
     #[test]
