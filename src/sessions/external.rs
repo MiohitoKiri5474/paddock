@@ -5,6 +5,7 @@
 //! without a `SessionEnd`).
 
 use super::{Agent, HookRecord, Session, Sessions};
+use std::collections::HashSet;
 
 /// What an external session's key starts with: never a tmux pane id (`%N`).
 const EXTERNAL: &str = "ext:";
@@ -80,12 +81,26 @@ impl Sessions {
     /// Forget external sessions quiet for longer than `timeout` ms at
     /// `now`, ended or not, so they do not pile up. An ended one is kept
     /// until then, so hooks landing after its `SessionEnd` stay ignored.
-    pub fn prune_externals(&mut self, now: u64, timeout: u64) {
+    /// Their dismissals go with them. Returns whether any dismissal went, so
+    /// the saved ones can be written again.
+    pub fn prune_externals(&mut self, now: u64, timeout: u64) -> bool {
         let quiet = |s: &Session| now > s.alive.saturating_add(timeout);
-        self.by_pane.retain(|k, s| !(is_external(k) && quiet(s)));
-        let kept = &self.by_pane;
-        self.seen
-            .retain(|(k, _), _| !is_external(k) || kept.contains_key(k));
+        let pruned: HashSet<String> = self
+            .by_pane
+            .iter()
+            .filter(|(k, s)| is_external(k) && quiet(s))
+            .map(|(k, _)| k.clone())
+            .collect();
+        if pruned.is_empty() {
+            return false;
+        }
+        // Only the sessions pruned now: a dismissal loaded before its
+        // session was replayed stays.
+        self.by_pane.retain(|k, _| !pruned.contains(k));
+        self.seen.retain(|(k, _), _| !pruned.contains(k));
+        let before = self.dismissed.len();
+        self.dismissed.retain(|(k, _), _| !pruned.contains(k));
+        self.dismissed.len() != before
     }
 }
 
@@ -226,5 +241,23 @@ mod tests {
         assert!(s.externals(3, MIN).is_empty(), "still the same session");
         s.apply(&ext("UserPromptSubmit", "e1", 4));
         assert_eq!(s.externals(4, MIN).len(), 1);
+    }
+
+    #[test]
+    fn pruning_an_external_session_drops_its_dismissals() {
+        let mut s = Sessions::default();
+        s.apply(&ext("Stop", "e1", 1));
+        s.apply(&rec("Stop", 1));
+        s.dismiss(&external_key("e1"), None, 2);
+        s.dismiss(&external_key("e1"), Some("feat/x"), 2);
+        s.dismiss("%1", None, 2);
+        // Not replayed yet: its dismissal stays.
+        s.dismiss(&external_key("later"), None, 2);
+        assert!(!s.prune_externals(5, MIN), "nothing quiet yet");
+        assert_eq!(s.dismissals().len(), 4);
+        assert!(s.prune_externals(2 * MIN, MIN));
+        let left: Vec<String> = s.dismissals().into_iter().map(|d| d.pane).collect();
+        assert_eq!(left, ["%1".to_string(), external_key("later")]);
+        assert!(!s.prune_externals(3 * MIN, MIN), "nothing left to drop");
     }
 }

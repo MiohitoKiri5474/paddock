@@ -454,6 +454,11 @@ impl App {
             .collect();
         self.task_status.retain(|task, _| shown.contains(task));
         self.task_details.retain(|task, _| shown.contains(task));
+        self.save_dismissed()
+    }
+
+    /// Write the dismissed rows to the state directory.
+    pub(super) fn save_dismissed(&mut self) -> Result<()> {
         dismissed::save(&self.state_dir, &self.sessions.dismissals())
     }
 
