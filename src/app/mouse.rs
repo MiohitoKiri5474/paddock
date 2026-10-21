@@ -3,7 +3,7 @@
 //! wheel and programs' mouse reports go to the pane under the pointer;
 //! dragging selects text and releasing copies it.
 
-use super::state::{App, Mode, Panel, TAB_BAR_ROWS};
+use super::state::{App, Mode, TAB_BAR_ROWS};
 use crate::input::{route_mouse, MouseAction};
 use crate::terminal::emulator::Emulator;
 use crate::ui::sidebar;
@@ -51,8 +51,7 @@ impl App {
             return false;
         }
         self.mode = match std::mem::replace(&mut self.mode, Mode::Normal) {
-            Mode::ConfirmClose { back: Some(d), .. } => Mode::Dashboard(d),
-            Mode::Naming { back, .. } => Panel::mode(back),
+            Mode::Naming { back, .. } | Mode::ConfirmClose { back, .. } => Mode::back_to(back),
             _ => Mode::Normal,
         };
         true

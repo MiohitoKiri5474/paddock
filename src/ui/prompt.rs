@@ -1,6 +1,7 @@
 //! The prompt popup (after LazyVim's input): a small rounded box in the
 //! middle of the screen, drawn over everything, its border in the accent
-//! colour and its title in the top border. It holds a line being typed (a name) or a question.
+//! colour and its title in the top border. It holds a line being typed
+//! (a name) or a question.
 //!
 //! ```text
 //! ╭──────── Rename tab ────────╮

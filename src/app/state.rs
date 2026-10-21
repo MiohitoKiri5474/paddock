@@ -46,11 +46,11 @@ pub enum Mode {
     /// The sidebar has the keyboard; holds its selection.
     Sidebar(Selection),
     /// Asking before closing `target`, where Claude is `state`; `back` is
-    /// the dashboard asked from, to return to.
+    /// the panel asked from, to return to.
     ConfirmClose {
         target: CloseTarget,
         state: State,
-        back: Option<Dashboard>,
+        back: Option<Panel>,
     },
     /// The dashboard is open.
     Dashboard(Dashboard),
@@ -65,14 +65,40 @@ pub enum Panel {
     Dashboard(Dashboard),
 }
 
-impl Panel {
-    /// The mode that gives the keyboard back to `panel`, or to the focused
+impl Mode {
+    /// The mode that gives the keyboard back to `back`, or to the focused
     /// pane if none.
-    pub fn mode(panel: Option<Self>) -> Mode {
-        match panel {
+    pub fn back_to(back: Option<Panel>) -> Self {
+        match back {
             Some(Panel::Sidebar(s)) => Mode::Sidebar(s),
             Some(Panel::Dashboard(d)) => Mode::Dashboard(d),
             None => Mode::Normal,
+        }
+    }
+
+    /// The panel with the keyboard in this mode, if any: to return to after
+    /// a prompt opened from it.
+    pub fn into_panel(self) -> Option<Panel> {
+        match self {
+            Mode::Sidebar(s) => Some(Panel::Sidebar(s)),
+            Mode::Dashboard(d) => Some(Panel::Dashboard(d)),
+            _ => None,
+        }
+    }
+
+    /// The panel the open prompt returns to, if any.
+    pub fn back_panel(&self) -> Option<&Panel> {
+        match self {
+            Mode::Naming { back, .. } | Mode::ConfirmClose { back, .. } => back.as_ref(),
+            _ => None,
+        }
+    }
+
+    /// The panel the open prompt returns to, to change it in place.
+    pub fn back_panel_mut(&mut self) -> Option<&mut Panel> {
+        match self {
+            Mode::Naming { back, .. } | Mode::ConfirmClose { back, .. } => back.as_mut(),
+            _ => None,
         }
     }
 }

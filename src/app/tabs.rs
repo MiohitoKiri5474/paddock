@@ -2,7 +2,6 @@
 //! session, a tab one of its windows. paddock asks tmux to change them and
 //! reads them back when tmux reports a change.
 
-use super::dashboard::Dashboard;
 use super::space::clamp;
 use super::state::{is_session_id, next_name, App, CloseTarget, Mode, NameTarget, Renamed};
 use crate::sessions::State;
@@ -225,16 +224,11 @@ impl App {
 
     /// End pane `pane`, first asking if Claude there is running or waiting.
     /// tmux closes its tab with its last pane, and its space with its last
-    /// tab, and reports each. Asking from the dashboard `back` returns to it
-    /// after.
-    pub fn close(&mut self, pane: &str, back: Option<Dashboard>) -> Result<()> {
+    /// tab, and reports each.
+    pub fn close(&mut self, pane: &str) -> Result<()> {
         match self.session_in(pane).map(|s| s.state) {
             Some(state @ (State::Running | State::Waiting)) => {
-                self.mode = Mode::ConfirmClose {
-                    target: CloseTarget::Pane(pane.to_string()),
-                    state,
-                    back,
-                };
+                self.ask_close(CloseTarget::Pane(pane.to_string()), state);
                 Ok(())
             }
             _ => self.server.kill_pane(pane),
@@ -252,15 +246,22 @@ impl App {
             .find(|s| matches!(s, State::Running | State::Waiting));
         match busy {
             Some(state) => {
-                self.mode = Mode::ConfirmClose {
-                    target: CloseTarget::Space(id.to_string()),
-                    state,
-                    back: None,
-                };
+                self.ask_close(CloseTarget::Space(id.to_string()), state);
                 Ok(())
             }
             None => self.server.kill_session(id),
         }
+    }
+
+    /// Ask before closing `target`, where Claude is `state`. A panel with
+    /// the keyboard (the sidebar or the dashboard) gets it back after.
+    fn ask_close(&mut self, target: CloseTarget, state: State) {
+        let back = std::mem::replace(&mut self.mode, Mode::Normal).into_panel();
+        self.mode = Mode::ConfirmClose {
+            target,
+            state,
+            back,
+        };
     }
 
     /// Close what a close question was about, once the user said yes.

@@ -28,9 +28,7 @@ impl App {
                 if key.code == KeyCode::Char('y') {
                     self.report(|app| app.close_now(&target));
                 }
-                if let Some(d) = back {
-                    self.mode = Mode::Dashboard(d);
-                }
+                self.mode = Mode::back_to(back);
                 Ok(Flow::Continue)
             }
             Mode::Dashboard(d) => {
@@ -101,7 +99,7 @@ impl App {
             Command::RenameSpace => self.start_naming(NameTarget::Rename(Renamed::Space)),
             Command::Close => {
                 if let Some(pane) = self.current_pane() {
-                    self.report(|app| app.close(&pane, None));
+                    self.report(|app| app.close(&pane));
                 }
             }
             Command::Fork => {
@@ -138,11 +136,7 @@ impl App {
     /// back when the prompt closes.
     fn start_naming(&mut self, target: NameTarget) {
         let line = LineEdit::new(&self.name_of(target));
-        let back = match std::mem::replace(&mut self.mode, Mode::Normal) {
-            Mode::Sidebar(s) => Some(Panel::Sidebar(s)),
-            Mode::Dashboard(d) => Some(Panel::Dashboard(d)),
-            _ => None,
-        };
+        let back = std::mem::replace(&mut self.mode, Mode::Normal).into_panel();
         self.mode = Mode::Naming { target, line, back };
     }
 
@@ -165,11 +159,11 @@ impl App {
     ) {
         match key.code {
             KeyCode::Enter => {
-                self.mode = Panel::mode(back);
+                self.mode = Mode::back_to(back);
                 self.report(|app| app.submit_name(target, line.text()));
                 self.relayout_and_save();
             }
-            KeyCode::Esc => self.mode = Panel::mode(back),
+            KeyCode::Esc => self.mode = Mode::back_to(back),
             _ => {
                 line.key(key);
                 self.mode = Mode::Naming { target, line, back };

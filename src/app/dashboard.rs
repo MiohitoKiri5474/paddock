@@ -44,13 +44,11 @@ impl App {
     /// The dashboard, if open (also while asking before a close from it).
     pub fn dashboard(&self) -> Option<&Dashboard> {
         match &self.mode {
-            Mode::Dashboard(d)
-            | Mode::ConfirmClose { back: Some(d), .. }
-            | Mode::Naming {
-                back: Some(Panel::Dashboard(d)),
-                ..
-            } => Some(d),
-            _ => None,
+            Mode::Dashboard(d) => Some(d),
+            mode => match mode.back_panel() {
+                Some(Panel::Dashboard(d)) => Some(d),
+                _ => None,
+            },
         }
     }
 
@@ -83,13 +81,14 @@ impl App {
     /// highlighted is the one keys act on.
     pub fn anchor_dashboard(&mut self) {
         let ids = row_ids(&self.rows());
-        if let Mode::Dashboard(d)
-        | Mode::ConfirmClose { back: Some(d), .. }
-        | Mode::Naming {
-            back: Some(Panel::Dashboard(d)),
-            ..
-        } = &mut self.mode
-        {
+        let d = match &mut self.mode {
+            Mode::Dashboard(d) => Some(d),
+            mode => match mode.back_panel_mut() {
+                Some(Panel::Dashboard(d)) => Some(d),
+                _ => None,
+            },
+        };
+        if let Some(d) = d {
             *d = d.anchored(&ids);
         }
     }
@@ -203,8 +202,8 @@ impl App {
                 Mode::Normal
             }
             DashboardAction::Close => {
-                self.mode = Mode::Dashboard(d.clone());
-                self.report(|app| app.close(&row.pane, Some(d)));
+                self.mode = Mode::Dashboard(d);
+                self.report(|app| app.close(&row.pane));
                 // Asking takes the keyboard, then comes back here.
                 std::mem::replace(&mut self.mode, Mode::Normal)
             }

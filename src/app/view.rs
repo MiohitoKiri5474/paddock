@@ -122,19 +122,19 @@ impl App {
     /// The prompt popup, while it is open: asking for a name, or asking
     /// before a close.
     pub(super) fn prompt(&self) -> Option<Prompt<'_>> {
-        match &self.mode {
-            Mode::Naming { target, line, .. } => Some(Prompt {
-                title: target.title(),
-                body: Body::Input(line),
-                accent: self.tab_colors.current,
-            }),
-            Mode::ConfirmClose { target, state, .. } => Some(Prompt {
-                title: self.close_title(target),
-                body: Body::Message(format!("Claude is {}: close? y/n", state.label())),
-                accent: self.tab_colors.current,
-            }),
-            _ => None,
-        }
+        let (title, body) = match &self.mode {
+            Mode::Naming { target, line, .. } => (target.title(), Body::Input(line)),
+            Mode::ConfirmClose { target, state, .. } => (
+                self.close_title(target),
+                Body::Message(format!("Claude is {}: close? y/n", state.label())),
+            ),
+            _ => return None,
+        };
+        Some(Prompt {
+            title,
+            body,
+            accent: self.tab_colors.current,
+        })
     }
 
     /// The title of the question before closing `target`: a pane alone in
