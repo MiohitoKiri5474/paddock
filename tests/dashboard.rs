@@ -149,9 +149,17 @@ fn the_list_sits_above_the_preview_and_the_keys_at_the_bottom() {
     };
     let (title, row, preview) = (at(" dashboard"), at(" repo"), at("preview: repo"));
     assert_eq!(title, 1, "right under the tab bar");
-    assert!(title < row && row < preview, "{}", rows.join("\n"));
-    let last = rows.last().expect("rows drawn");
-    assert!(last.starts_with(&format!(" {OPEN}")), "{}", rows.join("\n"));
+    let screen = rows.join("\n");
+    // The title, the column header, a blank line, then the rows.
+    assert_eq!(row, title + 3, "{screen}");
+    assert_eq!(rows[title + 2], "", "{screen}");
+    // A blank line, then the preview in a border, its title in the top one.
+    assert!(row < preview, "{screen}");
+    assert_eq!(rows[preview - 1], "", "{screen}");
+    assert!(rows[preview].starts_with("╭ preview: repo"), "{screen}");
+    let (last, above) = (rows.len() - 1, rows.len() - 2);
+    assert!(rows[above].starts_with("╰─"), "{screen}");
+    assert!(rows[last].starts_with(&format!(" {OPEN}")), "{screen}");
 }
 
 #[test]

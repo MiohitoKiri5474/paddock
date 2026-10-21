@@ -115,7 +115,7 @@ back = ["Esc", "q"]
 interact = "i"
 
 [colors]
-current_space = 236       # the current space's and agent's background: 256-colour index or "#rrggbb" (also read as current_item)
+current_space = 236       # the current space's and agent's background, and the dashboard selection's: 256-colour index or "#rrggbb" (also read as current_item)
 tab_bar = 235             # the tab bar's row
 tab = 237                 # a tab that is not current
 tab_current = 4           # the current tab and the popup border (default: the terminal's blue)

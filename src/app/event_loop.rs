@@ -338,6 +338,7 @@ fn draw_dashboard(app: &App, rows: &[Row], area: Rect, buf: &mut Buffer) -> Opti
             .map(|t| t.emulator()),
         interactive: d.interactive,
         now: now_ms() / MS_PER_SEC,
+        selection: app.current_space_bg,
     };
     dashboard::render(&view, area, buf)
 }

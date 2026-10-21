@@ -22,8 +22,9 @@ const SPIKE: &str = concat!(
 const OPEN: &str = "j down  k up";
 /// The dashboard's title, on its first line, right under the tab bar.
 const TITLE: &str = "dashboard";
-/// The selected session block's background.
-const SELECTED: vt100::Color = vt100::Color::Idx(237);
+/// The selected session block's background: the default
+/// `[colors] current_space`.
+const SELECTED: vt100::Color = vt100::Color::Idx(236);
 
 /// A recorded main-agent payload for `cwd`; `tool` renames its tool.
 fn payload(name: &str, cwd: &Path, tool: Option<&str>) -> String {
@@ -86,9 +87,10 @@ fn list(paddock: &Paddock) -> Vec<String> {
         return Vec::new();
     }
     rows.iter()
-        // The tab bar, the title and the column header.
-        .skip(3)
-        .take_while(|r| !r.starts_with('─'))
+        // The tab bar, the title, the column header and a blank line.
+        .skip(4)
+        // Up to the preview's border.
+        .take_while(|r| !r.starts_with('╭'))
         // Blank lines part the sessions, and fill the list's minimum height.
         .filter(|r| !r.is_empty() && !r.contains("no Claude sessions yet"))
         .map(|r| r.split_whitespace().collect::<Vec<_>>().join(" "))
