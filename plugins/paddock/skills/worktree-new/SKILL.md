@@ -3,7 +3,7 @@ name: worktree-new
 description: Check a branch out in a new paddock worktree and open a space there.
 argument-hint: <branch>
 disable-model-invocation: true
-allowed-tools: Bash(paddock worktree *)
+allowed-tools: Bash(paddock worktree new *)
 ---
 
 Run `paddock worktree new $ARGUMENTS --json`.

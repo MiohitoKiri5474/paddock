@@ -244,8 +244,9 @@ fn open_makes_a_space_once() {
     // Again, by path: it says so and changes nothing.
     let out = cli(&sandbox, &dir, &["open", &path.to_string_lossy()]);
     exits(&out, 0, "");
+    assert_eq!(stdout(&out).trim(), path.to_string_lossy());
     assert!(
-        stdout(&out).contains("already has a space: repo/feat/o"),
+        stderr(&out).contains("already has a space: repo/feat/o"),
         "{out:?}"
     );
     assert_eq!(sandbox.session_names(), ["repo/feat/o"]);

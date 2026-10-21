@@ -1,7 +1,7 @@
 ---
 name: paddock-worktrees
 description: Make, open, list and delete git worktrees as paddock spaces with the `paddock worktree` command. Use when work should happen on another branch in parallel, or when a task must not touch the current working tree, and paddock is installed (`command -v paddock`).
-allowed-tools: Bash(paddock worktree *)
+allowed-tools: Bash(paddock worktree list), Bash(paddock worktree list *), Bash(paddock worktree new *), Bash(paddock worktree open *)
 ---
 
 # Worktrees with paddock
@@ -34,7 +34,7 @@ Otherwise, work where you are.
 
    An existing branch is checked out; a new branch starts at the current tree's HEAD. Add `--no-space` for the worktree alone. Add `--from <dir>` to use another repository than the current directory's.
 
-3. Work in the returned `path`: `cd` there, or pass it to your tools. Do not edit the original tree for this task.
+3. Work in the returned `path`. A `cd` alone may not last to the next command: start each shell command with `cd <path> &&`, and give file tools absolute paths under `path`. Do not edit the original tree for this task.
 
 4. Delete it only when the user asks, or when its branch is merged:
 
@@ -42,7 +42,7 @@ Otherwise, work where you are.
    paddock worktree rm <branch> --json
    ```
 
-   This closes its spaces, removes the worktree and deletes the branch with `git branch -d`. An unmerged branch is kept, with a notice on stderr.
+   This closes its spaces, removes the worktree and deletes the branch with `git branch -d`. An unmerged branch is kept, with a notice on stderr. `rm` is not pre-approved: the user confirms each one.
 
 ## Never
 

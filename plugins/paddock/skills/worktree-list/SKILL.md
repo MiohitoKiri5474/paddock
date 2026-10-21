@@ -2,7 +2,7 @@
 name: worktree-list
 description: List the repository's worktrees with their paddock spaces, state and agents.
 disable-model-invocation: true
-allowed-tools: Bash(paddock worktree *)
+allowed-tools: Bash(paddock worktree list), Bash(paddock worktree list *)
 ---
 
 Run `paddock worktree list` and show its output as it is.

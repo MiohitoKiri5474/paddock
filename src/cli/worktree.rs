@@ -278,6 +278,10 @@ fn open(cx: &Context, from: Option<&Path>, target: &str, json: bool) -> Result<(
             (made, true)
         }
     };
+    if !made {
+        // A notice, not an error: the output stays the same shape.
+        eprintln!("paddock: {} already has a space: {space}", w.path);
+    }
     if json {
         return print_json(&Made {
             path: &w.path,
@@ -286,11 +290,7 @@ fn open(cx: &Context, from: Option<&Path>, target: &str, json: bool) -> Result<(
             space: Some(&space),
         });
     }
-    if made {
-        println!("{}", w.path);
-    } else {
-        println!("{} already has a space: {space}", w.path);
-    }
+    println!("{}", w.path);
     Ok(())
 }
 
