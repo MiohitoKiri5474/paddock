@@ -236,8 +236,9 @@ impl App {
 
     /// Interactive: every key but `Esc` goes to the previewed terminal, and
     /// `Esc` only leaves. `Esc` and a key read together arrive as that key
-    /// with Alt: no paddock key uses Alt, so any such key leaves too, and
-    /// `Esc` never reaches the terminal.
+    /// with Alt: no key of the dashboard uses Alt (direct chords are off
+    /// in it), so any such key leaves too, and `Esc` never reaches the
+    /// terminal.
     fn interactive_key(&mut self, d: Dashboard, key: KeyEvent) {
         if key.code == KeyCode::Esc || key.modifiers.contains(KeyModifiers::ALT) {
             self.mode = Mode::Dashboard(Dashboard {

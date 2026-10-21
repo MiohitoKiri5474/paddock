@@ -262,6 +262,7 @@ impl App {
             prefix: PrefixKeys::new(
                 config.prefix,
                 config.keys.commands.clone(),
+                config.keys.direct.clone(),
                 config.floats.list.iter().map(|f| f.key).collect(),
             ),
             prefix_name: config.prefix.name(),

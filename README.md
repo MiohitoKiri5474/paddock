@@ -151,6 +151,22 @@ While typing into the preview, every key goes to the terminal except `Esc`, whic
 
 Mouse: click to focus a split, switch tabs (`+` after the tabs opens one, `<`/`>` scroll a full bar), or open a space or agent; the wheel over the tab bar switches tabs; wheel scrolls history; drag selects and copies (hold Shift over programs that use the mouse).
 
+#### Direct
+
+Some commands also fire on one chord, no prefix (`[keys.direct]`), whenever a terminal has the keyboard: not in the sidebar, the dashboard, a prompt, the finder or a float (a float gets every key but the prefix). Any action from the prefix table can be bound here; by default:
+
+| Key | Action | Name |
+|---|---|---|
+| `C-M-c` | new tab in this space | `new_tab` |
+| `C-\` | split side by side | `split_right` |
+| `C--` | split top and bottom | `split_down` |
+| `C-h` | focus left | `focus_left` |
+| `C-j` | focus down | `focus_down` |
+| `C-k` | focus up | `focus_up` |
+| `C-l` | focus right | `focus_right` |
+
+`C-h`, `C-j`, `C-k` and `C-l` are Backspace, Enter, clear and kill-line in many programs, and paddock takes them: a notice at start says so until you set `[keys.direct]` yourself (even empty, or to the same chords; `focus_left = ""` gives `C-h` back to the terminal). `C-M-c` needs a terminal that sends Alt, and paddock gives no warning about it (see [Configure](#configure)). Next and previous tab have no chord by default (`C-a n`, `C-a p`); `C-M-[` would reach paddock only under the kitty keyboard protocol (elsewhere it is two `Esc`). A direct chord matches exactly as bound (not with an extra Shift), and may be the same key as a `[keys.commands]` one, since those need the prefix first. The help (`C-a ?`) shows each command's chord after it in brackets.
+
 ## Configure
 
 `~/.config/paddock/config.toml`:
@@ -164,6 +180,10 @@ new_tab = "t"             # one key...
 split_right = ["|", "\\"] # ...or a list of them
 next_tab = ""             # "" or [] unbinds
 go_to_tab = ["F1", "F2", "F3", "F4"]
+
+[keys.direct]             # the same actions on one chord, no prefix
+focus_left = ""           # C-h goes to the terminal again
+dashboard = "C-M-o"
 
 [keys.sidebar]            # while the sidebar has the keyboard
 back = ["Esc", "q"]
@@ -200,11 +220,12 @@ Once you resize the sidebar (`C-a {`, `C-a }` or dragging its border), paddock s
 - a character (`c`, `|`, `$`, `{`) or a name (`Tab`, `Enter`, `Esc`, `Space`, `Backspace`, `Delete`, `Insert`, `Home`, `End`, `PageUp`, `PageDown`, `Left`, `Down`, `Up`, `Right`, `F1`-`F12`); names in any case
 - optionally after `C-` (Ctrl), `S-` (Shift) or `M-` (Alt), in any case (`c-n` is `C-n`)
 - `C-` with a letter is the same key in either case (`C-A` is `C-a`: terminals send them alike); `C-S-` with a character is refused for the same reason
+- `C--`, `C-_` and `C-7` are one key, as are `C-\` and `C-4`, `C-]` and `C-5`, `C-^` and `C-6`: terminals send one control byte for each group, and paddock prints the first. Other Ctrl keys stay apart (`C-/`, `C-3` and `C-2` are their own keys). Without the kitty protocol, Ctrl+Space and Ctrl+@ both arrive as `C-Space`, so write `C-Space` (not `C-@` or `C-2`) to bind it
 - `S-` goes with a letter (`S-a` is `A`) or a named key (`S-Tab`); for other characters write the shifted one itself (`!`, not `S-1`)
-- `M-` works, with a warning at start and again on leaving, but not every terminal sends it, so paddock's own keys avoid it
-- the prefix must be `C-` with a letter, `Space`, or one of `\ ] ^ _`
+- `M-` works, but not every terminal sends it. A key you bind with `M-`, other than that action's default, gives a warning at start and again on leaving. paddock's own keys avoid `M-`, except the direct chord `C-M-c` (new tab), and that default gives no warning: if your terminal does not send Alt, it does nothing
+- the prefix must be `C-` with a letter, `Space`, or one of `\ ] ^ _` (`C-_` is `C--`)
 
-After the prefix, Shift does not matter for a key bound without it (Shift+arrows move focus too); in the sidebar and the dashboard, neither do Ctrl and Shift. A key bound with the modifier wins.
+After the prefix, Shift does not matter for a key bound without it (Shift+arrows move focus too); in the sidebar and the dashboard, neither do Ctrl and Shift. A key bound with the modifier wins. A direct chord matches only as bound.
 
 paddock refuses to start, naming the file and the setting, on an unknown action or section, a key it cannot read, a key listed twice for one action, a key bound to two actions in the same section (unbind one with `""`, even a default), or the prefix key inside a `[keys.…]` section. In `[floats]` the keys use the same syntax and are refused the same way when they cannot be read, are listed twice, are the prefix, or are bound in `[keys.commands]` (the default `G` too: write `G = ""` to free it); `width` and `height` are whole percents from 1 to 100. `g` now opens the finder, so a float you had on `[floats] g` must move to another key (lazygit's default moved to `G`).
 

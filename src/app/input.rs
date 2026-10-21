@@ -83,10 +83,17 @@ impl App {
         self.float_pane().or_else(|| self.current_pane())
     }
 
-    /// A key while the focused pane (or the float shown) has the keyboard.
+    /// A key while the focused pane (or the float shown) has the keyboard:
+    /// a direct chord is a command, unless a float shows (it gets every
+    /// key but the prefix).
     fn normal_key(&mut self, key: KeyEvent) -> Result<Flow> {
         match self.prefix.handle(key) {
             KeyAction::Forward(key) => {
+                if self.float_pane().is_none() {
+                    if let Some(c) = self.prefix.direct(&key) {
+                        return self.command(c);
+                    }
+                }
                 let Some(pane) = self.typing_pane() else {
                     return Ok(Flow::Continue);
                 };

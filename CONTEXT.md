@@ -106,6 +106,16 @@ _Avoid_: clone, duplicate
 Leave paddock while every terminal keeps running.
 _Avoid_: quit, exit
 
+### Keys
+
+**Prefix**:
+The key (`C-a` unless configured) that makes the next key a paddock command instead of input for the terminal. Pressed twice, it goes to the terminal.
+_Avoid_: shortcut, hotkey
+
+**Direct chord**:
+One key combination that runs a paddock command without the prefix, such as `C-l` to focus the terminal on the right. It works while a terminal has the keyboard, and goes to the program in a float.
+_Avoid_: shortcut, hotkey
+
 ### Git
 
 **Line changes**:

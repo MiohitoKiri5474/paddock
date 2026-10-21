@@ -1,9 +1,14 @@
 //! Keys from `config.toml`: remapped actions work, their old keys do not,
-//! the help shows them, and a bad `[keys.…]` table stops paddock.
+//! the help shows them, and a bad `[keys.…]` table stops paddock. Direct
+//! chords (ticket 22) are commands without the prefix.
 
 mod harness;
 
 use harness::{Paddock, Sandbox, PROMPT};
+use std::time::Duration;
+
+/// The notice an unset `[keys.direct]` gives at start.
+const CONTROL_CHARS_NOTICE: &str = "[keys.direct] takes C-h and C-j from the terminal";
 
 /// A launched paddock with its first shell ready.
 fn ready(sandbox: &Sandbox) -> Paddock {
@@ -15,6 +20,23 @@ fn ready(sandbox: &Sandbox) -> Paddock {
 /// Windows on the hidden server, in every space.
 fn window_count(sandbox: &Sandbox) -> usize {
     sandbox.tmux(&["list-windows", "-a"]).lines().count()
+}
+
+/// Panes on the hidden server, in every space.
+fn pane_count(sandbox: &Sandbox) -> usize {
+    sandbox.tmux(&["list-panes", "-a"]).lines().count()
+}
+
+/// Wait until space-1's current tab has `n` panes.
+fn wait_for_panes(paddock: &Paddock, sandbox: &Sandbox, n: usize) {
+    paddock.wait_for(&format!("{n} panes"), |_| pane_count(sandbox) == n);
+}
+
+/// Wait until the pane at `index` of space-1's current tab has the focus.
+fn wait_for_focus(paddock: &Paddock, sandbox: &Sandbox, index: &str) {
+    paddock.wait_for(&format!("pane {index} focused"), |_| {
+        sandbox.display("space-1", "#{pane_index}") == index
+    });
 }
 
 /// Run `echo <word>` in the focused shell and wait for its output: every
@@ -128,10 +150,113 @@ fn paddock_keys_prints_the_defaults_as_toml() {
         "[keys]\nprefix = \"C-a\"",
         "[keys.commands]\nnew_tab = \"c\"",
         "focus_left = [\"h\", \"Left\"]",
+        "[keys.direct]\nnew_tab = \"C-M-c\"",
+        "\nfocus_left = \"C-h\"",
+        "\nsplit_right = 'C-\\'",
+        "\nsplit_down = \"C--\"",
         "[keys.sidebar]",
         "[keys.dashboard]",
     ] {
         assert!(text.contains(line), "lacks {line:?}:\n{text}");
     }
     assert!(sandbox.sockets().is_empty(), "no tmux server was started");
+}
+
+#[test]
+fn direct_chords_work_without_the_prefix() {
+    let sandbox = Sandbox::new();
+    let mut paddock = ready(&sandbox);
+
+    // `C-\` splits side by side and the new pane gets the focus; `C-h`
+    // and `C-l` move it between the two.
+    paddock.send(b"\x1c");
+    wait_for_panes(&paddock, &sandbox, 2);
+    wait_for_focus(&paddock, &sandbox, "1");
+    paddock.send(b"\x08");
+    wait_for_focus(&paddock, &sandbox, "0");
+    paddock.send(b"\x0c");
+    wait_for_focus(&paddock, &sandbox, "1");
+
+    // `C--` splits the right pane top and bottom; `C-k` and `C-j` move.
+    paddock.send(b"\x1f");
+    wait_for_panes(&paddock, &sandbox, 3);
+    wait_for_focus(&paddock, &sandbox, "2");
+    paddock.send(b"\x0b");
+    wait_for_focus(&paddock, &sandbox, "1");
+    paddock.send(b"\x0a");
+    wait_for_focus(&paddock, &sandbox, "2");
+
+    // `C-M-c` (Esc and 0x03) opens a tab, which gets the keyboard.
+    paddock.send(b"\x1b\x03");
+    paddock.wait_for_tabs(&["1:home", "2:home"]);
+    paddock.wait_for_current_tab("2:home");
+
+    // Under the kitty protocol `C--` may come as Ctrl+Shift+_: one key.
+    paddock.send(b"\x1b[95;6u");
+    wait_for_panes(&paddock, &sandbox, 5);
+    paddock.send(b"\x1b[45;5u");
+    wait_for_panes(&paddock, &sandbox, 6);
+}
+
+#[test]
+fn an_unbound_direct_chord_reaches_the_terminal_again() {
+    let sandbox = Sandbox::new();
+    sandbox.write_config("[keys.direct]\nfocus_left = \"\"\n");
+    let mut paddock = ready(&sandbox);
+
+    // `cat -v` shows each byte as it comes once the tty stops editing lines.
+    paddock.type_line("stty -icanon; cat -v");
+    paddock.send(b"\x08");
+    paddock.wait_for_text("^H");
+    // `C-l` is still a chord: paddock keeps it, even with nowhere to go.
+    paddock.send(b"\x0c");
+    paddock.send(b"\x08");
+    paddock.wait_for_text("^H^H");
+    assert!(!paddock.screen().contains("^L"), "{}", paddock.screen());
+}
+
+#[test]
+fn in_a_float_a_direct_chord_goes_to_the_float() {
+    let sandbox = Sandbox::new();
+    sandbox.write_config("[floats]\nG = \"cat -v\"\n");
+    let mut paddock = ready(&sandbox);
+
+    paddock.command(b"G");
+    paddock.wait_for("the float shown", |_| {
+        paddock.full_screen().contains(" cat -v ")
+    });
+    // (`C-\` would quit `cat`: the tty reads 0x1c as SIGQUIT.)
+    paddock.send(b"\x0c\r");
+    paddock.wait_for("C-l in the float", |_| paddock.full_screen().contains("^L"));
+    paddock.send(b"\x08\r");
+    paddock.wait_for("C-h in the float", |_| paddock.full_screen().contains("^H"));
+    // The float and the shell: no chord moved focus or split anything.
+    assert_eq!(pane_count(&sandbox), 2);
+}
+
+#[test]
+fn the_control_character_notice_shows_at_start_until_direct_is_set() {
+    let sandbox = Sandbox::new();
+    let mut paddock = ready(&sandbox);
+    paddock.wait_for_text(CONTROL_CHARS_NOTICE);
+    paddock.detach_keys();
+    assert!(paddock.wait_exit(), "paddock should detach cleanly");
+    paddock.wait_for_text(&format!("paddock: {CONTROL_CHARS_NOTICE}"));
+
+    let sandbox = Sandbox::new();
+    sandbox.write_config("[keys.direct]\n");
+    let mut paddock = ready(&sandbox);
+    assert!(
+        !paddock.screen().contains("[keys.direct]"),
+        "{}",
+        paddock.screen()
+    );
+    paddock.detach_keys();
+    assert!(paddock.wait_exit(), "paddock should detach cleanly");
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(
+        !paddock.full_screen().contains("[keys.direct]"),
+        "{}",
+        paddock.full_screen()
+    );
 }
