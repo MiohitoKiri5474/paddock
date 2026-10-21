@@ -54,7 +54,8 @@ pub enum Command {
 
 impl Command {
     /// Whether a float shown stays shown through this command: those that
-    /// change neither the page under it nor who has the keyboard.
+    /// change neither the page under it nor who has the keyboard, and the
+    /// finder, which draws over it and hides it only when a row is picked.
     pub fn keeps_float(self) -> bool {
         matches!(
             self,
@@ -63,6 +64,7 @@ impl Command {
                 | Command::ToggleSidebar
                 | Command::ResizeSidebar(_)
                 | Command::ToggleFloat(_)
+                | Command::Finder
         )
     }
 }
@@ -324,6 +326,7 @@ mod tests {
             Command::Help,
             Command::ToggleSidebar,
             Command::ToggleFloat(1),
+            Command::Finder,
         ] {
             assert!(c.keeps_float(), "{c:?}");
         }
@@ -333,7 +336,6 @@ mod tests {
             Command::LastPage,
             Command::NewTab,
             Command::Dashboard,
-            Command::Finder,
             Command::FocusSidebar,
             Command::NextAttention,
             Command::Close,

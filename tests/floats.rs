@@ -432,3 +432,29 @@ fn clicks_and_the_wheel_inside_the_float_reach_its_pane() {
     let shell_screen = sandbox.tmux(&["capture-pane", "-p", "-t", &shell]);
     assert!(!shell_screen.contains(";6;3"), "{shell_screen}");
 }
+
+#[test]
+fn the_finder_opens_over_a_float_and_cancelling_leaves_it_shown() {
+    let sandbox = Sandbox::new();
+    let mut paddock = ready(&sandbox);
+    paddock.command(b"G");
+    wait_shown(&paddock);
+    wait_for_float(&paddock, &sandbox);
+
+    paddock.command(b"g");
+    wait_for_full_text(&paddock, " Finder ");
+    paddock.send(b"\x1b");
+    paddock.wait_for_no_popup();
+    wait_shown(&paddock);
+    // The float has the keyboard again.
+    paddock.type_line("typed-after-the-finder");
+    wait_for_full_text(&paddock, "typed-after-the-finder");
+
+    // Picking a row hides it, as any page change does.
+    paddock.command(b"g");
+    wait_for_full_text(&paddock, " Finder ");
+    paddock.send(b"\r");
+    paddock.wait_for_no_popup();
+    wait_hidden(&paddock);
+    assert_eq!(floats(&sandbox).len(), 1, "its program kept");
+}

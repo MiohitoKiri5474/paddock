@@ -19,8 +19,6 @@ use std::time::{Duration, Instant};
 const FRAME: Duration = Duration::from_millis(16);
 /// Milliseconds in a second.
 const MS_PER_SEC: u64 = 1000;
-/// The dashboard's key line while its filter is typed (fixed keys).
-const FILTER_KEYS: &str = "Enter keep  Esc clear";
 
 /// Tells the git thread which task rows are on screen.
 struct GitFeed {
@@ -390,11 +388,7 @@ fn draw_panes(app: &App, area: Rect, buf: &mut Buffer) -> Option<Position> {
 fn draw_dashboard(app: &App, area: Rect, buf: &mut Buffer) -> Option<Position> {
     let d = app.dashboard()?;
     let row = app.dashboard_row(d);
-    let keys = if d.filtering {
-        FILTER_KEYS.to_string()
-    } else {
-        app.keymap.dashboard.hints().join("  ")
-    };
+    let keys = app.dashboard_keys(d);
     let listed = app.dashboard_rows(d);
     let view = dashboard::View {
         rows: &listed,
@@ -405,8 +399,7 @@ fn draw_dashboard(app: &App, area: Rect, buf: &mut Buffer) -> Option<Position> {
             .and_then(|r| app.terminals.get(&r.pane))
             .map(|t| t.emulator()),
         interactive: d.interactive,
-        filter: d.shows_filter().then_some(&d.filter),
-        filtering: d.filtering,
+        filter: &d.filter,
         now: now_ms() / MS_PER_SEC,
         selection: app.current_space_bg,
     };

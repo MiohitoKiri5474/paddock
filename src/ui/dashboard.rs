@@ -7,8 +7,7 @@
 mod table;
 
 use super::session_view;
-use crate::app::{Row, RowId, TaskDetails, TaskRow};
-use crate::input::line::LineEdit;
+use crate::app::{DashboardFilter, Row, RowId, TaskDetails, TaskRow};
 use crate::sessions::{State, TaskState};
 use crate::terminal::emulator::Emulator;
 use ratatui::buffer::Buffer;
@@ -53,10 +52,9 @@ pub struct View<'a> {
     pub preview: Option<&'a Emulator>,
     /// Keys go to the previewed terminal.
     pub interactive: bool,
-    /// The filter, while its line shows (typed, or holding text).
-    pub filter: Option<&'a LineEdit>,
-    /// Keys type into the filter: the cursor is there.
-    pub filtering: bool,
+    /// The filter; its line shows while typed or holding text, with the
+    /// cursor while typed.
+    pub filter: &'a DashboardFilter,
     /// Seconds since the epoch, for commit ages.
     pub now: u64,
     /// The selected session block's background: the configured current
@@ -178,7 +176,7 @@ pub fn layout(area: Rect, lines: usize, filter: bool) -> Layout {
 /// previewed terminal while interactive.
 pub fn render(view: &View, area: Rect, buf: &mut Buffer) -> Option<Position> {
     Clear.render(area, buf);
-    let parts = layout(area, lines(view.rows).len(), view.filter.is_some());
+    let parts = layout(area, lines(view.rows).len(), view.filter.shown());
     let filter_cursor = render_list(view, parts.list, buf);
     render_keys(view.keys, parts.keys, buf);
     let preview_cursor = render_preview(view, parts.preview, buf);
@@ -220,12 +218,7 @@ fn cells(view: &View, line: ListLine) -> Option<(table::Cells, Style)> {
 
 /// The filter line under the title: ` / ` and the text typed. Returns the
 /// cursor while typing it.
-fn render_filter(
-    filter: &LineEdit,
-    typing: bool,
-    area: Rect,
-    buf: &mut Buffer,
-) -> Option<Position> {
+fn render_filter(filter: &DashboardFilter, area: Rect, buf: &mut Buffer) -> Option<Position> {
     let x = area.x + u16::try_from(FILTER_MARK.len()).unwrap_or(u16::MAX);
     let room = area.width.saturating_sub(x - area.x);
     buf.set_stringn(
@@ -235,9 +228,9 @@ fn render_filter(
         usize::from(area.width),
         Style::default(),
     );
-    let (shown, col) = filter.window(room);
+    let (shown, col) = filter.line.window(room);
     buf.set_stringn(x, area.y, shown, usize::from(room), Style::default());
-    (typing && col < room).then(|| Position::new(x + col, area.y))
+    (filter.typing && col < room).then(|| Position::new(x + col, area.y))
 }
 
 /// The title, the filter line if shown, the column header (dim), then the
@@ -250,15 +243,15 @@ fn render_list(view: &View, area: Rect, buf: &mut Buffer) -> Option<Position> {
     }
     let width = usize::from(area.width);
     render_title(area, buf);
-    let heads = heads(view.filter.is_some());
+    let heads = heads(view.filter.shown());
     let mut cursor = None;
-    if let (Some(filter), true) = (view.filter, area.height > 1) {
+    if view.filter.shown() && area.height > 1 {
         let line = Rect {
             y: area.y + 1,
             height: 1,
             ..area
         };
-        cursor = render_filter(filter, view.filtering, line, buf);
+        cursor = render_filter(view.filter, line, buf);
     }
     // The header's row: under the title, or under the filter line.
     let header_y = area.y + heads - 2;
@@ -471,7 +464,10 @@ mod tests {
         assert_eq!(layout(area, 7, true), stacked(12, 27, 1));
         let mut buf = Buffer::empty(area);
         let rows = [row("api", State::Idle, vec![])];
-        let filter = LineEdit::new("ap");
+        let filter = DashboardFilter {
+            line: crate::input::line::LineEdit::new("ap"),
+            typing: true,
+        };
         let view = View {
             keys: KEYS,
             rows: &rows,
@@ -479,8 +475,7 @@ mod tests {
             selected: None,
             preview: None,
             interactive: false,
-            filter: Some(&filter),
-            filtering: true,
+            filter: &filter,
             now: 0,
             selection: SELECTED,
         };
@@ -491,8 +486,12 @@ mod tests {
         assert_eq!(text(&buf, 4), "");
         assert!(text(&buf, 5).starts_with(" api"));
         assert_eq!(cursor, Some(Position::new(5, 2)), "typing the filter");
+        let kept_filter = DashboardFilter {
+            typing: false,
+            ..filter.clone()
+        };
         let kept = View {
-            filtering: false,
+            filter: &kept_filter,
             ..view
         };
         assert_eq!(render(&kept, area, &mut buf), None, "the filter kept");
@@ -578,8 +577,7 @@ mod tests {
             selected: Some(&selected),
             preview: Some(&emu),
             interactive: false,
-            filter: None,
-            filtering: false,
+            filter: &DashboardFilter::default(),
             now: 0,
             selection: SELECTED,
         };
@@ -638,8 +636,7 @@ mod tests {
             selected: Some(&selected),
             preview: None,
             interactive: false,
-            filter: None,
-            filtering: false,
+            filter: &DashboardFilter::default(),
             now: 0,
             selection: SELECTED,
         };
@@ -665,8 +662,7 @@ mod tests {
             selected: Some(&selected),
             preview: None,
             interactive: false,
-            filter: None,
-            filtering: false,
+            filter: &DashboardFilter::default(),
             now: 0,
             selection: SELECTED,
         };
@@ -685,8 +681,7 @@ mod tests {
             selected: None,
             preview: None,
             interactive: false,
-            filter: None,
-            filtering: false,
+            filter: &DashboardFilter::default(),
             now: 0,
             selection: SELECTED,
         };
@@ -712,8 +707,7 @@ mod tests {
             selected: Some(&selected),
             preview: None,
             interactive: false,
-            filter: None,
-            filtering: false,
+            filter: &DashboardFilter::default(),
             now: 0,
             selection: SELECTED,
         };
@@ -758,8 +752,7 @@ mod tests {
             selected: Some(&selected),
             preview: None,
             interactive: false,
-            filter: None,
-            filtering: false,
+            filter: &DashboardFilter::default(),
             now: 0,
             selection: SELECTED,
         };
@@ -791,8 +784,7 @@ mod tests {
             selected: Some(&selected),
             preview: None,
             interactive: false,
-            filter: None,
-            filtering: false,
+            filter: &DashboardFilter::default(),
             now: 0,
             selection: SELECTED,
         };

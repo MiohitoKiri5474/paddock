@@ -1,8 +1,9 @@
 //! The finder (`C-a g`): a box with a text field and, under it, every
 //! space, tab and agent that fuzzy-matches what is typed, best first.
 //! `Enter` shows the one selected: its space and tab, with its pane
-//! focused. On an empty query `b`, `w`, `i`, `d` and `a` filter agents by
-//! state (blocked, working, idle, done, all).
+//! focused. On an empty query, letters show only agents that are waiting
+//! (`b`, blocked), running (`w`, working), idle (`i`) or done (`d`), or
+//! everything again (`a`, all).
 
 use super::rows::Row;
 use super::state::{App, Mode, Panel};
@@ -11,6 +12,7 @@ use crate::fuzzy;
 use crate::input::line::LineEdit;
 use crate::sessions::State;
 use crate::ui::finder::{self as ui, FinderLine};
+use crate::ui::sidebar::SpaceLine;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Position, Rect};
 
@@ -78,28 +80,52 @@ impl FinderRow {
     }
 }
 
+/// Which rows the finder lists by state, set by a letter on an empty
+/// query.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum StateFilter {
+    /// Every row.
+    #[default]
+    All,
+    /// Only agents in this state.
+    Only(State),
+}
+
 /// The open finder: the line typed, the state filter and the selected
 /// match.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Finder {
     pub line: LineEdit,
-    /// Only agents in this state show, with `b`, `w`, `i` or `d` on an
-    /// empty query; `a` shows everything again.
-    pub filter: Option<State>,
+    /// Which rows show by state.
+    pub state: StateFilter,
     /// The index of the selected match.
     pub selected: usize,
 }
 
-/// The finder's title in its border, with the active filter.
+/// The finder's title in its border while every row shows;
+/// [`Finder::title`] adds a state filter after it.
 const TITLE: &str = " Finder ";
 
 impl Finder {
-    /// The title: ` Finder `, or ` Finder · waiting ` with a filter.
+    /// The title: [`TITLE`], or ` Finder · waiting ` with a state filter.
     pub fn title(&self) -> String {
-        match self.filter {
-            None => TITLE.to_string(),
-            Some(state) => format!(" Finder · {} ", state.label()),
+        match self.state {
+            StateFilter::All => TITLE.to_string(),
+            StateFilter::Only(state) => format!("{} · {} ", TITLE.trim_end(), state.label()),
         }
+    }
+
+    /// Change the line with `edit`; the selection starts over on the
+    /// first match.
+    pub fn edited(&mut self, edit: impl FnOnce(&mut LineEdit)) {
+        edit(&mut self.line);
+        self.selected = 0;
+    }
+
+    /// Show the rows `state` lets through; the selection starts over.
+    fn filtered(&mut self, state: StateFilter) {
+        self.state = state;
+        self.selected = 0;
     }
 
     /// The indices of the rows of `rows` that match, best first; with a
@@ -109,7 +135,10 @@ impl Finder {
         let mut scored: Vec<(usize, i32)> = rows
             .iter()
             .enumerate()
-            .filter(|(_, r)| self.filter.is_none_or(|f| r.state == Some(f)))
+            .filter(|(_, r)| match self.state {
+                StateFilter::All => true,
+                StateFilter::Only(state) => r.state == Some(state),
+            })
             .filter_map(|(i, r)| Some((i, r.score(query)?)))
             .collect();
         // Stable: rows in their own order within a score.
@@ -128,17 +157,48 @@ impl Finder {
     }
 }
 
-/// The state filter a letter on an empty query sets: `b` blocked
-/// (waiting), `w` working (running), `i` idle, `d` done, `a` all.
-fn filter_key(c: char) -> Option<Option<State>> {
+/// The state filter a letter on an empty query sets: waiting (`b`,
+/// blocked), running (`w`, working), idle (`i`), done (`d`), or every row
+/// (`a`, all).
+fn state_filter_for(c: char) -> Option<StateFilter> {
     match c {
-        'b' => Some(Some(State::Waiting)),
-        'w' => Some(Some(State::Running)),
-        'i' => Some(Some(State::Idle)),
-        'd' => Some(Some(State::Done)),
-        'a' => Some(None),
+        'b' => Some(StateFilter::Only(State::Waiting)),
+        'w' => Some(StateFilter::Only(State::Running)),
+        'i' => Some(StateFilter::Only(State::Idle)),
+        'd' => Some(StateFilter::Only(State::Done)),
+        'a' => Some(StateFilter::All),
         _ => None,
     }
+}
+
+/// A space's or tab's detail: its directory and branch.
+fn place_detail(path: Option<&str>, branch: Option<&str>) -> String {
+    [path, branch]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join("  ")
+}
+
+/// A tab's directory and branch: those of the Claude in its focused pane
+/// (`claude`) where known, else its space's (the first tab's), which needs
+/// no round trip to tmux.
+fn tab_place(
+    (path, branch): (Option<String>, Option<String>),
+    space: &SpaceLine,
+) -> (Option<String>, Option<String>) {
+    (
+        path.or_else(|| space.path.clone()),
+        branch.or_else(|| space.branch.clone()),
+    )
+}
+
+/// The branch row `r`'s main agent works on, if known.
+fn main_branch(r: &Row) -> Option<String> {
+    r.tasks
+        .iter()
+        .find(|t| t.subagent.is_none())
+        .map(|t| t.branch.clone())
 }
 
 impl App {
@@ -164,11 +224,7 @@ impl App {
             .map(|(line, space)| FinderRow {
                 kind: Kind::Space,
                 name: line.name.clone(),
-                detail: [line.path.as_deref(), line.branch.as_deref()]
-                    .into_iter()
-                    .flatten()
-                    .collect::<Vec<_>>()
-                    .join("  "),
+                detail: place_detail(line.path.as_deref(), line.branch.as_deref()),
                 path: line.path.clone(),
                 branch: line.branch.clone(),
                 state: None,
@@ -177,19 +233,18 @@ impl App {
             .collect();
         for (line, space) in spaces.iter().zip(&self.spaces) {
             for w in space.windows() {
-                // A tab's directory: its Claude's, else its space's (the
-                // first tab's), which needs no round trip to tmux.
-                let path = self
-                    .session_in(&w.active)
-                    .and_then(|s| s.cwd.as_deref())
-                    .map(|p| home.show(p))
-                    .or_else(|| line.path.clone());
+                let claude_branch = rows
+                    .iter()
+                    .find(|r| r.pane == w.active)
+                    .and_then(main_branch);
+                let claude = (self.shown_cwd(&w.active, &home), claude_branch);
+                let (path, branch) = tab_place(claude, line);
                 out.push(FinderRow {
                     kind: Kind::Tab,
                     name: format!("{} › {}", space.name(), self.tab_name(w)),
-                    detail: path.clone().unwrap_or_default(),
+                    detail: place_detail(path.as_deref(), branch.as_deref()),
                     path,
-                    branch: None,
+                    branch,
                     state: None,
                     target: Target::Tab(space.id.clone(), w.id.clone()),
                 });
@@ -199,23 +254,23 @@ impl App {
         out
     }
 
+    /// The directory of the Claude session in pane `pane`, home as `~`,
+    /// if known.
+    fn shown_cwd(&self, pane: &str, home: &HomePaths) -> Option<String> {
+        self.session_in(pane)
+            .and_then(|s| s.cwd.as_deref())
+            .map(|p| home.show(p))
+    }
+
     /// Agent row `r` of the sidebar as a finder row.
     fn agent_row(&self, r: &Row, home: &HomePaths) -> FinderRow {
         let place = self.place_of(r, " › ").unwrap_or_default();
-        let branch = r
-            .tasks
-            .iter()
-            .find(|t| t.subagent.is_none())
-            .map(|t| t.branch.clone());
         FinderRow {
             kind: Kind::Agent,
             name: r.label.clone(),
             detail: format!("{} · {place}", r.state.label()),
-            path: self
-                .session_in(&r.pane)
-                .and_then(|s| s.cwd.as_deref())
-                .map(|p| home.show(p)),
-            branch,
+            path: self.shown_cwd(&r.pane, home),
+            branch: main_branch(r),
             state: Some(r.state),
             target: Target::Pane(r.pane.clone()),
         }
@@ -258,15 +313,14 @@ impl App {
             };
             return;
         }
-        let filter = match key.code {
-            KeyCode::Char(c) if !ctrl && finder.line.text().is_empty() => filter_key(c),
+        let state = match key.code {
+            KeyCode::Char(c) if !ctrl && finder.line.text().is_empty() => state_filter_for(c),
             _ => None,
         };
-        match filter {
-            Some(filter) => finder.filter = filter,
-            None => finder.line.key(key),
+        match state {
+            Some(state) => finder.filtered(state),
+            None => finder.edited(|line| line.key(key)),
         }
-        finder.selected = 0;
         self.mode = Mode::Finder { finder, back };
     }
 
@@ -424,7 +478,7 @@ mod tests {
     #[test]
     fn a_state_filter_keeps_only_agents_in_that_state() {
         let waiting = Finder {
-            filter: Some(State::Waiting),
+            state: StateFilter::Only(State::Waiting),
             ..Finder::default()
         };
         assert_eq!(waiting.matches(&rows()), [2]);
@@ -433,13 +487,58 @@ mod tests {
     }
 
     #[test]
-    fn filter_letters_map_to_states() {
-        assert_eq!(filter_key('b'), Some(Some(State::Waiting)));
-        assert_eq!(filter_key('w'), Some(Some(State::Running)));
-        assert_eq!(filter_key('i'), Some(Some(State::Idle)));
-        assert_eq!(filter_key('d'), Some(Some(State::Done)));
-        assert_eq!(filter_key('a'), Some(None));
-        assert_eq!(filter_key('x'), None);
+    fn state_letters_map_to_state_filters() {
+        let only = |s| Some(StateFilter::Only(s));
+        assert_eq!(state_filter_for('b'), only(State::Waiting));
+        assert_eq!(state_filter_for('w'), only(State::Running));
+        assert_eq!(state_filter_for('i'), only(State::Idle));
+        assert_eq!(state_filter_for('d'), only(State::Done));
+        assert_eq!(state_filter_for('a'), Some(StateFilter::All));
+        assert_eq!(state_filter_for('x'), None);
+    }
+
+    #[test]
+    fn editing_or_filtering_starts_the_selection_over() {
+        let mut f = Finder {
+            selected: 3,
+            ..Finder::default()
+        };
+        f.edited(|line| line.insert("x"));
+        assert_eq!((f.line.text(), f.selected), ("x", 0));
+        f.selected = 2;
+        f.filtered(StateFilter::Only(State::Idle));
+        assert_eq!((f.state, f.selected), (StateFilter::Only(State::Idle), 0));
+    }
+
+    #[test]
+    fn a_tab_takes_its_claudes_place_else_its_spaces_and_matches_its_branch() {
+        let space = SpaceLine {
+            name: "api".into(),
+            state: None,
+            current: true,
+            path: Some("~/project/api".into()),
+            branch: Some("feat/login".into()),
+        };
+        let none = (None, None);
+        assert_eq!(
+            tab_place(none, &space),
+            (Some("~/project/api".into()), Some("feat/login".into()))
+        );
+        let claude = (Some("~/wt/fix".into()), Some("fix/css".into()));
+        assert_eq!(
+            tab_place(claude, &space),
+            (Some("~/wt/fix".into()), Some("fix/css".into()))
+        );
+        // A branch query finds the tab.
+        let (path, branch) = tab_place((None, None), &space);
+        let tab = FinderRow {
+            path,
+            branch,
+            ..row(Kind::Tab, "api › home", None, None)
+        };
+        assert_eq!(typed("login").matches(&[tab]), [0]);
+        assert_eq!(place_detail(Some("~/a"), Some("main")), "~/a  main");
+        assert_eq!(place_detail(None, None), "");
     }
 
     #[test]

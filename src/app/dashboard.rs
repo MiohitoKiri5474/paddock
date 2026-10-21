@@ -18,6 +18,26 @@ use crate::input::{encode_key, encode_paste};
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+/// The dashboard's key line while its filter is typed: its keys are
+/// fixed, so they are not read from the keymap.
+const FILTER_KEYS: &str = "Enter keep  Esc clear";
+
+/// The dashboard's filter: the text typed, and whether keys type into it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DashboardFilter {
+    /// Only blocks matching it are listed.
+    pub line: LineEdit,
+    /// Keys type into the line.
+    pub typing: bool,
+}
+
+impl DashboardFilter {
+    /// Whether its line shows: while typing it, or while it holds text.
+    pub fn shown(&self) -> bool {
+        self.typing || !self.line.text().is_empty()
+    }
+}
+
 /// The open dashboard: the selected line, whether keys go to its
 /// terminal, and the filter.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -26,23 +46,14 @@ pub struct Dashboard {
     /// Where the selected line was last seen, for when it goes away.
     pub index: usize,
     pub interactive: bool,
-    /// The filter typed: only blocks matching it are listed.
-    pub filter: LineEdit,
-    /// Keys type into the filter.
-    pub filtering: bool,
+    pub filter: DashboardFilter,
 }
 
 impl Dashboard {
-    /// Whether the filter line shows: while typing it, or while it holds
-    /// text.
-    pub fn shows_filter(&self) -> bool {
-        self.filtering || !self.filter.text().is_empty()
-    }
-
     /// The rows of `rows` whose session name, branch or state fuzzy-match
     /// the filter; all of them without one.
     pub fn filtered(&self, rows: Vec<Row>) -> Vec<Row> {
-        let query = self.filter.text();
+        let query = self.filter.line.text();
         if query.is_empty() {
             return rows;
         }
@@ -87,6 +98,16 @@ impl App {
                 Some(Panel::Dashboard(d)) => Some(d),
                 _ => None,
             },
+        }
+    }
+
+    /// The dashboard's key line: the filter's fixed keys while it is
+    /// typed, else `[keys.dashboard]`.
+    pub fn dashboard_keys(&self, d: &Dashboard) -> String {
+        if d.filter.typing {
+            FILTER_KEYS.to_string()
+        } else {
+            self.keymap.dashboard.hints().join("  ")
         }
     }
 
@@ -163,7 +184,7 @@ impl App {
     }
 
     /// A key for the dashboard. Interactive: see [`Self::interactive_key`];
-    /// typing the filter: see [`Self::filter_key`]. Else
+    /// typing the filter: see [`Self::dashboard_filter_key`]. Else
     /// `[keys.dashboard]`, by default: `j`/`k` (or arrows) move, `Enter`
     /// jumps to the selected session's terminal, `D` dismisses the
     /// session, `x` closes and `f` forks its terminal, `I` types into it,
@@ -174,8 +195,8 @@ impl App {
         if d.interactive {
             return self.interactive_key(d, key);
         }
-        if d.filtering {
-            return self.filter_key(d, key);
+        if d.filter.typing {
+            return self.dashboard_filter_key(d, key);
         }
         self.mode = match self.keymap.dashboard.action(&key) {
             Some(DashboardAction::Down) => self.dashboard_move(d, 1),
@@ -183,7 +204,10 @@ impl App {
             Some(DashboardAction::Dismiss) => self.dashboard_dismiss(d),
             Some(DashboardAction::Back) => Mode::Normal,
             Some(DashboardAction::Filter) => Mode::Dashboard(Dashboard {
-                filtering: true,
+                filter: DashboardFilter {
+                    typing: true,
+                    ..d.filter.clone()
+                },
                 ..d
             }),
             Some(
@@ -200,14 +224,11 @@ impl App {
     /// Typing the filter: `Enter` keeps it and returns to the list, `Esc`
     /// clears it and leaves the filter line, other keys edit it. The
     /// selection stays on a listed line.
-    fn filter_key(&mut self, mut d: Dashboard, key: KeyEvent) {
+    fn dashboard_filter_key(&mut self, mut d: Dashboard, key: KeyEvent) {
         match key.code {
-            KeyCode::Enter => d.filtering = false,
-            KeyCode::Esc => {
-                d.filter = LineEdit::default();
-                d.filtering = false;
-            }
-            _ => d.filter.key(key),
+            KeyCode::Enter => d.filter.typing = false,
+            KeyCode::Esc => d.filter = DashboardFilter::default(),
+            _ => d.filter.line.key(key),
         }
         let d = d.anchored(&row_ids(&self.dashboard_rows(&d)));
         self.mode = Mode::Dashboard(d);
@@ -295,9 +316,9 @@ impl App {
     /// Pasted text goes to the previewed terminal while interactive, into
     /// the filter while typing it, and is dropped otherwise.
     pub(super) fn dashboard_paste(&mut self, d: &Dashboard, text: &str) -> Result<()> {
-        if d.filtering {
+        if d.filter.typing {
             if let Mode::Dashboard(d) = &mut self.mode {
-                d.filter.insert(text);
+                d.filter.line.insert(text);
             }
             self.anchor_dashboard();
             return Ok(());
@@ -358,7 +379,10 @@ mod tests {
         };
         let labels = |filter: &str| -> Vec<String> {
             let d = Dashboard {
-                filter: LineEdit::new(filter),
+                filter: DashboardFilter {
+                    line: LineEdit::new(filter),
+                    typing: false,
+                },
                 ..Dashboard::default()
             };
             d.filtered(rows()).into_iter().map(|r| r.label).collect()
@@ -368,12 +392,17 @@ mod tests {
         assert_eq!(labels("login"), ["api"], "by branch");
         assert_eq!(labels("idle"), ["web"], "by state");
         assert_eq!(labels("zzz"), Vec::<String>::new());
-        let typing = Dashboard {
-            filtering: true,
-            ..Dashboard::default()
+        let typing = DashboardFilter {
+            typing: true,
+            ..DashboardFilter::default()
         };
-        assert!(typing.shows_filter());
-        assert!(!Dashboard::default().shows_filter());
+        assert!(typing.shown());
+        assert!(!DashboardFilter::default().shown());
+        let kept = DashboardFilter {
+            line: LineEdit::new("a"),
+            typing: false,
+        };
+        assert!(kept.shown());
     }
 
     #[test]

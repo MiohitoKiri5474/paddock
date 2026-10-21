@@ -38,7 +38,7 @@ impl App {
             }
             // Typing the filter takes the whole keyboard, the prefix
             // included, as naming does.
-            Mode::Dashboard(d) if d.filtering => {
+            Mode::Dashboard(d) if d.filter.typing => {
                 self.dashboard_key(d, key);
                 Ok(Flow::Continue)
             }
@@ -205,10 +205,7 @@ impl App {
         }
         match &mut self.mode {
             Mode::Naming { line, .. } => line.insert(text),
-            Mode::Finder { finder, .. } => {
-                finder.line.insert(text);
-                finder.selected = 0;
-            }
+            Mode::Finder { finder, .. } => finder.edited(|line| line.insert(text)),
             Mode::Help => self.mode = Mode::Normal,
             Mode::Sidebar(_) | Mode::ConfirmClose { .. } | Mode::Dashboard(_) => {}
             Mode::Normal => {
