@@ -8,7 +8,7 @@
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::thread::JoinHandle;
+use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
 /// Branches taken as the default when `origin/HEAD` names none.
@@ -59,22 +59,32 @@ fn git_with(dir: &str, args: &[&str], env: &[(&str, &str)]) -> Option<String> {
 /// deleting a branch), waiting at most [`MUTATION_TIMEOUT`]; fails with
 /// git's reason and the command.
 fn run_mutation(dir: &str, args: &[&str]) -> Result<(), String> {
-    run(dir, args, &[], MUTATION_TIMEOUT)
+    let mut command = git_command(dir, args, &[]);
+    // Nothing reads it: a chatty hook must not fill a pipe.
+    command.stdout(Stdio::null());
+    wait(command, MUTATION_TIMEOUT)
         .map(drop)
         .map_err(|e| format!("{e} (git {})", args.join(" ")))
 }
 
-/// Every git paddock runs: `git -C dir args…` with environment variables
-/// `env` set, waiting at most `timeout`, then killed. Returns its stdout,
-/// or why it failed (see [`reason`]). Never prints: hooks must stay
-/// silent.
+/// A git read: `git -C dir args…` with environment variables `env` set,
+/// waiting at most `timeout`. Returns its stdout, or why it failed.
 fn run(
     dir: &str,
     args: &[&str],
     env: &[(&str, &str)],
     timeout: Duration,
 ) -> Result<String, String> {
-    let mut child = Command::new("git")
+    let mut command = git_command(dir, args, env);
+    command.stdout(Stdio::piped());
+    wait(command, timeout)
+}
+
+/// `git -C dir args…` with environment variables `env` set, its stderr
+/// piped for [`reason`]; the caller says where stdout goes.
+fn git_command(dir: &str, args: &[&str], env: &[(&str, &str)]) -> Command {
+    let mut command = Command::new("git");
+    command
         .arg("-C")
         .arg(dir)
         .args(args)
@@ -82,8 +92,19 @@ fn run(
         // Polling must never take the index lock from Claude's own git.
         .env("GIT_OPTIONAL_LOCKS", "0")
         .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    command
+}
+
+/// Every git paddock runs ends here: start `command` and wait at most
+/// `timeout` for it to exit and for its output to end, then give up (and
+/// kill git if it still runs). A process git leaves behind holding its
+/// pipes (a hook's `cmd &`) counts as not finished too. Returns stdout,
+/// or why it failed (see [`reason`]). Never prints: hooks must stay
+/// silent.
+fn wait(mut command: Command, timeout: Duration) -> Result<String, String> {
+    let late = || format!("git did not finish in {timeout:?}");
+    let mut child = command
         .spawn()
         .map_err(|e| format!("cannot run git: {e}"))?;
     // Read both pipes while waiting, so a long output never stalls git.
@@ -96,31 +117,36 @@ fn run(
             Ok(None) if Instant::now() < deadline => std::thread::sleep(POLL),
             Ok(None) => {
                 // Best effort: it may have ended just now. The readers are
-                // left to end with the pipes (a hook may still hold them).
+                // left to end with the pipes.
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(format!("git did not finish in {}s", timeout.as_secs()));
+                return Err(late());
             }
             Err(e) => return Err(e.to_string()),
         }
     };
-    let out = stdout.join().unwrap_or_default();
+    let left = || deadline.saturating_duration_since(Instant::now());
+    let out = stdout.recv_timeout(left()).map_err(|_| late())?;
     if status.success() {
         return Ok(out);
     }
-    let said = stderr.join().unwrap_or_default();
+    // Without its words in time, the exit status says why.
+    let said = stderr.recv_timeout(left()).unwrap_or_default();
     Err(reason(&said).unwrap_or_else(|| status.to_string()))
 }
 
-/// Read all of `pipe` on a thread of its own.
-fn drain(pipe: Option<impl Read + Send + 'static>) -> JoinHandle<String> {
+/// Read all of `pipe` (none: nothing) on a thread of its own; the text
+/// comes on the channel once the pipe ends.
+fn drain(pipe: Option<impl Read + Send + 'static>) -> Receiver<String> {
+    let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         let mut bytes = Vec::new();
         if let Some(mut pipe) = pipe {
             let _ = pipe.read_to_end(&mut bytes);
         }
-        String::from_utf8_lossy(&bytes).into_owned()
-    })
+        let _ = tx.send(String::from_utf8_lossy(&bytes).into_owned());
+    });
+    rx
 }
 
 /// The branch checked out in `dir`; `None` if detached or not a repository.
@@ -815,6 +841,26 @@ mod tests {
         .unwrap_err();
         assert!(err.contains("did not finish"), "{err}");
         assert!(start.elapsed() < Duration::from_secs(3));
+        // git exits at once, but leaves a process holding its pipes: the
+        // deadline still holds.
+        let start = Instant::now();
+        let err = super::run(
+            dir,
+            &["-c", "alias.bg=!(sleep 3 &)", "bg"],
+            &[],
+            Duration::from_millis(200),
+        )
+        .unwrap_err();
+        assert!(err.contains("did not finish in 200ms"), "{err}");
+        assert!(start.elapsed() < Duration::from_secs(2));
+        // A mutation reads no stdout, and a successful one no stderr: it
+        // is done as soon as git is.
+        let start = Instant::now();
+        assert_eq!(
+            run_mutation(dir, &["-c", "alias.bg=!(sleep 3 &)", "bg"]),
+            Ok(())
+        );
+        assert!(start.elapsed() < Duration::from_secs(2));
         // One in time gives its output.
         let big = super::run(dir, &["version"], &[], READ_TIMEOUT).unwrap();
         assert!(big.starts_with("git version"));

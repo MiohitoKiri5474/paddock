@@ -15,6 +15,14 @@ use crate::sessions::State;
 use anyhow::{anyhow, bail, Result};
 use crossterm::event::{KeyCode, KeyEvent};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
+use std::time::Duration;
+
+/// How long the whole check of what a delete would lose may take; the
+/// second question waits for it.
+const RISK_DEADLINE: Duration = Duration::from_secs(5);
+/// What the questions call a base whose name is not known.
+const BASE: &str = "its base";
 
 /// A worktree space, as deleting it needs: its tmux session, its
 /// worktree's directory and branch (`None` if detached), and the
@@ -368,8 +376,9 @@ impl App {
             );
         }
         self.server.kill_session(&target.space)?;
+        // The path first: a notice cut to the tab bar still names it.
         git::remove_worktree(&target.main, path, force)
-            .map_err(|e| anyhow!("{e}: the space is closed, but {path} was left"))?;
+            .map_err(|e| anyhow!("space closed; {} left: {e}", Home::from_env().show(path)))?;
         if let Some(branch) = &target.branch {
             if let Err(e) = git::delete_branch(&target.main, branch) {
                 self.notice = Some(format!("worktree removed; branch {branch} kept: {e}"));
@@ -394,10 +403,28 @@ impl App {
 /// and commits checked out there that are not in the base (a branch's or
 /// a detached HEAD's).
 fn delete_risks(target: &WorktreeSpace) -> Option<Risks> {
-    let dirty = git::is_dirty(&target.path);
-    let unmerged = (!git::in_base(&target.path, "HEAD"))
-        .then(|| git::default_branch(&target.path).unwrap_or_else(|| "its base".into()));
-    (dirty || unmerged.is_some()).then_some(Risks { dirty, unmerged })
+    risks_within(&target.path, RISK_DEADLINE)
+}
+
+/// What deleting the worktree at `path` would lose, read in at most
+/// `limit` all told (its several git reads share it). Not known in time,
+/// it counts as every risk, so the user is still asked.
+fn risks_within(path: &str, limit: Duration) -> Option<Risks> {
+    let (tx, rx) = mpsc::channel();
+    let path = path.to_string();
+    // Left to finish on its own if late: each read has its own timeout.
+    std::thread::spawn(move || {
+        let dirty = git::is_dirty(&path);
+        let unmerged = (!git::in_base(&path, "HEAD"))
+            .then(|| git::default_branch(&path).unwrap_or_else(|| BASE.into()));
+        let _ = tx.send((dirty || unmerged.is_some()).then_some(Risks { dirty, unmerged }));
+    });
+    rx.recv_timeout(limit).unwrap_or_else(|_| {
+        Some(Risks {
+            dirty: true,
+            unmerged: Some(BASE.into()),
+        })
+    })
 }
 
 /// The sidebar order of spaces whose working trees are `trees` (by space
@@ -509,6 +536,20 @@ mod tests {
         assert_eq!(
             space_name("api", "/r/api", &wt("/w/api/loose", None)),
             "api/loose"
+        );
+    }
+
+    #[test]
+    fn a_risk_check_past_its_deadline_counts_as_every_risk() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_string_lossy().into_owned();
+        let late = risks_within(&dir, Duration::ZERO);
+        assert_eq!(
+            late,
+            Some(Risks {
+                dirty: true,
+                unmerged: Some(BASE.into())
+            })
         );
     }
 
