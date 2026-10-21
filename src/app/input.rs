@@ -50,6 +50,20 @@ impl App {
                 let kept = Mode::Sidebar(selected.clone());
                 self.panel_key(key, kept, |app, key| app.sidebar_key(selected, key))
             }
+            Mode::OpenWorktree(list) => {
+                self.open_worktree_key(list, key);
+                Ok(Flow::Continue)
+            }
+            // `y` goes on; any other key cancels the delete (nothing is
+            // deleted), and is not passed on.
+            Mode::ConfirmDelete(q) => {
+                if key.code == KeyCode::Char('y') {
+                    self.confirm_delete(q);
+                } else {
+                    self.mode = Mode::back_to(q.back);
+                }
+                Ok(Flow::Continue)
+            }
             Mode::Normal => self.normal_key(key),
         }
     }
@@ -135,6 +149,13 @@ impl App {
                     self.report(|app| app.fork(&pane));
                 }
             }
+            Command::NewWorktree => self.start_new_worktree(None),
+            Command::OpenWorktree => self.start_open_worktree(None),
+            Command::DeleteWorktree => {
+                if let Some(id) = self.current_space().map(|s| s.id.clone()) {
+                    self.report(|app| app.delete_worktree(&id));
+                }
+            }
             Command::SplitColumns => self.report(|app| app.split(true)),
             Command::SplitRows => self.report(|app| app.split(false)),
             Command::Focus(dir) => self.report(|app| app.move_focus(dir)),
@@ -168,8 +189,8 @@ impl App {
     /// Open the prompt for `target`, holding its current or default name.
     /// A panel with the keyboard (the sidebar or the dashboard) gets it
     /// back when the prompt closes.
-    fn start_naming(&mut self, target: NameTarget) {
-        let line = LineEdit::new(&self.name_of(target));
+    pub(super) fn start_naming(&mut self, target: NameTarget) {
+        let line = LineEdit::new(&self.name_of(&target));
         let back = std::mem::replace(&mut self.mode, Mode::Normal).into_panel();
         self.mode = Mode::Naming { target, line, back };
     }
@@ -194,7 +215,7 @@ impl App {
         match key.code {
             KeyCode::Enter => {
                 self.mode = Mode::back_to(back);
-                self.report(|app| app.submit_name(target, line.text()));
+                self.report(|app| app.submit_name(&target, line.text()));
                 self.relayout_and_save();
             }
             KeyCode::Esc => self.mode = Mode::back_to(back),
@@ -211,10 +232,18 @@ impl App {
             return self.dashboard_paste(&d, text);
         }
         match &mut self.mode {
-            Mode::Naming { line, .. } => line.insert(text),
-            Mode::Finder { finder, .. } => finder.edited(|line| line.insert(text)),
+            Mode::Naming { line, .. } => {
+                line.insert(text);
+                return Ok(());
+            }
+            Mode::Finder { finder, .. } => {
+                finder.edited(|line| line.insert(text));
+                return Ok(());
+            }
+            _ => {}
+        }
+        match self.mode {
             Mode::Help => self.mode = Mode::Normal,
-            Mode::Sidebar(_) | Mode::ConfirmClose { .. } | Mode::Dashboard(_) => {}
             Mode::Normal => {
                 let Some(pane) = self.typing_pane() else {
                     return Ok(());
@@ -225,6 +254,8 @@ impl App {
                     .is_some_and(|t| t.emulator().modes().bracketed_paste);
                 self.input(&pane, &encode_paste(text, bracketed))?;
             }
+            // The other prompts and the sidebar take no paste.
+            _ => {}
         }
         Ok(())
     }

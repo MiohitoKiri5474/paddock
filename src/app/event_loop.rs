@@ -289,10 +289,10 @@ fn draw(screen: &mut Screen, app: &App) -> Result<()> {
                 width: side,
                 ..full
             };
-            let spaces = app.sidebar_spaces(&rows);
+            let entries = app.sidebar_spaces(&rows);
             let agents = app.sidebar_agents(&rows);
             let bg = app.current_space_bg;
-            sidebar::render(&spaces, &agents, selected, bg, side_area, f.buffer_mut());
+            sidebar::render(&entries, &agents, selected, bg, side_area, f.buffer_mut());
         }
         let area = Rect {
             x: full.x + side,

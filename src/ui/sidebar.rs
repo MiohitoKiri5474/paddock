@@ -16,11 +16,26 @@
 //!
 //! A space's dot shows the most urgent state of the agents in it (none
 //! without agents); its second line, dim, shows its directory and the git
-//! branch checked out there. The current space has its own background
-//! over both lines. An agent's second line is dim and names its space and
-//! tab; the current agent (the one in the focused terminal) has the
-//! current space's background too. While the sidebar has the keyboard,
-//! the selected space or agent is drawn reversed.
+//! branch checked out there. A space in a linked worktree is listed one
+//! cell further in, under its repository's main-checkout space, or under
+//! a dim header with the repository's name when no space is in the main
+//! checkout:
+//!
+//! ```text
+//!  ● api-server
+//!    ~/project/api  main
+//!     api-server/feat/x
+//!     …es/api-server/feat-x  feat/x
+//!    paddock
+//!     paddock/feat/y
+//!     …trees/paddock/feat-y  feat/y
+//! ```
+//!
+//! The current space has its own background over both lines. An agent's
+//! second line is dim and names its space and tab; the current agent (the
+//! one in the focused terminal) has the current space's background too.
+//! While the sidebar has the keyboard, the selected space or agent is drawn
+//! reversed.
 
 use super::STATE_DOT;
 use crate::sessions::State;
@@ -46,6 +61,18 @@ pub struct SpaceLine {
     pub path: Option<String>,
     /// The branch (or detached commit) checked out there, if a repository.
     pub branch: Option<String>,
+    /// Its directory is a linked worktree: drawn one cell further in,
+    /// under its repository.
+    pub linked: bool,
+}
+
+/// A line of SPACES: a space, or the header over the worktree spaces of
+/// a repository whose main checkout has no space.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Entry {
+    Space(SpaceLine),
+    /// The repository's name.
+    RepoHeader(String),
 }
 
 /// One agent (main Claude session) as the sidebar draws it.
@@ -67,6 +94,8 @@ pub enum Line {
     Space(usize),
     /// A space's second line: its directory and branch.
     SpacePlace(usize),
+    /// A repository's header over its worktree spaces.
+    RepoHeader(usize),
     /// An agent's first line: dot, label and state.
     Agent(usize),
     /// An agent's second line: its space and tab.
@@ -80,14 +109,28 @@ pub fn pick(line: Line, spaces: usize) -> Option<usize> {
     match line {
         Line::Space(i) | Line::SpacePlace(i) => Some(i),
         Line::Agent(i) | Line::AgentPlace(i) => Some(spaces + i),
-        Line::Header(_) | Line::Blank => None,
+        Line::Header(_) | Line::RepoHeader(_) | Line::Blank => None,
     }
 }
 
-/// The sidebar's lines for `spaces` spaces and `agents` agents, top first.
-pub fn lines(spaces: usize, agents: usize) -> Vec<Line> {
+/// The sidebar's lines for `entries` (spaces and repository headers) and
+/// `agents` agents, top first. Spaces and headers are numbered apart, in
+/// their order among `entries`.
+pub fn lines(entries: &[Entry], agents: usize) -> Vec<Line> {
     let mut out = vec![Line::Header(SPACES)];
-    out.extend((0..spaces).flat_map(|i| [Line::Space(i), Line::SpacePlace(i)]));
+    let (mut spaces, mut repos) = (0, 0);
+    for entry in entries {
+        match entry {
+            Entry::Space(_) => {
+                out.extend([Line::Space(spaces), Line::SpacePlace(spaces)]);
+                spaces += 1;
+            }
+            Entry::RepoHeader(_) => {
+                out.push(Line::RepoHeader(repos));
+                repos += 1;
+            }
+        }
+    }
     out.extend([Line::Blank, Line::Header(AGENTS)]);
     for i in 0..agents {
         if i > 0 {
@@ -126,7 +169,7 @@ fn dot(state: State) -> Style {
 /// keyboard is on while the sidebar has it; `current_bg` the background of
 /// the current space and the current agent.
 pub fn render(
-    spaces: &[SpaceLine],
+    entries: &[Entry],
     agents: &[AgentLine],
     selected: Option<usize>,
     current_bg: Color,
@@ -140,12 +183,25 @@ pub fn render(
         buf.set_string(area.right() - 1, y, "│", Style::default());
     }
     let sidebar = Sidebar {
-        spaces,
+        spaces: entries
+            .iter()
+            .filter_map(|e| match e {
+                Entry::Space(s) => Some(s),
+                Entry::RepoHeader(_) => None,
+            })
+            .collect(),
+        repos: entries
+            .iter()
+            .filter_map(|e| match e {
+                Entry::RepoHeader(name) => Some(name.as_str()),
+                Entry::Space(_) => None,
+            })
+            .collect(),
         agents,
         selected,
         current_bg,
     };
-    for (line, y) in lines(spaces.len(), agents.len())
+    for (line, y) in lines(entries, agents.len())
         .into_iter()
         .zip(area.top()..area.bottom())
     {
@@ -155,7 +211,9 @@ pub fn render(
 
 /// What [`render`] draws, line by line.
 struct Sidebar<'a> {
-    spaces: &'a [SpaceLine],
+    spaces: Vec<&'a SpaceLine>,
+    /// The repository headers, in order.
+    repos: Vec<&'a str>,
     agents: &'a [AgentLine],
     selected: Option<usize>,
     current_bg: Color,
@@ -169,7 +227,7 @@ impl Sidebar<'_> {
         let current = match line {
             Line::Space(i) | Line::SpacePlace(i) => self.spaces[i].current,
             Line::Agent(i) | Line::AgentPlace(i) => self.agents[i].current,
-            Line::Header(_) | Line::Blank => false,
+            Line::Header(_) | Line::RepoHeader(_) | Line::Blank => false,
         };
         if current {
             base = base.bg(self.current_bg);
@@ -191,16 +249,21 @@ impl Sidebar<'_> {
         let dim = Style::default().add_modifier(Modifier::DIM);
         let (dot_x, name_x) = (row.x + 1, row.x + INDENT);
         let end = row.right().saturating_sub(1);
+        // A worktree space sits one cell further in, under its repository.
+        let indent = |x: u16, linked: bool| x + u16::from(linked);
         match line {
             Line::Header(title) => {
                 put(dot_x, title, dim.add_modifier(Modifier::BOLD));
             }
+            Line::RepoHeader(i) => {
+                put(name_x, self.repos[i], dim);
+            }
             Line::Space(i) => {
                 let s = &self.spaces[i];
                 if let Some(state) = s.state {
-                    put(dot_x, STATE_DOT, dot(state));
+                    put(indent(dot_x, s.linked), STATE_DOT, dot(state));
                 }
-                put(name_x, &s.name, Style::default());
+                put(indent(name_x, s.linked), &s.name, Style::default());
             }
             Line::Agent(i) => {
                 let a = &self.agents[i];
@@ -214,10 +277,11 @@ impl Sidebar<'_> {
                 put(state_x, state, highlight(a.state));
             }
             Line::SpacePlace(i) => {
-                let room = usize::from(end.saturating_sub(name_x));
                 let s = &self.spaces[i];
+                let x = indent(name_x, s.linked);
+                let room = usize::from(end.saturating_sub(x));
                 if let Some(path) = &s.path {
-                    put(name_x, &place(path, s.branch.as_deref(), room), dim);
+                    put(x, &place(path, s.branch.as_deref(), room), dim);
                 }
             }
             Line::AgentPlace(i) => {
@@ -277,13 +341,17 @@ pub fn place(path: &str, branch: Option<&str>, width: usize) -> String {
 }
 
 /// What the sidebar line at screen row `y` of `area` picks, if anything.
-pub fn pick_at(spaces: usize, agents: usize, area: Rect, y: u16) -> Option<usize> {
+pub fn pick_at(entries: &[Entry], agents: usize, area: Rect, y: u16) -> Option<usize> {
     if !(area.top()..area.bottom()).contains(&y) {
         return None;
     }
-    let line = lines(spaces, agents)
+    let line = lines(entries, agents)
         .into_iter()
         .nth(usize::from(y - area.y))?;
+    let spaces = entries
+        .iter()
+        .filter(|e| matches!(e, Entry::Space(_)))
+        .count();
     pick(line, spaces)
 }
 
@@ -298,7 +366,12 @@ mod tests {
             current,
             path: Some(format!("~/p/{name}")),
             branch: None,
+            linked: false,
         }
+    }
+
+    fn entries(spaces: &[SpaceLine]) -> Vec<Entry> {
+        spaces.iter().cloned().map(Entry::Space).collect()
     }
 
     fn agent(label: &str, state: State, place: &str) -> AgentLine {
@@ -319,9 +392,13 @@ mod tests {
     const GREY: Color = Color::Indexed(236);
 
     fn draw(spaces: &[SpaceLine], agents: &[AgentLine], selected: Option<usize>) -> Buffer {
+        draw_entries(&entries(spaces), agents, selected)
+    }
+
+    fn draw_entries(entries: &[Entry], agents: &[AgentLine], selected: Option<usize>) -> Buffer {
         let area = Rect::new(0, 0, 24, 12);
         let mut buf = Buffer::empty(area);
-        render(spaces, agents, selected, GREY, area, &mut buf);
+        render(entries, agents, selected, GREY, area, &mut buf);
         buf
     }
 
@@ -436,11 +513,68 @@ mod tests {
     }
 
     #[test]
+    fn worktree_spaces_sit_under_their_repository_or_a_header() {
+        let linked = |name: &str, branch: &str| SpaceLine {
+            path: Some(format!("~/w/{branch}")),
+            branch: Some(branch.into()),
+            linked: true,
+            ..space(name, Some(State::Waiting), false)
+        };
+        let entries = [
+            Entry::Space(SpaceLine {
+                branch: Some("main".into()),
+                ..space("api", None, true)
+            }),
+            Entry::Space(linked("api/feat/x", "feat/x")),
+            Entry::RepoHeader("paddock".into()),
+            Entry::Space(linked("paddock/feat/y", "feat/y")),
+        ];
+        let agents = [agent("x", State::Waiting, "api/feat/x · claude")];
+        let buf = draw_entries(&entries, &agents, Some(2));
+        let want = [
+            " SPACES                │",
+            "   api                 │",
+            "   ~/p/api  main       │",
+            "  ● api/feat/x         │",
+            "    ~/w/feat/x  feat/x │",
+            "   paddock             │",
+            "  ● paddock/feat/y     │",
+            "    ~/w/feat/y  feat/y │",
+            "                       │",
+            " AGENTS                │",
+            " ● x           waiting │",
+            "   api/feat/x · claude │",
+        ];
+        for (y, line) in want.iter().enumerate() {
+            assert_eq!(text(&buf, y as u16), *line, "row {y}");
+        }
+        assert!(
+            buf[(3, 5)].modifier.contains(Modifier::DIM),
+            "header is dim"
+        );
+        assert!(!buf[(3, 5)].modifier.contains(Modifier::REVERSED));
+        let reversed = |y| buf[(5, y)].modifier.contains(Modifier::REVERSED);
+        assert!(reversed(6) && reversed(7), "the third space is selected");
+        assert!(!reversed(3) && !reversed(5));
+        for (x, y) in [(0, 1), (22, 2)] {
+            assert_eq!(buf[(x, y)].bg, GREY, "({x}, {y}): current space");
+        }
+        // Clicks: the header picks nothing; the spaces count without it.
+        let area = Rect::new(0, 0, 24, 12);
+        let at = |y| pick_at(&entries, 1, area, y);
+        assert_eq!((at(1), at(4)), (Some(0), Some(1)));
+        assert_eq!(at(5), None, "header");
+        assert_eq!((at(6), at(7)), (Some(2), Some(2)));
+        assert_eq!(at(10), Some(3), "the agent");
+    }
+
+    #[test]
     fn clicks_find_what_is_drawn_under_them() {
         let area = Rect::new(0, 3, 24, 14);
         // 3 SPACES, 4-5 space 0, 6-7 space 1, 8 blank, 9 AGENTS,
         // 10-11 agent 0, 12 blank, 13-14 agent 1.
-        let at = |y| pick_at(2, 2, area, y);
+        let two = entries(&[space("a", None, false), space("b", None, false)]);
+        let at = |y| pick_at(&two, 2, area, y);
         assert_eq!(at(3), None, "header");
         assert_eq!((at(4), at(5)), (Some(0), Some(0)));
         assert_eq!((at(6), at(7)), (Some(1), Some(1)));
@@ -456,7 +590,7 @@ mod tests {
     fn lines_put_a_blank_between_agents_only() {
         use Line::*;
         assert_eq!(
-            lines(1, 2),
+            lines(&entries(&[space("a", None, false)]), 2),
             [
                 Header(SPACES),
                 Space(0),

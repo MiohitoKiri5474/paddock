@@ -218,7 +218,7 @@ impl App {
     pub(super) fn finder_rows(&self) -> Vec<FinderRow> {
         let rows = self.rows();
         let home = HomePaths::new();
-        let spaces = self.sidebar_spaces(&rows);
+        let spaces = self.space_lines(&rows);
         let mut out: Vec<FinderRow> = spaces
             .iter()
             .zip(&self.spaces)
@@ -519,6 +519,7 @@ mod tests {
             current: true,
             path: Some("~/project/api".into()),
             branch: Some("feat/login".into()),
+            linked: false,
         };
         let none = (None, None);
         assert_eq!(

@@ -28,16 +28,18 @@ const PROMPT_KEYS: [&str; 5] = [
     "C-w word",
 ];
 
-/// The lines of the help, with the prefix written out (e.g. `C-a`): the
-/// commands' and floats' keys in two columns, each command with its direct
-/// chord in brackets, then the sidebar's and the dashboard's keys.
-pub fn lines(prefix: &str, keys: &Keymap, floats: &Floats) -> Vec<String> {
-    let mut out = vec![
-        format!(
-            "Press {prefix}, then one of these ({prefix} again sends {prefix} to the terminal):"
-        ),
-        String::new(),
-    ];
+/// The help's title, in its top border, with the prefix written out
+/// (e.g. `C-a`): how commands start, and that the prefix pressed again
+/// goes to the terminal. In the border, it leaves every line to the keys.
+pub fn title(prefix: &str) -> String {
+    format!(" paddock keys: {prefix}, then a key ({prefix} again sends {prefix} to the terminal) ")
+}
+
+/// The lines of the help: the commands' and floats' keys in two columns,
+/// each command with its direct chord in brackets, then the sidebar's and
+/// the dashboard's keys.
+pub fn lines(keys: &Keymap, floats: &Floats) -> Vec<String> {
+    let mut out = Vec::new();
     let mut cells: Vec<String> = keys
         .commands_with_chords()
         .filter(|(_, k, chords)| !k.is_empty() || !chords.is_empty())
@@ -105,10 +107,12 @@ fn wrapped(title: &str, hints: &[String]) -> Vec<String> {
 
 /// Draw the help centred in `area`.
 pub fn render(prefix: &str, keys: &Keymap, floats: &Floats, area: Rect, buf: &mut Buffer) {
-    let text = lines(prefix, keys, floats);
+    let text = lines(keys, floats);
+    let title = title(prefix);
     let width = text
         .iter()
         .map(|l| Line::raw(l.as_str()).width())
+        .chain([Line::raw(title.as_str()).width()])
         .max()
         .unwrap_or(0)
         + FRAME;
@@ -130,7 +134,7 @@ pub fn render(prefix: &str, keys: &Keymap, floats: &Floats, area: Rect, buf: &mu
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(" paddock keys ")
+                .title(title)
                 .title_bottom(" any key closes this help · [chord]: works without the prefix "),
         )
         .render(popup, buf);
@@ -149,13 +153,16 @@ mod tests {
 
     #[test]
     fn lists_every_binding_with_the_prefix() {
-        let l = lines("C-b", &Keymap::default(), &Floats::default());
-        assert!(l[0].starts_with("Press C-b, then"), "{}", l[0]);
-        assert!(
-            l[0].contains("C-b again sends C-b to the terminal"),
-            "{}",
-            l[0]
+        let l = lines(&Keymap::default(), &Floats::default());
+        assert_eq!(
+            title("C-b"),
+            " paddock keys: C-b, then a key (C-b again sends C-b to the terminal) "
         );
+        assert!(l
+            .iter()
+            .any(|x| x.contains("W      new worktree as a new space")));
+        assert!(l.iter().any(|x| x.contains("W new_worktree")));
+        assert!(l.iter().any(|x| x.contains("o open_worktree")));
         assert!(l
             .iter()
             .any(|x| x.contains("c      new tab in this space [C-M-c]")));
@@ -207,7 +214,7 @@ mod tests {
             &[("new_tab", &["t"]), ("detach", &[])],
             &[("focus_left", &[""]), ("help", &["F1"])],
         );
-        let l = lines("C-a", &remapped, &Floats::default());
+        let l = lines(&remapped, &Floats::default());
         assert!(l.iter().any(|x| x.contains("t      new tab in this space")));
         assert!(!l.iter().any(|x| x.contains("detach")));
         assert!(l
@@ -216,7 +223,7 @@ mod tests {
         assert!(l.iter().any(|x| x.contains("this help [F1]")));
         // A command on a chord only still shows, with no key before it.
         let chord_only = keys(&[("detach", &[])], &[("detach", &["C-M-q"])]);
-        let l = lines("C-a", &chord_only, &Floats::default());
+        let l = lines(&chord_only, &Floats::default());
         assert!(l
             .iter()
             .any(|x| x.contains("       detach (terminals go on) [C-M-q]")));
@@ -229,12 +236,12 @@ mod tests {
         let keys = Keymap::default();
         render("C-a", &keys, &Floats::default(), area, &mut buf);
         let shown = rows(area, &buf);
-        assert!(shown.iter().any(|r| r.contains("paddock keys")));
+        assert!(shown.iter().any(|r| r.contains(title("C-a").trim())));
         assert!(shown.iter().any(|r| r.contains("any key closes this help")));
         assert!(shown
             .iter()
             .any(|r| r.contains("[chord]: works without the prefix")));
-        for line in lines("C-a", &keys, &Floats::default())
+        for line in lines(&keys, &Floats::default())
             .iter()
             .filter(|l| !l.is_empty())
         {
@@ -256,7 +263,7 @@ mod tests {
             }],
             ..Floats::default()
         };
-        let l = lines("C-a", &Keymap::default(), &floats);
+        let l = lines(&Keymap::default(), &floats);
         assert!(
             l.iter()
                 .any(|x| x.contains("T      float: htop --delay 10 ...")),

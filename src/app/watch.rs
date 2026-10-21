@@ -33,12 +33,16 @@ pub struct Watched {
     pub spaces: Vec<String>,
 }
 
-/// A space's directory and the branch checked out there.
+/// A space's directory, the branch checked out there, and the working
+/// tree it is in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Place {
     pub path: String,
     /// `None` outside a git repository.
     pub branch: Option<String>,
+    /// The working tree and its repository's main checkout; `None`
+    /// outside a git repository.
+    pub tree: Option<git::WorkingTree>,
 }
 
 /// Space `id`'s directory: that of its first tab's first pane, else the
@@ -71,7 +75,8 @@ fn places(server: &Server, spaces: &[String]) -> Vec<(String, Place)> {
         .filter_map(|id| {
             let path = space_dir(server, id)?;
             let branch = git::head(&path);
-            Some((id.clone(), Place { path, branch }))
+            let tree = git::working_tree(&path);
+            Some((id.clone(), Place { path, branch, tree }))
         })
         .collect()
 }

@@ -780,7 +780,10 @@ mod tests {
     #[test]
     fn hints_and_labels_show_the_keys() {
         let hints = Keys::defaults(&SIDEBAR_KEYS).hints().join("  ");
-        assert_eq!(hints, "j down  k up  Enter open  x close  f fork  Esc back");
+        assert_eq!(
+            hints,
+            "j down  k up  Enter open  x close  f fork  W new_worktree  o open_worktree  Esc back"
+        );
         let defaults = Keys::defaults(&COMMAND_KEYS);
         let labels: Vec<String> = defaults.bindings().map(|(_, k)| label(k)).collect();
         assert!(labels.contains(&"1...9".to_string()));
