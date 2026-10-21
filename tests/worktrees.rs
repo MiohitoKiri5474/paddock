@@ -314,6 +314,57 @@ fn a_dirty_unmerged_worktree_names_both_risks_and_the_branch_is_kept() {
 }
 
 #[test]
+fn commits_made_after_the_question_are_never_lost() {
+    let sandbox = Sandbox::new();
+    let dir = repo(&sandbox);
+    let mut paddock = in_repo(&sandbox, &dir);
+    new_worktree(&mut paddock, "feat/c");
+    wait_for_worktree_row(&paddock, "repo/feat/c");
+    let path = worktree(&sandbox, "feat/c");
+    std::fs::write(path.join("loose.txt"), "work\n").unwrap();
+
+    x_on_current_space(&mut paddock);
+    paddock.wait_for_popup("Delete worktree", "delete feat/c");
+    paddock.send(b"y");
+    paddock.wait_for_popup(
+        "Delete worktree",
+        "feat/c has uncommitted changes: delete anyway? y/n",
+    );
+    // The question was only about changes; they become a commit now.
+    git(&path, &["add", "."]);
+    git(&path, &["commit", "-q", "-m", "late"]);
+    paddock.send(b"y");
+
+    paddock.wait_for_text("has commits not in its base now");
+    assert!(path.join("loose.txt").is_file());
+    assert_eq!(sandbox.session_names(), ["space-1", "repo/feat/c"]);
+}
+
+#[test]
+fn every_space_in_the_worktree_closes_with_it() {
+    let sandbox = Sandbox::new();
+    let dir = repo(&sandbox);
+    let mut paddock = in_repo(&sandbox, &dir);
+    new_worktree(&mut paddock, "feat/s");
+    wait_for_worktree_row(&paddock, "repo/feat/s");
+    paddock.wait_for_text(PROMPT);
+    // A second space, started in the worktree's terminal's directory.
+    paddock.command(b"C");
+    paddock.wait_for_popup("New space", "space-2");
+    paddock.send(b"\r");
+    wait_for_sessions(&paddock, &sandbox, &["space-1", "repo/feat/s", "space-2"]);
+    wait_for_worktree_row(&paddock, "space-2");
+    let path = worktree(&sandbox, "feat/s");
+
+    x_on_current_space(&mut paddock);
+    paddock.wait_for_popup("Delete worktree", "delete feat/s");
+    paddock.send(b"y");
+
+    wait_for_sessions(&paddock, &sandbox, &["space-1"]);
+    paddock.wait_for("the worktree gone", |_| !path.exists());
+}
+
+#[test]
 fn changes_made_after_the_question_are_never_forced_away() {
     let sandbox = Sandbox::new();
     let dir = repo(&sandbox);

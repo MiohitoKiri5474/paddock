@@ -24,12 +24,16 @@ const RISK_DEADLINE: Duration = Duration::from_secs(5);
 /// What the questions call a base whose name is not known.
 const BASE: &str = "its base";
 
-/// A worktree space, as deleting it needs: its tmux session, its
+/// A worktree space, as deleting it needs: its tmux session, every space
+/// in that worktree (it first, read again before deleting), its
 /// worktree's directory and branch (`None` if detached), and the
 /// repository's main checkout, where git runs once the worktree is gone.
+// ponytail: paths are `String` here and in `git` (as tmux and git print
+// them) but `PathBuf` in config and `worktree_path`; one type would do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorktreeSpace {
     pub space: String,
+    pub spaces: Vec<String>,
     pub path: String,
     pub branch: Option<String>,
     pub main: String,
@@ -51,6 +55,20 @@ pub struct Risks {
     pub dirty: bool,
     /// The base's name, if commits checked out there are not in it.
     pub unmerged: Option<String>,
+    /// The check did not finish in time: nothing is known, so both of
+    /// the above are assumed.
+    pub late: bool,
+}
+
+impl Risks {
+    /// What a check that did not finish in time assumes: every risk.
+    fn unknown() -> Self {
+        Self {
+            dirty: true,
+            unmerged: Some(BASE.into()),
+            late: true,
+        }
+    }
 }
 
 /// The delete question: about `target`; the second time, `risks` holds
@@ -68,6 +86,16 @@ impl DeleteQuestion {
         let Some(risks) = &self.risks else {
             return format!("delete {label} and its worktree (ignored files too)? y/n");
         };
+        let kept = if self.target.branch.is_some() {
+            " (the branch is kept)"
+        } else {
+            ""
+        };
+        if risks.late {
+            return format!(
+                "couldn't check {label} in time: delete anyway, discarding any changes?{kept} y/n"
+            );
+        }
         let mut what = Vec::new();
         if risks.dirty {
             what.push("has uncommitted changes".to_string());
@@ -79,7 +107,7 @@ impl DeleteQuestion {
         }
         let what = what.join(" and ");
         if risks.unmerged.is_some() && self.target.branch.is_some() {
-            format!("{label} {what}: remove the worktree anyway? (the branch is kept) y/n")
+            format!("{label} {what}: remove the worktree anyway?{kept} y/n")
         } else {
             format!("{label} {what}: delete anyway? y/n")
         }
@@ -269,28 +297,31 @@ impl App {
         self.mode = Mode::OpenWorktree(WorktreeList { selected, ..list });
     }
 
-    /// Whether `top` is a worktree paddock may delete: under `[worktrees]
-    /// directory`, where `C-a W` makes them.
-    fn is_ours(&self, top: &str) -> bool {
-        let directory = git::resolved(&self.worktrees.directory.to_string_lossy());
-        Path::new(top).starts_with(directory)
-    }
-
     /// Space `id` as a worktree space paddock may delete, read now: its
-    /// directory is in a linked worktree under `[worktrees] directory`.
+    /// directory is in a linked worktree paddock made (see [`is_ours`]).
     /// The main checkout, and worktrees elsewhere (Claude's own), never
     /// are.
     pub(super) fn worktree_space(&self, id: &str) -> Option<WorktreeSpace> {
         let tree = self.tree_now(id)?;
-        if !tree.is_linked() || !self.is_ours(&tree.top) {
+        if !tree.is_linked() || !is_ours(&self.worktrees.directory, &tree.top) {
             return None;
         }
         Some(WorktreeSpace {
             space: id.to_string(),
+            spaces: vec![id.to_string()],
             branch: git::current_branch(&tree.top),
             path: tree.top,
             main: tree.main,
         })
+    }
+
+    /// Every space whose working tree is the one at `top`, read now.
+    fn spaces_in(&self, top: &str) -> Vec<String> {
+        self.spaces
+            .iter()
+            .filter(|s| self.tree_now(&s.id).is_some_and(|t| t.top == top))
+            .map(|s| s.id.clone())
+            .collect()
     }
 
     /// `delete_worktree`: ask before deleting space `id` with its worktree
@@ -321,7 +352,7 @@ impl App {
 
     /// `y` to a delete question. The first time, work that would be lost
     /// (uncommitted changes, commits not in the base) is asked about
-    /// again, naming all of it; else the space, worktree and branch go.
+    /// again, naming all of it; else the spaces, worktree and branch go.
     pub(super) fn confirm_delete(&mut self, q: DeleteQuestion) {
         if q.risks.is_none() {
             if let Some(risks) = delete_risks(&q.target) {
@@ -333,49 +364,63 @@ impl App {
             }
         }
         self.mode = Mode::back_to(q.back);
-        // Uncommitted changes are discarded only once the user said so.
-        let force = q.risks.is_some_and(|r| r.dirty);
-        let target = q.target;
-        self.report(|app| app.delete_worktree_space(target, force));
+        let (target, confirmed) = (q.target, q.risks);
+        self.report(|app| app.delete_worktree_space(target, confirmed));
     }
 
-    /// Delete `target`: close its space, asking first if Claude is running
-    /// or waiting in it (as `close` does), then remove the worktree and
-    /// delete the branch.
-    fn delete_worktree_space(&mut self, target: WorktreeSpace, force: bool) -> Result<()> {
+    /// Delete `target`: close every space in its worktree, asking first if
+    /// Claude is running or waiting in any of them (as `close` does), then
+    /// remove the worktree and delete the branch. `confirmed` is what the
+    /// user said yes to losing.
+    fn delete_worktree_space(
+        &mut self,
+        mut target: WorktreeSpace,
+        confirmed: Option<Risks>,
+    ) -> Result<()> {
+        target.spaces = self.spaces_in(&target.path);
+        if !target.spaces.contains(&target.space) {
+            target.spaces.push(target.space.clone());
+        }
         let busy = self
             .rows()
             .into_iter()
-            .filter(|r| r.space == target.space)
+            .filter(|r| target.spaces.contains(&r.space))
             .map(|r| r.state)
             .find(|s| matches!(s, State::Running | State::Waiting));
         match busy {
             Some(state) => {
-                self.ask_close(CloseTarget::Worktree { target, force }, state);
+                self.ask_close(CloseTarget::Worktree { target, confirmed }, state);
                 Ok(())
             }
-            None => self.remove_worktree_space(&target, force),
+            None => self.remove_worktree_space(&target, confirmed.as_ref()),
         }
     }
 
-    /// Close `target`'s space, remove its worktree (`force`: with its
-    /// uncommitted changes) and delete its branch. A worktree that has
-    /// changes the user was not asked about (they came after the question)
-    /// is left whole. A branch git does not find merged is kept, with a
-    /// notice.
+    /// Close every space in `target`'s worktree, remove the worktree and
+    /// delete its branch. Uncommitted changes go only if the user
+    /// `confirmed` them (`--force`); changes or commits the user was not
+    /// asked about (they came after the question) leave everything as it
+    /// is, with a notice. A branch git does not find merged is kept, with
+    /// a notice.
     pub(super) fn remove_worktree_space(
         &mut self,
         target: &WorktreeSpace,
-        force: bool,
+        confirmed: Option<&Risks>,
     ) -> Result<()> {
         let path = &target.path;
+        let label = target.label();
+        let force = confirmed.is_some_and(|r| r.dirty);
         if !force && git::is_dirty(path) {
-            bail!(
-                "{} has uncommitted changes now: nothing deleted",
-                target.label()
-            );
+            bail!("{label} has uncommitted changes now: nothing deleted");
         }
-        self.server.kill_session(&target.space)?;
+        let unmerged_ok = confirmed.is_some_and(|r| r.unmerged.is_some());
+        if !unmerged_ok && !git::in_base(path, "HEAD") {
+            bail!("{label} has commits not in its base now: nothing deleted");
+        }
+        let alive: Vec<String> = self.server.sessions().into_iter().map(|s| s.id).collect();
+        for space in target.spaces.iter().filter(|s| alive.contains(s)) {
+            self.server.kill_session(space)?;
+        }
         // The path first: a notice cut to the tab bar still names it.
         git::remove_worktree(&target.main, path, force)
             .map_err(|e| anyhow!("space closed; {} left: {e}", Home::from_env().show(path)))?;
@@ -417,14 +462,24 @@ fn risks_within(path: &str, limit: Duration) -> Option<Risks> {
         let dirty = git::is_dirty(&path);
         let unmerged = (!git::in_base(&path, "HEAD"))
             .then(|| git::default_branch(&path).unwrap_or_else(|| BASE.into()));
-        let _ = tx.send((dirty || unmerged.is_some()).then_some(Risks { dirty, unmerged }));
+        let risky = dirty || unmerged.is_some();
+        let _ = tx.send(risky.then_some(Risks {
+            dirty,
+            unmerged,
+            late: false,
+        }));
     });
-    rx.recv_timeout(limit).unwrap_or_else(|_| {
-        Some(Risks {
-            dirty: true,
-            unmerged: Some(BASE.into()),
-        })
-    })
+    rx.recv_timeout(limit)
+        .unwrap_or_else(|_| Some(Risks::unknown()))
+}
+
+/// Whether the worktree at `top` is one paddock made, and so may delete:
+/// `<directory>/<repo>/<name>`, as `C-a W` lays them out, exactly. A
+/// worktree deeper down (a repository's `.claude/worktrees/agent-*` when
+/// repositories live under `directory`) is not.
+fn is_ours(directory: &Path, top: &str) -> bool {
+    let directory = git::resolved(&directory.to_string_lossy());
+    Path::new(top).parent().and_then(Path::parent) == Some(Path::new(&directory))
 }
 
 /// The sidebar order of spaces whose working trees are `trees` (by space
@@ -540,17 +595,23 @@ mod tests {
     }
 
     #[test]
+    fn only_worktrees_laid_out_as_paddock_makes_them_are_its_own() {
+        let dir = Path::new("/nonexistent/code");
+        assert!(is_ours(dir, "/nonexistent/code/repo/feat-x"));
+        assert!(!is_ours(
+            dir,
+            "/nonexistent/code/repo/.claude/worktrees/agent-x"
+        ));
+        assert!(!is_ours(dir, "/nonexistent/code/repo"), "a main checkout");
+        assert!(!is_ours(dir, "/elsewhere/repo/feat-x"));
+    }
+
+    #[test]
     fn a_risk_check_past_its_deadline_counts_as_every_risk() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().to_string_lossy().into_owned();
         let late = risks_within(&dir, Duration::ZERO);
-        assert_eq!(
-            late,
-            Some(Risks {
-                dirty: true,
-                unmerged: Some(BASE.into())
-            })
-        );
+        assert_eq!(late, Some(Risks::unknown()));
     }
 
     #[test]
@@ -559,6 +620,7 @@ mod tests {
             DeleteQuestion {
                 target: WorktreeSpace {
                     space: "$1".into(),
+                    spaces: vec!["$1".into()],
                     path: "/w/repo/x".into(),
                     branch: branch.map(str::to_string),
                     main: "/r/repo".into(),
@@ -572,6 +634,7 @@ mod tests {
             Some(Risks {
                 dirty,
                 unmerged: unmerged.map(str::to_string),
+                late: false,
             })
         };
         assert_eq!(
@@ -594,6 +657,16 @@ mod tests {
         assert_eq!(
             q(None, risks(false, Some("main"))),
             "x has commits not in main: delete anyway? y/n"
+        );
+        // A check that ran out of time says so, and claims nothing.
+        assert_eq!(
+            q(Some("feat/x"), Some(Risks::unknown())),
+            "couldn't check feat/x in time: delete anyway, discarding any changes? \
+             (the branch is kept) y/n"
+        );
+        assert_eq!(
+            q(None, Some(Risks::unknown())),
+            "couldn't check x in time: delete anyway, discarding any changes? y/n"
         );
     }
 }

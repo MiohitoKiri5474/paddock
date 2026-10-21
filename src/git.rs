@@ -27,9 +27,14 @@ const SQUASH_IDENTITY: &[(&str, &str)] = &[
 const MAX_UNTRACKED: u64 = 1 << 20;
 /// How long a git read may take before it counts as failed: reads run on
 /// the key path too, and the screen waits for them.
+// ponytail: the deadlines are per git call, not per key: `x` makes several
+// reads, `C-a O` some per space, a delete several mutations, all on the UI
+// thread. The upgrade is to run deletes and mutations off it.
 const READ_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long adding or removing a worktree may take (a checkout of a big
 /// repository) before it counts as failed.
+// ponytail: a `worktree remove` killed at this deadline can leave a
+// half-deleted tree; git's own `worktree prune` cleans up after it.
 const MUTATION_TIMEOUT: Duration = Duration::from_secs(60);
 /// How often to look whether git finished.
 const POLL: Duration = Duration::from_millis(5);
@@ -122,7 +127,12 @@ fn wait(mut command: Command, timeout: Duration) -> Result<String, String> {
                 let _ = child.wait();
                 return Err(late());
             }
-            Err(e) => return Err(e.to_string()),
+            Err(e) => {
+                // Cannot tell whether it runs: never leave it behind.
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(e.to_string());
+            }
         }
     };
     let left = || deadline.saturating_duration_since(Instant::now());
@@ -307,10 +317,12 @@ pub fn worktree_path(directory: &Path, repo: &str, branch: &str) -> PathBuf {
 
 /// Whether `name` may name a branch (`git check-ref-format --branch`, run
 /// in `dir`). It takes no `--`, so a name starting with `-` is refused
-/// here.
+/// here, as is one with `@{` (git expands it, so it is not literal).
 pub fn valid_branch(dir: &str, name: &str) -> bool {
     !name.is_empty()
         && !name.starts_with('-')
+        // `@{-1}` and the like pass, but git expands them: not literal.
+        && !name.contains("@{")
         && git(dir, &["check-ref-format", "--branch", name]).is_some()
 }
 
@@ -912,7 +924,9 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dir = s(tmp.path());
         assert!(valid_branch(dir, "feat/x"));
-        for bad in ["", "-x", "a..b", "a b", "x/", "HEAD", "a\x7fb"] {
+        for bad in [
+            "", "-x", "a..b", "a b", "x/", "HEAD", "a\x7fb", "@{-1}", "x@{u}",
+        ] {
             assert!(!valid_branch(dir, bad), "{bad:?}");
         }
         assert_eq!(dir_name("/w/api"), "api");

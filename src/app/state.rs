@@ -14,7 +14,7 @@ use super::sidebar::clamp_width;
 use super::sidebar::Selection;
 use super::space::Space;
 use super::watch::Place;
-use super::worktrees::{DeleteQuestion, WorktreeList, WorktreeSpace};
+use super::worktrees::{DeleteQuestion, Risks, WorktreeList, WorktreeSpace};
 use super::Event;
 use crate::config::{Config, Floats, Worktrees};
 use crate::git::WorkingTree;
@@ -184,9 +184,12 @@ pub enum CloseTarget {
     Pane(String),
     /// A whole space (`$N`) with all its tabs.
     Space(String),
-    /// A worktree space, whose worktree and branch go with it (`force`:
-    /// with its uncommitted changes, which the user was asked about).
-    Worktree { target: WorktreeSpace, force: bool },
+    /// A worktree space, whose worktree and branch go with it; `confirmed`
+    /// is what the user said yes to losing.
+    Worktree {
+        target: WorktreeSpace,
+        confirmed: Option<Risks>,
+    },
 }
 
 pub struct App {

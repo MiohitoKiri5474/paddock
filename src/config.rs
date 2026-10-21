@@ -101,6 +101,11 @@ impl Worktrees {
         if !directory.is_absolute() {
             bail!("[worktrees] directory: {spec:?} is not an absolute path (or ~/...)");
         }
+        // Repositories live under home: their worktrees must not pass for
+        // paddock's own.
+        if home.is_some_and(|h| directory == Path::new(h)) {
+            bail!("[worktrees] directory: {spec:?} is the home directory; pick one under it");
+        }
         Ok(Self { directory })
     }
 }
@@ -547,6 +552,13 @@ mod tests {
             assert!(err.contains("[worktrees] directory"), "{bad}: {err}");
         }
         assert!(Config::parse("[worktrees]\ndir = \"/w\"\n").is_err());
+        for home_itself in ["~", "~/", &home, &format!("{home}/")] {
+            let err = format!("{:#}", parse(&format!("{home_itself:?}")).unwrap_err());
+            assert!(
+                err.contains("is the home directory"),
+                "{home_itself}: {err}"
+            );
+        }
         let no_home = Worktrees::configured(None, None).unwrap_err();
         assert!(format!("{no_home:#}").contains("HOME"), "{no_home:#}");
     }

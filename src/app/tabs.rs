@@ -210,7 +210,7 @@ impl App {
             NameTarget::Rename(_) if name.is_empty() => Ok(()),
             NameTarget::Rename(what) => self.rename(*what, name),
             NameTarget::NewWorktree(_) if name.is_empty() => Ok(()),
-            NameTarget::NewWorktree(checkout) => self.new_worktree(checkout, name),
+            NameTarget::NewWorktree(tree) => self.new_worktree(tree, name),
         }
     }
 
@@ -293,7 +293,9 @@ impl App {
         match target {
             CloseTarget::Pane(pane) => self.server.kill_pane(pane),
             CloseTarget::Space(id) => self.server.kill_session(id),
-            CloseTarget::Worktree { target, force } => self.remove_worktree_space(target, *force),
+            CloseTarget::Worktree { target, confirmed } => {
+                self.remove_worktree_space(target, confirmed.as_ref())
+            }
         }
     }
 
