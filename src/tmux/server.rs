@@ -140,7 +140,7 @@ impl Server {
     /// Start a session running the user's shell, starting the server if needed.
     pub fn new_session(&self, name: &str, cwd: &Path, (cols, rows): (u16, u16)) -> Result<Session> {
         let cwd = start_dir(cwd);
-        let named = literal(name);
+        let named = unexpanded(name);
         let (x, y) = (cols.to_string(), rows.to_string());
         let args = [
             "new-session",
@@ -287,7 +287,7 @@ impl Server {
 
     /// Rename a window; tmux then stops naming it after its command.
     pub fn rename_window(&self, window: &str, name: &str) -> Result<()> {
-        self.run(&["rename-window", "-t", window, &literal(name)])
+        self.run(&["rename-window", "-t", window, &unexpanded(name)])
             .map(drop)
     }
 
@@ -316,7 +316,7 @@ impl Server {
     }
 
     pub fn rename_session(&self, id: &str, name: &str) -> Result<()> {
-        self.run(&["rename-session", "-t", id, &literal(name)])
+        self.run(&["rename-session", "-t", id, &unexpanded(name)])
             .map(drop)
     }
 
@@ -334,16 +334,24 @@ impl Server {
     }
 }
 
-/// `dir` for `-c`, as a [`literal`]: tmux expands formats there, and
-/// `##` is a literal `#`.
+/// `dir` for `-c`, as an [`unexpanded`] argument.
 fn start_dir(dir: &Path) -> String {
-    literal(&dir.to_string_lossy().replace('#', "##"))
+    unexpanded(&dir.to_string_lossy())
 }
 
-/// `arg` as one tmux argument that stays itself: tmux reads an argument
-/// ending in `;` as a command separator, and one ending in `\;` as that
-/// argument with a `;` for the `\;`. Every argument from the user (a
-/// name, directory, float key or command) goes through it.
+/// `arg` for an argument tmux format-expands (a session or window name, a
+/// start directory), as a [`literal`] that tmux also stores as given: every
+/// `#` is doubled, and tmux expands `##` to `#`. Without it `v#S` would be
+/// stored as `v` followed by the session's name.
+fn unexpanded(arg: &str) -> String {
+    literal(&arg.replace('#', "##"))
+}
+
+/// `arg` as one tmux argument rather than the end of a command: tmux reads
+/// an argument ending in `;` as a command separator, and one ending in `\;`
+/// as that argument with a `;` for the `\;`. That is all it guarantees: it
+/// does not stop format expansion, which [`unexpanded`] does. Every argument
+/// from the user (a name, directory, float key or command) goes through it.
 fn literal(arg: &str) -> String {
     match arg.strip_suffix(';') {
         Some(rest) => format!("{rest}\\;"),
@@ -503,6 +511,49 @@ mod tests {
         assert_eq!(literal(";"), r"\;");
         assert_eq!(literal("C-;"), r"C-\;");
         assert_eq!(literal(r"find . -exec ls {} \;"), r"find . -exec ls {} \\;");
+    }
+
+    #[test]
+    fn unexpanded_doubles_every_hash_and_keeps_a_trailing_semicolon() {
+        assert_eq!(unexpanded("plain"), "plain");
+        assert_eq!(unexpanded("v#S"), "v##S");
+        assert_eq!(unexpanded("#"), "##");
+        assert_eq!(unexpanded("a##b"), "a####b");
+        assert_eq!(
+            unexpanded("#{session_id}#(id)#,"),
+            "##{session_id}##(id)##,"
+        );
+        assert_eq!(unexpanded("x#;"), r"x##\;");
+    }
+
+    #[test]
+    fn names_with_a_hash_are_taken_literally() {
+        let tmp = tempfile::tempdir().unwrap();
+        let server = Server::new(Paths {
+            socket: format!("paddock-unit-hashes-{}", std::process::id()),
+            state_dir: tmp.path().join("state"),
+            config_dir: tmp.path().join("config"),
+        });
+        server.write_config().unwrap();
+        let dir = tmp.path().canonicalize().unwrap();
+        let name = |id: &str| server.display(id, "#{session_name}|#{window_name}");
+        let run = || -> Result<Vec<String>> {
+            let s = server.new_session("v#S", &dir, (80, 24))?;
+            let started = name(&s.id)?;
+            let window = server.display(&s.id, "#{window_id}")?;
+            server.rename_window(&window, "w#{session_id}#(id)#")?;
+            server.rename_session(&s.id, "s#S;")?;
+            Ok(vec![started, name(&s.id)?])
+        };
+        let got = run();
+        let socket = server.run(&["display-message", "-p", "#{socket_path}"]);
+        let _ = server.run(&["kill-server"]);
+        if let Ok(socket) = socket {
+            let _ = std::fs::remove_file(socket.trim());
+        }
+        let got = got.unwrap();
+        assert!(got[0].starts_with("v#S|"), "{got:?}");
+        assert_eq!(got[1], "s#S;|w#{session_id}#(id)#");
     }
 
     #[test]
