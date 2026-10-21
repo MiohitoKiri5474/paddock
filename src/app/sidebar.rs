@@ -2,7 +2,7 @@
 //! over its spaces and agents, and acting on the one picked.
 
 use super::space::MIN_SIZE;
-use super::state::{App, Mode};
+use super::state::{App, Mode, Panel};
 use crate::input::keymap::SidebarAction;
 use crossterm::event::KeyEvent;
 
@@ -25,6 +25,16 @@ pub fn clamp_width(wanted: u16, screen_cols: u16) -> u16 {
 pub fn wish(width: i32) -> u16 {
     let width = width.clamp(i32::from(MIN_SIDEBAR), i32::from(MAX_SIDEBAR));
     u16::try_from(width).unwrap_or(MAX_SIDEBAR)
+}
+
+/// Where `C-a s` and `C-a w` put the sidebar's cursor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SidebarTarget {
+    /// The agent in the focused terminal if it is one, else the current
+    /// space.
+    Here,
+    /// The current space.
+    Spaces,
 }
 
 /// What a sidebar line stands for.
@@ -103,28 +113,37 @@ impl App {
         spaces.chain(agents).collect()
     }
 
-    /// Give the sidebar the keyboard: on the current space if `on_space`,
-    /// else on the first agent (the one that needs you most), if any.
-    pub(super) fn focus_sidebar(&mut self, on_space: bool) {
+    /// Give the sidebar the keyboard, showing it if hidden, on the line
+    /// `target` names.
+    pub(super) fn focus_sidebar(&mut self, target: SidebarTarget) {
         self.sidebar_hidden = false;
         let picks = self.sidebar_picks();
-        let first_agent = picks.iter().position(|p| matches!(p, Pick::Agent(_)));
-        let index = match first_agent {
-            Some(i) if !on_space => i,
-            _ => self.current,
+        let focused_agent = match target {
+            SidebarTarget::Spaces => None,
+            SidebarTarget::Here => picks
+                .iter()
+                .position(|p| matches!(p, Pick::Agent(pane) if self.is_current_pane(pane))),
         };
+        // Spaces come first in the picks, so the current space's index is
+        // also its pick index.
+        let index = focused_agent.unwrap_or(self.current);
         self.mode = Mode::Sidebar(Selection {
             pick: picks.get(index).cloned(),
             index,
         });
     }
 
-    /// The sidebar selection, if the sidebar has the keyboard.
+    /// The sidebar selection, if the sidebar has the keyboard (or gets it
+    /// back when the prompt closes).
     pub(super) fn sidebar_selection(&self) -> Option<usize> {
-        match &self.mode {
-            Mode::Sidebar(s) => Some(s.anchored(&self.sidebar_picks()).index),
-            _ => None,
-        }
+        let s = match &self.mode {
+            Mode::Sidebar(s) => s,
+            mode => match mode.back_panel() {
+                Some(Panel::Sidebar(s)) => s,
+                _ => return None,
+            },
+        };
+        Some(s.anchored(&self.sidebar_picks()).index)
     }
 
     /// `[keys.sidebar]` (by default): `j`/`k` (or arrows) move over the
@@ -149,7 +168,7 @@ impl App {
                 self.mode = Mode::Sidebar(s.clone());
                 match &s.pick {
                     Some(Pick::Space(id)) => self.report(|app| app.close_space(id)),
-                    Some(Pick::Agent(pane)) => self.report(|app| app.close(pane, None)),
+                    Some(Pick::Agent(pane)) => self.report(|app| app.close(pane)),
                     None => {}
                 }
                 return;

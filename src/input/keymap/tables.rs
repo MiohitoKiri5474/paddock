@@ -131,7 +131,7 @@ pub const COMMANDS: &[Binding<Command>] = &[
         "focus_sidebar",
         Command::FocusSidebar,
         &["s"],
-        "focus sidebar on agents",
+        "focus sidebar on current agent",
     ),
     bind(
         "focus_spaces",
@@ -215,31 +215,36 @@ pub const SIDEBAR: &[Binding<SidebarAction>] = &[
 
 /// Keys while the dashboard is open (`[keys.dashboard]`).
 pub const DASHBOARD: &[Binding<DashboardAction>] = &[
-    bind("down", DashboardAction::Down, &["j", "Down"], "next row"),
-    bind("up", DashboardAction::Up, &["k", "Up"], "previous row"),
+    bind(
+        "down",
+        DashboardAction::Down,
+        &["j", "Down"],
+        "next session",
+    ),
+    bind("up", DashboardAction::Up, &["k", "Up"], "previous session"),
     bind(
         "open",
         DashboardAction::Open,
         &["Enter"],
-        "jump to the row's terminal",
+        "jump to the session's terminal",
     ),
     bind(
         "dismiss",
         DashboardAction::Dismiss,
         &["D"],
-        "dismiss the row",
+        "dismiss the session",
     ),
     bind(
         "close",
         DashboardAction::Close,
         &["x"],
-        "close the row's terminal",
+        "close the session's terminal",
     ),
     bind(
         "fork",
         DashboardAction::Fork,
         &["f"],
-        "fork the row's Claude session",
+        "fork the Claude session",
     ),
     bind(
         "interact",

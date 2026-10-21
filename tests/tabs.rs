@@ -4,7 +4,7 @@
 
 mod harness;
 
-use harness::{Paddock, Sandbox, PROMPT};
+use harness::{Paddock, Sandbox, CURRENT_ITEM, PROMPT};
 
 /// A launched paddock with its first shell ready.
 fn ready(sandbox: &Sandbox) -> Paddock {
@@ -105,7 +105,7 @@ fn capital_c_opens_a_new_space_with_its_own_tabs() {
     let mut paddock = ready(&sandbox);
     new_tab(&mut paddock, &["1:home", "2:home"]);
 
-    paddock.command(b"C");
+    paddock.command(b"C\r");
 
     paddock.wait_for_tabs(&["1:home"]);
     wait_for_spaces(&paddock, &["space-1", "space-2"]);
@@ -122,7 +122,7 @@ fn picking_a_space_shows_its_tabs() {
     paddock.type_line("echo first-item-marker");
     paddock.wait_for_text("first-item-marker\n");
     new_tab(&mut paddock, &["1:home", "2:home"]);
-    paddock.command(b"C");
+    paddock.command(b"C\r");
     paddock.wait_for_tabs(&["1:home"]);
     paddock.wait_for_text(PROMPT);
 
@@ -145,12 +145,15 @@ fn picking_a_space_shows_its_tabs() {
 fn the_current_space_has_its_own_background() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
-    paddock.command(b"C");
+    paddock.command(b"C\r");
     wait_for_spaces(&paddock, &["space-1", "space-2"]);
 
-    let grey = vt100::Color::Idx(236);
-    assert_eq!(paddock.colors(3, 5).1, grey, "current: space-2");
-    assert_eq!(paddock.colors(4, 20).1, grey, "across both its lines");
+    assert_eq!(paddock.colors(3, 5).1, CURRENT_ITEM, "current: space-2");
+    assert_eq!(
+        paddock.colors(4, 20).1,
+        CURRENT_ITEM,
+        "across both its lines"
+    );
     assert_eq!(paddock.colors(1, 5).1, vt100::Color::Default);
 }
 
@@ -223,7 +226,7 @@ fn comma_renames_the_tab_and_the_name_survives_reattach() {
     paddock.wait_for_tabs(&["1:home"]); // named by tmux by now
 
     paddock.command(b",");
-    paddock.wait_for_text("rename tab: home");
+    paddock.wait_for_popup("Rename tab", "home");
     paddock.send(b"\x15build logs\r"); // C-u clears the old name
 
     paddock.wait_for_tabs(&["1:build logs"]);
@@ -245,7 +248,7 @@ fn dollar_renames_the_space() {
     let mut paddock = ready(&sandbox);
 
     paddock.command(b"$");
-    paddock.wait_for_text("rename space: space-1");
+    paddock.wait_for_popup("Rename space", "space-1");
     paddock.send(b"\x15api-server\r");
 
     wait_for_spaces(&paddock, &["api-server"]);
@@ -256,13 +259,15 @@ fn dollar_renames_the_space() {
 fn renaming_a_space_to_a_taken_name_shows_an_error_and_keeps_the_old_name() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
-    paddock.command(b"C");
+    paddock.command(b"C\r");
     paddock.wait_for_text(PROMPT);
 
     paddock.command(b"$");
-    paddock.wait_for_text("rename space: space-2");
+    paddock.wait_for_popup("Rename space", "space-2");
     paddock.send(b"\x15space-1\r");
 
+    // The popup closes; the notice shows in the tab bar.
+    paddock.wait_for_no_popup();
     paddock.wait_for("error notice", |s| {
         s.lines().next().unwrap_or("").contains("duplicate session")
     });
@@ -273,12 +278,19 @@ fn renaming_a_space_to_a_taken_name_shows_an_error_and_keeps_the_old_name() {
 fn renaming_can_be_cancelled_and_does_not_reach_the_shell() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
+    paddock.wait_for_tabs(&["1:home"]); // named by tmux by now
 
     paddock.command(b",");
-    paddock.wait_for_text("rename tab:");
-    paddock.send(b"zzz\x1b");
+    paddock.wait_for_popup("Rename tab", "home");
+    paddock.send(b"zzz");
+    paddock.wait_for_popup("Rename tab", "homezzz");
+    paddock.send(b"\x1b");
 
+    paddock.wait_for_no_popup();
     paddock.wait_for_tabs(&["1:home"]);
+    assert_eq!(windows(&sandbox, "space-1"), ["home"]);
+    // Esc right before a key would read as Alt with that key.
+    std::thread::sleep(std::time::Duration::from_millis(200));
     paddock.type_line("echo ok-after-cancel");
     paddock.wait_for_text("ok-after-cancel\n");
     assert!(!paddock.screen().contains("zzz"));
@@ -301,7 +313,7 @@ fn x_closes_the_tab_with_its_last_pane() {
 fn closing_a_spaces_last_tab_closes_the_space() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
-    paddock.command(b"C");
+    paddock.command(b"C\r");
     paddock.wait_for_text(PROMPT);
     wait_for_spaces(&paddock, &["space-1", "space-2"]);
 
@@ -392,7 +404,7 @@ fn reattaching_shows_every_space_and_tab_as_tmux_has_them() {
     new_tab(&mut paddock, &["1:home", "2:home", "3:home"]);
     paddock.type_line("echo third-tab-marker");
     paddock.wait_for_text("third-tab-marker\n");
-    paddock.command(b"C");
+    paddock.command(b"C\r");
     paddock.wait_for_tabs(&["1:home"]);
     paddock.detach_keys();
     assert!(paddock.wait_exit());
@@ -615,7 +627,7 @@ fn c_a_tab_goes_back_to_the_last_page_across_spaces() {
     paddock.type_line("echo one-$((1))");
     paddock.wait_for_text("one-1\n");
     new_tab(&mut paddock, &["1:home", "2:home"]);
-    paddock.command(b"C");
+    paddock.command(b"C\r");
     paddock.wait_for_tabs(&["1:home"]);
     paddock.wait_for_text(PROMPT);
 
@@ -637,7 +649,7 @@ fn c_a_tab_goes_back_to_the_last_page_across_spaces() {
 fn c_a_tab_skips_a_closed_page_for_an_older_one() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox); // A1
-    paddock.command(b"C"); // space-2: B1
+    paddock.command(b"C\r"); // space-2: B1
     paddock.wait_for_text(PROMPT);
     new_tab(&mut paddock, &["1:home", "2:home"]); // B2
     paddock.command(b"1"); // back on B1
@@ -650,7 +662,7 @@ fn c_a_tab_skips_a_closed_page_for_an_older_one() {
 
     // The current space's background is on space-1 again.
     paddock.wait_for("space-1 current", |_| {
-        paddock.colors(1, 5).1 == vt100::Color::Idx(236)
+        paddock.colors(1, 5).1 == CURRENT_ITEM
     });
     paddock.type_line("echo back-in-a1");
     paddock.wait_for_text("back-in-a1\n");

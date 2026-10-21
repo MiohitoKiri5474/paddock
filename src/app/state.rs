@@ -1,7 +1,7 @@
 //! What the running app holds: the spaces (tmux sessions, ADR 0006),
 //! each with its tabs (windows) and splits (panes) as tmux has them, a
 //! terminal per pane, the Claude sessions in them, and what the keyboard is
-//! doing (typing into the focused pane, renaming, reading help).
+//! doing (typing into the focused pane, naming, reading help).
 
 use super::attention::Attention;
 use super::dashboard::Dashboard;
@@ -17,9 +17,11 @@ use super::Event;
 use crate::config::Config;
 use crate::hooks::now_ms;
 use crate::input::keymap::Keymap;
+use crate::input::line::LineEdit;
 use crate::input::PrefixKeys;
 use crate::sessions::{dismissed, Session, Sessions, State};
 use crate::terminal::Terminal;
+use crate::tmux::structure::Window;
 use crate::tmux::Server;
 use crate::ui::tab_bar::TabColors;
 use anyhow::Result;
@@ -34,40 +36,99 @@ pub const TAB_BAR_ROWS: u16 = 1;
 
 pub enum Mode {
     Normal,
-    /// Renaming the current tab or space; holds the text typed so far.
-    Rename {
-        target: Renaming,
-        text: String,
+    /// The prompt popup asks for a name for `target`; holds the line typed
+    /// so far. `back` is the panel asked from, to return to.
+    Naming {
+        target: NameTarget,
+        line: LineEdit,
+        back: Option<Panel>,
     },
     Help,
     /// The sidebar has the keyboard; holds its selection.
     Sidebar(Selection),
     /// Asking before closing `target`, where Claude is `state`; `back` is
-    /// the dashboard asked from, to return to.
+    /// the panel asked from, to return to.
     ConfirmClose {
         target: CloseTarget,
         state: State,
-        back: Option<Dashboard>,
+        back: Option<Panel>,
     },
     /// The dashboard is open.
     Dashboard(Dashboard),
 }
 
-/// What is being renamed.
+/// A panel that had the keyboard when the prompt opened, and gets it back
+/// when the prompt closes.
+pub enum Panel {
+    /// The sidebar, with its selection.
+    Sidebar(Selection),
+    /// The dashboard.
+    Dashboard(Dashboard),
+}
+
+impl Mode {
+    /// The mode that gives the keyboard back to `back`, or to the focused
+    /// pane if none.
+    pub fn back_to(back: Option<Panel>) -> Self {
+        match back {
+            Some(Panel::Sidebar(s)) => Mode::Sidebar(s),
+            Some(Panel::Dashboard(d)) => Mode::Dashboard(d),
+            None => Mode::Normal,
+        }
+    }
+
+    /// The panel with the keyboard in this mode, if any: to return to after
+    /// a prompt opened from it.
+    pub fn into_panel(self) -> Option<Panel> {
+        match self {
+            Mode::Sidebar(s) => Some(Panel::Sidebar(s)),
+            Mode::Dashboard(d) => Some(Panel::Dashboard(d)),
+            _ => None,
+        }
+    }
+
+    /// The panel the open prompt returns to, if any.
+    pub fn back_panel(&self) -> Option<&Panel> {
+        match self {
+            Mode::Naming { back, .. } | Mode::ConfirmClose { back, .. } => back.as_ref(),
+            _ => None,
+        }
+    }
+
+    /// The panel the open prompt returns to, to change it in place.
+    pub fn back_panel_mut(&mut self) -> Option<&mut Panel> {
+        match self {
+            Mode::Naming { back, .. } | Mode::ConfirmClose { back, .. } => back.as_mut(),
+            _ => None,
+        }
+    }
+}
+
+/// What a name is asked for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Renaming {
+pub enum NameTarget {
+    /// Renaming the current tab or space.
+    Rename(Renamed),
+    /// A new space.
+    NewSpace,
+}
+
+/// What a rename is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Renamed {
     /// The current tab (tmux window).
     Tab,
     /// The current space (tmux session).
     Space,
 }
 
-impl Renaming {
-    /// What is renamed, as the prompt names it.
-    pub fn noun(self) -> &'static str {
+impl NameTarget {
+    /// The prompt's title.
+    pub fn title(self) -> &'static str {
         match self {
-            Renaming::Tab => "tab",
-            Renaming::Space => "space",
+            NameTarget::Rename(Renamed::Tab) => " Rename tab ",
+            NameTarget::Rename(Renamed::Space) => " Rename space ",
+            NameTarget::NewSpace => " New space ",
         }
     }
 }
@@ -79,16 +140,6 @@ pub enum CloseTarget {
     Pane(String),
     /// A whole space (`$N`) with all its tabs.
     Space(String),
-}
-
-impl CloseTarget {
-    /// What the close question asks to do.
-    pub fn verb(&self) -> &'static str {
-        match self {
-            CloseTarget::Pane(_) => "close",
-            CloseTarget::Space(_) => "close space",
-        }
-    }
 }
 
 pub struct App {
@@ -292,11 +343,12 @@ impl App {
         rows(&self.sessions, &self.task_status, self.placed())
     }
 
-    /// Dismiss a row: it leaves the rows, and stays gone after reopening,
-    /// until Claude reports on it again. Git and terminals are untouched.
+    /// Dismiss a session row: it leaves the rows, and stays gone after
+    /// reopening, until Claude reports on it again. Git and terminals are
+    /// untouched. Task rows are no longer dismissed alone, but task
+    /// dismissals saved before still load and apply.
     pub fn dismiss(&mut self, id: &RowId) -> Result<()> {
-        self.sessions
-            .dismiss(&id.pane, id.branch.as_deref(), now_ms());
+        self.sessions.dismiss(&id.pane, None, now_ms());
         let shown: Vec<(String, String)> = self
             .rows()
             .into_iter()
@@ -377,9 +429,20 @@ impl App {
         self.spaces.iter().position(|i| i.window_of(pane).is_some())
     }
 
+    /// The current tab: the current space's current window.
+    pub(super) fn focused_window(&self) -> Option<&Window> {
+        self.current_space()?.current_window()
+    }
+
     /// The focused pane of the current tab.
     pub fn current_pane(&self) -> Option<String> {
-        Some(self.current_space()?.current_window()?.active.clone())
+        Some(self.focused_window()?.active.clone())
+    }
+
+    /// Whether pane `pane` is the focused pane of the current tab, whatever
+    /// the outer window's focus.
+    pub(super) fn is_current_pane(&self, pane: &str) -> bool {
+        self.focused_window().is_some_and(|w| w.active == pane)
     }
 
     /// Send bytes to pane `pane`'s program, returning its view to the live

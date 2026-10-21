@@ -12,10 +12,10 @@
 //! [keys.dashboard]           # while the dashboard is open
 //!
 //! [colors]
-//! current_space = 236        # or "#303030": the current space's background
+//! current_space = 236        # or "#303030": the current space's, agent's and dashboard selection's background
 //! tab_bar = 235              # the tab bar's row
 //! tab = 237                  # a tab that is not current
-//! tab_current = 4            # the current tab (default: the terminal's blue)
+//! tab_current = 4            # the current tab and the popup border (default: the terminal's blue)
 //!
 //! [sidebar]
 //! width = 32                 # columns, until resized (then remembered)

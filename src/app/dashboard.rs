@@ -1,11 +1,13 @@
-//! The dashboard (`C-a o`): every session and task row with its details,
-//! and a live preview of the selected row's terminal that `I` types into.
+//! The dashboard (`C-a o`): every session with its task rows and their
+//! details, and a live preview of the selected session's terminal that `I`
+//! types into. Only sessions are selected; task rows go with theirs.
 //!
-//! It reads the task tree through [`App::rows`] and acts on rows through the
-//! same dismiss, close, fork and jump as the rest of the app.
+//! It reads the task tree through [`App::rows`] and acts on the selected
+//! session through the same dismiss, close, fork and jump as the rest of
+//! the app.
 
 use super::rows::{row_ids, Row, RowId};
-use super::state::{App, Mode};
+use super::state::{App, Mode, Panel};
 use super::watch::Watched;
 use crate::input::keymap::DashboardAction;
 use crate::input::{encode_key, encode_paste};
@@ -44,13 +46,15 @@ impl App {
     /// The dashboard, if open (also while asking before a close from it).
     pub fn dashboard(&self) -> Option<&Dashboard> {
         match &self.mode {
-            Mode::Dashboard(d) | Mode::ConfirmClose { back: Some(d), .. } => Some(d),
-            _ => None,
+            Mode::Dashboard(d) => Some(d),
+            mode => match mode.back_panel() {
+                Some(Panel::Dashboard(d)) => Some(d),
+                _ => None,
+            },
         }
     }
 
-    /// The session row of the dashboard's selected line (a task line counts
-    /// as its session's), else the first.
+    /// The dashboard's selected session, else the first.
     pub fn dashboard_row(&self, d: &Dashboard) -> Option<Row> {
         let rows = self.rows();
         let pane = d.selected.as_ref().map(|s| s.pane.as_str());
@@ -78,7 +82,14 @@ impl App {
     /// highlighted is the one keys act on.
     pub fn anchor_dashboard(&mut self) {
         let ids = row_ids(&self.rows());
-        if let Mode::Dashboard(d) | Mode::ConfirmClose { back: Some(d), .. } = &mut self.mode {
+        let d = match &mut self.mode {
+            Mode::Dashboard(d) => Some(d),
+            mode => match mode.back_panel_mut() {
+                Some(Panel::Dashboard(d)) => Some(d),
+                _ => None,
+            },
+        };
+        if let Some(d) = d {
             *d = d.anchored(&ids);
         }
     }
@@ -109,9 +120,10 @@ impl App {
 
     /// A key for the dashboard. Interactive: see [`Self::interactive_key`].
     /// Else `[keys.dashboard]`, by default: `j`/`k` (or arrows) move,
-    /// `Enter` jumps to the row's terminal, `D` dismisses the row, `x`
-    /// closes and `f` forks its terminal, `I` types into it, `Esc` closes
-    /// the dashboard. A closed terminal's row can only be dismissed.
+    /// `Enter` jumps to the selected session's terminal, `D` dismisses the
+    /// session, `x` closes and `f` forks its terminal, `I` types into it,
+    /// `Esc` closes the dashboard. A session whose terminal was closed can
+    /// only be dismissed.
     pub(super) fn dashboard_key(&mut self, d: Dashboard, key: KeyEvent) {
         // Act on the line highlighted, even if rows changed since the draw.
         let d = d.anchored(&row_ids(&self.rows()));
@@ -171,8 +183,8 @@ impl App {
         Mode::Dashboard(moved.anchored(&row_ids(&self.rows())))
     }
 
-    /// Dismiss the selected line, then select the line that took its place,
-    /// else the one above.
+    /// Dismiss the selected session, then select the session that took its
+    /// place, else the one above.
     fn dashboard_dismiss(&mut self, d: Dashboard) -> Mode {
         if let Some(id) = &d.selected {
             self.report(|app| app.dismiss(id));
@@ -180,8 +192,8 @@ impl App {
         Mode::Dashboard(d.anchored(&row_ids(&self.rows())))
     }
 
-    /// Open, close, fork and interact on the selected row's terminal, unless it
-    /// was closed.
+    /// Open, close, fork and interact on the selected session's terminal,
+    /// unless it was closed.
     fn dashboard_act(&mut self, d: Dashboard, action: DashboardAction) -> Mode {
         let Some(row) = self.dashboard_row(&d).filter(|r| !r.closed) else {
             return Mode::Dashboard(d);
@@ -192,8 +204,8 @@ impl App {
                 Mode::Normal
             }
             DashboardAction::Close => {
-                self.mode = Mode::Dashboard(d.clone());
-                self.report(|app| app.close(&row.pane, Some(d)));
+                self.mode = Mode::Dashboard(d);
+                self.report(|app| app.close(&row.pane));
                 // Asking takes the keyboard, then comes back here.
                 std::mem::replace(&mut self.mode, Mode::Normal)
             }
@@ -234,11 +246,8 @@ impl App {
 mod tests {
     use super::*;
 
-    fn id(pane: &str, branch: Option<&str>) -> RowId {
-        RowId {
-            pane: pane.into(),
-            branch: branch.map(str::to_string),
-        }
+    fn id(pane: &str) -> RowId {
+        RowId { pane: pane.into() }
     }
 
     fn at(selected: Option<RowId>, index: usize) -> Dashboard {
@@ -251,8 +260,8 @@ mod tests {
 
     #[test]
     fn a_selection_whose_line_went_away_moves_to_the_nearest_line() {
-        let ids = [id("%1", None), id("%1", Some("a")), id("%2", None)];
-        let gone = id("%9", None);
+        let ids = [id("%1"), id("%2"), id("%3")];
+        let gone = id("%9");
         let anchored = |d: Dashboard| d.anchored(&ids);
         assert_eq!(
             anchored(at(Some(ids[2].clone()), 0)),

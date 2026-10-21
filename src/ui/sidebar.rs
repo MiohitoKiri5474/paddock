@@ -17,9 +17,10 @@
 //! A space's dot shows the most urgent state of the agents in it (none
 //! without agents); its second line, dim, shows its directory and the git
 //! branch checked out there. The current space has its own background
-//! over both lines. An agent's
-//! second line is dim and names its space and tab. While the sidebar has the
-//! keyboard, the selected space or agent is drawn reversed.
+//! over both lines. An agent's second line is dim and names its space and
+//! tab; the current agent (the one in the focused terminal) has the
+//! current space's background too. While the sidebar has the keyboard,
+//! the selected space or agent is drawn reversed.
 
 use super::STATE_DOT;
 use crate::sessions::State;
@@ -54,6 +55,8 @@ pub struct AgentLine {
     pub state: State,
     /// Where it runs: `space · tab`.
     pub place: String,
+    /// Its pane is the focused terminal of the page shown now.
+    pub current: bool,
 }
 
 /// A line of the sidebar, below the top of its area. Drawing and clicks
@@ -120,8 +123,8 @@ fn dot(state: State) -> Style {
 }
 
 /// Draw the sidebar into `area`. `selected` is the pick (see [`pick`]) the
-/// keyboard is on while the sidebar has it; `current_bg` the current
-/// space's background.
+/// keyboard is on while the sidebar has it; `current_bg` the background of
+/// the current space and the current agent.
 pub fn render(
     spaces: &[SpaceLine],
     agents: &[AgentLine],
@@ -159,14 +162,17 @@ struct Sidebar<'a> {
 }
 
 impl Sidebar<'_> {
-    /// The style a line starts from: the current space's background, and
-    /// reversed if selected.
+    /// The style a line starts from: the current background on the
+    /// current space's and agent's lines, and reversed if selected.
     fn base(&self, line: Line) -> Style {
         let mut base = Style::default();
-        if let Line::Space(i) | Line::SpacePlace(i) = line {
-            if self.spaces[i].current {
-                base = base.bg(self.current_bg);
-            }
+        let current = match line {
+            Line::Space(i) | Line::SpacePlace(i) => self.spaces[i].current,
+            Line::Agent(i) | Line::AgentPlace(i) => self.agents[i].current,
+            Line::Header(_) | Line::Blank => false,
+        };
+        if current {
+            base = base.bg(self.current_bg);
         }
         if self.selected.is_some() && pick(line, self.spaces.len()) == self.selected {
             base = base.add_modifier(Modifier::REVERSED);
@@ -300,6 +306,7 @@ mod tests {
             label: label.into(),
             state,
             place: place.into(),
+            current: false,
         }
     }
 
@@ -372,6 +379,27 @@ mod tests {
         let waiting = &buf[(16, 7)];
         assert_eq!((waiting.fg, waiting.bg), (Color::Black, Color::Yellow));
         assert_eq!(buf[(1, 7)].fg, Color::Yellow);
+    }
+
+    #[test]
+    fn the_current_agent_has_the_current_background_over_both_its_lines() {
+        let spaces = [space("a", None, false)];
+        let agents = [
+            agent("x", State::Idle, "a · x"),
+            AgentLine {
+                current: true,
+                ..agent("y", State::Running, "a · y")
+            },
+        ];
+        let buf = draw(&spaces, &agents, None);
+        // 0 SPACES, 1-2 a, 3 blank, 4 AGENTS, 5-6 x, 7 blank, 8-9 y.
+        for (x, y) in [(0, 8), (22, 8), (0, 9), (22, 9)] {
+            assert_eq!(buf[(x, y)].bg, GREY, "({x}, {y}): both lines");
+        }
+        assert_eq!(buf[(23, 8)].bg, Color::Reset, "not the border");
+        assert_eq!(buf[(5, 7)].bg, Color::Reset, "not the blank above");
+        assert_eq!(buf[(5, 5)].bg, Color::Reset, "not another agent");
+        assert_eq!(buf[(5, 1)].bg, Color::Reset, "no current space");
     }
 
     #[test]

@@ -15,6 +15,15 @@ const LABEL: usize = 6;
 const HINT_WIDTH: usize = 69;
 /// Columns the box adds around the lines: borders and a space each side.
 const FRAME: usize = 4;
+/// The prompt popup's keys, which are fixed (`Backspace` and `Delete`
+/// too, left out to fit one line).
+const PROMPT_KEYS: [&str; 5] = [
+    "Enter ok",
+    "Esc cancel",
+    "← → Home End",
+    "C-u clear",
+    "C-w word",
+];
 
 /// The lines of the help, with the prefix written out (e.g. `C-a`): the
 /// commands' keys in two columns, then the sidebar's and the dashboard's.
@@ -31,6 +40,8 @@ pub fn lines(prefix: &str, keys: &Keymap) -> Vec<String> {
     out.push(String::new());
     out.extend(wrapped("Sidebar:   ", &keys.sidebar.hints()));
     out.extend(wrapped("Dashboard: ", &keys.dashboard.hints()));
+    let prompt: Vec<String> = PROMPT_KEYS.iter().map(|k| k.to_string()).collect();
+    out.extend(wrapped("Prompts:   ", &prompt));
     out
 }
 
@@ -123,6 +134,9 @@ mod tests {
         assert!(l.iter().any(|x| x.contains("send C-b to the terminal")));
         assert!(l.iter().any(|x| x.starts_with("Sidebar:   j down  k up")));
         assert!(l.iter().any(|x| x.contains("I interact  Esc back")));
+        assert!(l
+            .iter()
+            .any(|x| x.starts_with("Prompts:   Enter ok  Esc cancel")));
     }
 
     #[test]

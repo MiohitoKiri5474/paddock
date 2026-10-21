@@ -184,8 +184,8 @@ impl App {
     /// `C-a a`: jump to the next session that needs you.
     pub(super) fn next_attention(&mut self) {
         let rows = self.rows();
-        let focused = self.current_pane();
-        match next_needing(&rows, focused.as_deref()) {
+        let focused = self.focused_window().map(|w| w.active.as_str());
+        match next_needing(&rows, focused) {
             Some(row) => {
                 self.jump_to(&row.pane);
                 self.mode = Mode::Normal;
@@ -209,9 +209,10 @@ impl App {
         }
     }
 
-    /// Whether you are looking at the terminal with pane `pane`.
+    /// Whether you are looking at the terminal with pane `pane`: it is
+    /// focused and paddock's window has the focus.
     fn focused_on(&self, pane: &str) -> bool {
-        self.attention.window_focused && self.current_pane().is_some_and(|p| p == pane)
+        self.attention.window_focused && self.is_current_pane(pane)
     }
 
     fn notify(&mut self, pane: &str, alert: Alert) {

@@ -848,7 +848,7 @@ dependencies = [
 
 [[package]]
 name = "paddock"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "crossterm",
@@ -860,6 +860,8 @@ dependencies = [
  "signal-hook 0.3.18",
  "tempfile",
  "toml",
+ "unicode-segmentation",
+ "unicode-width",
  "vt100",
  "yas-alacritty-terminal",
 ]

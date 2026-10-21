@@ -103,11 +103,14 @@ impl Server {
             .output()
             .context("failed to run tmux")?;
         if !out.status.success() {
-            bail!(
-                "tmux {}: {}",
-                args.join(" "),
-                String::from_utf8_lossy(&out.stderr).trim()
-            );
+            // tmux's reason first: a notice cut to the tab bar's width
+            // still says why.
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            let reason = match stderr.trim() {
+                "" => format!("tmux exited with {}", out.status),
+                reason => reason.to_string(),
+            };
+            bail!("{reason} (tmux {})", args.join(" "));
         }
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }

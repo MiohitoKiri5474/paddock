@@ -21,22 +21,19 @@ pub struct Row {
     pub closed: bool,
 }
 
-/// A row line: pane `pane`'s session row, or its task row on `branch`.
+/// A selectable line: pane `pane`'s session row. Task rows belong to
+/// their session and are not selected.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RowId {
     pub pane: String,
-    pub branch: Option<String>,
 }
 
-/// Every row line of `rows`, in display order.
+/// The lines of `rows` the dashboard can select, in display order: the
+/// session rows. Task rows belong to their session and are not selected.
 pub fn row_ids(rows: &[Row]) -> Vec<RowId> {
     rows.iter()
-        .flat_map(|r| {
-            let id = |branch| RowId {
-                pane: r.pane.clone(),
-                branch,
-            };
-            std::iter::once(id(None)).chain(r.tasks.iter().map(move |t| id(Some(t.branch.clone()))))
+        .map(|r| RowId {
+            pane: r.pane.clone(),
         })
         .collect()
 }
@@ -391,12 +388,20 @@ mod tests {
     }
 
     #[test]
-    fn row_ids_follow_the_rows() {
+    fn row_ids_are_the_session_rows_only() {
         let task = |branch: &str| TaskRow {
             branch: branch.into(),
             cwd: "/r".into(),
             status: None,
             subagent: None,
+        };
+        let sub = TaskRow {
+            subagent: Some(SubagentTask {
+                agent_id: "a1".into(),
+                description: None,
+                state: TaskState::Running,
+            }),
+            ..task("fix/s")
         };
         let row = |pane: &str, tasks| Row {
             pane: pane.into(),
@@ -407,19 +412,11 @@ mod tests {
             tasks,
             closed: false,
         };
-        let rows = [row("%1", vec![task("a"), task("b")]), row("%2", vec![])];
-        let id = |pane: &str, branch: Option<&str>| RowId {
-            pane: pane.into(),
-            branch: branch.map(str::to_string),
-        };
-        assert_eq!(
-            row_ids(&rows),
-            [
-                id("%1", None),
-                id("%1", Some("a")),
-                id("%1", Some("b")),
-                id("%2", None)
-            ]
-        );
+        let rows = [
+            row("%1", vec![task("a"), sub, task("b")]),
+            row("%2", vec![]),
+        ];
+        let id = |pane: &str| RowId { pane: pane.into() };
+        assert_eq!(row_ids(&rows), [id("%1"), id("%2")]);
     }
 }

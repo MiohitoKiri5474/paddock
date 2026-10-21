@@ -2,9 +2,10 @@
 //! agents, the current space's tabs, and where the current tab's panes go.
 
 use super::rows::{most_urgent, Row};
-use super::state::{App, Mode};
+use super::state::{App, CloseTarget, Mode};
 use crate::sessions::State;
 use crate::tmux::structure::Window;
+use crate::ui::prompt::{self, Body, Prompt};
 use crate::ui::sidebar::{tilde, AgentLine, SpaceLine};
 use crate::ui::tab_bar::{self, Tab, TabBar};
 use ratatui::layout::Rect;
@@ -53,7 +54,8 @@ impl App {
         rows.iter().filter(|r| !r.closed).collect()
     }
 
-    /// Each agent: its label, state, and its space and tab.
+    /// Each agent: its label, state, its space and tab, and whether it is
+    /// in the focused terminal.
     pub(super) fn sidebar_agents(&self, rows: &[Row]) -> Vec<AgentLine> {
         self.agents(rows)
             .into_iter()
@@ -61,6 +63,7 @@ impl App {
                 label: r.label.clone(),
                 state: r.state,
                 place: self.place_of(r).unwrap_or_default(),
+                current: self.is_current_pane(&r.pane),
             })
             .collect()
     }
@@ -105,40 +108,58 @@ impl App {
             .collect()
     }
 
-    /// The tab bar as drawn now: the current space's tabs, or the question
-    /// before a close (it takes the whole bar, so it always fits), the
-    /// rename prompt, and a notice or the armed prefix at the right.
+    /// The tab bar as drawn now: the current space's tabs, and a notice or
+    /// the armed prefix at the right.
     pub(super) fn tab_bar_view(&self, rows: &[Row]) -> TabBar<'_> {
-        let ask = match &self.mode {
-            Mode::ConfirmClose { state, target, .. } => Some(format!(
-                "Claude is {}: {}? y/n",
-                state.label(),
-                target.verb()
-            )),
-            _ => None,
-        };
-        let armed = self
-            .prefix
-            .armed()
-            .then_some(Cow::Borrowed(self.prefix_name.as_str()));
+        let armed = self.prefix.armed().then_some(self.prefix_name.as_str());
         TabBar {
-            tabs: if ask.is_some() {
-                Vec::new()
-            } else {
-                self.tabs(rows)
-            },
+            tabs: self.tabs(rows),
             current: self.current_space().map_or(0, |s| s.structure.current),
             first: self.tab_first,
             colors: self.tab_colors,
-            rename: match &self.mode {
-                Mode::Rename { target, text } => Some((target.noun(), text.as_str())),
-                _ => None,
-            },
-            status: ask
-                .map(Cow::Owned)
-                .or_else(|| self.notice.as_deref().map(Cow::Borrowed))
-                .or(armed),
+            status: self.notice.as_deref().or(armed).map(Cow::Borrowed),
         }
+    }
+
+    /// The prompt popup, while it is open: asking for a name, or asking
+    /// before a close.
+    pub(super) fn prompt(&self) -> Option<Prompt<'_>> {
+        let (title, body) = match &self.mode {
+            Mode::Naming { target, line, .. } => (target.title(), Body::Input(line)),
+            Mode::ConfirmClose { target, state, .. } => (
+                self.close_title(target),
+                Body::Message(format!("Claude is {}: close? y/n", state.label())),
+            ),
+            _ => return None,
+        };
+        Some(Prompt {
+            title,
+            body,
+            accent: self.tab_colors.current,
+        })
+    }
+
+    /// The title of the question before closing `target`: a pane alone in
+    /// its tab closes the tab, and alone in its space's only tab, the space.
+    fn close_title(&self, target: &CloseTarget) -> &'static str {
+        let CloseTarget::Pane(pane) = target else {
+            return " Close space ";
+        };
+        let found = self.spaces.iter().find_map(|s| {
+            let w = s.windows().iter().find(|w| w.contains(pane))?;
+            Some((s.windows().len(), w.panes.len()))
+        });
+        match found {
+            Some((1, 1)) => " Close space ",
+            Some((_, 1)) | None => " Close tab ",
+            Some(_) => " Close pane ",
+        }
+    }
+
+    /// Where the prompt popup is on the screen: drawn there, and clicks
+    /// are judged against it.
+    pub(super) fn prompt_area(&self) -> Rect {
+        prompt::area(Rect::new(0, 0, self.screen.0, self.screen.1))
     }
 
     /// The tab bar's parts as drawn now, for clicks.

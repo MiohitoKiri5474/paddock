@@ -6,15 +6,45 @@ Design: [docs/design.md](docs/design.md). Glossary: [CONTEXT.md](CONTEXT.md). De
 
 ## Requirements
 
-- macOS
-- tmux (tested with 3.8)
-- Rust 1.85+
+- macOS (the release binary is for Apple Silicon only)
+- tmux (tested with 3.8): `brew install tmux`
 - Claude Code (for session tracking)
+- Rust 1.85+, only to build from source
 
 ## Install
 
+Pick one of these, then install the hooks (below).
+
+**Release tarball** (Apple Silicon). Download `paddock-v0.0.1-aarch64-apple-darwin.tar.gz` from [Releases](https://github.com/MiohitoKiri5474/paddock/releases), then:
+
+```sh
+tar xzf paddock-v0.0.1-aarch64-apple-darwin.tar.gz
+xattr -d com.apple.quarantine paddock   # unsigned binary: lets Gatekeeper run it ("No such xattr" is fine)
+sudo mkdir -p /usr/local/bin             # missing on a fresh Apple Silicon Mac
+sudo mv paddock /usr/local/bin/         # or anywhere on your PATH
+```
+
+**Homebrew** (installs tmux too; the tap is published alongside each release, starting with v0.0.1):
+
+```sh
+brew install MiohitoKiri5474/paddock/paddock
+```
+
+**Cargo**, from a tag:
+
+```sh
+cargo install --git https://github.com/MiohitoKiri5474/paddock --tag v0.0.1 --locked
+```
+
+**From source**, in a clone:
+
 ```sh
 cargo install --path . --locked     # installs ~/.cargo/bin/paddock
+```
+
+Then install the Claude Code hooks:
+
+```sh
 cp ~/.claude/settings.json ~/.claude/settings.json.bak
 paddock hooks install               # adds paddock's hooks to ~/.claude/settings.json
 ```
@@ -27,7 +57,7 @@ paddock hooks install               # adds paddock's hooks to ~/.claude/settings
 paddock          # open (a second launch offers to take over)
 ```
 
-The sidebar has two sections. SPACES lists your spaces, each with its directory and git branch on a dim second line: each space is a tmux session on paddock's hidden server, its tabs are the session's windows and its splits their panes, so `tmux -L paddock attach` shows the same thing. AGENTS lists every main Claude session in any space, with its state (waiting, done, idle, running, stopped) and the space and tab it runs in. Open a tab with `C-a c` and run `claude` in it; the dashboard (`C-a o`) shows the branches it and its subagents work on. A turn that ends while you look elsewhere is `done` until you look at its tab, then `idle`. You get a macOS notification when a session starts waiting or a main agent finishes a turn.
+The sidebar has two sections. SPACES lists your spaces, each with its directory and git branch on a dim second line: each space is a tmux session on paddock's hidden server, its tabs are the session's windows and its splits their panes, so `tmux -L paddock attach` shows the same thing. AGENTS lists every main Claude session in any space, with its state (waiting, done, idle, running, stopped) and the space and tab it runs in. The space you are in and the agent in the focused terminal have a darker background (`[colors] current_space`), and `C-a s` puts the sidebar's selection on that agent (else on that space). Open a tab with `C-a c` and run `claude` in it; the dashboard (`C-a o`) shows the branches it and its subagents work on. The dashboard lists the sessions on top as an aligned table (NAME, STATE, ↑↓, CHANGES, BASE, FILES, AGE, MERGED; on a narrow screen whole columns drop, NAME and STATE stay). A session and its branch and subagent rows form one block: only sessions are selected, the whole selected block is highlighted, and `D` dismisses the block. Below the list, a live preview of the selected session sits in a rounded border (`I` types into it), and the keys are on the last line. A turn that ends while you look elsewhere is `done` until you look at its tab, then `idle`. You get a macOS notification when a session starts waiting or a main agent finishes a turn.
 
 ### Keys
 
@@ -54,7 +84,7 @@ Every key is an action with a name you can rebind (see [Configure](#configure));
 | `=` | even out the focused split | `equalize` |
 | `x` | close pane (asks if busy) | `close` |
 | `f` | fork Claude into a new tab | `fork` |
-| `s` | focus sidebar on agents | `focus_sidebar` |
+| `s` | focus sidebar on current agent | `focus_sidebar` |
 | `w` | focus sidebar on the space | `focus_spaces` |
 | `b` | show or hide sidebar | `toggle_sidebar` |
 | `{` | sidebar narrower | `sidebar_narrower` |
@@ -64,7 +94,7 @@ Every key is an action with a name you can rebind (see [Configure](#configure));
 | `d` | detach (terminals go on) | `detach` |
 | `?` | this help | `help` |
 
-`C-a` pressed twice sends a literal `C-a`. `go_to_tab`'s first key goes to tab 1, its second to tab 2, and so on. `close` closes the pane; the last one closes its tab, the last tab its space, and it asks first if Claude is busy. `{`/`}` can also be done by dragging the sidebar's border.
+`C-a` pressed twice sends a literal `C-a`. `go_to_tab`'s first key goes to tab 1, its second to tab 2, and so on. `close` closes the pane; the last one closes its tab, the last tab its space, and it asks first if Claude is busy. Renaming, naming a new space (prefilled with `space-N`; `Enter` keeps it) and that question open a small box in the middle of the screen; `Esc` or a click outside it cancels. `{`/`}` can also be done by dragging the sidebar's border.
 
 In the sidebar (`[keys.sidebar]`; prefix commands work too):
 
@@ -81,16 +111,16 @@ In the dashboard (`[keys.dashboard]`):
 
 | Key | Action | Name |
 |---|---|---|
-| `j` `Down` | next row | `down` |
-| `k` `Up` | previous row | `up` |
-| `Enter` | jump to the row's terminal | `open` |
-| `D` | dismiss the row | `dismiss` |
-| `x` | close the row's terminal | `close` |
-| `f` | fork the row's Claude session | `fork` |
+| `j` `Down` | next session | `down` |
+| `k` `Up` | previous session | `up` |
+| `Enter` | jump to the session's terminal | `open` |
+| `D` | dismiss the session | `dismiss` |
+| `x` | close the session's terminal | `close` |
+| `f` | fork the Claude session | `fork` |
 | `I` | type into the previewed terminal (Esc leaves) | `interact` |
 | `Esc` | close the dashboard | `back` |
 
-While typing into the preview, every key goes to the terminal except `Esc`, which only leaves and is never passed on; this is fixed, so a remap can never trap you there. Task rows show line changes, ahead/behind, the diff and changed files against the base branch (`origin/HEAD`, else `main`/`master`), the last commit's age, and `merged` once the branch is in its base. Renaming (`Enter`, `Esc`, `Backspace`, `C-u`) and the `y` that confirms a close are fixed too.
+While typing into the preview, every key goes to the terminal except `Esc`, which only leaves and is never passed on; this is fixed, so a remap can never trap you there. Task rows show line changes, ahead/behind, the diff and changed files against the base branch (`origin/HEAD`, else `main`/`master`), the last commit's age, and `merged` once the branch is in its base. Prompt editing (`Enter`, `Esc`, `Left`/`Right`, `Home`/`End`, `Backspace`/`Delete`, `C-u` (clear), `C-w` (delete word)) and the `y` that confirms a close are fixed too.
 
 Mouse: click to focus a split, switch tabs (`+` after the tabs opens one, `<`/`>` scroll a full bar), or open a space or agent; the wheel over the tab bar switches tabs; wheel scrolls history; drag selects and copies (hold Shift over programs that use the mouse).
 
@@ -115,10 +145,10 @@ back = ["Esc", "q"]
 interact = "i"
 
 [colors]
-current_space = 236       # the current space's background: 256-colour index or "#rrggbb" (also read as current_item)
+current_space = 236       # the current space's and agent's background, and the dashboard selection's: 256-colour index or "#rrggbb" (also read as current_item)
 tab_bar = 235             # the tab bar's row
 tab = 237                 # a tab that is not current
-tab_current = 4           # the current tab (default: the terminal's blue)
+tab_current = 4           # the current tab and the popup border (default: the terminal's blue)
 
 [sidebar]
 width = 32                # columns until you resize it
@@ -150,7 +180,7 @@ paddock refuses to start, naming the file and the setting, on an unknown action 
 paddock hooks uninstall
 tmux -L paddock kill-server         # ends every paddock terminal
 rm -rf ~/.local/state/paddock ~/.config/paddock
-cargo uninstall paddock
+cargo uninstall paddock             # or brew uninstall paddock, or delete the binary you moved
 ```
 
 ## Develop
@@ -160,4 +190,12 @@ cargo clippy --all-targets -- -D warnings
 cargo test                          # unit + end-to-end tests (real tmux on a temp socket)
 ```
 
-CI runs the unit tests on macOS and uploads a release binary when they pass.
+CI runs the unit tests on macOS and uploads a release binary when they pass. Pushing a `v*` tag that matches the version in `Cargo.toml` builds the Apple Silicon tarball and opens a draft pre-release.
+
+## License
+
+MIT, see [LICENSE](LICENSE).
+
+## Credits
+
+paddock's look and much of its behaviour (spaces in a sidebar with an agents section, the filled-block tab bar) are inspired by [herdr](https://github.com/herdrdev/herdr). paddock is a separate implementation and contains none of herdr's code.

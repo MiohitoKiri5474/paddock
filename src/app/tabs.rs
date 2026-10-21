@@ -2,9 +2,8 @@
 //! session, a tab one of its windows. paddock asks tmux to change them and
 //! reads them back when tmux reports a change.
 
-use super::dashboard::Dashboard;
 use super::space::clamp;
-use super::state::{is_session_id, next_name, App, CloseTarget, Mode, Renaming};
+use super::state::{is_session_id, next_name, App, CloseTarget, Mode, NameTarget, Renamed};
 use crate::sessions::State;
 use crate::terminal::Terminal;
 use crate::tmux::server::quote;
@@ -15,16 +14,27 @@ use std::path::PathBuf;
 const SPACE_STEM: &str = "space-";
 
 impl App {
-    /// Start a shell in a new space at the end of the sidebar and make it
-    /// current.
-    pub fn new_space(&mut self) -> Result<()> {
+    /// The name a new space gets unless the user picks one: the first free
+    /// `space-N`.
+    pub fn new_space_name(&self) -> String {
         let sessions = self.server.sessions();
-        let name = next_name(SPACE_STEM, sessions.iter().map(|s| s.name.as_str()));
+        next_name(SPACE_STEM, sessions.iter().map(|s| s.name.as_str()))
+    }
+
+    /// Start a shell in a new space named [`Self::new_space_name`].
+    pub fn new_space(&mut self) -> Result<()> {
+        let name = self.new_space_name();
+        self.new_space_named(&name)
+    }
+
+    /// Start a shell in a new space named `name` at the end of the sidebar
+    /// and make it current.
+    pub fn new_space_named(&mut self, name: &str) -> Result<()> {
         let dir = self.new_dir();
         let area = self.area();
         let session = self
             .server
-            .new_session(&name, &dir, clamp((area.width, area.height)))?;
+            .new_session(name, &dir, clamp((area.width, area.height)))?;
         if let Err(e) = self.attach(&session.id) {
             // Best effort: never leave a shell running out of sight.
             let _ = self.server.kill_session(&session.id);
@@ -168,20 +178,29 @@ impl App {
         self.report(|app| app.server.select(&id, Some(pane)));
     }
 
+    /// Act on a name typed into the prompt for `target`: rename the current
+    /// tab or space, or start a new space (a blank name keeps the default,
+    /// or the old name).
+    pub fn submit_name(&mut self, target: NameTarget, name: &str) -> Result<()> {
+        let name = name.trim();
+        match target {
+            NameTarget::NewSpace if name.is_empty() => self.new_space(),
+            NameTarget::NewSpace => self.new_space_named(name),
+            NameTarget::Rename(_) if name.is_empty() => Ok(()),
+            NameTarget::Rename(what) => self.rename(what, name),
+        }
+    }
+
     /// Rename the current tab or space in tmux, so the name survives
     /// reattaching. tmux may adjust a session name (it replaces `.` and `:`).
-    pub fn rename(&mut self, target: Renaming, name: &str) -> Result<()> {
-        let name = name.trim();
+    fn rename(&mut self, what: Renamed, name: &str) -> Result<()> {
         let Some(space) = self.current_space() else {
             return Ok(());
         };
-        if name.is_empty() {
-            return Ok(());
-        }
         let id = space.id.clone();
-        match target {
-            Renaming::Space => self.server.rename_session(&id, name)?,
-            Renaming::Tab => match space.current_window() {
+        match what {
+            Renamed::Space => self.server.rename_session(&id, name)?,
+            Renamed::Tab => match space.current_window() {
                 Some(w) => self.server.rename_window(&w.id, name)?,
                 None => return Ok(()),
             },
@@ -189,30 +208,27 @@ impl App {
         self.refresh(&id)
     }
 
-    /// The current name of what `target` renames.
-    pub fn name_of(&self, target: Renaming) -> String {
+    /// What the prompt for `target` starts with: the current name, or the
+    /// default for a new space.
+    pub fn name_of(&self, target: NameTarget) -> String {
         let space = self.current_space();
         match target {
-            Renaming::Space => space.map(|i| i.name().to_string()),
-            Renaming::Tab => space
+            NameTarget::Rename(Renamed::Space) => space.map(|i| i.name().to_string()),
+            NameTarget::Rename(Renamed::Tab) => space
                 .and_then(|i| i.current_window())
                 .map(|w| w.name.clone()),
+            NameTarget::NewSpace => Some(self.new_space_name()),
         }
         .unwrap_or_default()
     }
 
     /// End pane `pane`, first asking if Claude there is running or waiting.
     /// tmux closes its tab with its last pane, and its space with its last
-    /// tab, and reports each. Asking from the dashboard `back` returns to it
-    /// after.
-    pub fn close(&mut self, pane: &str, back: Option<Dashboard>) -> Result<()> {
+    /// tab, and reports each.
+    pub fn close(&mut self, pane: &str) -> Result<()> {
         match self.session_in(pane).map(|s| s.state) {
             Some(state @ (State::Running | State::Waiting)) => {
-                self.mode = Mode::ConfirmClose {
-                    target: CloseTarget::Pane(pane.to_string()),
-                    state,
-                    back,
-                };
+                self.ask_close(CloseTarget::Pane(pane.to_string()), state);
                 Ok(())
             }
             _ => self.server.kill_pane(pane),
@@ -230,15 +246,22 @@ impl App {
             .find(|s| matches!(s, State::Running | State::Waiting));
         match busy {
             Some(state) => {
-                self.mode = Mode::ConfirmClose {
-                    target: CloseTarget::Space(id.to_string()),
-                    state,
-                    back: None,
-                };
+                self.ask_close(CloseTarget::Space(id.to_string()), state);
                 Ok(())
             }
             None => self.server.kill_session(id),
         }
+    }
+
+    /// Ask before closing `target`, where Claude is `state`. A panel with
+    /// the keyboard (the sidebar or the dashboard) gets it back after.
+    fn ask_close(&mut self, target: CloseTarget, state: State) {
+        let back = std::mem::replace(&mut self.mode, Mode::Normal).into_panel();
+        self.mode = Mode::ConfirmClose {
+            target,
+            state,
+            back,
+        };
     }
 
     /// Close what a close question was about, once the user said yes.

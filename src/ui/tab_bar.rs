@@ -12,7 +12,7 @@ use super::sidebar::highlight;
 use super::STATE_DOT;
 use crate::sessions::State;
 use ratatui::buffer::Buffer;
-use ratatui::layout::{Position, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
 use std::borrow::Cow;
@@ -194,30 +194,20 @@ pub struct TabBar<'a> {
     /// The first tab shown when they do not all fit.
     pub first: usize,
     pub colors: TabColors,
-    /// While renaming: what is renamed (`tab`, `space`) and the text so far.
-    pub rename: Option<(&'a str, &'a str)>,
     /// Shown at the right: a message, or the prefix while it is armed.
     pub status: Option<Cow<'a, str>>,
 }
 
 impl TabBar<'_> {
-    /// Draw into the first row of `area`. Returns the cursor position while renaming.
-    pub fn render(&self, area: Rect, buf: &mut Buffer) -> Option<Position> {
+    /// Draw into the first row of `area`.
+    pub fn render(&self, area: Rect, buf: &mut Buffer) {
         if area.height == 0 {
-            return None;
+            return;
         }
         let row = Rect { height: 1, ..area };
         let bar = Style::default().bg(self.colors.bar);
         buf.set_style(row, bar);
-        let mut cursor = None;
-        match self.rename {
-            Some((what, text)) => {
-                let prompt = format!(" rename {what}: {text}");
-                let (x, _) = buf.set_stringn(row.x, row.y, &prompt, usize::from(row.width), bar);
-                cursor = Some(Position::new(x.min(row.right().saturating_sub(1)), row.y));
-            }
-            None => self.render_tabs(row, buf),
-        }
+        self.render_tabs(row, buf);
         if let Some(status) = &self.status {
             let text = format!(" {status} ");
             let width = u16::try_from(Span::raw(text.as_str()).width()).unwrap_or(u16::MAX);
@@ -227,7 +217,6 @@ impl TabBar<'_> {
             let style = Style::default().add_modifier(Modifier::REVERSED);
             buf.set_stringn(x, row.y, &text, usize::from(row.right() - x), style);
         }
-        cursor
     }
 
     fn render_tabs(&self, row: Rect, buf: &mut Buffer) {
@@ -311,11 +300,11 @@ mod tests {
         names.iter().map(|n| tab(n)).collect()
     }
 
-    fn draw(bar: &TabBar, width: u16) -> (Buffer, Option<Position>) {
+    fn draw(bar: &TabBar, width: u16) -> Buffer {
         let area = Rect::new(0, 0, width, 1);
         let mut buf = Buffer::empty(area);
-        let cursor = bar.render(area, &mut buf);
-        (buf, cursor)
+        bar.render(area, &mut buf);
+        buf
     }
 
     fn text(buf: &Buffer) -> String {
@@ -332,7 +321,6 @@ mod tests {
             current,
             first: 0,
             colors: TabColors::default(),
-            rename: None,
             status: None,
         }
     }
@@ -362,7 +350,7 @@ mod tests {
     fn names_are_centred_on_filled_blocks_the_current_one_accented() {
         let mut b = bar(&["a", "claude"], 1);
         b.tabs[0].custom = true;
-        let (buf, cursor) = draw(&b, 30);
+        let buf = draw(&b, 30);
         assert_eq!(text(&buf), "   a       claude    +");
         let c = TabColors::default();
         assert_eq!(buf[(0, 0)].bg, c.tab, "tab filled from its edge");
@@ -378,7 +366,6 @@ mod tests {
         );
         assert!(!buf[(11, 0)].modifier.contains(Modifier::BOLD));
         assert_eq!(buf[(29, 0)].bg, c.bar, "the rest of the row");
-        assert_eq!(cursor, None);
     }
 
     #[test]
@@ -391,7 +378,7 @@ mod tests {
         {
             t.state = s;
         }
-        let (buf, _) = draw(&b, 40);
+        let buf = draw(&b, 40);
         assert_eq!(text(&buf), "  ● w      ● i       r      +");
         assert_eq!(buf[(2, 0)].fg, Color::Yellow);
         assert_eq!(buf[(2, 0)].bg, TabColors::default().tab);
@@ -447,29 +434,18 @@ mod tests {
     }
 
     #[test]
-    fn rename_prompt_replaces_the_tabs_and_places_the_cursor() {
-        let b = TabBar {
-            rename: Some(("space", "new")),
-            ..bar(&["shell"], 0)
-        };
-        let (buf, cursor) = draw(&b, 30);
-        assert_eq!(text(&buf), " rename space: new");
-        assert_eq!(cursor, Some(Position::new(18, 0)));
-    }
-
-    #[test]
     fn status_sits_at_the_right_and_long_messages_cover_the_tabs() {
         let b = TabBar {
             status: Some("C-a".into()),
             ..bar(&["a", "b"], 0)
         };
-        let (buf, _) = draw(&b, 30);
+        let buf = draw(&b, 30);
         assert_eq!(text(&buf), "   a        b      +      C-a");
         let b = TabBar {
             status: Some("cannot read /a/long/path".into()),
             ..bar(&["a", "b"], 0)
         };
-        let (buf, _) = draw(&b, 20);
+        let buf = draw(&b, 20);
         assert_eq!(text(&buf), " cannot read /a/long");
     }
 }

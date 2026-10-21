@@ -1,9 +1,11 @@
 [package]
 name = "paddock"
-version = "0.1.0"
+version = "0.0.1"
 edition = "2021"
 rust-version = "1.85"
 description = "A terminal workspace for running Claude Code"
+license = "MIT"
+repository = "https://github.com/MiohitoKiri5474/paddock"
 publish = false
 
 [[bin]]
@@ -18,6 +20,8 @@ ratatui = "0.30"
 serde = { version = "1", features = ["derive"] }
 signal-hook = "0.3"
 toml = "1"
+unicode-segmentation = "1.13"
+unicode-width = "0.2"
 # alacritty_terminal 0.26 plus the VS16 emoji width fix (ADR 0005). The library
 # name is still `alacritty_terminal`; pinned exactly until the fix is upstream.
 alacritty_terminal = { package = "yas-alacritty-terminal", version = "=0.26.0-yas.1" }

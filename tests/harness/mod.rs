@@ -27,8 +27,22 @@ pub const SIDEBAR: u16 = 32;
 /// defaults).
 const TAB: vt100::Color = vt100::Color::Idx(237);
 const CURRENT_TAB: vt100::Color = vt100::Color::Idx(4);
+/// Background of the current space and the current agent in the sidebar
+/// (paddock's default).
+pub const CURRENT_ITEM: vt100::Color = vt100::Color::Idx(236);
 /// The sidebar's title, in its first row.
 const SIDEBAR_TITLE: &str = " SPACES";
+/// Every prompt popup title, without its padding. Copied from the source,
+/// `close_title` in `src/app/view.rs` and `NameTarget::title` in
+/// `src/app/state.rs`: change them together.
+const POPUP_TITLES: &[&str] = &[
+    "Rename tab",
+    "Rename space",
+    "New space",
+    "Close tab",
+    "Close pane",
+    "Close space",
+];
 const SOCKET: &str = "paddock-test";
 const CURSOR_QUERY: &[u8] = b"\x1b[6n";
 
@@ -560,6 +574,25 @@ impl Paddock {
             self.current_tab(),
             self.screen()
         );
+    }
+
+    /// Wait until the prompt popup shows `title` in its border and `text`
+    /// at the start of its line.
+    pub fn wait_for_popup(&self, title: &str, text: &str) {
+        let (title, line) = (format!(" {title} "), format!("│ {text}"));
+        self.wait_for(&format!("popup {title:?} with {text:?}"), |_| {
+            let s = self.full_screen();
+            s.contains(&title) && s.contains(&line)
+        });
+    }
+
+    /// Wait until the prompt popup is gone: no popup title is drawn (the
+    /// dashboard preview has a rounded box too, so corners don't tell).
+    pub fn wait_for_no_popup(&self) {
+        self.wait_for("the popup gone", |_| {
+            let s = self.full_screen();
+            !POPUP_TITLES.iter().any(|t| s.contains(&format!(" {t} ")))
+        });
     }
 
     /// `C-a d`

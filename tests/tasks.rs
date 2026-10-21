@@ -18,8 +18,13 @@ const SPIKE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/spikes/02-subagent-worktree/fixtures"
 );
-/// The dashboard's title line, as drawn while it is open.
-const OPEN: &str = "dashboard  j down  k up";
+/// The start of the dashboard's key line, as drawn while it is open.
+const OPEN: &str = "j down  k up";
+/// The dashboard's title, on its first line, right under the tab bar.
+const TITLE: &str = "dashboard";
+/// The selected session block's background: the default
+/// `[colors] current_space`.
+const SELECTED: vt100::Color = vt100::Color::Idx(236);
 
 /// A recorded main-agent payload for `cwd`; `tool` renames its tool.
 fn payload(name: &str, cwd: &Path, tool: Option<&str>) -> String {
@@ -74,24 +79,29 @@ fn ready(sandbox: &Sandbox) -> Paddock {
     paddock
 }
 
-/// The dashboard's list lines, spaces collapsed; empty while it is closed.
+/// The dashboard's list lines below its column header, spaces collapsed;
+/// empty while it is closed.
 fn list(paddock: &Paddock) -> Vec<String> {
     let rows = paddock.rows();
-    if !rows.get(1).is_some_and(|r| r.contains(OPEN)) {
+    if rows.get(1).is_none_or(|r| r.trim() != TITLE) {
         return Vec::new();
     }
     rows.iter()
-        .skip(2)
-        .take_while(|r| !r.is_empty() && !r.starts_with('─'))
-        .filter(|r| !r.contains("no Claude sessions yet"))
+        // The tab bar, the title, the column header and a blank line.
+        .skip(4)
+        // Up to the preview's border.
+        .take_while(|r| !r.starts_with('╭'))
+        // Blank lines part the sessions, and fill the list's minimum height.
+        .filter(|r| !r.is_empty() && !r.contains("no Claude sessions yet"))
         .map(|r| r.split_whitespace().collect::<Vec<_>>().join(" "))
         .collect()
 }
 
-/// Whether list line `line` matches `want`: `prefix` or `prefix|suffix`.
+/// Whether list line `line` matches `want`: `prefix`, or `prefix|state`
+/// with `state` in its own column.
 fn matches(line: &str, want: &str) -> bool {
-    let (prefix, suffix) = want.split_once('|').unwrap_or((want, ""));
-    line.starts_with(prefix) && line.ends_with(suffix)
+    let (prefix, state) = want.split_once('|').unwrap_or((want, ""));
+    line.starts_with(prefix) && (state.is_empty() || line.split(' ').any(|w| w == state))
 }
 
 /// Wait until the dashboard lists lines matching `want` (see [`matches`]),
@@ -313,7 +323,7 @@ fn write_meta(sandbox: &Sandbox) {
 }
 
 /// A subagent's task row: its description (else its branch), then its
-/// fields and state.
+/// state.
 fn sub(label: &str, state: &str) -> String {
     format!("{label}|{state}")
 }
@@ -333,7 +343,8 @@ fn parallel_subagents_show_as_task_rows_from_running_to_done() {
     hook("UserPromptSubmit", "UserPromptSubmit", AGENT_A);
     hook("SubagentStart-subagent", "SubagentStart", AGENT_A);
     hook("SubagentStart-subagent", "SubagentStart", AGENT_B);
-    let first_b = format!("worktree-agent-{AGENT_B}");
+    // Its branch is longer than the name column: only its start shows.
+    let first_b = format!("worktree-agent-{}", &AGENT_B[..8]);
     wait_for_list(
         &mut paddock,
         &[
@@ -440,22 +451,30 @@ fn has_branch(dir: &Path, branch: &str) -> bool {
 }
 
 #[test]
-fn d_dismisses_a_task_row_and_it_stays_gone_after_reopening() {
+fn j_skips_branch_rows_and_d_dismisses_them_with_the_session() {
     let sandbox = Sandbox::new();
     let dir = repo(&sandbox);
     let mut paddock = ready(&sandbox);
     work_on(&sandbox, "space-1", &dir, &["feat/one", "feat/two"]);
     wait_for_list(&mut paddock, &[&session("idle"), "feat/one", "feat/two"]);
+    // The selection covers the session's whole block, as a background.
+    let (col, row) = paddock.find("feat/two").expect("feat/two drawn");
+    let x = paddock.left() + col;
+    assert_eq!(paddock.colors(row, x).1, SELECTED);
 
+    // Task rows cannot be selected: `j` stays on the session.
     paddock.send(b"jD");
-    wait_for_list(&mut paddock, &[&session("idle"), "feat/two"]);
+    wait_for_list(&mut paddock, &[]);
     assert!(has_branch(&dir, "feat/one"), "git is untouched");
 
     let mut again = reopen(&sandbox, paddock);
-    wait_for_list(&mut again, &[&session("idle"), "feat/two"]);
-
-    again.send(b"jD");
-    wait_for_list(&mut again, &[&session("idle")]);
+    // Claude is prompted again on feat/two: only that branch comes back.
+    sandbox.hook(
+        "space-1",
+        "UserPromptSubmit",
+        &payload("UserPromptSubmit", &dir, None),
+    );
+    wait_for_list(&mut again, &[&session("running"), "feat/two"]);
 }
 
 #[test]
@@ -517,7 +536,7 @@ fn a_new_conversation_in_the_same_terminal_keeps_its_task_rows() {
 }
 
 #[test]
-fn a_dismissed_subagent_task_row_stays_gone_after_reopening() {
+fn j_skips_subagent_rows_and_d_on_the_session_takes_them_along() {
     let sandbox = Sandbox::new();
     let dir = repo(&sandbox);
     write_meta(&sandbox);
@@ -533,10 +552,13 @@ fn a_dismissed_subagent_task_row_stays_gone_after_reopening() {
     hook("SubagentStop-subagent", "SubagentStop");
     wait_for_list(&mut paddock, &[&session("running"), &sub(FIX_A, "done")]);
 
+    // The subagent's row cannot be selected: `j` stays on the session,
+    // and `D` dismisses the session with its subagent.
     paddock.send(b"jD");
-    wait_for_list(&mut paddock, &[&session("running")]);
+    wait_for_list(&mut paddock, &[]);
 
     let mut again = reopen(&sandbox, paddock);
     hook("Stop", "Stop");
+    // Back, but its subagent dismissed with it stays gone.
     wait_for_list(&mut again, &[&session("idle")]);
 }
