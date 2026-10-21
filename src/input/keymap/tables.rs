@@ -131,7 +131,7 @@ pub const COMMANDS: &[Binding<Command>] = &[
         "focus_sidebar",
         Command::FocusSidebar,
         &["s"],
-        "focus sidebar on agents",
+        "focus sidebar where you are",
     ),
     bind(
         "focus_spaces",

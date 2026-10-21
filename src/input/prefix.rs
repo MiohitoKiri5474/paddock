@@ -30,6 +30,8 @@ pub enum Command {
     Equalise,
     Help,
     Detach,
+    /// Focus the sidebar on the agent in the focused terminal, if it is
+    /// one, else on the current space.
     FocusSidebar,
     /// Focus the sidebar on the current space.
     FocusSpaces,

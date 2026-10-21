@@ -337,9 +337,10 @@ fn enter_on_an_agent_jumps_to_its_space_tab_and_pane() {
     let sandbox = Sandbox::new();
     let mut paddock = agent_in_another_space(&sandbox);
 
-    // C-a s starts on the first agent.
+    // C-a s starts on the current space (no agent is focused); one down
+    // is the agent.
     paddock.command(b"s");
-    paddock.send(b"\r");
+    paddock.send(b"j\r");
 
     paddock.wait_for_tabs(&["1:home", "2:● claude"]);
     paddock.wait_for_current_tab("2:● claude");
@@ -347,6 +348,82 @@ fn enter_on_an_agent_jumps_to_its_space_tab_and_pane() {
     paddock.wait_for("idle", |_| paddock.full_screen().contains("idle"));
     paddock.type_line("echo typed-after-the-jump");
     wait_in_pane(&sandbox, "space-1:1", "typed-after-the-jump");
+}
+
+#[test]
+fn c_a_s_starts_on_the_current_space_when_no_agent_is_focused() {
+    let sandbox = Sandbox::new();
+    let mut paddock = agent_in_another_space(&sandbox);
+
+    paddock.command(b"s");
+
+    // Rows: 1-2 space-1, 3-4 space-2 (current), 7-8 the agent.
+    paddock.wait_for("space-2 selected", |_| paddock.reversed(3, 5));
+    assert!(!paddock.reversed(1, 5), "not the top item");
+    assert!(!paddock.reversed(7, 5), "not the agent");
+}
+
+/// One space with two agents: one waiting in tab 1, and one idle in tab 2,
+/// the current tab, so the agent focused is not the first in AGENTS.
+fn focused_agent_second(sandbox: &Sandbox) -> Paddock {
+    let mut paddock = ready(sandbox);
+    new_tab(&mut paddock, "2:home");
+    sandbox.hook(
+        "space-1:0",
+        "PermissionRequest",
+        &payload_for("PermissionRequest", "s1", "/w/first"),
+    );
+    sandbox.hook("space-1:1", "Stop", &payload_for("Stop", "s2", "/w/here"));
+    wait_for_lines(
+        &paddock,
+        &[
+            space("space-1", true),
+            at_home(),
+            " AGENTS".into(),
+            agent("first", "waiting"),
+            place("space-1", "claude"),
+            agent("here", "idle"),
+            place("space-1", "claude"),
+        ],
+    );
+    paddock
+}
+
+#[test]
+fn the_focused_agent_has_the_current_background() {
+    let sandbox = Sandbox::new();
+    let paddock = focused_agent_second(&sandbox);
+
+    // Rows: 1-2 space-1, 4 AGENTS, 5-6 first, 7 blank, 8-9 here.
+    let grey = vt100::Color::Idx(236);
+    paddock.wait_for("here highlighted", |_| paddock.colors(8, 5).1 == grey);
+    assert_eq!(paddock.colors(9, 20).1, grey, "across both its lines");
+    assert_eq!(
+        paddock.colors(7, 5).1,
+        vt100::Color::Default,
+        "not the blank"
+    );
+    assert_eq!(paddock.colors(5, 5).1, vt100::Color::Default, "not first");
+}
+
+#[test]
+fn c_a_s_starts_on_the_focused_agent_even_with_the_sidebar_hidden() {
+    let sandbox = Sandbox::new();
+    let mut paddock = focused_agent_second(&sandbox);
+
+    paddock.command(b"s");
+    paddock.wait_for("here selected", |_| paddock.reversed(8, 5));
+    assert!(!paddock.reversed(5, 5), "not the first agent");
+    assert!(!paddock.reversed(1, 5), "not the top item");
+
+    // Prefix commands work in the sidebar: hiding it gives the keyboard back.
+    paddock.command(b"b");
+    paddock.wait_for("sidebar hidden", |_| paddock.sidebar().is_empty());
+    paddock.command(b"s");
+    paddock.wait_for("shown, here selected", |_| {
+        !paddock.sidebar().is_empty() && paddock.reversed(8, 5)
+    });
+    assert!(!paddock.reversed(5, 5) && !paddock.reversed(1, 5));
 }
 
 #[test]
@@ -368,7 +445,7 @@ fn x_on_an_agent_row_closes_its_pane() {
     let mut paddock = agent_in_another_space(&sandbox);
 
     paddock.command(b"s");
-    paddock.send(b"x");
+    paddock.send(b"jx");
 
     paddock.wait_for("its tab closed", |_| {
         sandbox

@@ -103,13 +103,16 @@ impl App {
         spaces.chain(agents).collect()
     }
 
-    /// Give the sidebar the keyboard: on the current space if `on_space`,
-    /// else on the first agent (the one that needs you most), if any.
+    /// Give the sidebar the keyboard, showing it if hidden: on the current
+    /// space if `on_space`, else on the agent in the focused terminal if it
+    /// is one, else on the current space.
     pub(super) fn focus_sidebar(&mut self, on_space: bool) {
         self.sidebar_hidden = false;
         let picks = self.sidebar_picks();
-        let first_agent = picks.iter().position(|p| matches!(p, Pick::Agent(_)));
-        let index = match first_agent {
+        let focused_agent = self
+            .current_pane()
+            .and_then(|pane| picks.iter().position(|p| *p == Pick::Agent(pane.clone())));
+        let index = match focused_agent {
             Some(i) if !on_space => i,
             _ => self.current,
         };
