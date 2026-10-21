@@ -265,6 +265,11 @@ fn the_plugin_and_settings_hooks_together_record_every_event_once() {
     let from_settings = hook_commands(&read_json(&sandbox.settings()));
     let from_plugin = hook_commands(&plugin_hooks());
     assert_eq!(events_of(&from_settings), events_of(&from_plugin));
+    // The plugin's copies defer to the settings' ones.
+    for (_, p) in &from_plugin {
+        sandbox.fire(p);
+    }
+    assert!(sandbox.events().is_empty(), "{:?}", sandbox.events());
     // Claude runs both copies of an event, in either order.
     for (i, ((_, s), (_, p))) in from_settings.iter().zip(&from_plugin).enumerate() {
         let (first, second) = if i % 2 == 0 { (s, p) } else { (p, s) };
