@@ -165,6 +165,18 @@ fn new_makes_a_worktree_and_a_space_that_a_running_paddock_shows() {
 }
 
 #[test]
+fn a_space_named_after_a_branch_keeps_a_hash() {
+    let sandbox = Sandbox::new();
+    let dir = repo(&sandbox);
+
+    // tmux expands formats in names: `#S` would become the name itself.
+    let out = cli(&sandbox, &dir, &["new", "v#S", "--json"]);
+    exits(&out, 0, "");
+    assert_eq!(json(&out)["space"], "repo/v#S");
+    assert_eq!(sandbox.session_names(), ["repo/v#S"]);
+}
+
+#[test]
 fn new_starts_the_server_when_paddock_is_closed_and_no_space_makes_none() {
     let sandbox = Sandbox::new();
     let dir = repo(&sandbox);
