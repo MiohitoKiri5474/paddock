@@ -45,8 +45,10 @@ Otherwise, work where you are.
 4. Delete it only when the user asks, or when its row in `paddock worktree list --json` has `"merged": true`. Run `rm` from the main checkout (the row with `"main": true`), never from inside the worktree:
 
    ```sh
-   cd <main checkout path> && paddock worktree rm <branch> --json
+   cd <main checkout path> && paddock worktree rm <row's path> --json
    ```
+
+   Pass the row's absolute `path` from `list --json`, not the branch name: a branch named like a directory in the repository is refused as ambiguous (exit 1).
 
    This closes its spaces, removes the worktree and deletes the branch with `git branch -d`. An unmerged branch is kept, with a notice on stderr. `rm` is not pre-approved: the user confirms each one.
 

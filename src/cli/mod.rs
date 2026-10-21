@@ -179,7 +179,8 @@ pub fn parse(args: &[String]) -> Result<Parsed, String> {
 /// [`crate::worktree::risks_within`]) and what it was told to discard.
 /// A check that ran out of time refuses first (exit 4): nothing is known.
 /// Otherwise every risk not discarded is named (exit 3). On success,
-/// returns what the delete may lose, for the re-check right before it.
+/// returns what the delete may lose, for the re-check right before it:
+/// only the risks found and discarded, never a blanket consent.
 pub fn allowed(
     label: &str,
     risks: Option<&Risks>,
@@ -218,12 +219,13 @@ pub fn allowed(
             format!("{label} {}: nothing deleted", named.join(" and ")),
         ));
     }
-    let base = risks.and_then(|r| r.unmerged.clone());
+    // Consent covers only what the check found: changes or commits
+    // made after it are checked again before removing, and refused.
     Ok(Risks {
-        dirty: discard.changes,
-        unmerged: discard
-            .commits
-            .then(|| base.unwrap_or_else(|| crate::worktree::BASE.into())),
+        dirty: discard.changes && risks.is_some_and(|r| r.dirty),
+        unmerged: risks
+            .and_then(|r| r.unmerged.clone())
+            .filter(|_| discard.commits),
         late: false,
     })
 }
@@ -384,20 +386,18 @@ mod tests {
     }
 
     #[test]
-    fn discarded_or_absent_risks_go_on_and_confirm_only_what_was_given() {
+    fn discarded_or_absent_risks_go_on_and_confirm_only_what_was_found() {
         assert_eq!(allowed("x", None, false, NONE), Ok(risks(false, None)));
         let ok = allowed("x", Some(&risks(true, Some("main"))), false, ALL).unwrap();
         assert_eq!(ok, risks(true, Some("main")));
-        // `--discard-changes` with a clean tree still allows `--force`:
-        // changes made before the removal were agreed to.
-        let changes_only = Discard {
-            changes: true,
-            commits: false,
-        };
-        assert_eq!(
-            allowed("x", None, false, changes_only),
-            Ok(risks(true, None))
-        );
+        // Flags on a clean, merged tree consent to nothing: changes or
+        // commits made after the check are refused by the re-check (and
+        // never `--force`d).
+        assert_eq!(allowed("x", None, false, ALL), Ok(risks(false, None)));
+        let only_dirty = allowed("x", Some(&risks(true, None)), false, ALL).unwrap();
+        assert_eq!(only_dirty, risks(true, None));
+        let only_ahead = allowed("x", Some(&risks(false, Some("main"))), false, ALL).unwrap();
+        assert_eq!(only_ahead, risks(false, Some("main")));
     }
 
     #[test]

@@ -262,6 +262,16 @@ pub fn spaces_in(server: &Server, ids: &[String], top: &str) -> Result<Vec<Strin
     Ok(found)
 }
 
+/// Why removing the worktree shown as `shown` failed: git's `reason`
+/// first, then what is left, and that its spaces are gone if `closed`.
+fn left_after(reason: &str, closed: bool, shown: &str) -> String {
+    if closed {
+        format!("{reason}; space closed, {shown} left")
+    } else {
+        format!("{reason}; {shown} left")
+    }
+}
+
 /// What [`remove`] did once the worktree was gone.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Removal {
@@ -296,16 +306,16 @@ pub fn remove(
         )));
     }
     let alive: Vec<String> = server.sessions().into_iter().map(|s| s.id).collect();
+    let mut closed = false;
     for space in target.spaces.iter().filter(|s| alive.contains(s)) {
         server
             .kill_session(space)
             .map_err(|e| Failure::Tmux(format!("{e:#}")))?;
+        closed = true;
     }
     // git's reason first, then what is left.
-    git::remove_worktree(&target.main, path, force).map_err(|e| {
-        let left = HomePaths::new().show(path);
-        Failure::git(format!("{e}; space closed, {left} left"))
-    })?;
+    git::remove_worktree(&target.main, path, force)
+        .map_err(|e| Failure::git(left_after(&e, closed, &HomePaths::new().show(path))))?;
     let kept = target.branch.as_ref().and_then(|branch| {
         git::delete_branch(&target.main, branch)
             .err()
@@ -390,6 +400,19 @@ mod tests {
         // The format reads the float marker paddock sets.
         let marker = format!("#{{{}}}\x1f", crate::tmux::structure::FLOAT_OPTION);
         assert!(PANE_FORMAT.starts_with(&marker), "{PANE_FORMAT}");
+    }
+
+    #[test]
+    fn a_failed_removal_says_git_s_reason_first_and_a_closed_space_only_if_one_was() {
+        let reason = "fatal: x (git worktree remove)";
+        assert_eq!(
+            left_after(reason, true, "~/w/feat-x"),
+            "fatal: x (git worktree remove); space closed, ~/w/feat-x left"
+        );
+        assert_eq!(
+            left_after(reason, false, "~/w/feat-x"),
+            "fatal: x (git worktree remove); ~/w/feat-x left"
+        );
     }
 
     #[test]
