@@ -66,7 +66,7 @@ One purpose of work, identified by its git branch: one purpose, one branch.
 _Avoid_: job, ticket, worktree
 
 **External session**:
-A Claude session running outside paddock's terminals (another terminal app, an IDE). paddock shows it dimmed in an External group at the bottom of the dashboard and of AGENTS, with its state and branch, but not its screen. It can be dismissed, not shown, closed, forked or typed into, and `C-a a` skips it. It leaves when it ends, or after a quiet timeout.
+A Claude session running outside paddock's terminals (another terminal app, an IDE). paddock shows it dimmed in an External group at the bottom of the dashboard and of AGENTS, with its state and branch, but not its screen. It can only be dismissed: never shown, closed, forked or typed into; and `C-a a` skips it. It leaves when it ends, or after a quiet timeout.
 
 ### States
 

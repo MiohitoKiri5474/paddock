@@ -155,11 +155,12 @@ fn plugin_enabled(settings: &Value) -> bool {
 }
 
 /// Whether a hook from `source` (`$PADDOCK_HOOK_SOURCE`) records `event`:
-/// the plugin's hook is skipped when `settings` hold paddock's own hook for
-/// that event, since that one records it. Without readable settings (`None`)
-/// Claude runs no settings hooks, so the plugin's hook records.
-fn should_record(source: &str, settings: Option<&Value>, event: &str) -> bool {
-    source != PLUGIN_SOURCE || !settings.is_some_and(|s| has_hook(s, event))
+/// the plugin's hook is skipped when the settings (read by `settings`, and
+/// only for the plugin's hook) hold paddock's own hook for that event, since
+/// that one records it. Without readable settings (`None`) Claude runs no
+/// settings hooks, so the plugin's hook records.
+fn should_record(source: &str, settings: impl FnOnce() -> Option<Value>, event: &str) -> bool {
+    source != PLUGIN_SOURCE || !settings().is_some_and(|s| has_hook(&s, event))
 }
 
 fn read_settings(path: &Path) -> Option<Value> {
@@ -239,8 +240,9 @@ pub fn now_ms() -> u64 {
 
 /// `paddock hook <event>`: record the event, in its server's log if it
 /// comes from one of paddock's terminals, else in the external log (it runs
-/// for every Claude on the machine, so that stays one append). Never prints, never fails: Claude would show the
-/// output to the model, or block on a failing hook.
+/// for every Claude on the machine, so that stays one append). Never
+/// prints, never fails: Claude would show the output to the model, or block
+/// on a failing hook.
 pub fn hook(event: &str) -> ! {
     std::panic::set_hook(Box::new(|_| {}));
     let _ = std::panic::catch_unwind(|| {
@@ -259,12 +261,9 @@ fn record(event: &str) -> Result<()> {
     let text = |k: &str| var(k).unwrap_or_default();
     // Before anything else, for paddock's terminals and external sessions
     // alike. Only the plugin's hook reads the settings, to defer to them.
-    let source = text(SOURCE_VAR);
-    if source == PLUGIN_SOURCE {
-        let settings = settings_path(var).ok().and_then(|p| read_settings(&p));
-        if !should_record(&source, settings.as_ref(), event) {
-            return Ok(()); // settings.json's paddock hook records this one
-        }
+    let settings = || settings_path(var).ok().and_then(|p| read_settings(&p));
+    if !should_record(&text(SOURCE_VAR), settings, event) {
+        return Ok(()); // settings.json's paddock hook records this one
     }
     let paths = Paths::resolve(var)?;
     // Outside paddock's terminals, an external session: kept by session
@@ -425,26 +424,34 @@ mod tests {
         assert_eq!(keys, ["description", "hooks"]);
     }
 
+    /// [`should_record`] with `settings` already read.
+    fn records(source: &str, settings: Option<&Value>, event: &str) -> bool {
+        should_record(source, || settings.cloned(), event)
+    }
+
+    #[test]
+    fn only_the_plugins_hook_reads_the_settings() {
+        let unread = || -> Option<Value> { panic!("settings read") };
+        assert!(should_record("", unread, "Stop"));
+        assert!(should_record("other", unread, "Stop"));
+    }
+
     #[test]
     fn a_plugin_hook_defers_to_paddocks_hook_in_settings() {
         let both = install(json!({}), EXE).unwrap();
         for event in EVENTS {
-            assert!(should_record("", Some(&both), event), "settings' own hook");
-            assert!(!should_record(PLUGIN_SOURCE, Some(&both), event), "{event}");
+            assert!(records("", Some(&both), event), "settings' own hook");
+            assert!(!records(PLUGIN_SOURCE, Some(&both), event), "{event}");
         }
         // Settings with no paddock hook for this event, or none at all.
-        assert!(should_record(PLUGIN_SOURCE, Some(&supacode()), "Stop"));
-        assert!(should_record(PLUGIN_SOURCE, Some(&json!({})), "Stop"));
-        assert!(should_record(PLUGIN_SOURCE, None, "Stop"));
+        assert!(records(PLUGIN_SOURCE, Some(&supacode()), "Stop"));
+        assert!(records(PLUGIN_SOURCE, Some(&json!({})), "Stop"));
+        assert!(records(PLUGIN_SOURCE, None, "Stop"));
         let only_stop = json!({"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "paddock hook Stop"}]}]}});
-        assert!(!should_record(PLUGIN_SOURCE, Some(&only_stop), "Stop"));
-        assert!(should_record(
-            PLUGIN_SOURCE,
-            Some(&only_stop),
-            "SessionStart"
-        ));
+        assert!(!records(PLUGIN_SOURCE, Some(&only_stop), "Stop"));
+        assert!(records(PLUGIN_SOURCE, Some(&only_stop), "SessionStart"));
         // Hooks paddock cannot read count as none.
-        assert!(should_record(
+        assert!(records(
             PLUGIN_SOURCE,
             Some(&json!({"hooks": {"Stop": "oops"}})),
             "Stop"
