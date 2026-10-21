@@ -50,6 +50,26 @@ impl App {
         Ok(())
     }
 
+    /// Attach, as spaces at the end of the sidebar, the sessions made on
+    /// the hidden server by someone else (`paddock worktree new`, `tmux
+    /// new-session`); the current space stays. Every space's client hears
+    /// of a new session, so one already attached is skipped. A session
+    /// that ended before it could be attached is no news.
+    pub(super) fn attach_new_sessions(&mut self) {
+        let known: Vec<String> = self.spaces.iter().map(|s| s.id.clone()).collect();
+        for session in self.server.sessions() {
+            if known.contains(&session.id) {
+                continue;
+            }
+            if let Err(e) = self.attach(&session.id) {
+                let alive = self.server.sessions().iter().any(|s| s.id == session.id);
+                if alive {
+                    self.notice = Some(format!("{e:#}"));
+                }
+            }
+        }
+    }
+
     /// Start a shell in a new tab of the current space and make it current.
     pub fn new_tab(&mut self) -> Result<()> {
         let Some(id) = self.current_space().map(|i| i.id.clone()) else {
