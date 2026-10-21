@@ -1,0 +1,16 @@
+[package]
+name = "paddock-spike-01"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+alacritty_terminal = "0.26"
+vt100 = "0.18"
+yas_alacritty = { package = "yas-alacritty-terminal", version = "=0.26.0-yas.1" }
+ratatui = "0.30"
+crossterm = "0.29"
+anyhow = "1"
+
+[profile.release]
+debug = 1

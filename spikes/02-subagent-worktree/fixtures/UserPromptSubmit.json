@@ -1,0 +1,9 @@
+{
+  "session_id": "11111111-2222-4333-8444-555555555555",
+  "transcript_path": "/home/user/.claude/projects/-tmp-repo/11111111-2222-4333-8444-555555555555.jsonl",
+  "cwd": "/tmp/repo",
+  "prompt_id": "6ead5051-ad1f-40ad-837c-72acc08402ad",
+  "permission_mode": "bypassPermissions",
+  "hook_event_name": "UserPromptSubmit",
+  "prompt": "Spawn two subagents IN PARALLEL using the Agent tool, each with isolation: \"worktree\". Subagent 1: create branch fix/a, create file a.txt containing 'a', commit it. Subagent 2: same with fix/b and b.txt. Reply 'done' when both finish."
+}

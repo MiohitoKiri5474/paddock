@@ -1,0 +1,170 @@
+//! The session view: the current terminal's screen, drawn from its emulator.
+
+use crate::terminal::emulator::{Colour, Emulator};
+use ratatui::buffer::Buffer;
+use ratatui::layout::{Position, Rect};
+use ratatui::style::{Color, Modifier, Style};
+
+fn colour(c: Colour) -> Color {
+    match c {
+        Colour::Default => Color::Reset,
+        Colour::Indexed(i) => Color::Indexed(i),
+        Colour::Rgb(r, g, b) => Color::Rgb(r, g, b),
+    }
+}
+
+/// Draw the terminal into `area`. Returns where the cursor should be, if visible.
+pub fn render(emu: &Emulator, area: Rect, buf: &mut Buffer) -> Option<Position> {
+    cells(emu, 0, area, buf);
+    let offset = emu.scroll_offset();
+    if offset > 0 {
+        let label = format!("[{offset}/{}]", emu.history_len());
+        let width = u16::try_from(label.len())
+            .unwrap_or(area.width)
+            .min(area.width);
+        let x = area.right() - width;
+        buf.set_string(
+            x,
+            area.y,
+            &label,
+            Style::default().add_modifier(Modifier::REVERSED),
+        );
+        return None;
+    }
+    let (row, col) = emu.cursor();
+    let visible = emu.modes().show_cursor && row < area.height && col < area.width;
+    visible.then(|| Position::new(area.x + col, area.y + row))
+}
+
+/// Draw the terminal's rows from `first` on into `area`, cut to fit.
+pub fn cells(emu: &Emulator, first: u16, area: Rect, buf: &mut Buffer) {
+    let (cols, rows) = emu.size();
+    let selected = emu.selection();
+    for (y, row) in (first..rows).take(usize::from(area.height)).enumerate() {
+        let y = u16::try_from(y).unwrap_or(u16::MAX);
+        for x in 0..cols.min(area.width) {
+            let c = emu.cell(row, x);
+            if c.spacer {
+                // Covered by the wide character to its left; ratatui skips it.
+                continue;
+            }
+            let mut m = Modifier::empty();
+            m.set(Modifier::BOLD, c.bold);
+            m.set(Modifier::DIM, c.dim);
+            m.set(Modifier::ITALIC, c.italic);
+            m.set(Modifier::UNDERLINED, c.underline);
+            let highlight = selected.as_ref().is_some_and(|s| s.contains(row, x));
+            m.set(Modifier::REVERSED, c.inverse != highlight);
+            let style = Style::default()
+                .fg(colour(c.fg))
+                .bg(colour(c.bg))
+                .add_modifier(m);
+            let cell = &mut buf[(area.x + x, area.y + y)];
+            cell.set_symbol(if c.text.is_empty() { " " } else { &c.text });
+            cell.set_style(style);
+        }
+    }
+}
+
+/// Draw the borders between the split panes placed at `panes` inside
+/// `area`: tmux leaves one cell between two panes (ADR 0006). A gap beside a
+/// pane is a vertical line, any other a horizontal one.
+pub fn borders(area: Rect, panes: &[Rect], buf: &mut Buffer) {
+    let right = panes.iter().map(|r| r.right()).max().unwrap_or(0);
+    let bottom = panes.iter().map(|r| r.bottom()).max().unwrap_or(0);
+    let covered = |x: u16, y: u16| panes.iter().any(|r| r.contains(Position::new(x, y)));
+    for y in area.top()..bottom.min(area.bottom()) {
+        for x in area.left()..right.min(area.right()) {
+            if covered(x, y) {
+                continue;
+            }
+            let beside = (x > area.left() && covered(x - 1, y)) || covered(x + 1, y);
+            let symbol = if beside { "│" } else { "─" };
+            buf[(x, y)].set_symbol(symbol).set_style(Style::reset());
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn borders_fill_the_gaps_between_panes() {
+        // 3 | (1 over 1), 3x3: column 1 and the cell at (2, 1) are gaps.
+        let area = Rect::new(0, 0, 4, 3);
+        let mut buf = Buffer::empty(area);
+        let panes = [
+            Rect::new(0, 0, 1, 3),
+            Rect::new(2, 0, 1, 1),
+            Rect::new(2, 2, 1, 1),
+        ];
+        borders(area, &panes, &mut buf);
+        let row = |y: u16| (0..4).map(|x| buf[(x, y)].symbol()).collect::<String>();
+        assert_eq!(row(0), " │  ");
+        assert_eq!(row(1), " │─ ");
+        assert_eq!(row(2), " │  ");
+    }
+
+    /// Render into a fresh buffer, as a frame would.
+    fn draw(emu: &Emulator, w: u16, h: u16) -> (Buffer, Option<Position>) {
+        let area = Rect::new(0, 0, w, h);
+        let mut buf = Buffer::empty(area);
+        let cursor = render(emu, area, &mut buf);
+        (buf, cursor)
+    }
+
+    /// A row as the outer terminal shows it: cells under wide characters dropped.
+    fn row(buf: &Buffer, emu: &Emulator, y: u16) -> String {
+        (0..buf.area.width)
+            .filter(|&x| !emu.cell(y, x).spacer)
+            .map(|x| buf[(x, y)].symbol().to_string())
+            .collect::<String>()
+            .trim_end()
+            .to_string()
+    }
+
+    #[test]
+    fn draws_text_colours_and_cursor() {
+        let mut e = Emulator::new(12, 2, 10);
+        e.feed("\x1b[1;38;2;1;2;3mhi\x1b[0m 漢字".as_bytes());
+        let (buf, cursor) = draw(&e, 12, 2);
+        assert_eq!(row(&buf, &e, 0), "hi 漢字");
+        assert_eq!(buf[(0, 0)].fg, Color::Rgb(1, 2, 3));
+        assert!(buf[(0, 0)].modifier.contains(Modifier::BOLD));
+        assert_eq!(cursor, Some(Position::new(7, 0)));
+    }
+
+    #[test]
+    fn selected_cells_are_reversed() {
+        let mut e = Emulator::new(5, 1, 0);
+        e.feed(b"\x1b[7mab\x1b[0mcd");
+        e.select(0, 1);
+        e.select_to(0, 2);
+        let (buf, _) = draw(&e, 5, 1);
+        let reversed: Vec<bool> = (0..4)
+            .map(|x| buf[(x, 0)].modifier.contains(Modifier::REVERSED))
+            .collect();
+        assert_eq!(reversed, [true, false, true, false]);
+    }
+
+    #[test]
+    fn hidden_cursor_is_not_placed() {
+        let mut e = Emulator::new(5, 1, 0);
+        e.feed(b"\x1b[?25l");
+        assert_eq!(draw(&e, 5, 1).1, None);
+    }
+
+    #[test]
+    fn scrolled_view_shows_history_and_position() {
+        let mut e = Emulator::new(20, 2, 100);
+        for i in 0..6 {
+            e.feed(format!("line {i}\r\n").as_bytes());
+        }
+        e.scroll(3);
+        let (buf, cursor) = draw(&e, 20, 2);
+        assert_eq!(row(&buf, &e, 0), "line 2         [3/5]");
+        assert_eq!(row(&buf, &e, 1), "line 3");
+        assert_eq!(cursor, None);
+    }
+}

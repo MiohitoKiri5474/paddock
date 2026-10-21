@@ -1,0 +1,34 @@
+{
+  "session_id": "11111111-2222-4333-8444-555555555555",
+  "transcript_path": "/home/user/.claude/projects/-tmp-repo/11111111-2222-4333-8444-555555555555.jsonl",
+  "cwd": "/tmp/repo/.claude/worktrees/agent-a02c2bd27020e23b4",
+  "prompt_id": "6ead5051-ad1f-40ad-837c-72acc08402ad",
+  "permission_mode": "bypassPermissions",
+  "agent_id": "a02c2bd27020e23b4",
+  "agent_type": "general-purpose",
+  "effort": {
+    "level": "medium"
+  },
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "git switch -c fix/a && printf 'a\\n' > a.txt && git add a.txt && git commit -F - <<'EOF'\nfeat: add a.txt\n\nDisclosure: Based on Claude Code generated output.\n\nCo-Authored-By: Claude Haiku 5.5 <noreply@anthropic.com>\nEOF\necho \"exit=$?\"; git rev-parse --short HEAD; git log -1 --format=%B; git status --short; git branch --show-current",
+    "description": "Create branch, add a.txt, commit, and verify"
+  },
+  "tool_response": {
+    "stdout": "Switched to a new branch 'fix/a'\n[fix/a 2aa1118] feat: add a.txt\n 1 file changed, 1 insertion(+)\n create mode 100644 a.txt\nexit=0\n2aa1118\nfeat: add a.txt\n\nDisclosure: Based on Claude Code generated output.\n\nCo-Authored-By: Claude Haiku 5.5 <noreply@anthropic.com>\n\nfix/a",
+    "stderr": "",
+    "interrupted": false,
+    "isImage": false,
+    "noOutputExpected": false,
+    "gitOperation": {
+      "commit": {
+        "sha": "2aa1118",
+        "kind": "committed",
+        "branch": "fix/a"
+      }
+    }
+  },
+  "tool_use_id": "toolu_01XLsPmr6sVQyaYGrZdEZ2Cw",
+  "duration_ms": 940
+}
