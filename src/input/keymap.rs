@@ -81,7 +81,7 @@ pub const DASHBOARD_KEYS: Section<DashboardAction> = Section {
 };
 
 /// Direct chords that take a control character from the terminal
-/// (Backspace, Tab, Enter, Enter, Esc): worth a warning unless the user
+/// (Backspace, Tab, line feed, Enter, Esc): worth a warning unless the user
 /// chose them.
 const CONTROL_CHARS: &[&str] = &["C-h", "C-i", "C-j", "C-m", "C-["];
 
