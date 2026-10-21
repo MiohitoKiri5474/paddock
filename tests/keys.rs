@@ -218,10 +218,10 @@ fn an_unbound_direct_chord_reaches_the_terminal_again() {
 #[test]
 fn in_a_float_a_direct_chord_goes_to_the_float() {
     let sandbox = Sandbox::new();
-    sandbox.write_config("[floats]\ng = \"cat -v\"\n");
+    sandbox.write_config("[floats]\nG = \"cat -v\"\n");
     let mut paddock = ready(&sandbox);
 
-    paddock.command(b"g");
+    paddock.command(b"G");
     paddock.wait_for("the float shown", |_| {
         paddock.full_screen().contains(" cat -v ")
     });

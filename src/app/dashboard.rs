@@ -1,6 +1,8 @@
 //! The dashboard (`C-a o`): every session with its task rows and their
 //! details, and a live preview of the selected session's terminal that `I`
-//! types into. Only sessions are selected; task rows go with theirs.
+//! types into. Only sessions are selected; task rows go with theirs. `/`
+//! types a filter: only blocks whose session name, branch or state
+//! fuzzy-match it stay in the list.
 //!
 //! It reads the task tree through [`App::rows`] and acts on the selected
 //! session through the same dismiss, close, fork and jump as the rest of
@@ -9,22 +11,63 @@
 use super::rows::{row_ids, Row, RowId};
 use super::state::{App, Mode, Panel};
 use super::watch::Watched;
+use crate::fuzzy;
 use crate::input::keymap::DashboardAction;
+use crate::input::line::LineEdit;
 use crate::input::{encode_key, encode_paste};
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-/// The open dashboard: the selected line, and whether keys go to its
-/// terminal.
+/// The dashboard's key line while its filter is typed: its keys are
+/// fixed, so they are not read from the keymap.
+const FILTER_KEYS: &str = "Enter keep  Esc clear";
+
+/// The dashboard's filter: the text typed, and whether keys type into it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DashboardFilter {
+    /// Only blocks matching it are listed.
+    pub line: LineEdit,
+    /// Keys type into the line.
+    pub typing: bool,
+}
+
+impl DashboardFilter {
+    /// Whether its line shows: while typing it, or while it holds text.
+    pub fn shown(&self) -> bool {
+        self.typing || !self.line.text().is_empty()
+    }
+}
+
+/// The open dashboard: the selected line, whether keys go to its
+/// terminal, and the filter.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Dashboard {
     pub selected: Option<RowId>,
     /// Where the selected line was last seen, for when it goes away.
     pub index: usize,
     pub interactive: bool,
+    pub filter: DashboardFilter,
 }
 
 impl Dashboard {
+    /// The rows of `rows` whose session name, branch or state fuzzy-match
+    /// the filter; all of them without one.
+    pub fn filtered(&self, rows: Vec<Row>) -> Vec<Row> {
+        let query = self.filter.line.text();
+        if query.is_empty() {
+            return rows;
+        }
+        rows.into_iter()
+            .filter(|r| {
+                let branches = r.tasks.iter().map(|t| t.branch.as_str());
+                [r.label.as_str(), r.state.label()]
+                    .into_iter()
+                    .chain(branches)
+                    .any(|f| fuzzy::score(query, f).is_some())
+            })
+            .collect()
+    }
+
     /// The same dashboard with a line of `ids` selected: the selected one
     /// wherever it moved, else (it went away, or none was) the one now at
     /// `index`, else the last; nothing without lines. When the selected one
@@ -41,6 +84,7 @@ impl Dashboard {
             selected: ids.get(index).cloned(),
             index,
             interactive: self.interactive && !gone,
+            ..self.clone()
         }
     }
 }
@@ -57,9 +101,24 @@ impl App {
         }
     }
 
+    /// The dashboard's key line: the filter's fixed keys while it is
+    /// typed, else `[keys.dashboard]`.
+    pub fn dashboard_keys(&self, d: &Dashboard) -> String {
+        if d.filter.typing {
+            FILTER_KEYS.to_string()
+        } else {
+            self.keymap.dashboard.hints().join("  ")
+        }
+    }
+
+    /// The rows the dashboard lists: those matching its filter.
+    pub fn dashboard_rows(&self, d: &Dashboard) -> Vec<Row> {
+        d.filtered(self.rows())
+    }
+
     /// The dashboard's selected session, else the first.
     pub fn dashboard_row(&self, d: &Dashboard) -> Option<Row> {
-        let rows = self.rows();
+        let rows = self.dashboard_rows(d);
         let pane = d.selected.as_ref().map(|s| s.pane.as_str());
         let found = rows.iter().position(|r| Some(r.pane.as_str()) == pane);
         rows.into_iter().nth(found.unwrap_or(0))
@@ -84,7 +143,10 @@ impl App {
     /// Keep the dashboard's selection on a line that exists, so the line
     /// highlighted is the one keys act on.
     pub fn anchor_dashboard(&mut self) {
-        let ids = row_ids(&self.rows());
+        let Some(d) = self.dashboard() else {
+            return;
+        };
+        let ids = row_ids(&self.dashboard_rows(d));
         let d = match &mut self.mode {
             Mode::Dashboard(d) => Some(d),
             mode => match mode.back_panel_mut() {
@@ -121,22 +183,33 @@ impl App {
         }
     }
 
-    /// A key for the dashboard. Interactive: see [`Self::interactive_key`].
-    /// Else `[keys.dashboard]`, by default: `j`/`k` (or arrows) move,
-    /// `Enter` jumps to the selected session's terminal, `D` dismisses the
+    /// A key for the dashboard. Interactive: see [`Self::interactive_key`];
+    /// typing the filter: see [`Self::dashboard_filter_key`]. Else
+    /// `[keys.dashboard]`, by default: `j`/`k` (or arrows) move, `Enter`
+    /// jumps to the selected session's terminal, `D` dismisses the
     /// session, `x` closes and `f` forks its terminal, `I` types into it,
-    /// `Esc` closes the dashboard.
+    /// `/` types the filter, `Esc` closes the dashboard.
     pub(super) fn dashboard_key(&mut self, d: Dashboard, key: KeyEvent) {
         // Act on the line highlighted, even if rows changed since the draw.
-        let d = d.anchored(&row_ids(&self.rows()));
+        let d = d.anchored(&row_ids(&self.dashboard_rows(&d)));
         if d.interactive {
             return self.interactive_key(d, key);
+        }
+        if d.filter.typing {
+            return self.dashboard_filter_key(d, key);
         }
         self.mode = match self.keymap.dashboard.action(&key) {
             Some(DashboardAction::Down) => self.dashboard_move(d, 1),
             Some(DashboardAction::Up) => self.dashboard_move(d, -1),
             Some(DashboardAction::Dismiss) => self.dashboard_dismiss(d),
             Some(DashboardAction::Back) => Mode::Normal,
+            Some(DashboardAction::Filter) => Mode::Dashboard(Dashboard {
+                filter: DashboardFilter {
+                    typing: true,
+                    ..d.filter.clone()
+                },
+                ..d
+            }),
             Some(
                 action @ (DashboardAction::Open
                 | DashboardAction::Close
@@ -146,6 +219,19 @@ impl App {
             None => Mode::Dashboard(d),
         };
         self.report(|app| app.relayout());
+    }
+
+    /// Typing the filter: `Enter` keeps it and returns to the list, `Esc`
+    /// clears it and leaves the filter line, other keys edit it. The
+    /// selection stays on a listed line.
+    fn dashboard_filter_key(&mut self, mut d: Dashboard, key: KeyEvent) {
+        match key.code {
+            KeyCode::Enter => d.filter.typing = false,
+            KeyCode::Esc => d.filter = DashboardFilter::default(),
+            _ => d.filter.line.key(key),
+        }
+        let d = d.anchored(&row_ids(&self.dashboard_rows(&d)));
+        self.mode = Mode::Dashboard(d);
     }
 
     /// Interactive: every key but `Esc` goes to the previewed terminal, and
@@ -183,7 +269,7 @@ impl App {
             index: d.index.saturating_add_signed(step),
             ..d
         };
-        Mode::Dashboard(moved.anchored(&row_ids(&self.rows())))
+        Mode::Dashboard(moved.anchored(&row_ids(&self.dashboard_rows(&moved))))
     }
 
     /// Dismiss the selected session, then select the session that took its
@@ -192,7 +278,7 @@ impl App {
         if let Some(id) = &d.selected {
             self.report(|app| app.dismiss(id));
         }
-        Mode::Dashboard(d.anchored(&row_ids(&self.rows())))
+        Mode::Dashboard(d.anchored(&row_ids(&self.dashboard_rows(&d))))
     }
 
     /// Open, close, fork and interact on the selected session's terminal.
@@ -223,13 +309,21 @@ impl App {
             DashboardAction::Down
             | DashboardAction::Up
             | DashboardAction::Dismiss
+            | DashboardAction::Filter
             | DashboardAction::Back => Mode::Dashboard(d),
         }
     }
 
-    /// Pasted text goes to the previewed terminal while interactive, and is
-    /// dropped otherwise.
+    /// Pasted text goes to the previewed terminal while interactive, into
+    /// the filter while typing it, and is dropped otherwise.
     pub(super) fn dashboard_paste(&mut self, d: &Dashboard, text: &str) -> Result<()> {
+        if d.filter.typing {
+            if let Mode::Dashboard(d) = &mut self.mode {
+                d.filter.line.insert(text);
+            }
+            self.anchor_dashboard();
+            return Ok(());
+        }
         if !d.interactive {
             return Ok(());
         }
@@ -247,6 +341,8 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::rows::TaskRow;
+    use crate::sessions::State;
 
     fn id(pane: &str) -> RowId {
         RowId { pane: pane.into() }
@@ -257,7 +353,57 @@ mod tests {
             selected,
             index,
             interactive: true,
+            ..Dashboard::default()
         }
+    }
+
+    #[test]
+    fn the_filter_keeps_blocks_matching_a_name_branch_or_state() {
+        let row = |label: &str, state: State, branch: &str| Row {
+            pane: format!("%{label}"),
+            space: "$1".into(),
+            window: "@1".into(),
+            label: label.into(),
+            state,
+            tasks: vec![TaskRow {
+                branch: branch.into(),
+                cwd: "/r".into(),
+                status: None,
+                subagent: None,
+            }],
+        };
+        let rows = || {
+            vec![
+                row("api", State::Waiting, "feat/login"),
+                row("web", State::Idle, "fix/css"),
+            ]
+        };
+        let labels = |filter: &str| -> Vec<String> {
+            let d = Dashboard {
+                filter: DashboardFilter {
+                    line: LineEdit::new(filter),
+                    typing: false,
+                },
+                ..Dashboard::default()
+            };
+            d.filtered(rows()).into_iter().map(|r| r.label).collect()
+        };
+        assert_eq!(labels(""), ["api", "web"]);
+        assert_eq!(labels("web"), ["web"]);
+        assert_eq!(labels("login"), ["api"], "by branch");
+        assert_eq!(labels("idle"), ["web"], "by state");
+        assert_eq!(labels("zzz"), Vec::<String>::new());
+        let typing = DashboardFilter {
+            typing: true,
+            ..DashboardFilter::default()
+        };
+        assert!(typing.shown());
+        assert!(!DashboardFilter::default().shown());
+        let kept = DashboardFilter {
+            line: LineEdit::new("a"),
+            typing: false,
+        };
+        assert!(kept.shown());
     }
 
     #[test]

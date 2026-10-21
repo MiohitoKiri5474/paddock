@@ -47,13 +47,16 @@ pub enum Command {
     NextAttention,
     /// Open or close the dashboard.
     Dashboard,
+    /// Open the finder: a box to pick a space, tab or agent by typing.
+    Finder,
     /// Show or hide float N (0-based, in `[floats]` order).
     ToggleFloat(usize),
 }
 
 impl Command {
     /// Whether a float shown stays shown through this command: those that
-    /// change neither the page under it nor who has the keyboard.
+    /// change neither the page under it nor who has the keyboard, and the
+    /// finder, which draws over it and hides it only when a row is picked.
     pub fn keeps_float(self) -> bool {
         matches!(
             self,
@@ -62,6 +65,7 @@ impl Command {
                 | Command::ToggleSidebar
                 | Command::ResizeSidebar(_)
                 | Command::ToggleFloat(_)
+                | Command::Finder
         )
     }
 }
@@ -186,7 +190,7 @@ mod tests {
             Key::parse("C-a").unwrap(),
             Keys::defaults(&COMMAND_KEYS),
             Keys::defaults(&DIRECT_KEYS),
-            ["g", "C-y", "F5"]
+            ["G", "C-y", "F5"]
                 .iter()
                 .map(|k| Key::parse(k).unwrap())
                 .collect(),
@@ -306,32 +310,35 @@ mod tests {
             after_prefix('o', none),
             KeyAction::Command(Command::Dashboard)
         );
+        assert_eq!(after_prefix('g', none), KeyAction::Command(Command::Finder));
     }
 
     #[test]
     fn float_keys_after_the_prefix_toggle_their_float() {
         let none = KeyModifiers::NONE;
         assert_eq!(
-            after_prefix('g', none),
+            after_prefix('G', KeyModifiers::SHIFT),
             KeyAction::Command(Command::ToggleFloat(0))
         );
         assert_eq!(
             after_prefix('y', KeyModifiers::CONTROL),
             KeyAction::Command(Command::ToggleFloat(1))
         );
-        // As for commands, Shift does not matter for a named key, but `G`
-        // is another key than `g`, and Ctrl matters.
+        // As for commands, Shift does not matter for a named key, but `g`
+        // is another key than `G` (it opens the finder), and Ctrl matters.
         let mut p = ctrl_a();
         p.handle(k('a', KeyModifiers::CONTROL));
         assert_eq!(
             p.handle(KeyEvent::new(KeyCode::F(5), KeyModifiers::SHIFT)),
             KeyAction::Command(Command::ToggleFloat(2))
         );
-        assert_eq!(after_prefix('G', KeyModifiers::SHIFT), KeyAction::None);
         assert_eq!(after_prefix('y', none), KeyAction::None);
         // Without the prefix, a float's key is typed.
         let mut p = ctrl_a();
-        assert_eq!(p.handle(k('g', none)), KeyAction::Forward(k('g', none)));
+        assert_eq!(
+            p.handle(k('G', KeyModifiers::SHIFT)),
+            KeyAction::Forward(k('G', KeyModifiers::SHIFT))
+        );
     }
 
     #[test]
@@ -340,6 +347,7 @@ mod tests {
             Command::Help,
             Command::ToggleSidebar,
             Command::ToggleFloat(1),
+            Command::Finder,
         ] {
             assert!(c.keeps_float(), "{c:?}");
         }

@@ -14,24 +14,40 @@ use std::borrow::Cow;
 /// What a tab running Claude is called while the user has not named it.
 const CLAUDE: &str = "claude";
 
+/// The home directory, for showing paths with `~`.
+pub(super) struct HomePaths {
+    home: String,
+    /// tmux reports directories with symlinks resolved (`/tmp` is
+    /// `/private/tmp` on macOS), so home may be written either way.
+    real_home: String,
+}
+
+impl HomePaths {
+    pub(super) fn new() -> Self {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let real_home = std::fs::canonicalize(&home)
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| home.clone());
+        Self { home, real_home }
+    }
+
+    /// `path` with home, written either way, as `~`.
+    pub(super) fn show(&self, path: &str) -> String {
+        let short = tilde(path, &self.home);
+        if short == path {
+            tilde(path, &self.real_home)
+        } else {
+            short
+        }
+    }
+}
+
 impl App {
     /// Each space: its name, the most urgent state of its agents, whether
     /// it is current, and its directory and branch once read.
     pub(super) fn sidebar_spaces(&self, rows: &[Row]) -> Vec<SpaceLine> {
-        let home = std::env::var("HOME").unwrap_or_default();
-        // tmux reports directories with symlinks resolved (`/tmp` is
-        // `/private/tmp` on macOS), so home may be written either way.
-        let real_home = std::fs::canonicalize(&home)
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|_| home.clone());
-        let show = |path: &str| {
-            let short = tilde(path, &home);
-            if short == path {
-                tilde(path, &real_home)
-            } else {
-                short
-            }
-        };
+        let home = HomePaths::new();
+        let show = |path: &str| home.show(path);
         self.spaces
             .iter()
             .enumerate()
@@ -56,23 +72,23 @@ impl App {
             .map(|r| AgentLine {
                 label: r.label.clone(),
                 state: r.state,
-                place: self.place_of(r).unwrap_or_default(),
+                place: self.place_of(r, " · ").unwrap_or_default(),
                 current: self.is_current_pane(&r.pane),
             })
             .collect()
     }
 
-    /// Where row `r` runs, as `space · tab`.
-    fn place_of(&self, r: &Row) -> Option<String> {
+    /// Where row `r` runs: its space and tab, `sep` between them.
+    pub(super) fn place_of(&self, r: &Row, sep: &str) -> Option<String> {
         let space = self.spaces.iter().find(|i| i.id == r.space)?;
         let w = space.windows().iter().find(|w| w.id == r.window)?;
-        Some(format!("{} · {}", space.name(), self.tab_name(w)))
+        Some(format!("{}{sep}{}", space.name(), self.tab_name(w)))
     }
 
     /// A tab's name as shown: tmux's, except that a tab tmux names (not
     /// renamed by the user) whose focused pane runs Claude is called
     /// `claude`, whatever process name tmux sees.
-    fn tab_name(&self, w: &Window) -> String {
+    pub(super) fn tab_name(&self, w: &Window) -> String {
         let claude = self.session_in(&w.active).is_some_and(|s| {
             matches!(
                 s.state,

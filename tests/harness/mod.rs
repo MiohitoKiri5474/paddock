@@ -32,9 +32,10 @@ const CURRENT_TAB: vt100::Color = vt100::Color::Idx(4);
 pub const CURRENT_ITEM: vt100::Color = vt100::Color::Idx(236);
 /// The sidebar's title, in its first row.
 const SIDEBAR_TITLE: &str = " SPACES";
-/// Every prompt popup title, without its padding. Copied from the source,
-/// `close_title` in `src/app/view.rs` and `NameTarget::title` in
-/// `src/app/state.rs`: change them together.
+/// Every prompt popup title, without its padding, and the finder's.
+/// Copied from the source, `close_title` in `src/app/view.rs`,
+/// `NameTarget::title` in `src/app/state.rs` and `TITLE` in
+/// `src/app/finder.rs`: change them together.
 const POPUP_TITLES: &[&str] = &[
     "Rename tab",
     "Rename space",
@@ -42,6 +43,7 @@ const POPUP_TITLES: &[&str] = &[
     "Close tab",
     "Close pane",
     "Close space",
+    "Finder",
 ];
 const SOCKET: &str = "paddock-test";
 const CURSOR_QUERY: &[u8] = b"\x1b[6n";

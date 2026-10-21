@@ -24,12 +24,22 @@ impl App {
                 self.naming_key(target, line, back, key);
                 Ok(Flow::Continue)
             }
+            Mode::Finder { finder, back } => {
+                self.finder_key(finder, back, key);
+                Ok(Flow::Continue)
+            }
             // `y` closes; any other key keeps it, and is not passed on.
             Mode::ConfirmClose { target, back, .. } => {
                 if key.code == KeyCode::Char('y') {
                     self.report(|app| app.close_now(&target));
                 }
                 self.mode = Mode::back_to(back);
+                Ok(Flow::Continue)
+            }
+            // Typing the filter takes the whole keyboard, the prefix
+            // included, as naming does.
+            Mode::Dashboard(d) if d.filter.typing => {
+                self.dashboard_key(d, key);
                 Ok(Flow::Continue)
             }
             Mode::Dashboard(d) => {
@@ -144,6 +154,7 @@ impl App {
             }
             Command::NextAttention => self.next_attention(),
             Command::Dashboard => self.toggle_dashboard(),
+            Command::Finder => self.open_finder(),
             Command::ToggleFloat(i) => {
                 // The float takes the keyboard from any panel.
                 self.mode = Mode::Normal;
@@ -201,6 +212,7 @@ impl App {
         }
         match &mut self.mode {
             Mode::Naming { line, .. } => line.insert(text),
+            Mode::Finder { finder, .. } => finder.edited(|line| line.insert(text)),
             Mode::Help => self.mode = Mode::Normal,
             Mode::Sidebar(_) | Mode::ConfirmClose { .. } | Mode::Dashboard(_) => {}
             Mode::Normal => {
