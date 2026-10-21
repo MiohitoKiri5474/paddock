@@ -67,15 +67,26 @@ paddock hooks install               # adds paddock's hooks to ~/.claude/settings
 
 `hooks install` keeps other hooks (for example Supacode's), removes the old tmux-claude-session-manager hooks, and records the binary's full path, so install from a stable location. Re-run it after upgrading paddock or moving its binary. It says so when the plugin is enabled in that file.
 
-Both at once is safe: each event is still recorded once (the plugin's hook steps aside when `settings.json` holds paddock's hook for that event).
+Both at once records each event once, as long as the `paddock` on your `PATH` is the release that added the plugin's hooks or newer: the plugin's hook steps aside when `settings.json` holds paddock's hook for that event. An older `paddock` records each event twice.
 
 ### Move from `hooks install` to the plugin
 
-```sh
-paddock hooks uninstall             # removes only paddock's hooks from ~/.claude/settings.json
-```
+1. Get the plugin with its hooks. If you have the plugin already (an earlier one has no hooks), update it from your shell:
 
-Then install the plugin (above) and restart running Claude sessions. Config and state are kept.
+   ```sh
+   claude plugin marketplace update paddock
+   claude plugin update paddock@paddock
+   ```
+
+   Otherwise install it (see [Connect Claude Code](#connect-claude-code)).
+2. Restart running Claude sessions. Both sets of hooks now run, and each event is still recorded once.
+3. Remove the settings hooks, then restart running Claude sessions again:
+
+   ```sh
+   paddock hooks uninstall             # removes only paddock's hooks from ~/.claude/settings.json
+   ```
+
+Config and state are kept.
 
 ### Switch install method
 

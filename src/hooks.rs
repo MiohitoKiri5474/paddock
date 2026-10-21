@@ -30,12 +30,17 @@ pub const EVENTS: &[&str] = &[
 const LEGACY: &str = "tmux-claude-session-manager";
 
 /// The paddock plugin's key in Claude's `enabledPlugins` (`<plugin>@<marketplace>`).
-const PLUGIN: &str = "paddock@paddock";
+const PLUGIN_KEY: &str = "paddock@paddock";
 
-/// Set to `plugin` by the plugin's hook commands. A plugin hook defers to
-/// paddock's hooks in `settings.json`, so an event is recorded once when both
-/// are installed.
+/// Set to [`PLUGIN_SOURCE`] by the plugin's hook commands. A plugin hook
+/// defers to paddock's hooks in `settings.json`, so an event is recorded once
+/// when both are installed.
 const SOURCE_VAR: &str = "PADDOCK_HOOK_SOURCE";
+const PLUGIN_SOURCE: &str = "plugin";
+
+/// Restarting running Claude sessions makes them run the hooks as they are
+/// now: a session may not reload `settings.json` hooks at once.
+const RESTART: &str = "Restart running Claude sessions so they use the hooks as they are now.";
 
 /// Claude's user settings: `$CLAUDE_CONFIG_DIR/settings.json`, else
 /// `~/.claude/settings.json`.
@@ -146,15 +151,15 @@ fn has_hook(settings: &Value, event: &str) -> bool {
 
 /// Whether the settings enable the paddock plugin.
 fn plugin_enabled(settings: &Value) -> bool {
-    settings["enabledPlugins"][PLUGIN].as_bool() == Some(true)
+    settings["enabledPlugins"][PLUGIN_KEY].as_bool() == Some(true)
 }
 
 /// Whether a hook from `source` (`$PADDOCK_HOOK_SOURCE`) records `event`:
 /// the plugin's hook is skipped when `settings` hold paddock's own hook for
 /// that event, since that one records it. Without readable settings (`None`)
 /// Claude runs no settings hooks, so the plugin's hook records.
-fn records(source: &str, settings: Option<&Value>, event: &str) -> bool {
-    source != "plugin" || !settings.is_some_and(|s| has_hook(s, event))
+fn should_record(source: &str, settings: Option<&Value>, event: &str) -> bool {
+    source != PLUGIN_SOURCE || !settings.is_some_and(|s| has_hook(s, event))
 }
 
 fn read_settings(path: &Path) -> Option<Value> {
@@ -203,23 +208,22 @@ pub fn command(action: &str) -> Result<()> {
         "install" => {
             let exe = std::env::current_exe().context("cannot find paddock's own path")?;
             let exe = exe.to_string_lossy().into_owned();
-            let mut plugin = false;
-            edit_file(&path, |s| {
-                plugin = plugin_enabled(&s);
-                install(s, &exe)
-            })?;
+            let plugin = read_settings(&path).is_some_and(|s| plugin_enabled(&s));
+            edit_file(&path, |s| install(s, &exe))?;
             println!("paddock hooks installed in {}", path.display());
             if plugin {
                 println!(
                     "note: the paddock plugin is enabled and carries these hooks too; \
-                     each event is still recorded once. To keep only the plugin's, run \
-                     `paddock hooks uninstall`."
+                     paddock records each event once, from these. To keep only the \
+                     plugin's, run `paddock hooks uninstall`."
                 );
             }
+            println!("{RESTART}");
         }
         "uninstall" => {
             edit_file(&path, |s| Ok(uninstall(s)))?;
             println!("paddock hooks removed from {}", path.display());
+            println!("{RESTART}");
         }
         other => bail!("unknown hooks action {other:?}: use install or uninstall"),
     }
@@ -250,15 +254,14 @@ fn record(event: &str) -> Result<()> {
     // Always drain stdin, so Claude never writes into a closed pipe.
     let mut payload = String::new();
     std::io::stdin().read_to_string(&mut payload)?;
-    let var = |k: &str| std::env::var(k).unwrap_or_default();
-    let paths = Paths::from_env()?;
-    let Some((pid, pane)) = log::terminal(&var("TMUX"), &var("TMUX_PANE"), &paths.socket) else {
+    let var = |k: &str| std::env::var(k).ok();
+    let text = |k: &str| var(k).unwrap_or_default();
+    let paths = Paths::resolve(var)?;
+    let Some((pid, pane)) = log::terminal(&text("TMUX"), &text("TMUX_PANE"), &paths.socket) else {
         return Ok(()); // not in paddock: an external session
     };
-    let settings = settings_path(|k| std::env::var(k).ok())
-        .ok()
-        .and_then(|p| read_settings(&p));
-    if !records(&var(SOURCE_VAR), settings.as_ref(), event) {
+    let settings = settings_path(var).ok().and_then(|p| read_settings(&p));
+    if !should_record(&text(SOURCE_VAR), settings.as_ref(), event) {
         return Ok(()); // settings.json's paddock hook records this one
     }
     let mut r = log::record(event, &pane, &payload, now_ms());
@@ -375,7 +378,7 @@ mod tests {
     fn plugin_command(event: &str) -> String {
         format!(
             "command -v paddock >/dev/null 2>&1 || {{ cat >/dev/null; exit 0; }}; \
-             export {SOURCE_VAR}=plugin; exec paddock hook {event} >/dev/null 2>&1"
+             export {SOURCE_VAR}={PLUGIN_SOURCE}; paddock hook {event} >/dev/null 2>&1 || true"
         )
     }
 
@@ -405,19 +408,23 @@ mod tests {
     fn a_plugin_hook_defers_to_paddocks_hook_in_settings() {
         let both = install(json!({}), EXE).unwrap();
         for event in EVENTS {
-            assert!(records("", Some(&both), event), "settings' own hook");
-            assert!(!records("plugin", Some(&both), event), "{event}");
+            assert!(should_record("", Some(&both), event), "settings' own hook");
+            assert!(!should_record(PLUGIN_SOURCE, Some(&both), event), "{event}");
         }
         // Settings with no paddock hook for this event, or none at all.
-        assert!(records("plugin", Some(&supacode()), "Stop"));
-        assert!(records("plugin", Some(&json!({})), "Stop"));
-        assert!(records("plugin", None, "Stop"));
+        assert!(should_record(PLUGIN_SOURCE, Some(&supacode()), "Stop"));
+        assert!(should_record(PLUGIN_SOURCE, Some(&json!({})), "Stop"));
+        assert!(should_record(PLUGIN_SOURCE, None, "Stop"));
         let only_stop = json!({"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "paddock hook Stop"}]}]}});
-        assert!(!records("plugin", Some(&only_stop), "Stop"));
-        assert!(records("plugin", Some(&only_stop), "SessionStart"));
+        assert!(!should_record(PLUGIN_SOURCE, Some(&only_stop), "Stop"));
+        assert!(should_record(
+            PLUGIN_SOURCE,
+            Some(&only_stop),
+            "SessionStart"
+        ));
         // Hooks paddock cannot read count as none.
-        assert!(records(
-            "plugin",
+        assert!(should_record(
+            PLUGIN_SOURCE,
             Some(&json!({"hooks": {"Stop": "oops"}})),
             "Stop"
         ));

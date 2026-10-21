@@ -193,7 +193,8 @@ impl Sandbox {
             .spawn()
             .unwrap();
         let mut input = child.stdin.take().unwrap();
-        input.write_all(stdin.as_bytes()).unwrap();
+        // A program that exits without reading closes the pipe: fine.
+        let _ = input.write_all(stdin.as_bytes());
         drop(input);
         child.wait_with_output().unwrap()
     }
@@ -228,10 +229,25 @@ fn the_plugin_hooks_run_paddock_hook_for_their_event() {
     assert_eq!(commands.len(), 10, "one hook per event");
     for (event, command) in &commands {
         assert!(
-            command.contains(&format!("exec paddock hook {event} >/dev/null 2>&1")),
+            command.ends_with(&format!("; paddock hook {event} >/dev/null 2>&1 || true")),
             "{command}"
         );
     }
+}
+
+#[test]
+fn a_failing_paddock_on_path_never_reaches_claude() {
+    let sandbox = Sandbox::new();
+    // Some other `paddock`, or a broken one: prints, and exits 2, which
+    // would block `Stop`.
+    let fake = sandbox.path("bin/paddock");
+    std::fs::write(&fake, "#!/bin/sh\necho out\necho err >&2\nexit 2\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    for (_, command) in hook_commands(&plugin_hooks()) {
+        sandbox.fire(&command);
+    }
+    assert!(sandbox.events().is_empty());
 }
 
 #[test]
@@ -293,7 +309,19 @@ fn hooks_install_notes_an_enabled_plugin() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("the paddock plugin is enabled"), "{stdout}");
     assert!(stdout.contains("paddock hooks uninstall"), "{stdout}");
+    assert!(
+        stdout.contains("Restart running Claude sessions"),
+        "{stdout}"
+    );
     let settings = read_json(&sandbox.settings());
     assert_eq!(settings["enabledPlugins"]["paddock@paddock"], true);
     assert!(settings["hooks"]["Stop"].is_array());
+
+    let out = sandbox.run(PADDOCK, &["hooks", "uninstall"], "");
+    assert!(out.status.success(), "{out:?}");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("Restart running Claude sessions"),
+        "{stdout}"
+    );
 }
