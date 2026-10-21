@@ -173,6 +173,23 @@ pub const COMMANDS: &[Binding<Command>] = &[
     bind("help", Command::Help, &["?"], "this help"),
 ];
 
+/// Default keys of the commands that fire without the prefix
+/// (`[keys.direct]`), by action name; the other commands have none. Bare
+/// keys would be unusable for typing, so these are Ctrl chords, with Alt
+/// where a terminal has no free Ctrl key left (herdr's layout, but focus
+/// on `C-h/j/k/l`).
+pub const DIRECT: &[(&str, &[&str])] = &[
+    ("focus_left", &["C-h"]),
+    ("focus_down", &["C-j"]),
+    ("focus_up", &["C-k"]),
+    ("focus_right", &["C-l"]),
+    ("previous_tab", &["C-M-["]),
+    ("next_tab", &["C-M-]"]),
+    ("new_tab", &["C-M-c"]),
+    ("split_right", &["C-\\"]),
+    ("split_down", &["C--"]),
+];
+
 /// Keys while the sidebar has the keyboard (`[keys.sidebar]`).
 pub const SIDEBAR: &[Binding<SidebarAction>] = &[
     bind(

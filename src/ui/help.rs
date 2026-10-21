@@ -171,7 +171,7 @@ mod tests {
         .into();
         let none = Given::new();
         let prefix = Key::parse("C-a").unwrap();
-        let (keys, _) = Keymap::configured(prefix, [&commands, &none, &none]).unwrap();
+        let (keys, _) = Keymap::configured(prefix, [&commands, &none, &none, &none]).unwrap();
         let l = lines("C-a", &keys, &Floats::default());
         assert!(l.iter().any(|x| x.contains("t      new tab in this space")));
         assert!(!l.iter().any(|x| x.contains("detach")));

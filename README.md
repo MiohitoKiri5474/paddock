@@ -117,6 +117,24 @@ Every key is an action with a name you can rebind (see [Configure](#configure));
 
 `C-a` pressed twice sends a literal `C-a`. `go_to_tab`'s first key goes to tab 1, its second to tab 2, and so on. `close` closes the pane; the last one closes its tab, the last tab its space, and it asks first if Claude is busy. Renaming, naming a new space (prefilled with `space-N`; `Enter` keeps it) and that question open a small box in the middle of the screen; `Esc` or a click outside it cancels. `{`/`}` can also be done by dragging the sidebar's border.
 
+#### Direct
+
+Some commands also fire on one chord, no prefix (`[keys.direct]`), whenever a terminal has the keyboard: not in the sidebar, the dashboard, a prompt or a float (a float gets every key but the prefix). Any action from the table above can be bound here; by default:
+
+| Key | Action | Name |
+|---|---|---|
+| `C-M-c` | new tab in this space | `new_tab` |
+| `C-M-]` | next tab | `next_tab` |
+| `C-M-[` | previous tab | `previous_tab` |
+| `C-\` | split side by side | `split_right` |
+| `C--` | split top and bottom | `split_down` |
+| `C-h` | focus left | `focus_left` |
+| `C-j` | focus down | `focus_down` |
+| `C-k` | focus up | `focus_up` |
+| `C-l` | focus right | `focus_right` |
+
+`C-h`, `C-j`, `C-k` and `C-l` are Backspace, Enter, clear and kill-line in many programs, and paddock takes them: a notice at start says so until you set `[keys.direct]` yourself (even empty, or to the same chords; `focus_left = ""` gives `C-h` back to the terminal). The `C-M-` chords need a terminal that sends Alt; `C-M-[` works only under the kitty keyboard protocol (elsewhere it is two `Esc`). A direct chord matches exactly as bound (not with an extra Shift), and may be the same key as a `[keys.commands]` one, since those need the prefix first.
+
 Floats (`[floats]`): `C-a g` shows lazygit in a box over the whole screen, sidebar included, framed like the prompts and titled with its command; `C-a g` again hides it and the program keeps running, so showing it again brings back the same program and state. When the program exits, the float closes, and the next `C-a g` starts it again. Each space has its own float per key, started in the focused terminal's directory; it lives in the space's tmux session (so it survives detaching) but is never a tab, never in `C-a Tab`'s history, and paddock does not follow Claude in it. One float shows at a time. While it shows, every key, paste and mouse event inside it goes to it, except the prefix: `C-a` commands still work, and one that changes the page or gives the sidebar or dashboard the keyboard hides the float first. A click outside it does nothing. A float whose key you remove from `[floats]` is closed, with its program, the next time paddock opens. Floats are tmux windows, so `tmux -L paddock attach` lists them next to the tabs.
 
 In the sidebar (`[keys.sidebar]`; prefix commands work too):
@@ -161,6 +179,10 @@ split_right = ["|", "\\"] # ...or a list of them
 next_tab = ""             # "" or [] unbinds
 go_to_tab = ["F1", "F2", "F3", "F4"]
 
+[keys.direct]             # the same actions on one chord, no prefix
+focus_left = ""           # C-h goes to the terminal again
+dashboard = "C-M-o"
+
 [keys.sidebar]            # while the sidebar has the keyboard
 back = ["Esc", "q"]
 
@@ -196,11 +218,12 @@ Once you resize the sidebar (`C-a {`, `C-a }` or dragging its border), paddock s
 - a character (`c`, `|`, `$`, `{`) or a name (`Tab`, `Enter`, `Esc`, `Space`, `Backspace`, `Delete`, `Insert`, `Home`, `End`, `PageUp`, `PageDown`, `Left`, `Down`, `Up`, `Right`, `F1`-`F12`); names in any case
 - optionally after `C-` (Ctrl), `S-` (Shift) or `M-` (Alt), in any case (`c-n` is `C-n`)
 - `C-` with a letter is the same key in either case (`C-A` is `C-a`: terminals send them alike); `C-S-` with a character is refused for the same reason
+- `C--` and `C-_` are one key, as are `C-\` and `C-4`, `C-]` and `C-5`, `C-^` and `C-6`, `C-Space`, `C-@` and `C-2`: terminals send one control byte for each pair, and paddock prints the first
 - `S-` goes with a letter (`S-a` is `A`) or a named key (`S-Tab`); for other characters write the shifted one itself (`!`, not `S-1`)
-- `M-` works, with a warning at start and again on leaving, but not every terminal sends it, so paddock's own keys avoid it
+- `M-` works, with a warning at start and again on leaving, but not every terminal sends it, so paddock's own keys avoid it, except the direct chords, which have no bare key to use (those defaults give no warning)
 - the prefix must be `C-` with a letter, `Space`, or one of `\ ] ^ _`
 
-After the prefix, Shift does not matter for a key bound without it (Shift+arrows move focus too); in the sidebar and the dashboard, neither do Ctrl and Shift. A key bound with the modifier wins.
+After the prefix, Shift does not matter for a key bound without it (Shift+arrows move focus too); in the sidebar and the dashboard, neither do Ctrl and Shift. A key bound with the modifier wins. A direct chord matches only as bound.
 
 paddock refuses to start, naming the file and the setting, on an unknown action or section, a key it cannot read, a key listed twice for one action, a key bound to two actions in the same section (unbind one with `""`, even a default), or the prefix key inside a `[keys.…]` section. In `[floats]` the keys use the same syntax and are refused the same way when they cannot be read, are listed twice, are the prefix, or are bound in `[keys.commands]` (the default `g` too: write `g = ""` to free it); `width` and `height` are whole percents from 1 to 100.
 
