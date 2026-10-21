@@ -189,8 +189,8 @@ impl App {
             let Some(alert) = self.attention.alerts.on_hook(r) else {
                 continue;
             };
-            // `[notify]` turns off only the notification: the session's
-            // state, markers and the dashboard changed above all the same.
+            // `[notify]` turns off only the notification: `sessions.apply`
+            // above has already updated the state, markers and dashboard.
             if !self.attention.notify.allows(alert)
                 || r.ts < self.attention.started
                 || self.focused_on(&r.pane)

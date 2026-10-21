@@ -21,8 +21,8 @@
 //! width = 32                 # columns, until resized (then remembered)
 //!
 //! [notify]                   # macOS notifications, on unless set false
-//! waiting = true             # a session starts waiting on you
-//! idle = true                # an agent finishes its turn
+//! waiting = true             # a session or one of its subagents starts waiting on you
+//! idle = true                # a main agent finishes its turn
 //! ```
 //!
 //! `paddock keys` prints every action with its default keys.
@@ -61,9 +61,10 @@ pub struct Config {
 /// show every change either way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Notify {
-    /// When a session starts waiting on you.
+    /// When a session, or one of its subagents, starts waiting on you.
     pub waiting: bool,
-    /// When an agent finishes its turn.
+    /// When a session's main agent finishes its turn (a subagent finishing
+    /// never notifies).
     pub idle: bool,
 }
 
@@ -195,9 +196,12 @@ impl Config {
                 current: colour(c.tab_current, tabs.current)?,
             },
             sidebar_width: raw.sidebar.width.unwrap_or(DEFAULT_SIDEBAR_WIDTH),
-            notify: Notify {
-                waiting: raw.notify.waiting.unwrap_or(true),
-                idle: raw.notify.idle.unwrap_or(true),
+            notify: {
+                let on = Notify::default();
+                Notify {
+                    waiting: raw.notify.waiting.unwrap_or(on.waiting),
+                    idle: raw.notify.idle.unwrap_or(on.idle),
+                }
             },
         })
     }
@@ -345,10 +349,8 @@ mod tests {
 
     #[test]
     fn both_notifications_are_on_by_default_and_each_can_be_turned_off() {
-        let on = Notify {
-            waiting: true,
-            idle: true,
-        };
+        let on = Notify::default();
+        assert!(on.waiting && on.idle);
         assert_eq!(Config::default().notify, on);
         assert_eq!(Config::parse("[notify]\n").unwrap().notify, on);
         assert_eq!(

@@ -75,7 +75,7 @@ The dashboard list is a table under a dim header: NAME (the session's label, its
 ### Attention
 
 - Waiting rows and agents get a strong highlight; done (bold) and idle ones a soft one. Tabs holding such sessions are highlighted and marked `●` too.
-- macOS notifications fire when a session starts waiting and when a main agent goes idle, but not when that terminal is already focused. `[notify] waiting = false` or `idle = false` turns off that kind (both default to `true`); only the notification goes, while states, highlights, markers, `C-a a` and the dashboard stay as they are.
+- macOS notifications fire when a session or one of its subagents starts waiting and when a main agent goes idle (a subagent finishing never notifies), but not when that terminal is already focused. `[notify] waiting = false` or `idle = false` turns off that kind (both default to `true`); only the notification goes, while states, highlights, markers, `C-a a` and the dashboard stay as they are.
 
 ### Preview
 
