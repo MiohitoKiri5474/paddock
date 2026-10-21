@@ -28,6 +28,9 @@
 //! [notify]                   # macOS notifications, on unless set false
 //! waiting = true             # a session or one of its subagents starts waiting on you
 //! idle = true                # a main agent finishes its turn
+//!
+//! [worktrees]
+//! directory = "~/.paddock/worktrees"   # new worktrees go to <directory>/<repo>/<branch>
 //! ```
 //!
 //! `paddock keys` prints every action with its default keys.
@@ -42,7 +45,7 @@ use anyhow::{bail, Context, Result};
 use ratatui::style::Color;
 use serde::Deserialize;
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub const FILE_NAME: &str = "config.toml";
 const DEFAULT_PREFIX: &str = "C-a";
@@ -50,6 +53,8 @@ const DEFAULT_PREFIX: &str = "C-a";
 const DEFAULT_SIDEBAR_WIDTH: u16 = 32;
 /// A dark grey, a little darker than most dark themes' background.
 const DEFAULT_CURRENT_SPACE: Color = Color::Indexed(236);
+/// Where new worktrees go unless `[worktrees] directory` says otherwise.
+const DEFAULT_WORKTREES: &str = "~/.paddock/worktrees";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
@@ -66,6 +71,49 @@ pub struct Config {
     pub notify: Notify,
     /// The floats and the size of their box.
     pub floats: Floats,
+    /// Where new worktrees are checked out.
+    pub worktrees: Worktrees,
+}
+
+/// `[worktrees]`: where `C-a W` checks a new branch out.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Worktrees {
+    /// New worktrees go to `<directory>/<repo name>/<branch>` (slashes in
+    /// the branch written `-`); absolute, with `~` expanded.
+    pub directory: PathBuf,
+}
+
+impl Worktrees {
+    /// The directory as written (`given`), else the default, with a
+    /// leading `~` replaced by `home`; it must be absolute.
+    pub fn configured(given: Option<&str>, home: Option<&str>) -> Result<Self> {
+        let spec = given.unwrap_or(DEFAULT_WORKTREES);
+        let expanded = match spec.strip_prefix('~') {
+            Some(rest) if rest.is_empty() || rest.starts_with('/') => {
+                let Some(home) = home.filter(|h| !h.is_empty()) else {
+                    bail!("[worktrees] directory: cannot expand {spec:?}: HOME is not set");
+                };
+                format!("{home}{rest}")
+            }
+            _ => spec.to_string(),
+        };
+        let directory = PathBuf::from(expanded);
+        if !directory.is_absolute() {
+            bail!("[worktrees] directory: {spec:?} is not an absolute path (or ~/...)");
+        }
+        Ok(Self { directory })
+    }
+}
+
+impl Default for Worktrees {
+    fn default() -> Self {
+        let home = std::env::var("HOME").ok();
+        // Without a home there is nothing to expand `~` with: paddock does
+        // not start then (its state directory needs it too).
+        Self::configured(None, home.as_deref()).unwrap_or(Self {
+            directory: PathBuf::from(DEFAULT_WORKTREES),
+        })
+    }
 }
 
 /// Which macOS notifications to send; states, markers and the dashboard
@@ -102,6 +150,17 @@ struct RawConfig {
     /// `[floats]` as written; read by [`Floats::configured`].
     #[serde(default)]
     floats: toml::Table,
+    #[serde(default)]
+    worktrees: RawWorktrees,
+}
+
+/// A `[worktrees]` table as written.
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct RawWorktrees {
+    /// Checked by [`Worktrees::configured`], so a wrong type names the
+    /// setting the same way.
+    directory: Option<toml::Value>,
 }
 
 /// A `[notify]` table as written: a switch per kind of notification.
@@ -198,6 +257,12 @@ impl Config {
         let sections = [raw.keys.commands, raw.keys.sidebar, raw.keys.dashboard].map(given);
         let (keys, warnings) = Keymap::configured(prefix, sections.each_ref())?;
         let floats = Floats::configured(&raw.floats, prefix, &keys.commands)?;
+        let directory = match &raw.worktrees.directory {
+            None => None,
+            Some(toml::Value::String(dir)) => Some(dir.as_str()),
+            Some(_) => bail!("[worktrees] directory: expected a path in quotes"),
+        };
+        let worktrees = Worktrees::configured(directory, std::env::var("HOME").ok().as_deref())?;
         let c = raw.colors;
         let tabs = TabColors::default();
         Ok(Self {
@@ -219,6 +284,7 @@ impl Config {
                 }
             },
             floats,
+            worktrees,
         })
     }
 }
@@ -234,6 +300,7 @@ impl Default for Config {
             sidebar_width: DEFAULT_SIDEBAR_WIDTH,
             notify: Notify::default(),
             floats: Floats::default(),
+            worktrees: Worktrees::default(),
         }
     }
 }
@@ -458,6 +525,30 @@ mod tests {
         assert!(err("[keys.commands]\nhelp = \"g\"\n").contains("\"g\" is also bound to help"));
         assert!(Config::parse("[keys.commands]\nhelp = \"g\"\n[floats]\ng = \"\"\n").is_ok());
         assert!(err("[keys]\nprefix = \"C-g\"\n[floats]\nC-g = \"x\"\n").contains("prefix key"));
+    }
+
+    #[test]
+    fn the_worktree_directory_defaults_under_home_and_must_be_absolute() {
+        let home = std::env::var("HOME").unwrap();
+        let want = PathBuf::from(format!("{home}/.paddock/worktrees"));
+        assert_eq!(Config::default().worktrees.directory, want);
+        assert_eq!(Config::parse("").unwrap().worktrees.directory, want);
+        let parse = |t: &str| Config::parse(&format!("[worktrees]\ndirectory = {t}\n"));
+        assert_eq!(
+            parse("\"~/wt\"").unwrap().worktrees.directory,
+            PathBuf::from(format!("{home}/wt"))
+        );
+        assert_eq!(
+            parse("\"/tmp/wt/\"").unwrap().worktrees.directory,
+            PathBuf::from("/tmp/wt")
+        );
+        for bad in ["\"wt\"", "\"~wt\"", "\"\"", "1"] {
+            let err = format!("{:#}", parse(bad).unwrap_err());
+            assert!(err.contains("[worktrees] directory"), "{bad}: {err}");
+        }
+        assert!(Config::parse("[worktrees]\ndir = \"/w\"\n").is_err());
+        let no_home = Worktrees::configured(None, None).unwrap_err();
+        assert!(format!("{no_home:#}").contains("HOME"), "{no_home:#}");
     }
 
     #[test]

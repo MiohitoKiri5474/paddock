@@ -31,10 +31,16 @@ pub enum Press {
 impl App {
     /// Returns whether the screen may have changed.
     pub fn mouse(&mut self, m: MouseEvent) -> Result<bool> {
+        if self.mode.is_prompt() {
+            return Ok(self.prompt_mouse(m));
+        }
         match self.mode {
-            Mode::Naming { .. } | Mode::ConfirmClose { .. } => return Ok(self.prompt_mouse(m)),
             Mode::Help | Mode::Dashboard(_) => return Ok(false),
             Mode::Normal | Mode::Sidebar(_) => {}
+            Mode::Naming { .. }
+            | Mode::ConfirmClose { .. }
+            | Mode::OpenWorktree { .. }
+            | Mode::ConfirmDelete { .. } => unreachable!("the prompt took it"),
         }
         match m.kind {
             MouseEventKind::Down(_) => self.press(m),
@@ -52,7 +58,10 @@ impl App {
             return false;
         }
         self.mode = match std::mem::replace(&mut self.mode, Mode::Normal) {
-            Mode::Naming { back, .. } | Mode::ConfirmClose { back, .. } => Mode::back_to(back),
+            Mode::Naming { back, .. }
+            | Mode::ConfirmClose { back, .. }
+            | Mode::OpenWorktree { back, .. }
+            | Mode::ConfirmDelete { back, .. } => Mode::back_to(back),
             _ => Mode::Normal,
         };
         true
@@ -143,9 +152,9 @@ impl App {
     fn press_sidebar(&mut self, y: u16) -> bool {
         let area = Rect::new(0, 0, self.sidebar_width(), self.screen.1);
         let picks = self.sidebar_picks();
-        let spaces = self.spaces.len();
-        let agents = picks.len() - spaces;
-        let Some(pick) = sidebar::pick_at(spaces, agents, area, y).and_then(|i| picks.get(i))
+        let entries = self.sidebar_spaces(&self.rows());
+        let agents = picks.len() - self.spaces.len();
+        let Some(pick) = sidebar::pick_at(&entries, agents, area, y).and_then(|i| picks.get(i))
         else {
             return false;
         };

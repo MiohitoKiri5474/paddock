@@ -34,6 +34,10 @@ pub enum SidebarAction {
     Open,
     Close,
     Fork,
+    /// A new worktree of the space's repository, as a new space.
+    NewWorktree,
+    /// One of the space's repository's worktrees, as a new space.
+    OpenWorktree,
     Back,
 }
 
@@ -128,6 +132,24 @@ pub const COMMANDS: &[Binding<Command>] = &[
     bind("close", Command::Close, &["x"], "close pane (asks if busy)"),
     bind("fork", Command::Fork, &["f"], "fork Claude into a new tab"),
     bind(
+        "new_worktree",
+        Command::NewWorktree,
+        &["W"],
+        "new worktree as a new space",
+    ),
+    bind(
+        "open_worktree",
+        Command::OpenWorktree,
+        &["O"],
+        "open a worktree as a new space",
+    ),
+    bind(
+        "delete_worktree",
+        Command::DeleteWorktree,
+        &[],
+        "delete this space's worktree",
+    ),
+    bind(
         "focus_sidebar",
         Command::FocusSidebar,
         &["s"],
@@ -204,6 +226,18 @@ pub const SIDEBAR: &[Binding<SidebarAction>] = &[
         SidebarAction::Fork,
         &["f"],
         "fork the agent (on a space, its agent that needs you most)",
+    ),
+    bind(
+        "new_worktree",
+        SidebarAction::NewWorktree,
+        &["W"],
+        "new worktree of the space's repository, as a new space",
+    ),
+    bind(
+        "open_worktree",
+        SidebarAction::OpenWorktree,
+        &["o"],
+        "open a worktree of the space's repository as a new space",
     ),
     bind(
         "back",

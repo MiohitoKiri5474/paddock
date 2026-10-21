@@ -1,7 +1,7 @@
 //! The prompt popup (after LazyVim's input): a small rounded box in the
 //! middle of the screen, drawn over everything, its border in the accent
 //! colour and its title in the top border. It holds a line being typed
-//! (a name) or a question.
+//! (a name), a question, or a list to pick from.
 //!
 //! ```text
 //! ╭──────── Rename tab ────────╮
@@ -12,12 +12,14 @@
 use crate::input::line::LineEdit;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, BorderType, Clear, Widget};
 
 /// The box's width on screens wide enough.
 const WIDTH: u16 = 40;
+/// The width of a box holding a list (paths need the room).
+const LIST_WIDTH: u16 = 60;
 /// Borders and one line.
 const HEIGHT: u16 = 3;
 /// Blank columns between the border and the text, each side.
@@ -29,6 +31,8 @@ pub enum Body<'a> {
     Input(&'a LineEdit),
     /// A question, answered by a key.
     Message(String),
+    /// Lines to pick one of, `selected` reversed.
+    List { items: Vec<String>, selected: usize },
 }
 
 /// The popup as drawn now: its title, what it holds, and its colour.
@@ -42,11 +46,17 @@ pub struct Prompt<'a> {
     pub accent: Color,
 }
 
-/// Where the box goes on a screen `screen`: centred, [`WIDTH`] wide or
-/// as wide as the screen if narrower.
+/// Where a box of one line goes on a screen `screen`: centred, [`WIDTH`]
+/// wide or as wide as the screen if narrower.
 pub fn area(screen: Rect) -> Rect {
-    let width = WIDTH.min(screen.width);
-    let height = HEIGHT.min(screen.height);
+    sized(screen, WIDTH, 1)
+}
+
+/// Where a box `width` wide holding `lines` lines goes on a screen
+/// `screen`: centred, cut to the screen.
+fn sized(screen: Rect, width: u16, lines: u16) -> Rect {
+    let width = width.min(screen.width);
+    let height = (HEIGHT - 1).saturating_add(lines).min(screen.height);
     Rect {
         x: screen.x + (screen.width - width) / 2,
         y: screen.y + (screen.height - height) / 2,
@@ -65,8 +75,25 @@ pub fn frame(title: &str, accent: Color) -> Block<'_> {
 }
 
 impl Prompt<'_> {
-    /// Draw the box at `popup` (see [`area`]). Returns the cursor while
-    /// typing.
+    /// Where this box goes on `screen`: one line [`WIDTH`] wide for input,
+    /// as wide as its question needs for a message, and [`LIST_WIDTH`]
+    /// with a line per item for a list.
+    pub fn area(&self, screen: Rect) -> Rect {
+        match &self.body {
+            Body::Input(_) => area(screen),
+            Body::Message(m) => {
+                let needed = u16::try_from(m.chars().count()).unwrap_or(u16::MAX);
+                sized(screen, WIDTH.max(needed.saturating_add(2 * PAD + 2)), 1)
+            }
+            Body::List { items, .. } => {
+                let lines = u16::try_from(items.len().max(1)).unwrap_or(u16::MAX);
+                sized(screen, LIST_WIDTH, lines)
+            }
+        }
+    }
+
+    /// Draw the box at `popup` (see [`Self::area`]). Returns the cursor
+    /// while typing.
     pub fn render(&self, popup: Rect, buf: &mut Buffer) -> Option<Position> {
         Clear.render(popup, buf);
         let block = frame(self.title, self.accent);
@@ -90,6 +117,19 @@ impl Prompt<'_> {
                 let (shown, col) = line.window(text.width);
                 buf.set_stringn(text.x, text.y, shown, width, Style::default());
                 Some(Position::new(text.x + col, text.y))
+            }
+            Body::List { items, selected } => {
+                for (item, y) in items.iter().zip(text.y..text.bottom()) {
+                    let row = Rect::new(text.x, y, text.width, 1);
+                    let style = if items.get(*selected) == Some(item) {
+                        Style::default().add_modifier(Modifier::REVERSED)
+                    } else {
+                        Style::default()
+                    };
+                    buf.set_style(row, style);
+                    buf.set_stringn(text.x, y, item, width, style);
+                }
+                None
             }
         }
     }
@@ -165,6 +205,52 @@ mod tests {
         assert_eq!(prompt.render(area(screen), &mut buf), None);
         assert!(rows(&buf)[1].contains("│ Claude is running: close? y/n"));
         assert!(rows(&buf)[0].contains(" Close tab "));
+    }
+
+    #[test]
+    fn a_list_shows_a_line_per_item_with_the_selected_one_reversed() {
+        let screen = Rect::new(0, 0, 70, 8);
+        let mut buf = Buffer::empty(screen);
+        let prompt = Prompt {
+            title: " Open worktree ",
+            body: Body::List {
+                items: vec!["api/feat/x  ~/w/feat-x".into(), "api  ~/api".into()],
+                selected: 1,
+            },
+            accent: Color::Blue,
+        };
+        let popup = prompt.area(screen);
+        assert_eq!(popup, Rect::new(5, 2, 60, 4));
+        assert_eq!(prompt.render(popup, &mut buf), None);
+        let shown = rows(&buf);
+        assert!(
+            shown[3].contains("│ api/feat/x  ~/w/feat-x"),
+            "{}",
+            shown[3]
+        );
+        assert!(shown[4].contains("│ api  ~/api"), "{}", shown[4]);
+        assert!(!buf[(7, 3)].modifier.contains(Modifier::REVERSED));
+        assert!(buf[(7, 4)].modifier.contains(Modifier::REVERSED));
+        assert!(
+            buf[(60, 4)].modifier.contains(Modifier::REVERSED),
+            "whole line"
+        );
+        // A long question widens its box; an empty list still has a line.
+        let long = Prompt {
+            title: " x ",
+            body: Body::Message("a".repeat(50)),
+            accent: Color::Blue,
+        };
+        assert_eq!(long.area(screen).width, 54);
+        let empty = Prompt {
+            title: " x ",
+            body: Body::List {
+                items: vec![],
+                selected: 0,
+            },
+            accent: Color::Blue,
+        };
+        assert_eq!(empty.area(screen).height, 3);
     }
 
     #[test]

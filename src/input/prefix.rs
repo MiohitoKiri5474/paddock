@@ -22,6 +22,12 @@ pub enum Command {
     Close,
     /// Continue a copy of the focused session in a new tab of its space.
     Fork,
+    /// A new worktree of the focused terminal's repository, as a new space.
+    NewWorktree,
+    /// One of the focused terminal's repository's worktrees, as a new space.
+    OpenWorktree,
+    /// Delete the current space's worktree and branch, closing the space.
+    DeleteWorktree,
     /// Split the focused terminal side by side.
     SplitColumns,
     /// Split the focused terminal top and bottom.
@@ -224,6 +230,15 @@ mod tests {
         );
         assert_eq!(after_prefix('x', none), KeyAction::Command(Command::Close));
         assert_eq!(after_prefix('f', none), KeyAction::Command(Command::Fork));
+        assert_eq!(
+            after_prefix('W', KeyModifiers::SHIFT),
+            KeyAction::Command(Command::NewWorktree)
+        );
+        assert_eq!(
+            after_prefix('O', KeyModifiers::SHIFT),
+            KeyAction::Command(Command::OpenWorktree)
+        );
+        assert_eq!(after_prefix('X', KeyModifiers::SHIFT), KeyAction::None);
         assert_eq!(
             after_prefix('|', KeyModifiers::SHIFT),
             KeyAction::Command(Command::SplitColumns)

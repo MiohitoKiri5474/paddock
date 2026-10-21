@@ -104,6 +104,8 @@ Every key is an action with a name you can rebind (see [Configure](#configure));
 | `=` | even out the focused split | `equalize` |
 | `x` | close pane (asks if busy) | `close` |
 | `f` | fork Claude into a new tab | `fork` |
+| `W` | new worktree as a new space | `new_worktree` |
+| `O` | open a worktree as a new space | `open_worktree` |
 | `s` | focus sidebar on current agent | `focus_sidebar` |
 | `w` | focus sidebar on the space | `focus_spaces` |
 | `b` | show or hide sidebar | `toggle_sidebar` |
@@ -119,6 +121,8 @@ Every key is an action with a name you can rebind (see [Configure](#configure));
 
 Floats (`[floats]`): `C-a g` shows lazygit in a box over the whole screen, sidebar included, framed like the prompts and titled with its command; `C-a g` again hides it and the program keeps running, so showing it again brings back the same program and state. When the program exits, the float closes, and the next `C-a g` starts it again. Each space has its own float per key, started in the focused terminal's directory; it lives in the space's tmux session (so it survives detaching) but is never a tab, never in `C-a Tab`'s history, and paddock does not follow Claude in it. One float shows at a time. While it shows, every key, paste and mouse event inside it goes to it, except the prefix: `C-a` commands still work, and one that changes the page or gives the sidebar or dashboard the keyboard hides the float first. A click outside it does nothing. A float whose key you remove from `[floats]` is closed, with its program, the next time paddock opens. Floats are tmux windows, so `tmux -L paddock attach` lists them next to the tabs.
 
+Worktrees: a git worktree is a space. `C-a W` asks for a branch name (edited like the other prompts) and, in the focused terminal's repository, runs `git worktree add -b <branch> <path>` (`git worktree add <path> <branch>` if the branch exists), where `<path>` is `<[worktrees] directory>/<repo>/<branch>` with slashes in the branch written `-`; then it opens a new space named `<repo>/<branch>` with its first tab there. A name git refuses, a path that exists or any git error shows as a notice (git's reason first), and nothing is left half-made. `C-a O` lists the repository's worktrees that have no space yet: `j`/`k` move, `Enter` opens one, `Esc` cancels. In the sidebar, a space in a linked worktree is listed one cell in, under its repository's main-checkout space, or under a dim header with the repository's name when no space is in the main checkout; `W` and `o` there act on the selected space's repository, and `x` on a worktree space deletes it: it asks `y`; if the worktree has uncommitted changes or its branch is not merged into its base, it asks again naming that risk (a second `y` deletes anyway); then it closes the space (asking if Claude is busy, as close does) and runs `git worktree remove` and `git branch -d` (never `-D`). The main checkout is never deleted this way: `x` on its space only closes the space. `delete_worktree` (unbound by default) does the same for the current space.
+
 In the sidebar (`[keys.sidebar]`; prefix commands work too):
 
 | Key | Action | Name |
@@ -128,6 +132,8 @@ In the sidebar (`[keys.sidebar]`; prefix commands work too):
 | `Enter` | show the space's tabs, or jump to the agent's pane | `open` |
 | `x` | close the space, or the agent's pane | `close` |
 | `f` | fork the agent (on a space, its agent that needs you most) | `fork` |
+| `W` | new worktree of the space's repository, as a new space | `new_worktree` |
+| `o` | open a worktree of the space's repository as a new space | `open_worktree` |
 | `Esc` | give the keyboard back | `back` |
 
 In the dashboard (`[keys.dashboard]`):
@@ -143,7 +149,7 @@ In the dashboard (`[keys.dashboard]`):
 | `I` | type into the previewed terminal (Esc leaves) | `interact` |
 | `Esc` | close the dashboard | `back` |
 
-While typing into the preview, every key goes to the terminal except `Esc`, which only leaves and is never passed on; this is fixed, so a remap can never trap you there. Task rows show line changes, ahead/behind, the diff and changed files against the base branch (`origin/HEAD`, else `main`/`master`), the last commit's age, and `merged` once the branch is in its base. Prompt editing (`Enter`, `Esc`, `Left`/`Right`, `Home`/`End`, `Backspace`/`Delete`, `C-u` (clear), `C-w` (delete word)) and the `y` that confirms a close are fixed too.
+While typing into the preview, every key goes to the terminal except `Esc`, which only leaves and is never passed on; this is fixed, so a remap can never trap you there. Task rows show line changes, ahead/behind, the diff and changed files against the base branch (`origin/HEAD`, else `main`/`master`), the last commit's age, and `merged` once the branch is in its base. Prompt editing (`Enter`, `Esc`, `Left`/`Right`, `Home`/`End`, `Backspace`/`Delete`, `C-u` (clear), `C-w` (delete word)) and the `y` that confirms a close or a worktree delete are fixed too, as are `j`/`k`/`Enter`/`Esc` in the worktree list.
 
 Mouse: click to focus a split, switch tabs (`+` after the tabs opens one, `<`/`>` scroll a full bar), or open a space or agent; the wheel over the tab bar switches tabs; wheel scrolls history; drag selects and copies (hold Shift over programs that use the mouse).
 
@@ -185,7 +191,12 @@ y = "yazi"
 [notify]
 waiting = true            # a macOS notification when a session or one of its subagents waits on you; false turns it off
 idle = true               # a macOS notification when a main agent finishes its turn; false turns it off
+
+[worktrees]
+directory = "~/.paddock/worktrees"  # C-a W checks new worktrees out in <directory>/<repo>/<branch>
 ```
+
+`[worktrees] directory` must be absolute once `~` is expanded; paddock refuses to start otherwise.
 
 Both notifications are on by default; `false` turns one off. The session's state, the sidebar and tab markers, `C-a a` and the dashboard work the same either way.
 

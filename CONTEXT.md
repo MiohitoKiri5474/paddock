@@ -104,6 +104,14 @@ _Avoid_: quit, exit
 
 ### Git
 
+**Worktree**:
+A git working tree linked to a repository, checked out on its own branch in its own directory. paddock makes one with `C-a W` (under `[worktrees] directory`), opens one with `C-a O`, and deletes one with `x` on its space; a space in a worktree is listed under its repository's main checkout.
+_Avoid_: checkout (for a linked one), clone
+
+**Main checkout**:
+A repository's first working tree, the one `git clone` or `git init` made; the others are its worktrees. paddock never deletes it.
+_Avoid_: main worktree, root repo
+
 **Line changes**:
 Uncommitted lines added and removed in a task's working tree, shown as `+30 −144`.
 _Avoid_: diff

@@ -14,8 +14,10 @@ use super::sidebar::clamp_width;
 use super::sidebar::Selection;
 use super::space::Space;
 use super::watch::Place;
+use super::worktrees::{Choice, WorktreeSpace};
 use super::Event;
-use crate::config::{Config, Floats};
+use crate::config::{Config, Floats, Worktrees};
+use crate::git::Checkout;
 use crate::hooks::now_ms;
 use crate::input::keymap::Keymap;
 use crate::input::line::LineEdit;
@@ -56,6 +58,22 @@ pub enum Mode {
     },
     /// The dashboard is open.
     Dashboard(Dashboard),
+    /// The prompt lists `candidates` (the repository's worktrees without
+    /// a space) to open one; `selected` is the line the cursor is on.
+    /// `back` is the panel asked from, to return to.
+    OpenWorktree {
+        candidates: Vec<Choice>,
+        selected: usize,
+        back: Option<Panel>,
+    },
+    /// Asking before deleting `target` with its worktree and branch; the
+    /// second time, `risk` names what would be lost. `back` is the panel
+    /// asked from, to return to.
+    ConfirmDelete {
+        target: WorktreeSpace,
+        risk: Option<String>,
+        back: Option<Panel>,
+    },
 }
 
 /// A panel that had the keyboard when the prompt opened, and gets it back
@@ -91,7 +109,10 @@ impl Mode {
     /// The panel the open prompt returns to, if any.
     pub fn back_panel(&self) -> Option<&Panel> {
         match self {
-            Mode::Naming { back, .. } | Mode::ConfirmClose { back, .. } => back.as_ref(),
+            Mode::Naming { back, .. }
+            | Mode::ConfirmClose { back, .. }
+            | Mode::OpenWorktree { back, .. }
+            | Mode::ConfirmDelete { back, .. } => back.as_ref(),
             _ => None,
         }
     }
@@ -99,19 +120,35 @@ impl Mode {
     /// The panel the open prompt returns to, to change it in place.
     pub fn back_panel_mut(&mut self) -> Option<&mut Panel> {
         match self {
-            Mode::Naming { back, .. } | Mode::ConfirmClose { back, .. } => back.as_mut(),
+            Mode::Naming { back, .. }
+            | Mode::ConfirmClose { back, .. }
+            | Mode::OpenWorktree { back, .. }
+            | Mode::ConfirmDelete { back, .. } => back.as_mut(),
             _ => None,
         }
+    }
+
+    /// Whether the prompt popup is open: every key and click goes to it.
+    pub fn is_prompt(&self) -> bool {
+        matches!(
+            self,
+            Mode::Naming { .. }
+                | Mode::ConfirmClose { .. }
+                | Mode::OpenWorktree { .. }
+                | Mode::ConfirmDelete { .. }
+        )
     }
 }
 
 /// What a name is asked for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NameTarget {
     /// Renaming the current tab or space.
     Rename(Renamed),
     /// A new space.
     NewSpace,
+    /// A branch to check out in a new worktree of this repository.
+    NewWorktree(Checkout),
 }
 
 /// What a rename is for.
@@ -125,11 +162,12 @@ pub enum Renamed {
 
 impl NameTarget {
     /// The prompt's title.
-    pub fn title(self) -> &'static str {
+    pub fn title(&self) -> &'static str {
         match self {
             NameTarget::Rename(Renamed::Tab) => " Rename tab ",
             NameTarget::Rename(Renamed::Space) => " Rename space ",
             NameTarget::NewSpace => " New space ",
+            NameTarget::NewWorktree(_) => " New worktree ",
         }
     }
 }
@@ -141,6 +179,9 @@ pub enum CloseTarget {
     Pane(String),
     /// A whole space (`$N`) with all its tabs.
     Space(String),
+    /// A worktree space, whose worktree and branch go with it (`force`:
+    /// with its uncommitted changes).
+    Worktree { target: WorktreeSpace, force: bool },
 }
 
 pub struct App {
@@ -198,6 +239,8 @@ pub struct App {
     /// Every float pane seen, closed ones included: their late hooks are
     /// left out too.
     pub(super) float_panes: HashSet<String>,
+    /// Where new worktrees are checked out.
+    pub(super) worktrees: Worktrees,
 }
 
 /// The part of a screen of `(cols, rows)` that shows the current tab's
@@ -278,6 +321,7 @@ impl App {
             floats: config.floats.clone(),
             float: None,
             float_panes: HashSet::new(),
+            worktrees: config.worktrees.clone(),
         };
         app.load_dismissed();
         app.open_spaces()?;

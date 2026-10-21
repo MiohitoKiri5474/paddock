@@ -19,6 +19,7 @@ mod state;
 mod tabs;
 mod view;
 mod watch;
+mod worktrees;
 
 pub use rows::{Row, RowId, TaskDetails, TaskRow};
 

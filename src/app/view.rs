@@ -3,10 +3,11 @@
 
 use super::rows::{most_urgent, Row};
 use super::state::{App, CloseTarget, Mode};
+use super::worktrees::SpaceEntry;
 use crate::sessions::State;
 use crate::tmux::structure::Window;
 use crate::ui::prompt::{self, Body, Prompt};
-use crate::ui::sidebar::{tilde, AgentLine, SpaceLine};
+use crate::ui::sidebar::{tilde, AgentLine, Entry, SpaceLine};
 use crate::ui::tab_bar::{self, Tab, TabBar};
 use ratatui::layout::Rect;
 use std::borrow::Cow;
@@ -14,35 +15,56 @@ use std::borrow::Cow;
 /// What a tab running Claude is called while the user has not named it.
 const CLAUDE: &str = "claude";
 
-impl App {
-    /// Each space: its name, the most urgent state of its agents, whether
-    /// it is current, and its directory and branch once read.
-    pub(super) fn sidebar_spaces(&self, rows: &[Row]) -> Vec<SpaceLine> {
+/// The home directory, for writing paths with `~`.
+pub(super) struct Home {
+    home: String,
+    /// tmux reports directories with symlinks resolved (`/tmp` is
+    /// `/private/tmp` on macOS), so home may be written either way.
+    real: String,
+}
+
+impl Home {
+    pub fn from_env() -> Self {
         let home = std::env::var("HOME").unwrap_or_default();
-        // tmux reports directories with symlinks resolved (`/tmp` is
-        // `/private/tmp` on macOS), so home may be written either way.
-        let real_home = std::fs::canonicalize(&home)
+        let real = std::fs::canonicalize(&home)
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_else(|_| home.clone());
-        let show = |path: &str| {
-            let short = tilde(path, &home);
-            if short == path {
-                tilde(path, &real_home)
-            } else {
-                short
-            }
-        };
-        self.spaces
-            .iter()
-            .enumerate()
-            .map(|(i, space)| {
-                let place = self.places.get(&space.id);
-                SpaceLine {
-                    name: space.name().to_string(),
-                    state: most_urgent(rows, |r| r.space == space.id),
-                    current: i == self.current,
-                    path: place.map(|p| show(&p.path)),
-                    branch: place.and_then(|p| p.branch.clone()),
+        Self { home, real }
+    }
+
+    /// `path` with the home directory written `~`.
+    pub fn show(&self, path: &str) -> String {
+        let short = tilde(path, &self.home);
+        if short == path {
+            tilde(path, &self.real)
+        } else {
+            short
+        }
+    }
+}
+
+impl App {
+    /// SPACES as drawn: each space (its name, the most urgent state of its
+    /// agents, whether it is current, and its directory and branch once
+    /// read) in sidebar order, worktree spaces under their repository, with
+    /// a header for a repository whose main checkout has no space.
+    pub(super) fn sidebar_spaces(&self, rows: &[Row]) -> Vec<Entry> {
+        let home = Home::from_env();
+        self.space_entries()
+            .into_iter()
+            .map(|entry| match entry {
+                SpaceEntry::Repo(name) => Entry::Repo(name),
+                SpaceEntry::Space { index, linked } => {
+                    let space = &self.spaces[index];
+                    let place = self.places.get(&space.id);
+                    Entry::Space(SpaceLine {
+                        name: space.name().to_string(),
+                        state: most_urgent(rows, |r| r.space == space.id),
+                        current: index == self.current,
+                        path: place.map(|p| home.show(&p.path)),
+                        branch: place.and_then(|p| p.branch.clone()),
+                        linked,
+                    })
                 }
             })
             .collect()
@@ -115,14 +137,32 @@ impl App {
         }
     }
 
-    /// The prompt popup, while it is open: asking for a name, or asking
-    /// before a close.
+    /// The prompt popup, while it is open: asking for a name, asking
+    /// before a close or a delete, or listing worktrees to open.
     pub(super) fn prompt(&self) -> Option<Prompt<'_>> {
         let (title, body) = match &self.mode {
             Mode::Naming { target, line, .. } => (target.title(), Body::Input(line)),
             Mode::ConfirmClose { target, state, .. } => (
                 self.close_title(target),
                 Body::Message(format!("Claude is {}: close? y/n", state.label())),
+            ),
+            Mode::OpenWorktree {
+                candidates,
+                selected,
+                ..
+            } => (
+                " Open worktree ",
+                Body::List {
+                    items: candidates.iter().map(|c| c.line.clone()).collect(),
+                    selected: *selected,
+                },
+            ),
+            Mode::ConfirmDelete { target, risk, .. } => (
+                " Delete worktree ",
+                Body::Message(match risk {
+                    None => format!("delete {} and its worktree? y/n", target.label()),
+                    Some(risk) => format!("{risk}: delete anyway? y/n"),
+                }),
             ),
             _ => return None,
         };
@@ -137,6 +177,7 @@ impl App {
     /// its tab closes the tab, and alone in its space's only tab, the space.
     fn close_title(&self, target: &CloseTarget) -> &'static str {
         let CloseTarget::Pane(pane) = target else {
+            // A space, or a worktree space.
             return " Close space ";
         };
         let found = self.spaces.iter().find_map(|s| {
@@ -153,7 +194,9 @@ impl App {
     /// Where the prompt popup is on the screen: drawn there, and clicks
     /// are judged against it.
     pub(super) fn prompt_area(&self) -> Rect {
-        prompt::area(Rect::new(0, 0, self.screen.0, self.screen.1))
+        let screen = Rect::new(0, 0, self.screen.0, self.screen.1);
+        self.prompt()
+            .map_or_else(|| prompt::area(screen), |p| p.area(screen))
     }
 
     /// The tab bar's parts as drawn now, for clicks.
