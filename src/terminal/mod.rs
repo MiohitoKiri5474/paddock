@@ -19,15 +19,23 @@ pub const SCROLLBACK: usize = 50_000;
 /// on by itself.
 pub const MAX_HELD: usize = 8 * 1024 * 1024;
 
+/// Why a paused terminal went on by itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WentOn {
+    /// The held output outgrew [`MAX_HELD`].
+    Overflowed,
+    /// The terminal was resized.
+    Resized,
+}
+
 pub struct Terminal {
     emulator: Emulator,
     keys: KeyModeScanner,
     titles: ScreenTitleFilter,
     /// Output held back while paused (copy mode), fed when it goes on.
     held: Option<Vec<u8>>,
-    /// The held output outgrew [`MAX_HELD`], so the terminal went on by
-    /// itself.
-    overflowed: bool,
+    /// Why the terminal last went on by itself, until asked.
+    went_on: Option<WentOn>,
 }
 
 impl Terminal {
@@ -38,7 +46,7 @@ impl Terminal {
             keys: KeyModeScanner::default(),
             titles: ScreenTitleFilter::default(),
             held: None,
-            overflowed: false,
+            went_on: None,
         }
     }
 
@@ -46,10 +54,14 @@ impl Terminal {
     /// would draw as text. While paused, they are held back instead, up to
     /// [`MAX_HELD`]: past it the terminal goes on by itself.
     pub fn output(&mut self, bytes: &[u8]) {
+        // While paused, the key-mode scanner and the title filter wait for
+        // the bytes too: they see them, in order, when the terminal goes
+        // on, and nothing reads their state meanwhile, as no key, paste
+        // or mouse report reaches a terminal in copy mode.
         if let Some(held) = &mut self.held {
             held.extend_from_slice(bytes);
             if held.len() > MAX_HELD {
-                self.overflowed = true;
+                self.went_on = Some(WentOn::Overflowed);
                 self.go_on();
             }
             return;
@@ -75,6 +87,9 @@ impl Terminal {
     /// at the size it was written for.
     pub fn resize(&mut self, (cols, rows): (u16, u16)) {
         if self.emulator.size() != (cols, rows) {
+            if self.is_paused() {
+                self.went_on = Some(WentOn::Resized);
+            }
             self.go_on();
             self.emulator.resize(cols, rows);
         }
@@ -84,7 +99,7 @@ impl Terminal {
     pub fn pause(&mut self) {
         if self.held.is_none() {
             self.held = Some(Vec::new());
-            self.overflowed = false;
+            self.went_on = None;
         }
     }
 
@@ -100,10 +115,10 @@ impl Terminal {
         }
     }
 
-    /// Whether the terminal went on by itself because it held too much,
-    /// since this was last asked.
-    pub fn take_overflowed(&mut self) -> bool {
-        std::mem::take(&mut self.overflowed)
+    /// Why the terminal went on by itself, if it did since this was last
+    /// asked.
+    pub fn take_went_on(&mut self) -> Option<WentOn> {
+        self.went_on.take()
     }
 
     pub fn emulator(&self) -> &Emulator {
@@ -130,7 +145,7 @@ mod tests {
         t.go_on();
         assert!(!t.is_paused());
         assert_eq!(t.emulator().row_text(1), "two");
-        assert!(!t.take_overflowed());
+        assert_eq!(t.take_went_on(), None);
     }
 
     #[test]
@@ -139,12 +154,16 @@ mod tests {
         t.pause();
         t.output(&vec![b'x'; MAX_HELD + 1]);
         assert!(!t.is_paused());
-        assert!(t.take_overflowed());
-        assert!(!t.take_overflowed(), "told once");
+        assert_eq!(t.take_went_on(), Some(WentOn::Overflowed));
+        assert_eq!(t.take_went_on(), None, "told once");
         t.pause();
         t.output(b"\r\nlate");
         t.resize((12, 2));
         assert!(!t.is_paused());
         assert_eq!(t.emulator().row_text(1), "late");
+        assert_eq!(t.take_went_on(), Some(WentOn::Resized));
+        // A resize while not paused is no reason to tell.
+        t.resize((14, 2));
+        assert_eq!(t.take_went_on(), None);
     }
 }

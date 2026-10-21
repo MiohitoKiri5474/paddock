@@ -239,3 +239,15 @@ fn copy_mode_works_in_the_float_shown() {
     p.wait_for("copy mode left", |_| !p.full_screen().contains(COPY));
     assert!(p.full_screen().contains(" cat "), "the float stays shown");
 }
+
+#[test]
+fn a_resize_ends_copy_mode_with_a_notice() {
+    let sandbox = Sandbox::new();
+    let mut p = ready(&sandbox);
+    enter_copy_mode(&mut p);
+    p.resize(90, 30);
+    p.wait_for_text("copy mode ended: the terminal was resized");
+    wait_left(&p);
+    p.type_line("echo resized-$((4+4))");
+    p.wait_for_text("resized-8");
+}

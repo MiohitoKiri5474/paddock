@@ -11,7 +11,7 @@ use crate::input::keymap::CopyAction;
 use crate::input::line::LineEdit;
 use crate::input::{Command, KeyAction};
 use crate::terminal::emulator::{Emulator, Found, Motion, Spot};
-use crate::terminal::search;
+use crate::terminal::{search, WentOn};
 use crate::ui::copy::{CopyView, Status};
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent};
@@ -129,7 +129,7 @@ impl App {
 
     /// After any event: copy mode ends by itself when its terminal closed,
     /// is no longer on screen (another tab, the float hidden), or went on
-    /// because it held too much output.
+    /// by itself (resized, or holding too much output), with a notice.
     pub(super) fn check_copy(&mut self) {
         let Mode::Copy(copy) = &self.mode else {
             return;
@@ -142,13 +142,14 @@ impl App {
         if let Mode::Copy(copy) = std::mem::replace(&mut self.mode, Mode::Normal) {
             self.leave_copy(&copy);
         }
-        if self
-            .terminals
-            .get_mut(&pane)
-            .is_some_and(|t| t.take_overflowed())
-        {
-            self.notice = Some("copy mode left: too much output came meanwhile".into());
-        }
+        let went_on = self.terminals.get_mut(&pane).and_then(|t| t.take_went_on());
+        self.notice = match went_on {
+            Some(WentOn::Overflowed) => {
+                Some("copy mode ended: too much output came meanwhile".into())
+            }
+            Some(WentOn::Resized) => Some("copy mode ended: the terminal was resized".into()),
+            None => return,
+        };
     }
 
     /// A key in copy mode: while typing a search, it edits the search;
