@@ -128,15 +128,17 @@ fn hook_events_drive_the_agent_row() {
         ("PostToolUse", "running"),
         ("Notification-permission_prompt", "waiting"),
         ("Stop", "idle"),
-        ("SessionEnd", "stopped"),
     ];
     for (name, state) in steps {
         let event = name.split('-').next().unwrap();
         let out = sandbox.hook("space-1", event, &payload(name));
         assert!(out.stdout.is_empty() && out.stderr.is_empty(), "{out:?}");
-        let tab = if state == "stopped" { "home" } else { "claude" };
-        wait_for_lines(&paddock, &one_agent("repo", state, tab));
+        wait_for_lines(&paddock, &one_agent("repo", state, "claude"));
     }
+    // Claude quit: its agent leaves the sidebar.
+    let out = sandbox.hook("space-1", "SessionEnd", &payload("SessionEnd"));
+    assert!(out.stdout.is_empty() && out.stderr.is_empty(), "{out:?}");
+    wait_for_lines(&paddock, &no_agents());
 }
 
 /// What a case is called, the hook's extra environment, and its event.
@@ -193,7 +195,8 @@ fn agents_of_every_space_are_listed_with_their_space_and_tab() {
     start("space-1:2", "s3", "/w/idle", "Stop");
     start("space-1:3", "s4", "/w/waiting", "PermissionRequest");
 
-    // Sorted by state; the turn that ended out of sight is done.
+    // Sorted by state; the turn that ended out of sight is done; the
+    // session that ended is not listed.
     wait_for_lines(
         &paddock,
         &[
@@ -208,8 +211,6 @@ fn agents_of_every_space_are_listed_with_their_space_and_tab() {
             place("space-1", "claude"),
             agent("running", "running"),
             place("space-1", "claude"),
-            agent("stopped", "stopped"),
-            place("space-1", "home"),
         ],
     );
     // The space's tabs show theirs; tabs running Claude are called so.

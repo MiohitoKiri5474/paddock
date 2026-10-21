@@ -1,12 +1,15 @@
 //! Key help (`C-a ?`): an overlay listing the keys as configured. With the
 //! default keys it fits an 80x24 terminal.
 
+use crate::config::Floats;
 use crate::input::keymap::{label, Keymap};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
 
+/// The most of a float's command the help shows.
+const FLOAT_COMMAND: usize = 16;
 /// Columns between the two columns of command keys.
 const GAP: usize = 3;
 /// Columns for a command's keys before its description.
@@ -26,17 +29,27 @@ const PROMPT_KEYS: [&str; 5] = [
 ];
 
 /// The lines of the help, with the prefix written out (e.g. `C-a`): the
-/// commands' keys in two columns, then the sidebar's and the dashboard's.
-pub fn lines(prefix: &str, keys: &Keymap) -> Vec<String> {
+/// commands' and floats' keys in two columns, then the sidebar's and the
+/// dashboard's.
+pub fn lines(prefix: &str, keys: &Keymap, floats: &Floats) -> Vec<String> {
     let mut out = vec![format!("Press {prefix}, then:"), String::new()];
-    let cells: Vec<String> = keys
+    let mut cells: Vec<String> = keys
         .commands
         .bindings()
         .filter(|(_, k)| !k.is_empty())
         .map(|(b, k)| format!("{:<LABEL$} {}", label(k), b.help))
         .collect();
+    cells.extend(floats.list.iter().map(|f| {
+        let command: String = f.command.chars().take(FLOAT_COMMAND).collect();
+        let cut = if f.command.chars().count() > FLOAT_COMMAND {
+            "..."
+        } else {
+            ""
+        };
+        format!("{:<LABEL$} float: {command}{cut}", f.key.name())
+    }));
+    cells.push(format!("{prefix:<LABEL$} send {prefix} to the terminal"));
     out.extend(two_columns(&cells));
-    out.push(format!("{prefix:<LABEL$} send {prefix} to the terminal"));
     out.push(String::new());
     out.extend(wrapped("Sidebar:   ", &keys.sidebar.hints()));
     out.extend(wrapped("Dashboard: ", &keys.dashboard.hints()));
@@ -82,8 +95,8 @@ fn wrapped(title: &str, hints: &[String]) -> Vec<String> {
 }
 
 /// Draw the help centred in `area`.
-pub fn render(prefix: &str, keys: &Keymap, area: Rect, buf: &mut Buffer) {
-    let text = lines(prefix, keys);
+pub fn render(prefix: &str, keys: &Keymap, floats: &Floats, area: Rect, buf: &mut Buffer) {
+    let text = lines(prefix, keys, floats);
     let width = text
         .iter()
         .map(|l| Line::raw(l.as_str()).width())
@@ -127,11 +140,12 @@ mod tests {
 
     #[test]
     fn lists_every_binding_with_the_prefix() {
-        let l = lines("C-b", &Keymap::default());
+        let l = lines("C-b", &Keymap::default(), &Floats::default());
         assert_eq!(l[0], "Press C-b, then:");
         assert!(l.iter().any(|x| x.contains("c      new tab in this space")));
         assert!(l.iter().any(|x| x.contains("1...9  go to tab")));
         assert!(l.iter().any(|x| x.contains("send C-b to the terminal")));
+        assert!(l.iter().any(|x| x.contains("g      float: lazygit")));
         assert!(l.iter().any(|x| x.starts_with("Sidebar:   j down  k up")));
         assert!(l.iter().any(|x| x.contains("I interact  Esc back")));
         assert!(l
@@ -158,7 +172,7 @@ mod tests {
         let none = Given::new();
         let prefix = Key::parse("C-a").unwrap();
         let (keys, _) = Keymap::configured(prefix, [&commands, &none, &none]).unwrap();
-        let l = lines("C-a", &keys);
+        let l = lines("C-a", &keys, &Floats::default());
         assert!(l.iter().any(|x| x.contains("t      new tab in this space")));
         assert!(!l.iter().any(|x| x.contains("detach")));
     }
@@ -168,11 +182,14 @@ mod tests {
         let area = Rect::new(0, 0, 80, 24);
         let mut buf = Buffer::empty(area);
         let keys = Keymap::default();
-        render("C-a", &keys, area, &mut buf);
+        render("C-a", &keys, &Floats::default(), area, &mut buf);
         let shown = rows(area, &buf);
         assert!(shown.iter().any(|r| r.contains("paddock keys")));
         assert!(shown.iter().any(|r| r.contains("any key closes this help")));
-        for line in lines("C-a", &keys).iter().filter(|l| !l.is_empty()) {
+        for line in lines("C-a", &keys, &Floats::default())
+            .iter()
+            .filter(|l| !l.is_empty())
+        {
             let line = line.trim_end();
             assert!(
                 shown.iter().any(|r| r.contains(line)),
@@ -183,8 +200,32 @@ mod tests {
     }
 
     #[test]
+    fn long_float_commands_are_cut_and_removed_floats_left_out() {
+        let floats = Floats {
+            list: vec![crate::config::Float {
+                key: crate::input::keymap::Key::parse("T").unwrap(),
+                command: "htop --delay 10 --sort-key PERCENT_CPU".into(),
+            }],
+            ..Floats::default()
+        };
+        let l = lines("C-a", &Keymap::default(), &floats);
+        assert!(
+            l.iter()
+                .any(|x| x.contains("T      float: htop --delay 10 ...")),
+            "{l:?}"
+        );
+        assert!(!l.iter().any(|x| x.contains("lazygit")));
+    }
+
+    #[test]
     fn renders_on_screens_too_small_for_it() {
         let small = Rect::new(0, 0, 10, 3);
-        render("C-a", &Keymap::default(), small, &mut Buffer::empty(small));
+        render(
+            "C-a",
+            &Keymap::default(),
+            &Floats::default(),
+            small,
+            &mut Buffer::empty(small),
+        );
     }
 }

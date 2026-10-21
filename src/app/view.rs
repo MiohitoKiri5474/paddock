@@ -48,17 +48,11 @@ impl App {
             .collect()
     }
 
-    /// The main Claude sessions in open panes, across every space, in row
-    /// order.
-    pub(super) fn agents<'a>(&self, rows: &'a [Row]) -> Vec<&'a Row> {
-        rows.iter().filter(|r| !r.closed).collect()
-    }
-
-    /// Each agent: its label, state, its space and tab, and whether it is
-    /// in the focused terminal.
+    /// Each agent (every row: a main Claude session that has not ended, in
+    /// any space): its label, state, its space and tab, and whether it is in
+    /// the focused terminal.
     pub(super) fn sidebar_agents(&self, rows: &[Row]) -> Vec<AgentLine> {
-        self.agents(rows)
-            .into_iter()
+        rows.iter()
             .map(|r| AgentLine {
                 label: r.label.clone(),
                 state: r.state,

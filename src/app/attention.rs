@@ -8,6 +8,7 @@
 use super::rows::Row;
 use super::state::{App, Mode};
 use super::Event;
+use crate::config::Notify;
 use crate::hooks::now_ms;
 use crate::sessions::{self, state_after, HookRecord, State};
 use std::collections::HashMap;
@@ -73,6 +74,16 @@ pub enum Alert {
     Idle,
 }
 
+impl Notify {
+    /// Whether the config lets `alert` show a notification.
+    pub fn allows(self, alert: Alert) -> bool {
+        match alert {
+            Alert::Waiting => self.waiting,
+            Alert::Idle => self.idle,
+        }
+    }
+}
+
 /// The last alert of each terminal's session, so that one wait or one
 /// finished turn notifies once however many hooks report it.
 #[derive(Debug, Default)]
@@ -130,11 +141,15 @@ pub struct Attention {
     /// A failure to notify was shown; later ones are not, to avoid a notice
     /// on every notification.
     notify_failure_shown: bool,
+    /// Which kinds of alert show a notification (`[notify]`).
+    notify: Notify,
 }
 
 impl Attention {
-    pub fn from_env() -> Self {
+    /// Notify the kinds `notify` allows, through `PADDOCK_OSASCRIPT` if set.
+    pub fn from_env(notify: Notify) -> Self {
         Self {
+            notify,
             alerts: Alerts::default(),
             started: now_ms(),
             window_focused: true,
@@ -168,13 +183,23 @@ pub fn next_needing<'a>(rows: &'a [Row], focused: Option<&str>) -> Option<&'a Ro
 
 impl App {
     /// Apply recorded hook events and notify about the ones that need you.
+    /// Events from floats are left out: paddock does not follow Claude there.
     pub(super) fn hooks(&mut self, records: &[HookRecord]) {
-        for r in records {
+        let followed: Vec<&HookRecord> = records
+            .iter()
+            .filter(|r| !self.is_float_pane(&r.pane))
+            .collect();
+        for r in followed {
             self.sessions.apply(r);
             let Some(alert) = self.attention.alerts.on_hook(r) else {
                 continue;
             };
-            if r.ts < self.attention.started || self.focused_on(&r.pane) {
+            // `[notify]` turns off only the notification: `sessions.apply`
+            // above has already updated the state, markers and dashboard.
+            if !self.attention.notify.allows(alert)
+                || r.ts < self.attention.started
+                || self.focused_on(&r.pane)
+            {
                 continue;
             }
             self.notify(&r.pane, alert);
@@ -195,9 +220,10 @@ impl App {
     }
 
     /// Turns done in the tab you are looking at (the current space's
-    /// current tab, with the outer window focused) become idle.
+    /// current tab, with the outer window focused and no float over it)
+    /// become idle.
     pub(super) fn see_current(&mut self) {
-        if !self.attention.window_focused {
+        if !self.looking_at_tab() {
             return;
         }
         let Some(window) = self.current_space().and_then(|i| i.current_window()) else {
@@ -210,9 +236,15 @@ impl App {
     }
 
     /// Whether you are looking at the terminal with pane `pane`: it is
-    /// focused and paddock's window has the focus.
+    /// focused, paddock's window has the focus, and no float is over it.
     fn focused_on(&self, pane: &str) -> bool {
-        self.attention.window_focused && self.is_current_pane(pane)
+        self.looking_at_tab() && self.is_current_pane(pane)
+    }
+
+    /// Whether you are looking at the current tab: paddock's window has
+    /// the focus and no float is shown (the float has the keyboard then).
+    fn looking_at_tab(&self) -> bool {
+        self.attention.window_focused && self.float_pane().is_none()
     }
 
     fn notify(&mut self, pane: &str, alert: Alert) {
@@ -340,13 +372,29 @@ mod tests {
 
     #[test]
     fn a_failing_notifier_is_reported_once() {
-        let mut a = Attention::from_env();
+        let mut a = Attention::from_env(Notify::default());
         let first = a.notify_failed("osascript: syntax error");
         assert_eq!(
             first.as_deref(),
             Some("cannot notify: osascript: syntax error")
         );
         assert_eq!(a.notify_failed("again"), None);
+    }
+
+    #[test]
+    fn each_kind_of_notification_follows_its_switch() {
+        let only_waiting = Notify {
+            waiting: true,
+            idle: false,
+        };
+        assert!(only_waiting.allows(Alert::Waiting));
+        assert!(!only_waiting.allows(Alert::Idle));
+        let only_idle = Notify {
+            waiting: false,
+            idle: true,
+        };
+        assert!(!only_idle.allows(Alert::Waiting));
+        assert!(only_idle.allows(Alert::Idle));
     }
 
     #[test]
@@ -441,7 +489,6 @@ mod tests {
             label: pane.into(),
             state,
             tasks: Vec::new(),
-            closed: false,
         }
     }
 

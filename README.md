@@ -23,11 +23,11 @@ brew install MiohitoKiri5474/paddock/paddock
 
 If an earlier `brew install` failed while tapping, run `brew untap miohitokiri5474/paddock` first. Upgrade with `brew upgrade paddock`.
 
-**Release tarball** (Apple Silicon). Download `paddock-v0.0.1-aarch64-apple-darwin.tar.gz` and its `.sha256` from [Releases](https://github.com/MiohitoKiri5474/paddock/releases), then:
+**Release tarball** (Apple Silicon). Download `paddock-v0.0.2-aarch64-apple-darwin.tar.gz` and its `.sha256` from [Releases](https://github.com/MiohitoKiri5474/paddock/releases), then:
 
 ```sh
-shasum -a 256 -c paddock-v0.0.1-aarch64-apple-darwin.tar.gz.sha256
-tar xzf paddock-v0.0.1-aarch64-apple-darwin.tar.gz
+shasum -a 256 -c paddock-v0.0.2-aarch64-apple-darwin.tar.gz.sha256
+tar xzf paddock-v0.0.2-aarch64-apple-darwin.tar.gz
 xattr -d com.apple.quarantine paddock   # unsigned binary: lets Gatekeeper run it ("No such xattr" is fine)
 sudo mkdir -p /usr/local/bin             # missing on a fresh Apple Silicon Mac
 sudo mv paddock /usr/local/bin/         # or anywhere on your PATH
@@ -36,7 +36,7 @@ sudo mv paddock /usr/local/bin/         # or anywhere on your PATH
 **Cargo**, from a tag:
 
 ```sh
-cargo install --git https://github.com/MiohitoKiri5474/paddock --tag v0.0.1 --locked
+cargo install --git https://github.com/MiohitoKiri5474/paddock --tag v0.0.2 --locked
 ```
 
 If it fails with `failed to authenticate when downloading repository: git@github.com:…` (your git config rewrites GitHub URLs to SSH), let cargo use the `git` command: prefix the command with `CARGO_NET_GIT_FETCH_WITH_CLI=true`, or set `git-fetch-with-cli = true` under `[net]` in `~/.cargo/config.toml`.
@@ -77,7 +77,7 @@ Restart running Claude sessions so they use the new hooks. Config and state are 
 paddock          # open (a second launch offers to take over)
 ```
 
-The sidebar has two sections. SPACES lists your spaces, each with its directory and git branch on a dim second line: each space is a tmux session on paddock's hidden server, its tabs are the session's windows and its splits their panes, so `tmux -L paddock attach` shows the same thing. AGENTS lists every main Claude session in any space, with its state (waiting, done, idle, running, stopped) and the space and tab it runs in. The space you are in and the agent in the focused terminal have a darker background (`[colors] current_space`), and `C-a s` puts the sidebar's selection on that agent (else on that space). Open a tab with `C-a c` and run `claude` in it; the dashboard (`C-a o`) shows the branches it and its subagents work on. The dashboard lists the sessions on top as an aligned table (NAME, STATE, ↑↓, CHANGES, BASE, FILES, AGE, MERGED; on a narrow screen whole columns drop, NAME and STATE stay). A session and its branch and subagent rows form one block: only sessions are selected, the whole selected block is highlighted, and `D` dismisses the block. Below the list, a live preview of the selected session sits in a rounded border (`I` types into it), and the keys are on the last line. A turn that ends while you look elsewhere is `done` until you look at its tab, then `idle`. You get a macOS notification when a session starts waiting or a main agent finishes a turn.
+The sidebar has two sections. SPACES lists your spaces, each with its directory and git branch on a dim second line: each space is a tmux session on paddock's hidden server, its tabs are the session's windows and its splits their panes, so `tmux -L paddock attach` shows the same thing. AGENTS lists every main Claude session in any space, with its state (waiting, done, idle, running) and the space and tab it runs in. The space you are in and the agent in the focused terminal have a darker background (`[colors] current_space`), and `C-a s` puts the sidebar's selection on that agent (else on that space). Open a tab with `C-a c` and run `claude` in it; the dashboard (`C-a o`) shows the branches it and its subagents work on. The dashboard lists the sessions on top as an aligned table (NAME, STATE, ↑↓, CHANGES, BASE, FILES, AGE, MERGED; on a narrow screen whole columns drop, NAME and STATE stay). A session and its branch and subagent rows form one block: only sessions are selected, the whole selected block is highlighted, and `D` dismisses the block. A session leaves the sidebar and the dashboard by itself once it ends: when its terminal (pane, tab or space) is closed, or when Claude quits in it (`/exit`, Ctrl-D); the selection moves to the session that takes its place. A new `claude` in that terminal is a new session and shows up as usual. Below the list, a live preview of the selected session sits in a rounded border (`I` types into it), and the keys are on the last line. A turn that ends while you look elsewhere is `done` until you look at its tab, then `idle`. You get a macOS notification when a session or one of its subagents starts waiting, or when a main agent finishes a turn (a subagent finishing never notifies).
 
 ### Keys
 
@@ -113,8 +113,11 @@ Every key is an action with a name you can rebind (see [Configure](#configure));
 | `o` | dashboard | `dashboard` |
 | `d` | detach (terminals go on) | `detach` |
 | `?` | this help | `help` |
+| `g` | show or hide lazygit in a float | `[floats] g` |
 
 `C-a` pressed twice sends a literal `C-a`. `go_to_tab`'s first key goes to tab 1, its second to tab 2, and so on. `close` closes the pane; the last one closes its tab, the last tab its space, and it asks first if Claude is busy. Renaming, naming a new space (prefilled with `space-N`; `Enter` keeps it) and that question open a small box in the middle of the screen; `Esc` or a click outside it cancels. `{`/`}` can also be done by dragging the sidebar's border.
+
+Floats (`[floats]`): `C-a g` shows lazygit in a box over the whole screen, sidebar included, framed like the prompts and titled with its command; `C-a g` again hides it and the program keeps running, so showing it again brings back the same program and state. When the program exits, the float closes, and the next `C-a g` starts it again. Each space has its own float per key, started in the focused terminal's directory; it lives in the space's tmux session (so it survives detaching) but is never a tab, never in `C-a Tab`'s history, and paddock does not follow Claude in it. One float shows at a time. While it shows, every key, paste and mouse event inside it goes to it, except the prefix: `C-a` commands still work, and one that changes the page or gives the sidebar or dashboard the keyboard hides the float first. A click outside it does nothing. A float whose key you remove from `[floats]` is closed, with its program, the next time paddock opens. Floats are tmux windows, so `tmux -L paddock attach` lists them next to the tabs.
 
 In the sidebar (`[keys.sidebar]`; prefix commands work too):
 
@@ -172,11 +175,23 @@ tab_current = 4           # the current tab and the popup border (default: the t
 
 [sidebar]
 width = 32                # columns until you resize it
+
+[floats]                  # the prefix, then a key, shows or hides a float running the command
+width = 80                # percent of the screen's width (default 80)
+height = 80               # and height (default 80)
+g = "lazygit"             # the default float; "" removes it
+y = "yazi"
+
+[notify]
+waiting = true            # a macOS notification when a session or one of its subagents waits on you; false turns it off
+idle = true               # a macOS notification when a main agent finishes its turn; false turns it off
 ```
+
+Both notifications are on by default; `false` turns one off. The session's state, the sidebar and tab markers, `C-a a` and the dashboard work the same either way.
 
 Once you resize the sidebar (`C-a {`, `C-a }` or dragging its border), paddock saves that width in `~/.local/state/paddock/layout.toml` (`sidebar = N`), and it overrides `[sidebar] width` from then on. Delete that line (with paddock closed) to go back to the configured width.
 
-`paddock keys` prints every action with its default keys, ready to copy. Actions you leave out keep their defaults. The prefix and the bindings share one key syntax:
+`paddock keys` prints every action with its default keys, and the default floats, ready to copy. Actions you leave out keep their defaults. The prefix and the bindings share one key syntax:
 
 - a character (`c`, `|`, `$`, `{`) or a name (`Tab`, `Enter`, `Esc`, `Space`, `Backspace`, `Delete`, `Insert`, `Home`, `End`, `PageUp`, `PageDown`, `Left`, `Down`, `Up`, `Right`, `F1`-`F12`); names in any case
 - optionally after `C-` (Ctrl), `S-` (Shift) or `M-` (Alt), in any case (`c-n` is `C-n`)
@@ -187,7 +202,7 @@ Once you resize the sidebar (`C-a {`, `C-a }` or dragging its border), paddock s
 
 After the prefix, Shift does not matter for a key bound without it (Shift+arrows move focus too); in the sidebar and the dashboard, neither do Ctrl and Shift. A key bound with the modifier wins.
 
-paddock refuses to start, naming the file and the setting, on an unknown action or section, a key it cannot read, a key listed twice for one action, a key bound to two actions in the same section (unbind one with `""`, even a default), or the prefix key inside a `[keys.…]` section.
+paddock refuses to start, naming the file and the setting, on an unknown action or section, a key it cannot read, a key listed twice for one action, a key bound to two actions in the same section (unbind one with `""`, even a default), or the prefix key inside a `[keys.…]` section. In `[floats]` the keys use the same syntax and are refused the same way when they cannot be read, are listed twice, are the prefix, or are bound in `[keys.commands]` (the default `g` too: write `g = ""` to free it); `width` and `height` are whole percents from 1 to 100.
 
 ## Files
 

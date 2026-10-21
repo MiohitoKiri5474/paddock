@@ -38,6 +38,7 @@ pub fn record(event: &str, pane: &str, payload: &str, ts: u64) -> HookRecord {
         cwd: field("cwd"),
         source: field("source"),
         notification_type: field("notification_type"),
+        reason: field("reason"),
         agent_id: field("agent_id"),
         tool_name: field("tool_name"),
         branch: None,

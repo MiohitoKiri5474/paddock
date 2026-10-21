@@ -27,17 +27,20 @@ pub struct Dashboard {
 impl Dashboard {
     /// The same dashboard with a line of `ids` selected: the selected one
     /// wherever it moved, else (it went away, or none was) the one now at
-    /// `index`, else the last; nothing without lines.
+    /// `index`, else the last; nothing without lines. When the selected one
+    /// went away (its session ended), keys stop going to a terminal, so they
+    /// never reach the session that took its place.
     pub fn anchored(&self, ids: &[RowId]) -> Self {
         let found = self
             .selected
             .as_ref()
             .and_then(|s| ids.iter().position(|id| id == s));
+        let gone = self.selected.is_some() && found.is_none();
         let index = found.unwrap_or(self.index.min(ids.len().saturating_sub(1)));
         Self {
             selected: ids.get(index).cloned(),
             index,
-            interactive: self.interactive,
+            interactive: self.interactive && !gone,
         }
     }
 }
@@ -66,7 +69,7 @@ impl App {
     pub fn shows_in_preview(&self, pane: &str) -> bool {
         self.dashboard()
             .and_then(|d| self.dashboard_row(d))
-            .is_some_and(|r| !r.closed && r.pane == pane)
+            .is_some_and(|r| r.pane == pane)
     }
 
     /// `C-a o`: open the dashboard on its first line, or close it.
@@ -122,8 +125,7 @@ impl App {
     /// Else `[keys.dashboard]`, by default: `j`/`k` (or arrows) move,
     /// `Enter` jumps to the selected session's terminal, `D` dismisses the
     /// session, `x` closes and `f` forks its terminal, `I` types into it,
-    /// `Esc` closes the dashboard. A session whose terminal was closed can
-    /// only be dismissed.
+    /// `Esc` closes the dashboard.
     pub(super) fn dashboard_key(&mut self, d: Dashboard, key: KeyEvent) {
         // Act on the line highlighted, even if rows changed since the draw.
         let d = d.anchored(&row_ids(&self.rows()));
@@ -158,7 +160,7 @@ impl App {
             });
             return;
         }
-        let row = self.dashboard_row(&d).filter(|r| !r.closed);
+        let row = self.dashboard_row(&d);
         self.mode = Mode::Dashboard(d);
         let Some(pane) = row.map(|r| r.pane) else {
             return;
@@ -192,10 +194,9 @@ impl App {
         Mode::Dashboard(d.anchored(&row_ids(&self.rows())))
     }
 
-    /// Open, close, fork and interact on the selected session's terminal,
-    /// unless it was closed.
+    /// Open, close, fork and interact on the selected session's terminal.
     fn dashboard_act(&mut self, d: Dashboard, action: DashboardAction) -> Mode {
-        let Some(row) = self.dashboard_row(&d).filter(|r| !r.closed) else {
+        let Some(row) = self.dashboard_row(&d) else {
             return Mode::Dashboard(d);
         };
         match action {
@@ -231,7 +232,7 @@ impl App {
         if !d.interactive {
             return Ok(());
         }
-        let Some(row) = self.dashboard_row(d).filter(|r| !r.closed) else {
+        let Some(row) = self.dashboard_row(d) else {
             return Ok(());
         };
         let bracketed = self
@@ -268,17 +269,26 @@ mod tests {
             at(Some(ids[2].clone()), 2),
             "still there: followed where it moved"
         );
+        // Keys stop going to a terminal: the one typed into went away.
+        let typing_stops = |d: Dashboard| Dashboard {
+            interactive: false,
+            ..d
+        };
         assert_eq!(
             anchored(at(Some(gone.clone()), 1)),
-            at(Some(ids[1].clone()), 1),
+            typing_stops(at(Some(ids[1].clone()), 1)),
             "gone: the line now in its place"
         );
         assert_eq!(
             anchored(at(Some(gone.clone()), 7)),
-            at(Some(ids[2].clone()), 2),
+            typing_stops(at(Some(ids[2].clone()), 2)),
             "gone from the end: the last line"
         );
         assert_eq!(anchored(at(None, 0)), at(Some(ids[0].clone()), 0));
-        assert_eq!(at(Some(gone), 1).anchored(&[]), at(None, 0), "no lines");
+        assert_eq!(
+            at(Some(gone), 1).anchored(&[]),
+            typing_stops(at(None, 0)),
+            "no lines"
+        );
     }
 }

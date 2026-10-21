@@ -66,8 +66,9 @@ struct EventEffects {
     hooks: bool,
     /// Pane output: the most frequent event, changing nothing but a screen.
     output: bool,
-    /// Anything but tmux and the readers' results may change which rows are
-    /// on screen.
+    /// Anything but the readers' results and tmux messages may change which
+    /// rows are on screen. A tmux message does once `handle_tmux` changed the
+    /// panes: a pane that closes takes its session's row with it.
     rows_may_move: bool,
 }
 
@@ -114,11 +115,12 @@ pub fn run(
             Wait::FrameDue => continue,
             Wait::Closed => break,
         };
-        let effects = EventEffects::of(&event);
+        let mut effects = EventEffects::of(&event);
         // A terminal can end with its exit still queued: a write to it fails
         // then. Say so, and go on rather than quit without saving.
-        let (flow, changed) = handle(&mut app, event, screen).unwrap_or_else(|e| {
+        let (flow, changed) = handle(&mut app, event, screen, &mut effects).unwrap_or_else(|e| {
             app.notice = Some(format!("{e:#}"));
+            effects.rows_may_move = true;
             (Flow::Continue, true)
         });
         dirty |= changed;
@@ -147,10 +149,20 @@ fn follow_up(app: &mut App, git: &mut GitFeed, effects: &EventEffects) {
     }
 }
 
-/// Apply one event. Returns whether to go on and whether the screen may have changed.
-fn handle(app: &mut App, event: Event, screen: &mut Screen) -> Result<(Flow, bool)> {
+/// Apply one event, noting in `effects` what only handling it tells. Returns
+/// whether to go on and whether the screen may have changed.
+fn handle(
+    app: &mut App,
+    event: Event,
+    screen: &mut Screen,
+    effects: &mut EventEffects,
+) -> Result<(Flow, bool)> {
     match event {
-        Event::Tmux { session, msg } => Ok(handle_tmux(app, &session, msg)),
+        Event::Tmux { session, msg } => {
+            let done = handle_tmux(app, &session, msg);
+            effects.rows_may_move = done.panes_changed;
+            Ok((done.flow, done.changed))
+        }
         Event::Input(input) => handle_input(app, input, screen),
         Event::Detach => Ok((Flow::Quit, true)),
         Event::Hooks(records) => {
@@ -158,6 +170,11 @@ fn handle(app: &mut App, event: Event, screen: &mut Screen) -> Result<(Flow, boo
             Ok((Flow::Continue, true))
         }
         Event::Agents(taken, agents) => {
+            // Claude in a float is not followed.
+            let agents: Vec<_> = agents
+                .into_iter()
+                .filter(|a| !a.pane.as_deref().is_some_and(|p| app.is_float_pane(p)))
+                .collect();
             app.sessions.reconcile(taken, &agents);
             Ok((Flow::Continue, true))
         }
@@ -182,11 +199,33 @@ fn handle(app: &mut App, event: Event, screen: &mut Screen) -> Result<(Flow, boo
     }
 }
 
+/// What handling a tmux control message did.
+struct TmuxHandled {
+    /// Whether to go on.
+    flow: Flow,
+    /// Whether the screen may have changed.
+    changed: bool,
+    /// Whether the panes changed, which may move rows (see [`EventEffects`]).
+    panes_changed: bool,
+}
+
+impl TmuxHandled {
+    /// The panes changed: everything may have.
+    fn panes_changed(flow: Flow) -> Self {
+        Self {
+            flow,
+            changed: true,
+            panes_changed: true,
+        }
+    }
+}
+
 /// A control message from space `session`'s client.
-fn handle_tmux(app: &mut App, session: &str, msg: Message) -> (Flow, bool) {
+fn handle_tmux(app: &mut App, session: &str, msg: Message) -> TmuxHandled {
     match msg {
         Message::Output { pane, data } => {
-            if !app.terminals.contains_key(&pane) {
+            let unseen = !app.terminals.contains_key(&pane);
+            if unseen {
                 // A pane made since the last look, maybe through `tmux
                 // attach`. The refresh may change the tab shown, which
                 // `follow_up` skips for output: note the page here.
@@ -196,19 +235,24 @@ fn handle_tmux(app: &mut App, session: &str, msg: Message) -> (Flow, bool) {
             if let Some(t) = app.terminals.get_mut(&pane) {
                 t.output(&data);
             }
-            (
-                Flow::Continue,
-                app.shows(&pane) || app.shows_in_preview(&pane),
-            )
+            TmuxHandled {
+                flow: Flow::Continue,
+                changed: app.shows(&pane) || app.shows_in_preview(&pane),
+                panes_changed: unseen,
+            }
         }
         // The space's tmux session ended: its last pane exited or was closed.
-        Message::Exit if app.space_ended(session) => (Flow::Continue, true),
-        Message::Exit => (Flow::Quit, true),
+        Message::Exit if app.space_ended(session) => TmuxHandled::panes_changed(Flow::Continue),
+        Message::Exit => TmuxHandled::panes_changed(Flow::Quit),
         Message::Notification(n) if changes_structure(&n) => {
             app.refresh_reported(session);
-            (Flow::Continue, true)
+            TmuxHandled::panes_changed(Flow::Continue)
         }
-        Message::Notification(_) | Message::Reply { .. } => (Flow::Continue, false),
+        Message::Notification(_) | Message::Reply { .. } => TmuxHandled {
+            flow: Flow::Continue,
+            changed: false,
+            panes_changed: false,
+        },
     }
 }
 
@@ -271,14 +315,27 @@ fn draw(screen: &mut Screen, app: &App) -> Result<()> {
         let panes = app.area().intersection(full);
         let term_cursor = draw_panes(app, panes, f.buffer_mut());
         let dash_cursor = draw_dashboard(app, &rows, panes, f.buffer_mut());
+        // Over everything but the help and the prompt, sidebar included.
+        // The float shown has the keyboard, so the cursor is its own, if
+        // it shows one.
+        let typing_cursor = match app.float_view() {
+            Some(v) => v.render(app.float_area().intersection(full), f.buffer_mut()),
+            None => term_cursor,
+        };
         if let Mode::Help = app.mode {
-            help::render(&app.prefix_name, &app.keymap, full, f.buffer_mut());
+            help::render(
+                &app.prefix_name,
+                &app.keymap,
+                &app.floats,
+                full,
+                f.buffer_mut(),
+            );
         }
         let at = match app.prompt() {
             // Over everything, sidebar included; clipped to a frame that
             // may be smaller than the screen the app knows.
             Some(p) => p.render(app.prompt_area().intersection(full), f.buffer_mut()),
-            None => cursor(app, dash_cursor, term_cursor),
+            None => cursor(app, dash_cursor, typing_cursor),
         };
         if let Some(at) = at {
             f.set_cursor_position(at);
@@ -289,12 +346,13 @@ fn draw(screen: &mut Screen, app: &App) -> Result<()> {
 
 /// Where the cursor shows while the prompt is closed: in the dashboard
 /// only while typing into the preview, nowhere while the help or the
-/// sidebar has the keyboard, else in the focused pane.
-fn cursor(app: &App, dashboard: Option<Position>, pane: Option<Position>) -> Option<Position> {
+/// sidebar has the keyboard, else in the terminal typing goes to (`typing`:
+/// the float shown, else the focused pane).
+fn cursor(app: &App, dashboard: Option<Position>, typing: Option<Position>) -> Option<Position> {
     match app.mode {
         Mode::Help | Mode::Sidebar(_) => None,
         _ if app.dashboard().is_some() => dashboard,
-        _ => pane,
+        _ => typing,
     }
 }
 
