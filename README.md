@@ -172,7 +172,13 @@ tab_current = 4           # the current tab and the popup border (default: the t
 
 [sidebar]
 width = 32                # columns until you resize it
+
+[notify]
+waiting = true            # a macOS notification when a session waits on you
+idle = false              # none when an agent finishes its turn
 ```
+
+Both notifications are on by default; `false` turns one off. The session's state, the sidebar and tab markers, `C-a a` and the dashboard work the same either way.
 
 Once you resize the sidebar (`C-a {`, `C-a }` or dragging its border), paddock saves that width in `~/.local/state/paddock/layout.toml` (`sidebar = N`), and it overrides `[sidebar] width` from then on. Delete that line (with paddock closed) to go back to the configured width.
 

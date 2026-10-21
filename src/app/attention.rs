@@ -8,6 +8,7 @@
 use super::rows::Row;
 use super::state::{App, Mode};
 use super::Event;
+use crate::config::Notify;
 use crate::hooks::now_ms;
 use crate::sessions::{self, state_after, HookRecord, State};
 use std::collections::HashMap;
@@ -73,6 +74,16 @@ pub enum Alert {
     Idle,
 }
 
+impl Notify {
+    /// Whether the config lets `alert` show a notification.
+    pub fn allows(self, alert: Alert) -> bool {
+        match alert {
+            Alert::Waiting => self.waiting,
+            Alert::Idle => self.idle,
+        }
+    }
+}
+
 /// The last alert of each terminal's session, so that one wait or one
 /// finished turn notifies once however many hooks report it.
 #[derive(Debug, Default)]
@@ -130,11 +141,15 @@ pub struct Attention {
     /// A failure to notify was shown; later ones are not, to avoid a notice
     /// on every notification.
     notify_failure_shown: bool,
+    /// Which kinds of alert show a notification (`[notify]`).
+    notify: Notify,
 }
 
 impl Attention {
-    pub fn from_env() -> Self {
+    /// Notify the kinds `notify` allows, through `PADDOCK_OSASCRIPT` if set.
+    pub fn from_env(notify: Notify) -> Self {
         Self {
+            notify,
             alerts: Alerts::default(),
             started: now_ms(),
             window_focused: true,
@@ -174,7 +189,12 @@ impl App {
             let Some(alert) = self.attention.alerts.on_hook(r) else {
                 continue;
             };
-            if r.ts < self.attention.started || self.focused_on(&r.pane) {
+            // `[notify]` turns off only the notification: the session's
+            // state, markers and the dashboard changed above all the same.
+            if !self.attention.notify.allows(alert)
+                || r.ts < self.attention.started
+                || self.focused_on(&r.pane)
+            {
                 continue;
             }
             self.notify(&r.pane, alert);
@@ -340,13 +360,29 @@ mod tests {
 
     #[test]
     fn a_failing_notifier_is_reported_once() {
-        let mut a = Attention::from_env();
+        let mut a = Attention::from_env(Notify::default());
         let first = a.notify_failed("osascript: syntax error");
         assert_eq!(
             first.as_deref(),
             Some("cannot notify: osascript: syntax error")
         );
         assert_eq!(a.notify_failed("again"), None);
+    }
+
+    #[test]
+    fn each_kind_of_notification_follows_its_switch() {
+        let only_waiting = Notify {
+            waiting: true,
+            idle: false,
+        };
+        assert!(only_waiting.allows(Alert::Waiting));
+        assert!(!only_waiting.allows(Alert::Idle));
+        let only_idle = Notify {
+            waiting: false,
+            idle: true,
+        };
+        assert!(!only_idle.allows(Alert::Waiting));
+        assert!(only_idle.allows(Alert::Idle));
     }
 
     #[test]

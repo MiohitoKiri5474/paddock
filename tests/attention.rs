@@ -276,3 +276,43 @@ fn a_notifier_that_fails_says_so_in_a_notice() {
 
     paddock.wait_for_text("cannot notify: syntax error");
 }
+
+#[test]
+fn finished_turns_can_stop_notifying_while_waits_still_do() {
+    let sandbox = Sandbox::new();
+    sandbox.write_config("[notify]\nidle = false\n");
+    let mut paddock = ready(&sandbox);
+    new_tab(&mut paddock, "2:home"); // look away from the first tab
+
+    hooks(&sandbox, "space-1:0", &["UserPromptSubmit", "Stop"]);
+    // The turn still shows as done; only the notification is gone.
+    paddock.wait_for("done", |_| paddock.full_screen().contains("done"));
+
+    // The sentinel: a wait still notifies.
+    hooks(
+        &sandbox,
+        "space-1:0",
+        &["UserPromptSubmit", "PermissionRequest"],
+    );
+    assert_eq!(sandbox.wait_for_notifications(1), [WAITING]);
+}
+
+#[test]
+fn waits_can_stop_notifying_while_finished_turns_still_do() {
+    let sandbox = Sandbox::new();
+    sandbox.write_config("[notify]\nwaiting = false\n");
+    let mut paddock = ready(&sandbox);
+    new_tab(&mut paddock, "2:home"); // look away from the first tab
+
+    hooks(
+        &sandbox,
+        "space-1:0",
+        &["UserPromptSubmit", "PermissionRequest"],
+    );
+    // The session still shows as waiting; only the notification is gone.
+    paddock.wait_for("waiting", |_| paddock.full_screen().contains("waiting"));
+
+    // The sentinel: a finished turn still notifies.
+    hooks(&sandbox, "space-1:0", &["Stop"]);
+    assert_eq!(sandbox.wait_for_notifications(1), [IDLE]);
+}

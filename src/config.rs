@@ -19,6 +19,10 @@
 //!
 //! [sidebar]
 //! width = 32                 # columns, until resized (then remembered)
+//!
+//! [notify]                   # macOS notifications, on unless set false
+//! waiting = true             # a session starts waiting on you
+//! idle = true                # an agent finishes its turn
 //! ```
 //!
 //! `paddock keys` prints every action with its default keys.
@@ -49,6 +53,27 @@ pub struct Config {
     pub tabs: TabColors,
     /// The sidebar's starting width, while none was saved.
     pub sidebar_width: u16,
+    /// Which macOS notifications to send.
+    pub notify: Notify,
+}
+
+/// Which macOS notifications to send; states, markers and the dashboard
+/// show every change either way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Notify {
+    /// When a session starts waiting on you.
+    pub waiting: bool,
+    /// When an agent finishes its turn.
+    pub idle: bool,
+}
+
+impl Default for Notify {
+    fn default() -> Self {
+        Self {
+            waiting: true,
+            idle: true,
+        }
+    }
 }
 
 #[derive(Deserialize, Default)]
@@ -60,6 +85,16 @@ struct RawConfig {
     colors: RawColors,
     #[serde(default)]
     sidebar: RawSidebar,
+    #[serde(default)]
+    notify: RawNotify,
+}
+
+/// A `[notify]` table as written: a switch per kind of notification.
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct RawNotify {
+    waiting: Option<bool>,
+    idle: Option<bool>,
 }
 
 #[derive(Deserialize, Default)]
@@ -160,6 +195,10 @@ impl Config {
                 current: colour(c.tab_current, tabs.current)?,
             },
             sidebar_width: raw.sidebar.width.unwrap_or(DEFAULT_SIDEBAR_WIDTH),
+            notify: Notify {
+                waiting: raw.notify.waiting.unwrap_or(true),
+                idle: raw.notify.idle.unwrap_or(true),
+            },
         })
     }
 }
@@ -173,6 +212,7 @@ impl Default for Config {
             current_space: DEFAULT_CURRENT_SPACE,
             tabs: TabColors::default(),
             sidebar_width: DEFAULT_SIDEBAR_WIDTH,
+            notify: Notify::default(),
         }
     }
 }
@@ -301,6 +341,32 @@ mod tests {
         );
         assert!(Config::parse("[sidebar]\nwide = 40\n").is_err());
         assert!(Config::parse("[sidebar]\nwidth = -1\n").is_err());
+    }
+
+    #[test]
+    fn both_notifications_are_on_by_default_and_each_can_be_turned_off() {
+        let on = Notify {
+            waiting: true,
+            idle: true,
+        };
+        assert_eq!(Config::default().notify, on);
+        assert_eq!(Config::parse("[notify]\n").unwrap().notify, on);
+        assert_eq!(
+            Config::parse("[notify]\nidle = false\n").unwrap().notify,
+            Notify { idle: false, ..on }
+        );
+        assert_eq!(
+            Config::parse("[notify]\nwaiting = false\nidle = false\n")
+                .unwrap()
+                .notify,
+            Notify {
+                waiting: false,
+                idle: false
+            }
+        );
+        assert!(Config::parse("[notify]\nidle = \"no\"\n").is_err());
+        assert!(Config::parse("[notify]\nidle = 0\n").is_err());
+        assert!(Config::parse("[notify]\ndone = false\n").is_err());
     }
 
     #[test]
