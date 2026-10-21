@@ -68,11 +68,16 @@ impl App {
         }
     }
 
-    /// A key while the focused pane has the keyboard.
+    /// The pane typing goes to: the float shown, else the focused pane.
+    fn typing_pane(&self) -> Option<String> {
+        self.float_pane().or_else(|| self.current_pane())
+    }
+
+    /// A key while the focused pane (or the float shown) has the keyboard.
     fn normal_key(&mut self, key: KeyEvent) -> Result<Flow> {
         match self.prefix.handle(key) {
             KeyAction::Forward(key) => {
-                let Some(pane) = self.current_pane() else {
+                let Some(pane) = self.typing_pane() else {
                     return Ok(Flow::Continue);
                 };
                 let bytes = self
@@ -90,6 +95,11 @@ impl App {
     }
 
     fn command(&mut self, command: Command) -> Result<Flow> {
+        // A command that changes the page or gives a panel the keyboard
+        // hides the float first.
+        if !command.keeps_float() {
+            self.hide_float();
+        }
         match command {
             Command::NewTab => self.report(|app| app.new_tab()),
             Command::NewSpace => self.start_naming(NameTarget::NewSpace),
@@ -127,6 +137,11 @@ impl App {
             }
             Command::NextAttention => self.next_attention(),
             Command::Dashboard => self.toggle_dashboard(),
+            Command::ToggleFloat(i) => {
+                // The float takes the keyboard from any panel.
+                self.mode = Mode::Normal;
+                self.report(|app| app.toggle_float(i));
+            }
         }
         self.relayout_and_save();
         Ok(Flow::Continue)
@@ -182,7 +197,7 @@ impl App {
             Mode::Help => self.mode = Mode::Normal,
             Mode::Sidebar(_) | Mode::ConfirmClose { .. } | Mode::Dashboard(_) => {}
             Mode::Normal => {
-                let Some(pane) = self.current_pane() else {
+                let Some(pane) = self.typing_pane() else {
                     return Ok(());
                 };
                 let bracketed = self

@@ -218,6 +218,67 @@ fn d_dismisses_a_row_and_it_stays_gone_after_reopening() {
     assert!(!again.screen().contains("alpha"), "{}", again.screen());
 }
 
+/// Three tabs, each with a waiting Claude session, alpha, bravo and
+/// charlie in tab order, listed in that order; the third tab current.
+fn three_waiting(sandbox: &Sandbox) -> Paddock {
+    let mut paddock = two_tabs(sandbox);
+    paddock.command(b"c");
+    paddock.wait_for_current_tab("3:home");
+    paddock.wait_for_text(PROMPT);
+    for (tab, session, dir) in [(0, "s1", "alpha"), (1, "s2", "bravo"), (2, "s3", "charlie")] {
+        let terminal = format!("space-1:{tab}");
+        claude(
+            sandbox,
+            &terminal,
+            "PermissionRequest",
+            session,
+            &format!("/w/{dir}"),
+        );
+    }
+    paddock.wait_for_tabs(&["1:● claude", "2:● claude", "3:● claude"]);
+    paddock
+}
+
+#[test]
+fn a_closed_terminals_session_leaves_and_the_selection_moves_to_the_next() {
+    let sandbox = Sandbox::new();
+    // No `claude agents` snapshots, whose polls would move the selection
+    // anyway.
+    sandbox.set_agents("not json");
+    let mut paddock = three_waiting(&sandbox);
+    open(&mut paddock);
+    paddock.wait_for_text("preview: alpha");
+    paddock.send(b"j");
+    paddock.wait_for_text("preview: bravo");
+
+    sandbox.tmux(&["kill-window", "-t", "space-1:1"]);
+    paddock.wait_for("bravo left the list", |s| !s.contains("bravo"));
+    // The session that took its place is selected, not the first.
+    paddock.wait_for_text("preview: charlie");
+    assert!(paddock.screen().contains("alpha"), "{}", paddock.screen());
+}
+
+#[test]
+fn a_session_whose_claude_quit_leaves_while_its_terminal_stays() {
+    let sandbox = Sandbox::new();
+    sandbox.set_agents("not json");
+    let mut paddock = three_waiting(&sandbox);
+    open(&mut paddock);
+    paddock.send(b"j");
+    paddock.wait_for_text("preview: bravo");
+
+    claude(&sandbox, "space-1:1", "SessionEnd", "s2", "/w/bravo");
+    paddock.wait_for("bravo left everywhere", |_| {
+        !paddock.full_screen().contains("bravo")
+    });
+    paddock.wait_for_text("preview: charlie");
+    assert_eq!(tabs(&sandbox), 3, "terminal kept");
+
+    // A new Claude in the same terminal is a new session, listed again.
+    claude(&sandbox, "space-1:1", "SessionStart", "s4", "/w/delta");
+    paddock.wait_for_text("delta");
+}
+
 #[test]
 fn the_preview_shows_the_selected_terminal_live() {
     let sandbox = Sandbox::new();
@@ -320,7 +381,8 @@ fn x_asks_while_claude_runs_then_returns_to_the_dashboard() {
     paddock.wait_for_text(ASK);
     paddock.send(b"y");
     paddock.wait_for("its pane closed", |_| tabs(&sandbox) == 1);
-    paddock.wait_for_text("repo: no terminal");
+    // Its session ended with its terminal: it left the list.
+    paddock.wait_for_text("no Claude sessions yet");
     paddock.wait_for_text(OPEN);
 }
 

@@ -46,6 +46,23 @@ pub enum Command {
     NextAttention,
     /// Open or close the dashboard.
     Dashboard,
+    /// Show or hide float N (0-based, in `[floats]` order).
+    ToggleFloat(usize),
+}
+
+impl Command {
+    /// Whether a float shown stays shown through this command: those that
+    /// change neither the page under it nor who has the keyboard.
+    pub fn keeps_float(self) -> bool {
+        matches!(
+            self,
+            Command::Help
+                | Command::Detach
+                | Command::ToggleSidebar
+                | Command::ResizeSidebar(_)
+                | Command::ToggleFloat(_)
+        )
+    }
 }
 
 /// A direction to move focus in.
@@ -72,16 +89,29 @@ pub const SIDEBAR_STEP: i16 = 2;
 pub struct PrefixKeys {
     prefix: Key,
     commands: Keys<Command>,
+    /// Each float's key, in `[floats]` order.
+    floats: Vec<Key>,
     armed: bool,
 }
 
 impl PrefixKeys {
-    pub fn new(prefix: Key, commands: Keys<Command>) -> Self {
+    /// The prefix `prefix`, then one of `commands`' keys or a float's key
+    /// from `floats`.
+    pub fn new(prefix: Key, commands: Keys<Command>, floats: Vec<Key>) -> Self {
         Self {
             prefix,
             commands,
+            floats,
             armed: false,
         }
+    }
+
+    /// The float whose key `key` is: exactly, else, as for commands,
+    /// without Shift.
+    fn float(&self, key: &KeyEvent) -> Option<usize> {
+        Key::of(key).lookup(self.commands.ignored(), |k| {
+            self.floats.iter().position(|f| *f == k)
+        })
     }
 
     /// Whether the next key will be read as a command.
@@ -107,7 +137,9 @@ impl PrefixKeys {
             return KeyAction::Forward(key);
         }
         let Some((command, i)) = self.commands.get(&key) else {
-            return KeyAction::None;
+            return self.float(&key).map_or(KeyAction::None, |f| {
+                KeyAction::Command(Command::ToggleFloat(f))
+            });
         };
         // `go_to_tab`'s Nth key goes to tab N.
         let command = if let Command::GoToTab(_) = command {
@@ -130,7 +162,14 @@ mod tests {
     }
 
     fn ctrl_a() -> PrefixKeys {
-        PrefixKeys::new(Key::parse("C-a").unwrap(), Keys::defaults(&COMMAND_KEYS))
+        PrefixKeys::new(
+            Key::parse("C-a").unwrap(),
+            Keys::defaults(&COMMAND_KEYS),
+            ["g", "C-y", "F5"]
+                .iter()
+                .map(|k| Key::parse(k).unwrap())
+                .collect(),
+        )
     }
 
     fn after_prefix(c: char, m: KeyModifiers) -> KeyAction {
@@ -249,6 +288,55 @@ mod tests {
     }
 
     #[test]
+    fn float_keys_after_the_prefix_toggle_their_float() {
+        let none = KeyModifiers::NONE;
+        assert_eq!(
+            after_prefix('g', none),
+            KeyAction::Command(Command::ToggleFloat(0))
+        );
+        assert_eq!(
+            after_prefix('y', KeyModifiers::CONTROL),
+            KeyAction::Command(Command::ToggleFloat(1))
+        );
+        // As for commands, Shift does not matter for a named key, but `G`
+        // is another key than `g`, and Ctrl matters.
+        let mut p = ctrl_a();
+        p.handle(k('a', KeyModifiers::CONTROL));
+        assert_eq!(
+            p.handle(KeyEvent::new(KeyCode::F(5), KeyModifiers::SHIFT)),
+            KeyAction::Command(Command::ToggleFloat(2))
+        );
+        assert_eq!(after_prefix('G', KeyModifiers::SHIFT), KeyAction::None);
+        assert_eq!(after_prefix('y', none), KeyAction::None);
+        // Without the prefix, a float's key is typed.
+        let mut p = ctrl_a();
+        assert_eq!(p.handle(k('g', none)), KeyAction::Forward(k('g', none)));
+    }
+
+    #[test]
+    fn only_commands_that_keep_the_page_and_the_keyboard_keep_a_float() {
+        for c in [
+            Command::Help,
+            Command::ToggleSidebar,
+            Command::ToggleFloat(1),
+        ] {
+            assert!(c.keeps_float(), "{c:?}");
+        }
+        for c in [
+            Command::NextTab,
+            Command::GoToTab(0),
+            Command::LastPage,
+            Command::NewTab,
+            Command::Dashboard,
+            Command::FocusSidebar,
+            Command::NextAttention,
+            Command::Close,
+        ] {
+            assert!(!c.keeps_float(), "{c:?}");
+        }
+    }
+
+    #[test]
     fn tab_after_the_prefix_shows_the_last_page() {
         let mut p = ctrl_a();
         p.handle(k('a', KeyModifiers::CONTROL));
@@ -310,7 +398,11 @@ mod tests {
 
     #[test]
     fn any_prefix_key_works() {
-        let mut p = PrefixKeys::new(Key::parse("C-b").unwrap(), Keys::defaults(&COMMAND_KEYS));
+        let mut p = PrefixKeys::new(
+            Key::parse("C-b").unwrap(),
+            Keys::defaults(&COMMAND_KEYS),
+            Vec::new(),
+        );
         assert_eq!(
             p.handle(k('a', KeyModifiers::CONTROL)),
             KeyAction::Forward(k('a', KeyModifiers::CONTROL))

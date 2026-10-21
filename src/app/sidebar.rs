@@ -106,10 +106,7 @@ impl App {
     pub(super) fn sidebar_picks(&self) -> Vec<Pick> {
         let rows = self.rows();
         let spaces = self.spaces.iter().map(|i| Pick::Space(i.id.clone()));
-        let agents = self
-            .agents(&rows)
-            .into_iter()
-            .map(|r| Pick::Agent(r.pane.clone()));
+        let agents = rows.iter().map(|r| Pick::Agent(r.pane.clone()));
         spaces.chain(agents).collect()
     }
 

@@ -5,6 +5,7 @@
 
 use super::attention::Attention;
 use super::dashboard::Dashboard;
+use super::floats::Shown;
 use super::mouse::Press;
 use super::pages::Pages;
 use super::rows::{rows, Placed, Row, RowId, TaskDetails, TaskStatus};
@@ -14,7 +15,7 @@ use super::sidebar::Selection;
 use super::space::Space;
 use super::watch::Place;
 use super::Event;
-use crate::config::Config;
+use crate::config::{Config, Floats};
 use crate::hooks::now_ms;
 use crate::input::keymap::Keymap;
 use crate::input::line::LineEdit;
@@ -27,7 +28,7 @@ use crate::ui::tab_bar::TabColors;
 use anyhow::Result;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 
@@ -190,6 +191,13 @@ pub struct App {
     pub(super) tab_first: usize,
     /// The space and tab the bar was last scrolled for.
     pub(super) tab_shown: Option<(String, usize)>,
+    /// The floats as configured, and the size of their box.
+    pub(super) floats: Floats,
+    /// The float shown over the screen, if any; it has the keyboard.
+    pub(super) float: Option<Shown>,
+    /// Every float pane seen, closed ones included: their late hooks are
+    /// left out too.
+    pub(super) float_panes: HashSet<String>,
 }
 
 /// The part of a screen of `(cols, rows)` that shows the current tab's
@@ -240,7 +248,11 @@ impl App {
             spaces: Vec::new(),
             current: 0,
             terminals: HashMap::new(),
-            prefix: PrefixKeys::new(config.prefix, config.keys.commands.clone()),
+            prefix: PrefixKeys::new(
+                config.prefix,
+                config.keys.commands.clone(),
+                config.floats.list.iter().map(|f| f.key).collect(),
+            ),
             prefix_name: config.prefix.name(),
             keymap: config.keys.clone(),
             mode: Mode::Normal,
@@ -258,11 +270,14 @@ impl App {
             sidebar_wish: None,
             pages: Pages::default(),
             press: None,
-            attention: Attention::from_env(),
+            attention: Attention::from_env(config.notify),
             current_space_bg: config.current_space,
             tab_colors: config.tabs,
             tab_first: 0,
             tab_shown: None,
+            floats: config.floats.clone(),
+            float: None,
+            float_panes: HashSet::new(),
         };
         app.load_dismissed();
         app.open_spaces()?;
@@ -388,8 +403,12 @@ impl App {
                 .is_ok()
         };
         let size = (self.area().width, self.area().height);
-        let (space, terminals) = Space::attach(&self.server, id, size, deliver)?;
-        self.terminals.extend(terminals);
+        let (mut space, terminals) = Space::attach(&self.server, id, size, deliver)?;
+        self.close_orphan_floats(&mut space.structure);
+        self.remember_float_panes(&space.structure);
+        // Not the panes of floats just closed.
+        let kept = terminals.into_iter().filter(|(p, _)| space.holds(p));
+        self.terminals.extend(kept);
         self.spaces.push(space);
         Ok(())
     }
@@ -424,9 +443,9 @@ impl App {
         self.spaces.get_mut(self.current)
     }
 
-    /// The space holding pane `pane`, by index.
+    /// The space holding pane `pane` (in a tab or a float), by index.
     pub(super) fn space_of(&self, pane: &str) -> Option<usize> {
-        self.spaces.iter().position(|i| i.window_of(pane).is_some())
+        self.spaces.iter().position(|i| i.holds(pane))
     }
 
     /// The current tab: the current space's current window.
@@ -446,8 +465,9 @@ impl App {
     }
 
     /// Send bytes to pane `pane`'s program, returning its view to the live
-    /// screen.
+    /// screen. Every key, paste and mouse report for a pane comes here.
     pub(super) fn input(&mut self, pane: &str, bytes: &[u8]) -> Result<()> {
+        self.note_float_input(pane);
         if let Some(t) = self.terminals.get_mut(pane) {
             t.emulator_mut().scroll_to_bottom();
         }
@@ -457,11 +477,14 @@ impl App {
         }
     }
 
-    /// Whether pane `pane` is on screen (in the current tab).
+    /// Whether pane `pane` is on screen: in the current tab, or the
+    /// float shown.
     pub fn shows(&self, pane: &str) -> bool {
-        self.current_space()
+        let in_tab = self
+            .current_space()
             .and_then(Space::current_window)
-            .is_some_and(|w| w.contains(pane))
+            .is_some_and(|w| w.contains(pane));
+        in_tab || self.float_pane().as_deref() == Some(pane)
     }
 
     pub fn resize(&mut self, screen: (u16, u16)) -> Result<()> {

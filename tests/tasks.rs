@@ -269,6 +269,10 @@ fn no_rows_for_the_default_branch_or_shells_without_claude() {
 const AGENT_A: &str = "a02c2bd27020e23b4";
 const AGENT_B: &str = "a9700dfeed5ef352c";
 const SESSION: &str = "11111111-2222-4333-8444-555555555555";
+/// Another session's id, for the recorded payloads' [`SESSION`].
+const OTHER_SESSION: &str = "22222222-2222-4333-8444-555555555555";
+/// A third session's id: a new Claude after one quit.
+const NEW_CLAUDE: &str = "33333333-2222-4333-8444-555555555555";
 const FIX_A: &str = "Create fix/a branch and a.txt";
 const FIX_B: &str = "Create fix/b branch and b.txt";
 
@@ -397,22 +401,61 @@ fn subagent_work_done_while_paddock_is_closed_appears_on_reopen() {
         hook("PostToolUse-subagent", "PostToolUse", agent);
     }
     hook("SubagentStop-subagent", "SubagentStop", AGENT_A);
-    // The session ends while agent B still runs.
-    hook("SessionEnd", "SessionEnd", AGENT_A);
 
     let mut again = ready(&sandbox);
     wait_for_list(
         &mut again,
         &[
-            &session("stopped"),
+            &session("running"),
+            &sub("fix/b", "running"),
             &sub(FIX_A, "done"),
-            &sub("fix/b", "stopped"),
         ],
     );
 }
 
-// Ticket 10: rows stay, across new conversations, closed terminals and
-// reopening, until dismissed with `D`.
+#[test]
+fn a_session_that_ends_while_paddock_is_closed_is_gone_with_its_tasks_on_reopen() {
+    let sandbox = Sandbox::new();
+    let dir = repo(&sandbox);
+    write_meta(&sandbox);
+    let (wt_a, wt_b) = (worktree(&dir, AGENT_A), worktree(&dir, AGENT_B));
+    let mut paddock = ready(&sandbox);
+    paddock.command(b"c");
+    paddock.wait_for_current_tab("2:home");
+    paddock.detach_keys();
+    assert!(paddock.wait_exit());
+
+    let hook = |name: &str, event: &str, agent: &str| {
+        sandbox.hook("space-1:0", event, &recorded(&sandbox, name, &dir, agent));
+    };
+    hook("UserPromptSubmit", "UserPromptSubmit", AGENT_A);
+    for (agent, wt, branch) in [(AGENT_A, &wt_a, "fix/a"), (AGENT_B, &wt_b, "fix/b")] {
+        hook("SubagentStart-subagent", "SubagentStart", agent);
+        git(wt, &["switch", "-q", "-c", branch]);
+        hook("PostToolUse-subagent", "PostToolUse", agent);
+    }
+    hook("SubagentStop-subagent", "SubagentStop", AGENT_A);
+    // The session ends while agent B still runs.
+    hook("SessionEnd", "SessionEnd", AGENT_A);
+    witness(&sandbox, "space-1:1", &dir);
+
+    let mut again = ready(&sandbox);
+    wait_for_list(&mut again, &[&session("idle")]);
+}
+
+/// Another session, in the terminal tmux target `terminal` names, that
+/// starts and goes idle in `dir`, which must be on its default branch, so
+/// without tasks. Hooked last while paddock is closed, its row on reopen
+/// shows the whole event log has been read.
+fn witness(sandbox: &Sandbox, terminal: &str, dir: &Path) {
+    for event in ["SessionStart", "Stop"] {
+        let text = payload(event, dir, None).replace(SESSION, OTHER_SESSION);
+        sandbox.hook(terminal, event, &text);
+    }
+}
+
+// Ticket 10: rows stay, across new conversations and reopening, until
+// dismissed with `D` or until their session ends (ticket 20).
 
 /// Main-agent events in the pane tmux target `terminal` names: it starts in `dir`, then a
 /// shell command leaves it on each of `branches` in turn, then it stops.
@@ -503,7 +546,7 @@ fn d_on_a_session_row_hides_it_with_its_tasks_until_claude_reports_again() {
 }
 
 #[test]
-fn a_closed_terminals_rows_stay_as_stopped_after_reopening() {
+fn a_closed_terminals_rows_leave_at_once_and_stay_gone_after_reopening() {
     let sandbox = Sandbox::new();
     let dir = repo(&sandbox);
     let mut paddock = ready(&sandbox);
@@ -514,11 +557,49 @@ fn a_closed_terminals_rows_stay_as_stopped_after_reopening() {
 
     close_list(&mut paddock);
     paddock.type_line("exit");
-    wait_for_list(&mut paddock, &[&session("stopped"), "feat/one"]);
+    wait_for_list(&mut paddock, &[]);
     assert_eq!(tabs(&sandbox), 1);
 
-    let mut again = reopen(&sandbox, paddock);
-    wait_for_list(&mut again, &[&session("stopped"), "feat/one"]);
+    // Replaying the event log does not bring them back.
+    paddock.detach_keys();
+    assert!(paddock.wait_exit());
+    git(&dir, &["switch", "-q", "main"]);
+    witness(&sandbox, "space-1:0", &dir);
+    let mut again = ready(&sandbox);
+    wait_for_list(&mut again, &[&session("idle")]);
+}
+
+#[test]
+fn a_session_whose_claude_quit_leaves_with_its_task_rows() {
+    let sandbox = Sandbox::new();
+    let dir = repo(&sandbox);
+    let mut paddock = ready(&sandbox);
+    paddock.command(b"c");
+    paddock.wait_for_current_tab("2:home");
+    work_on(&sandbox, "space-1:0", &dir, &["feat/one"]);
+    // Its turn ended in a tab you are not looking at: done.
+    wait_for_list(&mut paddock, &[&session("done"), "feat/one"]);
+
+    sandbox.hook(
+        "space-1:0",
+        "SessionEnd",
+        &payload("SessionEnd", &dir, None),
+    );
+    wait_for_list(&mut paddock, &[]);
+    assert_eq!(tabs(&sandbox), 2, "terminal kept");
+
+    paddock.detach_keys();
+    assert!(paddock.wait_exit());
+    git(&dir, &["switch", "-q", "main"]);
+    witness(&sandbox, "space-1:1", &dir);
+    let mut again = ready(&sandbox);
+    wait_for_list(&mut again, &[&session("idle")]);
+
+    // A new Claude in the same terminal starts without the ended
+    // session's task rows.
+    let next = payload("SessionStart", &dir, None).replace(SESSION, NEW_CLAUDE);
+    sandbox.hook("space-1:0", "SessionStart", &next);
+    wait_for_list(&mut again, &[&session("idle"), &session("idle")]);
 }
 
 #[test]
@@ -529,8 +610,7 @@ fn a_new_conversation_in_the_same_terminal_keeps_its_task_rows() {
     work_on(&sandbox, "space-1", &dir, &["feat/one"]);
     wait_for_list(&mut paddock, &[&session("idle"), "feat/one"]);
 
-    let next = payload("UserPromptSubmit", &dir, None)
-        .replace(SESSION, "22222222-2222-4333-8444-555555555555");
+    let next = payload("UserPromptSubmit", &dir, None).replace(SESSION, OTHER_SESSION);
     sandbox.hook("space-1", "UserPromptSubmit", &next);
     wait_for_list(&mut paddock, &[&session("running"), "feat/one"]);
 }

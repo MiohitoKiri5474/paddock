@@ -22,12 +22,14 @@ pub enum State {
     /// The main agent finished a turn you have not looked at yet.
     Done,
     Idle,
+    /// Claude quit: the session ended, so it has no row.
     Stopped,
     Unknown,
 }
 
 impl State {
-    /// Sort order of rows: waiting, done, idle, running, stopped, then unknown.
+    /// Sort order of rows: waiting, done, idle, running, then unknown. A
+    /// stopped session (one that ended) has no row.
     pub fn rank(self) -> u8 {
         match self {
             State::Waiting => 0,
@@ -80,6 +82,9 @@ pub struct HookRecord {
     pub source: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notification_type: Option<String>,
+    /// Why a session ended (`SessionEnd`), e.g. [`CLEAR`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
     /// Set when a subagent, not the main agent, caused the event.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<String>,
@@ -97,10 +102,23 @@ pub struct HookRecord {
     pub ts: u64,
 }
 
+/// The `SessionEnd` reason `/clear` gives: a new conversation starts in
+/// the same Claude at once, so the terminal's session goes on.
+pub const CLEAR: &str = "clear";
+
+/// The `SessionStart` source of a compaction: the conversation goes on.
+const COMPACT: &str = "compact";
+
+/// Whether `r` is Claude starting a conversation (startup, resume,
+/// `/clear`), not going on with one (compaction).
+fn restarts(r: &HookRecord) -> bool {
+    r.event == "SessionStart" && r.source.as_deref() != Some(COMPACT)
+}
+
 /// The session state an event leads to, if it changes it.
 pub fn state_after(r: &HookRecord) -> Option<State> {
     let state = match r.event.as_str() {
-        "SessionStart" if r.source.as_deref() == Some("compact") => State::Running,
+        "SessionStart" if r.source.as_deref() == Some(COMPACT) => State::Running,
         "SessionStart" | "Stop" => State::Idle,
         "UserPromptSubmit" | "PreCompact" | "PostToolUse" => State::Running,
         "PermissionRequest" => State::Waiting,
@@ -109,6 +127,7 @@ pub fn state_after(r: &HookRecord) -> Option<State> {
             Some("idle_prompt") => State::Idle,
             _ => return None,
         },
+        "SessionEnd" if r.reason.as_deref() == Some(CLEAR) => return None,
         "SessionEnd" => State::Stopped,
         _ => return None,
     };
@@ -218,6 +237,11 @@ pub struct Session {
 }
 
 impl Session {
+    /// Whether Claude quit: the session ended, so it has no row.
+    pub fn ended(&self) -> bool {
+        self.state == State::Stopped
+    }
+
     fn new(session_id: Option<String>) -> Self {
         Self {
             session_id,
@@ -299,10 +323,16 @@ impl Session {
             .and_then(|a| a.branch.clone())
     }
 
-    /// The same terminal's next conversation: only the task rows carry over.
+    /// The same terminal's next conversation: only the task rows carry
+    /// over, and only if Claude goes on (`/clear`). After Claude quit, a new
+    /// Claude starts with none.
     fn next(&mut self, session_id: Option<String>) {
         self.stop_subagents();
-        let tasks = std::mem::take(&mut self.tasks);
+        let tasks = if self.ended() {
+            Vec::new()
+        } else {
+            std::mem::take(&mut self.tasks)
+        };
         *self = Session {
             tasks,
             ..Session::new(session_id)
@@ -386,17 +416,18 @@ impl Sessions {
         self.by_pane.get(pane)
     }
 
-    /// Every terminal with a session, closed ones included.
-    pub fn panes(&self) -> impl Iterator<Item = &str> {
-        self.by_pane.keys().map(String::as_str)
-    }
-
     /// Pane `pane`'s session and task rows, leaving out dismissed ones; `None`
-    /// if its session row is dismissed. A dismissed row stays hidden until an
-    /// event about it newer than the dismissal (a dismissed session row hides
-    /// its task rows too), so replaying the event log keeps it hidden.
+    /// if its session ended (Claude quit: it is stopped) or its session row
+    /// is dismissed. A dismissed row stays hidden until an event about it
+    /// newer than the dismissal (a dismissed session row hides its task rows
+    /// too), so replaying the event log keeps it hidden. An ended session
+    /// stays hidden until a new one starts in the same terminal, or Claude
+    /// resumes it (see [`Sessions::fold`]).
     pub fn shown(&self, pane: &str) -> Option<(&Session, Vec<&Task>)> {
         let s = self.by_pane.get(pane)?;
+        if s.ended() {
+            return None;
+        }
         let key = |branch: Option<&str>| (pane.to_string(), branch.map(str::to_string));
         let seen = |k: &RowKey| self.seen.get(k).copied().unwrap_or(0);
         let hidden =
@@ -456,7 +487,9 @@ impl Sessions {
 
     /// Apply one recorded hook event.
     pub fn apply(&mut self, r: &HookRecord) {
-        self.fold(r);
+        if !self.fold(r) {
+            return;
+        }
         self.touch(&r.pane, None, r.ts);
         let branch = match &r.agent_id {
             Some(id) => self
@@ -470,13 +503,21 @@ impl Sessions {
         }
     }
 
-    fn fold(&mut self, r: &HookRecord) {
+    /// Fold in hook event `r`. Returns false if it was ignored: it came
+    /// late, from a session that already ended.
+    fn fold(&mut self, r: &HookRecord) -> bool {
         let s = self
             .by_pane
             .entry(r.pane.clone())
             .or_insert_with(|| Session::new(r.session_id.clone()));
         if r.session_id.is_some() && r.session_id != s.session_id {
             s.next(r.session_id.clone());
+        }
+        // Hooks landing after `SessionEnd` (a subagent's, a tool's, a late
+        // compaction's) lag behind and are ignored. Only Claude starting
+        // the same conversation again (a resume) brings it back.
+        if s.ended() && !restarts(r) {
+            return false;
         }
         // A subagent's directory is its worktree, not the session's.
         if r.cwd.is_some() && r.agent_id.is_none() {
@@ -495,7 +536,7 @@ impl Sessions {
         }
         if let Some(id) = &r.agent_id {
             s.apply_subagent(id, r);
-            return;
+            return true;
         }
         if r.event == "SessionEnd" {
             s.stop_subagents();
@@ -510,6 +551,7 @@ impl Sessions {
                 }),
             }
         }
+        true
     }
 
     /// Fold in a `claude agents --json` snapshot taken at `taken` (ms). It
@@ -532,6 +574,11 @@ impl Sessions {
                 .entry(pane.clone())
                 .or_insert_with(|| Session::new(Some(a.session_id.clone())));
             let same = s.session_id.as_deref() == Some(a.session_id.as_str());
+            // A session that ended never runs again: a snapshot still
+            // listing it lags behind.
+            if same && s.ended() {
+                continue;
+            }
             let fresh_hook = same && s.hooked.is_some_and(|h| taken <= h + HOOK_GRACE);
             if taken <= s.updated || fresh_hook {
                 if same {
@@ -1053,6 +1100,63 @@ mod tests {
     }
 
     #[test]
+    fn a_session_that_ended_is_not_shown_until_the_next_one_starts() {
+        let mut s = Sessions::default();
+        s.apply(&on("feat/a", "/r", 1));
+        s.apply(&rec("SessionEnd", 2));
+        assert_eq!(shown(&s), None);
+        // A snapshot that still lists it, even long after, does not bring
+        // it back.
+        s.reconcile(10_000, &[agent(S1, "idle", Some("%1"))]);
+        assert_eq!(shown(&s), None);
+        // A new Claude in the same terminal is shown, without the ended
+        // session's tasks.
+        s.apply(&HookRecord {
+            session_id: Some("newer".into()),
+            ..rec("SessionStart", 10_001)
+        });
+        assert_eq!(shown(&s), Some(vec![]));
+        assert!(tasks(&s).is_empty());
+    }
+
+    #[test]
+    fn hooks_landing_after_a_session_ended_do_not_bring_it_back() {
+        let mut s = Sessions::default();
+        s.apply(&on("feat/a", "/r", 1));
+        s.apply(&rec("SessionEnd", 2));
+        s.apply(&sub("PermissionRequest", "a1", WT_A, None, 3));
+        s.apply(&on("feat/late", "/r", 4));
+        assert_eq!(state(&s), State::Stopped);
+        assert_eq!(shown(&s), None);
+        assert_eq!(tasks(&s), [("feat/a", "/r")]);
+        // A late compaction does not bring it back.
+        s.apply(&HookRecord {
+            source: Some(COMPACT.into()),
+            ..rec("SessionStart", 5)
+        });
+        assert_eq!(shown(&s), None);
+        // Claude resuming the same conversation brings it back.
+        s.apply(&rec("SessionStart", 6));
+        assert_eq!(state(&s), State::Idle);
+        assert_eq!(shown(&s), Some(vec!["feat/a"]));
+    }
+
+    #[test]
+    fn clear_ends_a_conversation_but_not_the_terminals_session() {
+        let mut s = Sessions::default();
+        s.apply(&rec("Stop", 1));
+        s.see("%1");
+        let clear = HookRecord {
+            reason: Some(CLEAR.into()),
+            ..rec("SessionEnd", 2)
+        };
+        assert_eq!(state_after(&clear), None);
+        s.apply(&clear);
+        assert_eq!(state(&s), State::Idle);
+        assert_eq!(shown(&s), Some(vec![]));
+    }
+
+    #[test]
     fn a_dismissed_session_row_stays_hidden_until_its_next_hook_event() {
         let mut s = Sessions::default();
         s.apply(&on("feat/a", "/r", 1));
@@ -1125,7 +1229,6 @@ mod tests {
             at: 5,
         };
         assert_eq!(s.dismissals(), [want]);
-        assert_eq!(s.panes().collect::<Vec<_>>(), ["%1"]);
     }
 
     #[test]

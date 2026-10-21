@@ -26,6 +26,10 @@ The panel on the left, which can be shown or hidden: SPACES, one line per space 
 **Agent**:
 A main agent in the sidebar's AGENTS section. Subagents show only in the dashboard.
 
+**Float**:
+A program shown in a box over the whole screen and hidden again by the prefix and its key, kept running while hidden. Each space has its own float per key. It is a tmux window of the space's session marked as a float, never a tab.
+_Avoid_: popup (that is the prompt), overlay
+
 **Session view**:
 The main area, showing the current tab's terminals.
 
@@ -41,6 +45,10 @@ A live picture of a session's screen inside the dashboard. In interactive previe
 **Session**:
 A Claude Code conversation running, or that ran, in a terminal. One running outside paddock's terminals is an external session.
 _Avoid_: agent (too broad), terminal, tmux session
+
+**Ended**:
+A session whose terminal was closed or whose Claude quit. It leaves the dashboard and the sidebar; a new Claude in the same terminal is a new session. `/clear` does not end it.
+_Avoid_: stopped (a subagent task's state)
 
 **Main agent**:
 The Claude you talk to directly in a session.
@@ -71,7 +79,7 @@ The main agent finished its turn while you looked at another tab; it turns idle 
 The main agent finished its turn and is ready for your next prompt.
 
 **Stopped**:
-Claude no longer runs in that terminal, or the session ended while a subagent was still running.
+A subagent task whose session ended while it was still running.
 
 **Unknown**:
 No state has been reported yet.
