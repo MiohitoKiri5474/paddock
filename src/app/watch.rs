@@ -24,28 +24,33 @@ const GIT_POLL: Duration = Duration::from_secs(3);
 /// How often to look whether the external log needs trimming (a `stat`).
 const EXTERNAL_CHECK: Duration = AGENTS_POLL;
 
-/// Trim the external log (see [`log::compact`]). Returns whether it did.
-fn compact_external(path: &Path) -> Result<bool> {
+/// Trim the external log (see [`log::compact`]), whose reader got to
+/// `read`.
+fn compact_external(path: &Path, read: u64) -> Result<Option<log::Compacted>> {
     log::compact(
         path,
         log::EXTERNAL_MAX_BYTES,
         now_ms(),
         log::EXTERNAL_KEEP_MS,
+        read,
     )
 }
 
-/// While paddock runs: once the external log passes its cap, read what
-/// `reader` has not yet, trim the log and go on from its new end. Returns
-/// the records read first, keyed, so none is skipped.
+/// While paddock runs: once the external log passes its cap, trim it and
+/// have `reader` go on in the trimmed file. Returns the records past what
+/// `reader` had read, from the bytes the trim read, so none is skipped or
+/// read twice.
 fn trim_external(path: &Path, reader: &mut log::Reader) -> Vec<HookRecord> {
     if !log::too_big(path, log::EXTERNAL_MAX_BYTES) {
         return Vec::new();
     }
-    let late = log::merged(Vec::new(), reader.read_new());
-    if let Ok(true) = compact_external(path) {
-        reader.skip_to_end();
+    match compact_external(path, reader.position()) {
+        Ok(Some(done)) => {
+            reader.resume_at(done.kept);
+            done.unread
+        }
+        _ => Vec::new(),
     }
-    late
 }
 
 /// Tasks to keep the git status of, as `(directory, branch)`.
@@ -99,17 +104,20 @@ pub fn start(server: &Server, state_dir: &Path, tx: &Sender<Event>) -> Result<Se
     // before replaying it, and while paddock runs. Failing that, it is read
     // whole.
     let external_path = log::external_path(state_dir);
-    let _ = compact_external(&external_path);
+    let _ = compact_external(&external_path, u64::MAX);
     let mut external = log::Reader::new(external_path.clone());
     let events = tx.clone();
     std::thread::spawn(move || {
         let mut checked = Instant::now();
         loop {
-            let mut records = log::merged(reader.read_new(), external.read_new());
+            let server = reader.read_new();
+            let mut outside = external.read_new();
             if checked.elapsed() >= EXTERNAL_CHECK {
                 checked = Instant::now();
-                records.extend(trim_external(&external_path, &mut external));
+                outside.extend(trim_external(&external_path, &mut external));
             }
+            // One batch in time order, late records included.
+            let records = log::merged(server, outside);
             if !records.is_empty() && events.send(Event::Hooks(records)).is_err() {
                 break;
             }

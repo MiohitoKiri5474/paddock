@@ -58,19 +58,34 @@ pub fn too_big(path: &Path, max: u64) -> bool {
     std::fs::metadata(path).is_ok_and(|m| m.len() > max)
 }
 
+/// What [`compact`] did: the trimmed file's length, and the records it
+/// read past the reader's position, which no reader has seen yet.
+#[derive(Debug)]
+pub struct Compacted {
+    pub kept: u64,
+    pub unread: Vec<HookRecord>,
+}
+
 /// Trim the log at `path` once it is bigger than `max` bytes: keep only
 /// the records of the last `keep` ms before `now`, and of those only the
 /// newest that fit in half of `max`. The next trim is then at least half of
 /// `max` of new hooks away, however busy the last day was, so paddock never
 /// rewrites a huge file on every open or poll. The kept lines replace the
-/// file in one rename; a hook appending meanwhile may lose its line, which
-/// the next hook or `claude agents --json` makes up for. Returns whether it
-/// trimmed.
-pub fn compact(path: &Path, max: u64, now: u64, keep: u64) -> Result<bool> {
+/// file in one rename; a hook appending between the read and the rename
+/// may lose its line, which the next hook or `claude agents --json` makes
+/// up for. `read` is where a reader of the file got to (see
+/// [`Reader::position`]): the complete records past it in what was read
+/// come back as [`Compacted::unread`], and the reader goes on at
+/// [`Compacted::kept`] (see [`Reader::resume_at`]), so it neither skips nor
+/// repeats a record. `None` if the log was small enough.
+pub fn compact(path: &Path, max: u64, now: u64, keep: u64, read: u64) -> Result<Option<Compacted>> {
     if !too_big(path, max) {
-        return Ok(false);
+        return Ok(None);
     }
     let text = std::fs::read(path).with_context(|| format!("cannot read {}", path.display()))?;
+    let unread = text
+        .get(usize::try_from(read).unwrap_or(usize::MAX)..)
+        .map_or_else(Vec::new, records);
     let since = now.saturating_sub(keep);
     let recent: Vec<&[u8]> = text
         .split(|&b| b == b'\n')
@@ -92,9 +107,20 @@ pub fn compact(path: &Path, max: u64, now: u64, keep: u64) -> Result<bool> {
         kept.push(b'\n');
     }
     let tmp = path.with_extension("jsonl.tmp");
+    let len = kept.len() as u64;
     std::fs::write(&tmp, kept).with_context(|| format!("cannot write {}", tmp.display()))?;
     std::fs::rename(&tmp, path).with_context(|| format!("cannot replace {}", path.display()))?;
-    Ok(true)
+    Ok(Some(Compacted { kept: len, unread }))
+}
+
+/// The records of the complete lines in `bytes` (up to its last newline);
+/// lines that do not parse are skipped.
+fn records(bytes: &[u8]) -> Vec<HookRecord> {
+    let end = bytes.iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1);
+    bytes[..end]
+        .split(|&b| b == b'\n')
+        .filter_map(|l| serde_json::from_slice(l).ok())
+        .collect()
 }
 
 /// The terminal a hook runs in, from `$TMUX` (`socket,pid,index`) and
@@ -192,18 +218,28 @@ impl Reader {
         }
     }
 
-    /// Go on from the end of the file as it is now: after [`compact`]
-    /// rewrote it, every record it kept was read already.
-    pub fn skip_to_end(&mut self) {
-        self.offset = std::fs::metadata(&self.path).map_or(0, |m| m.len());
+    /// Where the records read so far end: past the last complete line.
+    pub fn position(&self) -> u64 {
+        self.offset - self.partial.len() as u64
+    }
+
+    /// Go on at `offset` of the file, with no partial line: after
+    /// [`compact`] rewrote it, at [`Compacted::kept`].
+    pub fn resume_at(&mut self, offset: u64) {
+        self.offset = offset;
         self.partial.clear();
     }
 
-    /// Records written since the last call. A missing file has none.
+    /// Records written since the last call. A missing file has none. A file
+    /// shorter than what was read (truncated, or replaced by another) is
+    /// read again from its start.
     pub fn read_new(&mut self) -> Vec<HookRecord> {
         let Ok(mut f) = std::fs::File::open(&self.path) else {
             return Vec::new();
         };
+        if f.metadata().is_ok_and(|m| m.len() < self.offset) {
+            self.resume_at(0);
+        }
         let mut buf = Vec::new();
         if f.seek(SeekFrom::Start(self.offset)).is_err() || f.read_to_end(&mut buf).is_err() {
             return Vec::new();
@@ -214,10 +250,7 @@ impl Reader {
             return Vec::new();
         };
         let complete: Vec<u8> = self.partial.drain(..=end).collect();
-        complete
-            .split(|&b| b == b'\n')
-            .filter_map(|l| serde_json::from_slice(l).ok())
-            .collect()
+        records(&complete)
     }
 }
 
@@ -308,11 +341,13 @@ mod tests {
         f.write_all(b"garbage\n").unwrap();
         stops(&p, [100, 101]);
         let before = std::fs::read(&p).unwrap();
-        assert!(!compact(&p, 1 << 20, 101, 60).unwrap());
+        assert!(compact(&p, 1 << 20, 101, 60, 0).unwrap().is_none());
         assert_eq!(std::fs::read(&p).unwrap(), before, "small: untouched");
-        assert!(compact(&p, 5 * line, 101, 60).unwrap());
+        assert!(compact(&p, 5 * line, 101, 60, 0).unwrap().is_some());
         assert_eq!(stamps(&p), [100, 101]);
-        assert!(!compact(&dir.path().join("none.jsonl"), 0, 1, 1).unwrap());
+        assert!(compact(&dir.path().join("none.jsonl"), 0, 1, 1, 0)
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -321,25 +356,67 @@ mod tests {
         let p = external_path(dir.path());
         // A busy day: every record is recent, and twelve lines pass the cap.
         let line = stops(&p, 100..112);
-        assert!(compact(&p, 5 * line, 111, 1_000).unwrap());
+        assert!(compact(&p, 5 * line, 111, 1_000, 0).unwrap().is_some());
         assert_eq!(stamps(&p), [110, 111], "2.5 lines of room");
         assert!(std::fs::metadata(&p).unwrap().len() <= 5 * line / 2);
-        assert!(!compact(&p, 5 * line, 111, 1_000).unwrap(), "not again");
+        assert!(
+            compact(&p, 5 * line, 111, 1_000, 0).unwrap().is_none(),
+            "not again"
+        );
     }
 
     #[test]
-    fn the_reader_goes_on_after_a_compaction() {
+    fn a_record_landing_before_a_compaction_is_handed_out_once() {
         let dir = tempfile::tempdir().unwrap();
         let p = external_path(dir.path());
         let line = stops(&p, 100..112);
         let mut reader = Reader::new(p.clone());
         assert_eq!(reader.read_new().len(), 12);
-        assert!(compact(&p, 5 * line, 111, 1_000).unwrap());
-        reader.skip_to_end();
-        assert!(reader.read_new().is_empty(), "kept records were read");
+        // A hook appends after the reader's last read, before the trim.
         stops(&p, [112]);
+        let done = compact(&p, 5 * line, 112, 1_000, reader.position()).unwrap();
+        let done = done.expect("trimmed");
+        let unread: Vec<u64> = done.unread.iter().map(|r| r.ts).collect();
+        assert_eq!(unread, [112], "handed out by the trim");
+        assert_eq!(done.kept, std::fs::metadata(&p).unwrap().len());
+        reader.resume_at(done.kept);
+        assert!(reader.read_new().is_empty(), "not read twice");
+        // One landing after the rename is read next.
+        stops(&p, [113]);
         let next: Vec<u64> = reader.read_new().iter().map(|r| r.ts).collect();
-        assert_eq!(next, [112]);
+        assert_eq!(next, [113]);
+    }
+
+    #[test]
+    fn the_reader_starts_over_on_a_file_shorter_than_it_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = external_path(dir.path());
+        stops(&p, 100..110);
+        let mut reader = Reader::new(p.clone());
+        assert_eq!(reader.read_new().len(), 10);
+        // Replaced by a shorter log, as another paddock's trim would.
+        std::fs::remove_file(&p).unwrap();
+        stops(&p, [200, 201]);
+        let again: Vec<u64> = reader.read_new().iter().map(|r| r.ts).collect();
+        assert_eq!(again, [200, 201], "from its start, not mid-line");
+    }
+
+    #[test]
+    fn records_read_late_merge_into_the_batch_by_time() {
+        let at = |pane: &str, ts| HookRecord {
+            event: "Stop".into(),
+            pane: pane.into(),
+            session_id: Some("e1".into()),
+            ts,
+            ..Default::default()
+        };
+        // The poll's external records, then the trim's late ones.
+        let external = vec![at("", 3), at("", 1)];
+        let got: Vec<u64> = merged(vec![at("%1", 2)], external)
+            .iter()
+            .map(|r| r.ts)
+            .collect();
+        assert_eq!(got, [1, 2, 3]);
     }
 
     #[test]
