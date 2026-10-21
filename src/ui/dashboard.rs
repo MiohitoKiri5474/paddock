@@ -1,10 +1,12 @@
 //! The dashboard (`C-a o`): an overlay over the session view listing every
-//! session row with its task rows and their git details, on top, a live
-//! preview of the selected row's terminal below, and the keys at the bottom.
+//! session row with its task rows and their git details as a table on top,
+//! a live preview of the selected row's terminal below, and the keys at the
+//! bottom.
+
+mod table;
 
 use super::session_view;
 use crate::app::{Row, RowId, TaskDetails, TaskRow};
-use crate::git::{age, Details};
 use crate::sessions::{State, TaskState};
 use crate::terminal::emulator::Emulator;
 use ratatui::buffer::Buffer;
@@ -18,11 +20,11 @@ const EMPTY: &str = " no Claude sessions yet";
 /// The list's share of the dashboard's height at most, in percent, unless
 /// that is below [`MIN_LIST`].
 const LIST_SHARE_PERCENT: u32 = 40;
-/// The list's height at least (its title and a few lines), while the
-/// dashboard is that tall.
-const MIN_LIST: u16 = 4;
-/// The list's title line, above its lines.
-const LIST_TITLE: u16 = 1;
+/// The list's height at least (its title, header and a few lines), while
+/// the dashboard is that tall.
+const MIN_LIST: u16 = 5;
+/// The list's title line and its column header, above its lines.
+const LIST_HEADS: u16 = 2;
 /// The key line under the preview.
 const KEYS_HEIGHT: u16 = 1;
 /// The preview's height at least: its title and one line of the terminal.
@@ -88,64 +90,6 @@ fn is_subagent(line: &Line) -> bool {
     line.is_some_and(|(_, task)| task.is_some_and(|t| t.subagent.is_some()))
 }
 
-/// A task's fields: ahead/behind and uncommitted line changes, then its base
-/// diff and changed files, last commit age, merged badge, and a subagent's
-/// state; what is zero or unknown is left out.
-pub fn fields(task: &TaskRow, details: Option<&Details>, now: u64) -> String {
-    let status = task.status.unwrap_or_default();
-    let arrows: String = status
-        .ahead_behind
-        .map(|(ahead, behind)| [("↑", ahead), ("↓", behind)])
-        .into_iter()
-        .flatten()
-        .filter(|&(_, n)| n > 0)
-        .map(|(arrow, n)| format!("{arrow}{n}"))
-        .collect();
-    let changes = status
-        .changes
-        .filter(|&c| c != (0, 0))
-        .map(|(added, removed)| format!("+{added} −{removed}"));
-    let base = details.and_then(|d| d.base_diff).filter(|b| b.files > 0);
-    let base_diff = base.map(|b| format!("base +{} −{}", b.added, b.removed));
-    let files = base.map(|b| match b.files {
-        1 => "1 file".to_string(),
-        n => format!("{n} files"),
-    });
-    let commit = details
-        .and_then(|d| d.last_commit)
-        .map(|t| age(now.saturating_sub(t)));
-    let merged = details.filter(|d| d.merged).map(|_| "merged".to_string());
-    let state = task.subagent.as_ref().map(|s| s.state.label().to_string());
-    [
-        Some(arrows),
-        changes,
-        base_diff,
-        files,
-        commit,
-        merged,
-        state,
-    ]
-    .into_iter()
-    .flatten()
-    .filter(|p| !p.is_empty())
-    .collect::<Vec<_>>()
-    .join("  ")
-}
-
-/// `left` after `indent` spaces and `right` at the end, then one space:
-/// exactly `width` cells; `left` is cut to fit.
-fn spread(indent: usize, left: &str, right: &str, width: usize) -> String {
-    let right_len = right.chars().count();
-    let min_gap = usize::from(right_len > 0);
-    let left: String = left
-        .chars()
-        .take(width.saturating_sub(indent + right_len + min_gap + 1))
-        .collect();
-    let gap = width.saturating_sub(indent + left.chars().count() + right_len + 1);
-    let text = format!("{}{left}{}{right} ", " ".repeat(indent), " ".repeat(gap));
-    text.chars().take(width).collect()
-}
-
 /// Where the dashboard's parts go, top to bottom.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Layout {
@@ -173,7 +117,7 @@ pub fn layout(area: Rect, lines: usize) -> Layout {
     let cap = u16::try_from(share).unwrap_or(u16::MAX).max(MIN_LIST);
     let wanted = u16::try_from(lines.max(1))
         .unwrap_or(u16::MAX)
-        .saturating_add(LIST_TITLE);
+        .saturating_add(LIST_HEADS);
     let list = wanted.max(MIN_LIST).min(cap).min(room);
     // Too short to show any of the terminal: the list keeps that room.
     let list = if room - list < MIN_PREVIEW {
@@ -221,28 +165,21 @@ fn render_keys(keys: &str, area: Rect, buf: &mut Buffer) {
     buf.set_stringn(area.x, area.y, text, usize::from(area.width), dim);
 }
 
-/// A list line's text, `width` cells, and style: a session row's label and
-/// state, or a task row's label and fields.
-fn line(view: &View, row: &Row, task: Option<&TaskRow>, width: usize) -> (String, Style) {
+/// A list line's cells and style: a session row's, or a task row's.
+fn cells(view: &View, row: &Row, task: Option<&TaskRow>) -> (table::Cells, Style) {
     let Some(t) = task else {
-        return (
-            spread(1, &row.label, row.state.label(), width),
-            style(row.state),
-        );
-    };
-    let label = match t.subagent.as_ref().and_then(|s| s.description.as_ref()) {
-        Some(d) => format!("{d} · {}", t.branch),
-        None => t.branch.clone(),
+        return (table::session(row), style(row.state));
     };
     let details = view.details.get(&(t.cwd.clone(), t.branch.clone()));
-    let right = fields(t, details, view.now);
     let style = t
         .subagent
         .as_ref()
         .map_or(Style::default(), |s| task_style(s.state));
-    (spread(3, &label, &right, width), style)
+    (table::task(t, details, view.now), style)
 }
 
+/// The title, the column header (dim), then the lines in sight as a table,
+/// scrolled to keep the selected line in sight with the subagents under it.
 fn render_list(view: &View, area: Rect, buf: &mut Buffer) {
     if area.height == 0 || area.width == 0 {
         return;
@@ -250,9 +187,6 @@ fn render_list(view: &View, area: Rect, buf: &mut Buffer) {
     let width = usize::from(area.width);
     render_title(area, buf);
     let lines = lines(view.rows);
-    if lines.is_empty() && area.height > 1 {
-        buf.set_stringn(area.x, area.y + 1, EMPTY, width, Style::default());
-    }
     let picked = lines.iter().position(|l| {
         let Some((row, task)) = l else {
             return false;
@@ -263,27 +197,42 @@ fn render_list(view: &View, area: Rect, buf: &mut Buffer) {
     });
     // Keep the selected line on screen with the subagents under it, the
     // selected line first if they do not all fit.
-    let room = usize::from(area.height - 1);
+    let room = usize::from(area.height.saturating_sub(LIST_HEADS));
     let skip = picked.map_or(0, |p| {
         let subagents = lines[p + 1..].iter().take_while(|l| is_subagent(l)).count();
         (p + 1 + subagents).saturating_sub(room).min(p)
     });
-    for ((i, l), y) in lines
+    let shown: Vec<(usize, Option<(table::Cells, Style)>)> = lines
         .iter()
         .enumerate()
         .skip(skip)
-        .zip(area.y + 1..area.bottom())
-    {
-        let Some((row, task)) = l else {
+        .take(room)
+        .map(|(i, l)| (i, l.map(|(row, task)| cells(view, row, task))))
+        .collect();
+    let header = table::header();
+    let all: Vec<&table::Cells> = std::iter::once(&header)
+        .chain(shown.iter().filter_map(|(_, l)| l.as_ref().map(|(c, _)| c)))
+        .collect();
+    let widths = table::widths(&all, width);
+    if area.height > 1 {
+        let dim = Style::default().add_modifier(Modifier::DIM);
+        let text = table::line(&header, &widths, width);
+        buf.set_stringn(area.x, area.y + 1, text, width, dim);
+    }
+    if lines.is_empty() && area.height > LIST_HEADS {
+        let y = area.y + LIST_HEADS;
+        buf.set_stringn(area.x, y, EMPTY, width, Style::default());
+    }
+    for ((i, l), y) in shown.iter().zip(area.y + LIST_HEADS..area.bottom()) {
+        let Some((cells, style)) = l else {
             continue;
         };
-        let (text, style) = line(view, row, *task, width);
-        let style = if Some(i) == picked {
+        let style = if Some(*i) == picked {
             style.add_modifier(Modifier::REVERSED)
         } else {
-            style
+            *style
         };
-        buf.set_stringn(area.x, y, text, width, style);
+        buf.set_stringn(area.x, y, table::line(cells, &widths, width), width, style);
     }
 }
 
@@ -350,7 +299,7 @@ mod tests {
     use super::*;
 
     const KEYS: &str = "j down  k up";
-    use crate::git::{BaseDiff, Status};
+    use crate::git::{BaseDiff, Details, Status};
     use crate::sessions::SubagentTask;
 
     fn row(label: &str, state: State, tasks: Vec<TaskRow>) -> Row {
@@ -380,59 +329,6 @@ mod tests {
             .collect::<String>()
             .trim_end()
             .to_string()
-    }
-
-    #[test]
-    fn fields_cover_status_base_diff_files_age_and_merged() {
-        let status = Status {
-            ahead_behind: Some((2, 0)),
-            changes: Some((30, 144)),
-        };
-        let details = Details {
-            base_diff: Some(BaseDiff {
-                added: 12,
-                removed: 3,
-                files: 4,
-            }),
-            last_commit: Some(1_000),
-            merged: true,
-        };
-        let t = task("feat/a", Some(status));
-        assert_eq!(
-            fields(&t, Some(&details), 1_000 + 7_200),
-            "↑2  +30 −144  base +12 −3  4 files  2h  merged"
-        );
-        let one = Details {
-            base_diff: Some(BaseDiff {
-                added: 1,
-                removed: 0,
-                files: 1,
-            }),
-            last_commit: None,
-            merged: false,
-        };
-        assert_eq!(
-            fields(&t, Some(&one), 0),
-            "↑2  +30 −144  base +1 −0  1 file"
-        );
-        let none = Details {
-            base_diff: Some(BaseDiff {
-                added: 0,
-                removed: 0,
-                files: 0,
-            }),
-            ..Details::default()
-        };
-        assert_eq!(fields(&task("b", None), Some(&none), 0), "");
-        let sub = TaskRow {
-            subagent: Some(SubagentTask {
-                agent_id: "a1".into(),
-                description: None,
-                state: TaskState::Done,
-            }),
-            ..task("c", Some(Status::default()))
-        };
-        assert_eq!(fields(&sub, None, 0), "done");
     }
 
     #[test]
@@ -475,18 +371,18 @@ mod tests {
         let area = |height| Rect::new(0, 1, 80, height);
         assert_eq!(
             layout(area(40), 7),
-            stacked(8, 31, 1),
-            "the title and seven lines"
+            stacked(9, 30, 1),
+            "the title, the header and seven lines"
         );
         assert_eq!(layout(area(40), 50), stacked(16, 23, 1), "capped at 40%");
         assert_eq!(
             layout(area(40), 1),
-            stacked(4, 35, 1),
+            stacked(5, 34, 1),
             "a few rows at least"
         );
         assert_eq!(
             layout(area(40), 0),
-            stacked(4, 35, 1),
+            stacked(5, 34, 1),
             "the line saying there are none"
         );
     }
@@ -494,7 +390,7 @@ mod tests {
     #[test]
     fn a_short_dashboard_loses_its_preview_before_its_list() {
         let area = |height| Rect::new(0, 1, 80, height);
-        assert_eq!(layout(area(8), 9), stacked(4, 3, 1), "the minimum wins");
+        assert_eq!(layout(area(8), 9), stacked(5, 2, 1), "the minimum wins");
         assert_eq!(
             layout(area(6), 9),
             stacked(5, 0, 1),
@@ -522,7 +418,7 @@ mod tests {
 
     #[test]
     fn renders_rows_tasks_and_a_live_preview() {
-        let area = Rect::new(0, 0, 60, 12);
+        let area = Rect::new(0, 0, 80, 12);
         let mut buf = Buffer::empty(area);
         let status = Status {
             ahead_behind: None,
@@ -569,22 +465,20 @@ mod tests {
         assert_eq!(render(&view, area, &mut buf), None);
         assert_eq!(text(&buf, 0), " dashboard");
         assert_eq!(
-            text(&buf, 1),
-            " api                                                   idle"
+            [1, 2, 3, 4].map(|y| text(&buf, y)),
+            [
+                " NAME             STATE    ↑↓  CHANGES   BASE  FILES  AGE  MERGED",
+                " api              idle",
+                "   feat/a                        +3 −1  +5 −0      2       ✓",
+                "   Fix b · fix/b  waiting",
+            ]
         );
-        assert_eq!(
-            text(&buf, 2),
-            "   feat/a                +3 −1  base +5 −0  2 files  merged"
-        );
-        assert_eq!(
-            text(&buf, 3),
-            "   Fix b · fix/b                                    waiting"
-        );
-        assert!(buf[(3, 2)].modifier.contains(Modifier::REVERSED));
-        assert!(!buf[(3, 1)].modifier.contains(Modifier::REVERSED));
-        assert_eq!(buf[(3, 3)].bg, Color::Yellow);
-        assert!(text(&buf, 4).starts_with("─ preview: api  I to type ──"));
-        assert_eq!(text(&buf, 5), "hello preview");
+        assert!(buf[(1, 1)].modifier.contains(Modifier::DIM), "a dim header");
+        assert!(buf[(3, 3)].modifier.contains(Modifier::REVERSED));
+        assert!(!buf[(3, 2)].modifier.contains(Modifier::REVERSED));
+        assert_eq!(buf[(3, 4)].bg, Color::Yellow);
+        assert!(text(&buf, 5).starts_with("─ preview: api  I to type ──"));
+        assert_eq!(text(&buf, 6), "hello preview");
         assert_eq!(text(&buf, 11), " j down  k up", "the keys at the bottom");
         assert!(buf[(1, 11)].modifier.contains(Modifier::DIM));
 
@@ -593,7 +487,7 @@ mod tests {
             ..view
         };
         let cursor = render(&typing, area, &mut Buffer::empty(area));
-        assert_eq!(cursor, Some(Position::new(13, 5)));
+        assert_eq!(cursor, Some(Position::new(13, 6)));
     }
 
     #[test]
@@ -615,7 +509,7 @@ mod tests {
             now: 0,
         };
         render(&view, area, &mut buf);
-        assert!(text(&buf, 4).starts_with("─ gone: no terminal ─"));
+        assert!(text(&buf, 5).starts_with("─ gone: no terminal ─"));
     }
 
     #[test]
@@ -632,8 +526,8 @@ mod tests {
             now: 0,
         };
         render(&view, area, &mut buf);
-        assert_eq!(text(&buf, 1), " no Claude sessions yet");
-        assert_eq!(text(&buf, 4), "─".repeat(40));
+        assert_eq!(text(&buf, 2), " no Claude sessions yet");
+        assert_eq!(text(&buf, 5), "─".repeat(40));
         assert_eq!(text(&buf, 7), " j down  k up");
     }
 
@@ -658,12 +552,12 @@ mod tests {
             now: 0,
         };
         render(&view, area, &mut buf);
-        // The list is capped at four rows: three lines below its title, a
-        // blank one between two sessions.
-        assert!(text(&buf, 1).starts_with(" r4"));
-        assert_eq!(text(&buf, 2), "");
-        assert!(text(&buf, 3).starts_with(" r5"));
-        assert!(text(&buf, 4).starts_with("─ r5: no terminal"));
+        // The list is capped at five rows: three lines below its title and
+        // header, a blank one between two sessions.
+        assert!(text(&buf, 2).starts_with(" r4"));
+        assert_eq!(text(&buf, 3), "");
+        assert!(text(&buf, 4).starts_with(" r5"));
+        assert!(text(&buf, 5).starts_with("─ r5: no terminal"));
     }
 
     /// A subagent's task row on `branch`.
@@ -701,11 +595,11 @@ mod tests {
             now: 0,
         };
         render(&view, area, &mut buf);
-        assert!(text(&buf, 1).starts_with(" r2"));
-        assert!(text(&buf, 2).starts_with("   s1"));
-        assert!(text(&buf, 3).starts_with("   s2"));
+        assert!(text(&buf, 2).starts_with(" r2"));
+        assert!(text(&buf, 3).starts_with("   s1"));
+        assert!(text(&buf, 4).starts_with("   s2"));
         // Only the selected line is highlighted, not its subagents.
-        assert!(buf[(1, 1)].modifier.contains(Modifier::REVERSED));
-        assert!(!buf[(3, 2)].modifier.contains(Modifier::REVERSED));
+        assert!(buf[(1, 2)].modifier.contains(Modifier::REVERSED));
+        assert!(!buf[(3, 3)].modifier.contains(Modifier::REVERSED));
     }
 }

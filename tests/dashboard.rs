@@ -356,6 +356,16 @@ fn f_forks_the_selected_session() {
     paddock.wait_for("the dashboard closed", |s| !s.contains(OPEN));
 }
 
+/// The list line of the task row on `branch` in `screen`, spaces collapsed;
+/// empty if not drawn.
+fn task_line(screen: &str, branch: &str) -> String {
+    screen
+        .lines()
+        .map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "))
+        .find(|l| l.starts_with(branch))
+        .unwrap_or_default()
+}
+
 #[test]
 fn task_rows_show_base_diff_files_age_and_merged() {
     let sandbox = Sandbox::new();
@@ -374,12 +384,14 @@ fn task_rows_show_base_diff_files_age_and_merged() {
 
     open(&mut paddock);
     paddock.wait_for_text("feat/x");
-    paddock.wait_for_text("base +1 −0  1 file  now");
-    assert!(!paddock.screen().contains("merged"));
+    // BASE, FILES and AGE, in their columns.
+    paddock.wait_for("feat/x's fields", |s| {
+        task_line(s, "feat/x") == "feat/x +1 −0 1 now"
+    });
 
     git(&dir, &["switch", "-q", "main"]);
     commit(&dir, "b");
     git(&dir, &["merge", "-q", "--no-edit", "feat/x"]);
     // No hook: the dashboard's own refresh picks this up.
-    paddock.wait_for_text("merged");
+    paddock.wait_for("feat/x merged", |s| task_line(s, "feat/x").ends_with(" ✓"));
 }

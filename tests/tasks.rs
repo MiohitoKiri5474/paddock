@@ -76,14 +76,16 @@ fn ready(sandbox: &Sandbox) -> Paddock {
     paddock
 }
 
-/// The dashboard's list lines, spaces collapsed; empty while it is closed.
+/// The dashboard's list lines below its column header, spaces collapsed;
+/// empty while it is closed.
 fn list(paddock: &Paddock) -> Vec<String> {
     let rows = paddock.rows();
     if rows.get(1).is_none_or(|r| r.trim() != TITLE) {
         return Vec::new();
     }
     rows.iter()
-        .skip(2)
+        // The tab bar, the title and the column header.
+        .skip(3)
         .take_while(|r| !r.starts_with('─'))
         // Blank lines part the sessions, and fill the list's minimum height.
         .filter(|r| !r.is_empty() && !r.contains("no Claude sessions yet"))
@@ -91,10 +93,11 @@ fn list(paddock: &Paddock) -> Vec<String> {
         .collect()
 }
 
-/// Whether list line `line` matches `want`: `prefix` or `prefix|suffix`.
+/// Whether list line `line` matches `want`: `prefix`, or `prefix|state`
+/// with `state` in its own column.
 fn matches(line: &str, want: &str) -> bool {
-    let (prefix, suffix) = want.split_once('|').unwrap_or((want, ""));
-    line.starts_with(prefix) && line.ends_with(suffix)
+    let (prefix, state) = want.split_once('|').unwrap_or((want, ""));
+    line.starts_with(prefix) && (state.is_empty() || line.split(' ').any(|w| w == state))
 }
 
 /// Wait until the dashboard lists lines matching `want` (see [`matches`]),
@@ -316,7 +319,7 @@ fn write_meta(sandbox: &Sandbox) {
 }
 
 /// A subagent's task row: its description (else its branch), then its
-/// fields and state.
+/// state.
 fn sub(label: &str, state: &str) -> String {
     format!("{label}|{state}")
 }
@@ -336,7 +339,8 @@ fn parallel_subagents_show_as_task_rows_from_running_to_done() {
     hook("UserPromptSubmit", "UserPromptSubmit", AGENT_A);
     hook("SubagentStart-subagent", "SubagentStart", AGENT_A);
     hook("SubagentStart-subagent", "SubagentStart", AGENT_B);
-    let first_b = format!("worktree-agent-{AGENT_B}");
+    // Its branch is longer than the name column: only its start shows.
+    let first_b = format!("worktree-agent-{}", &AGENT_B[..8]);
     wait_for_list(
         &mut paddock,
         &[

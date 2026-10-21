@@ -63,6 +63,8 @@ Not in scope for now: agents other than Claude Code, Linux, remote machines, a s
 | Sidebar agent | label, state and highlight, space and tab |
 | Dashboard | state and highlight, branch, ahead/behind upstream, line changes (`+30 −144`, uncommitted), base diff, number of changed files, last commit age, merged badge; PR number and state after v1 |
 
+The dashboard list is a table under a dim header: NAME (the session's label, its task rows indented under it), STATE, ↑↓, CHANGES, BASE, FILES, AGE, MERGED. Every line puts each value in its column, empty when zero or unknown, so values line up; a column is as wide as its widest value in sight (capped), numbers to the right. When the list is narrow, whole columns go so the name keeps room, MERGED first, then FILES, BASE, ↑↓, AGE and CHANGES; NAME and STATE always stay, and a name too long is cut with `…`.
+
 ### States
 
 - Session: running, waiting, done, idle, stopped, or unknown. A main agent that finishes a turn (`Stop`) is done while you are not looking at its tab (the current space's current tab, outer window focused), and turns idle once you do. Done is not saved: it is per running paddock.
