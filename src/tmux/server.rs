@@ -140,6 +140,7 @@ impl Server {
     /// Start a session running the user's shell, starting the server if needed.
     pub fn new_session(&self, name: &str, cwd: &Path, (cols, rows): (u16, u16)) -> Result<Session> {
         let cwd = start_dir(cwd);
+        let named = literal(name);
         let (x, y) = (cols.to_string(), rows.to_string());
         let args = [
             "new-session",
@@ -148,7 +149,7 @@ impl Server {
             "-F",
             "#{session_id}",
             "-s",
-            name,
+            &named,
             "-x",
             &x,
             "-y",
@@ -204,7 +205,8 @@ impl Server {
     /// between sees it as a tab, and a command that exits at once still
     /// leaves the run a success. The window is found again by a name of
     /// its own (`set-option` after `new-window -d` would mark the
-    /// current tab), then named after its command as tabs are.
+    /// current tab), then named after its command as tabs are. If marking
+    /// fails, the window is killed by that name, so it never stays as a tab.
     pub fn new_float(&self, id: &str, cwd: &Path, command: &str, key: &str) -> Result<String> {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -212,7 +214,7 @@ impl Server {
         let name = format!("paddock-float-{}-{nanos}", std::process::id());
         let target = format!("{id}:");
         let made = format!("{id}:={name}");
-        let cwd = literal(&start_dir(cwd));
+        let cwd = start_dir(cwd);
         let (command, key) = (literal(command), literal(key));
         let args = [
             "new-window",
@@ -242,7 +244,14 @@ impl Server {
             "automatic-rename",
             "on",
         ];
-        Ok(self.run(&args)?.trim().to_string())
+        match self.run(&args) {
+            Ok(out) => Ok(out.trim().to_string()),
+            Err(e) => {
+                // Gone already if `new-window` failed; the error is `e`.
+                let _ = self.run(&["kill-window", "-t", &made]);
+                Err(e)
+            }
+        }
     }
 
     /// End window `window` and everything running in it.
@@ -278,7 +287,8 @@ impl Server {
 
     /// Rename a window; tmux then stops naming it after its command.
     pub fn rename_window(&self, window: &str, name: &str) -> Result<()> {
-        self.run(&["rename-window", "-t", window, name]).map(drop)
+        self.run(&["rename-window", "-t", window, &literal(name)])
+            .map(drop)
     }
 
     /// Make a window its session's current one and focus pane `pane` in it.
@@ -306,7 +316,8 @@ impl Server {
     }
 
     pub fn rename_session(&self, id: &str, name: &str) -> Result<()> {
-        self.run(&["rename-session", "-t", id, name]).map(drop)
+        self.run(&["rename-session", "-t", id, &literal(name)])
+            .map(drop)
     }
 
     /// End a session and everything running in it.
@@ -323,14 +334,16 @@ impl Server {
     }
 }
 
-/// `dir` for `-c`: tmux expands formats there, and `##` is a literal `#`.
+/// `dir` for `-c`, as a [`literal`]: tmux expands formats there, and
+/// `##` is a literal `#`.
 fn start_dir(dir: &Path) -> String {
-    dir.to_string_lossy().replace('#', "##")
+    literal(&dir.to_string_lossy().replace('#', "##"))
 }
 
 /// `arg` as one tmux argument that stays itself: tmux reads an argument
 /// ending in `;` as a command separator, and one ending in `\;` as that
-/// argument with a `;` for the `\;`.
+/// argument with a `;` for the `\;`. Every argument from the user (a
+/// name, directory, float key or command) goes through it.
 fn literal(arg: &str) -> String {
     match arg.strip_suffix(';') {
         Some(rest) => format!("{rest}\\;"),
@@ -490,6 +503,50 @@ mod tests {
         assert_eq!(literal(";"), r"\;");
         assert_eq!(literal("C-;"), r"C-\;");
         assert_eq!(literal(r"find . -exec ls {} \;"), r"find . -exec ls {} \\;");
+    }
+
+    #[test]
+    fn names_and_directories_ending_in_a_semicolon_are_taken_literally() {
+        let tmp = tempfile::tempdir().unwrap();
+        let server = Server::new(Paths {
+            socket: format!("paddock-unit-semicolons-{}", std::process::id()),
+            state_dir: tmp.path().join("state"),
+            config_dir: tmp.path().join("config"),
+        });
+        server.write_config().unwrap();
+        let dir = tmp.path().canonicalize().unwrap().join("d;");
+        std::fs::create_dir(&dir).unwrap();
+        let run = || -> Result<(String, String, String)> {
+            let s = server.new_session("s;", &dir, (80, 24))?;
+            let started = server.display(&s.id, "#{session_name}")?;
+            server.new_window(&s.id, &dir)?;
+            let pane = server.split(&server.display(&s.id, "#{pane_id}")?, true, &dir)?;
+            let window = server.display(&pane, "#{window_id}")?;
+            server.rename_window(&window, "a;")?;
+            server.rename_session(&s.id, "b;")?;
+            let format = "#{session_name} #{window_name}";
+            let names = server.display(&pane, format)?;
+            let dirs = server.run(&[
+                "list-panes",
+                "-s",
+                "-t",
+                &s.id,
+                "-F",
+                "#{pane_current_path}",
+            ])?;
+            Ok((started, names, dirs))
+        };
+        let got = run();
+        let socket = server.run(&["display-message", "-p", "#{socket_path}"]);
+        let _ = server.run(&["kill-server"]);
+        if let Ok(socket) = socket {
+            let _ = std::fs::remove_file(socket.trim());
+        }
+        let (started, names, dirs) = got.unwrap();
+        assert_eq!(started, "s;");
+        assert_eq!(names, "b; a;");
+        let dir = dir.to_string_lossy();
+        assert_eq!(dirs.lines().collect::<Vec<_>>(), [&*dir; 3]);
     }
 
     #[test]

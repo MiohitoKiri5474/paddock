@@ -404,7 +404,8 @@ impl App {
         };
         let size = (self.area().width, self.area().height);
         let (mut space, terminals) = Space::attach(&self.server, id, size, deliver)?;
-        self.tidy_floats(&mut space.structure);
+        self.close_orphan_floats(&mut space.structure);
+        self.remember_float_panes(&space.structure);
         // Not the panes of floats just closed.
         let kept = terminals.into_iter().filter(|(p, _)| space.holds(p));
         self.terminals.extend(kept);
@@ -464,8 +465,9 @@ impl App {
     }
 
     /// Send bytes to pane `pane`'s program, returning its view to the live
-    /// screen.
+    /// screen. Every key, paste and mouse report for a pane comes here.
     pub(super) fn input(&mut self, pane: &str, bytes: &[u8]) -> Result<()> {
+        self.note_float_input(pane);
         if let Some(t) = self.terminals.get_mut(pane) {
             t.emulator_mut().scroll_to_bottom();
         }

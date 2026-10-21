@@ -13,8 +13,8 @@ use anyhow::Result;
 use ratatui::layout::Rect;
 use std::time::{Duration, Instant};
 
-/// A float whose program ends this soon after paddock started it most
-/// likely could not run (e.g. it is not installed).
+/// A float whose program ends this soon after paddock started it, before
+/// any input, exited at once: paddock says so.
 const QUICK_EXIT: Duration = Duration::from_secs(2);
 
 /// The float shown: space `space`'s float for `[floats]` entry `index`.
@@ -24,8 +24,8 @@ pub struct Shown {
     pub space: String,
     /// Its place in `[floats]`.
     pub index: usize,
-    /// When paddock started its program, if this showing did and
-    /// nothing has been typed into it since.
+    /// When paddock started its program, if this showing did and no
+    /// input (keys, paste or mouse) has reached it since.
     pub started: Option<Instant>,
 }
 
@@ -111,7 +111,7 @@ impl App {
             self.float = Some(shown);
         }
         // Its program may have exited already.
-        self.forget_ended_float();
+        self.forget_ended_float_noting_quick_exit();
         self.resize_float()
     }
 
@@ -134,10 +134,9 @@ impl App {
     }
 
     /// Forget the shown float once it has closed (its program exited) or
-    /// its space has ended. A program that ended right after paddock
-    /// started it, before any typing, gets a notice: it most likely could
-    /// not run.
-    pub(super) fn forget_ended_float(&mut self) {
+    /// its space has ended, and post a notice if its program ended within
+    /// [`QUICK_EXIT`] of paddock starting it, before any input.
+    pub(super) fn forget_ended_float_noting_quick_exit(&mut self) {
         let Some(shown) = &self.float else {
             return;
         };
@@ -150,9 +149,19 @@ impl App {
         }
         let quick = shown.started.is_some_and(|t| t.elapsed() < QUICK_EXIT);
         if let (true, Some(f)) = (quick, float) {
-            self.notice = Some(format!("{} exited at once; is it installed?", f.command));
+            self.notice = Some(format!("{} exited at once", f.command));
         }
         self.float = None;
+    }
+
+    /// Input is about to reach pane `pane`: if that is the shown float's,
+    /// its program ran, so it quitting soon after gives no notice.
+    pub(super) fn note_float_input(&mut self, pane: &str) {
+        if self.float_pane().as_deref() == Some(pane) {
+            if let Some(shown) = &mut self.float {
+                shown.started = None;
+            }
+        }
     }
 
     /// Whether pane `pane` is or was in a float of any space: paddock
@@ -162,10 +171,20 @@ impl App {
         self.float_panes.contains(pane)
     }
 
-    /// Kill the floats in `structure` whose key is no longer in
-    /// `[floats]` (nothing could show or close them), leaving them out of
-    /// it, and remember the other floats' panes.
-    pub(super) fn tidy_floats(&mut self, structure: &mut Structure) {
+    /// Remember the panes of the floats in `structure`, for
+    /// [`is_float_pane`](Self::is_float_pane).
+    // ponytail: never pruned, so it grows by one id per float started
+    // while paddock runs. Harmless unless the tmux server restarts under
+    // a running paddock and reuses a `%N` id for a tab's pane.
+    pub(super) fn remember_float_panes(&mut self, structure: &Structure) {
+        let panes = structure.floats.iter().flat_map(|f| &f.window.panes);
+        self.float_panes.extend(panes.map(|p| p.id.clone()));
+    }
+
+    /// At attach: kill the floats in `structure` whose key is no longer
+    /// in `[floats]` (nothing could show or close them), leaving them out
+    /// of it.
+    pub(super) fn close_orphan_floats(&mut self, structure: &mut Structure) {
         let keys: Vec<String> = self.floats.list.iter().map(|f| f.key.name()).collect();
         let (kept, orphans): (Vec<_>, Vec<_>) = std::mem::take(&mut structure.floats)
             .into_iter()
@@ -174,7 +193,5 @@ impl App {
         for orphan in orphans {
             self.report(|app| app.server.kill_window(&orphan.window.id));
         }
-        let panes = structure.floats.iter().flat_map(|f| &f.window.panes);
-        self.float_panes.extend(panes.map(|p| p.id.clone()));
     }
 }

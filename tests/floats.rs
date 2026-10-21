@@ -326,6 +326,7 @@ fn a_program_that_exits_at_once_gives_a_notice_and_never_a_tab() {
     paddock.command(b"g");
     paddock.wait_for_text("exit 3 exited at once");
     assert!(!paddock.full_screen().contains("can't find"));
+    assert!(!paddock.full_screen().contains("installed"));
     paddock.wait_for_tabs(&["1:home"]);
     assert!(floats(&sandbox).is_empty());
     paddock.type_line("echo still-in-the-shell");
