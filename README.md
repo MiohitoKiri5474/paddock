@@ -135,7 +135,7 @@ In the sidebar (`[keys.sidebar]`; prefix commands work too):
 | `j` `Down` | next space or agent | `down` |
 | `k` `Up` | previous space or agent | `up` |
 | `Enter` | show the space's tabs, or jump to the agent's pane | `open` |
-| `x` | close the space, or the agent's pane | `close` |
+| `x` | close the space (a worktree space paddock made: delete it, asking), or the agent's pane | `close` |
 | `f` | fork the agent (on a space, its agent that needs you most) | `fork` |
 | `W` | new worktree of the space's repository, as a new space | `new_worktree` |
 | `o` | open a worktree of the space's repository as a new space | `open_worktree` |

@@ -245,7 +245,7 @@ pub const SIDEBAR: &[Binding<SidebarAction>] = &[
         "close",
         SidebarAction::Close,
         &["x"],
-        "close the space, or the agent's pane",
+        "close the space (a worktree space paddock made: delete it, asking), or the agent's pane",
     ),
     bind(
         "fork",
