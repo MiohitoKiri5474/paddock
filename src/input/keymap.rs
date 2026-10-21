@@ -12,17 +12,23 @@ use anyhow::{bail, Result};
 use crossterm::event::{KeyEvent, KeyModifiers};
 pub use key::Key;
 use std::collections::BTreeMap;
-pub use tables::{Binding, DashboardAction, SidebarAction, COMMANDS, DASHBOARD, DIRECT, SIDEBAR};
+pub use tables::{Binding, DashboardAction, SidebarAction, COMMANDS, DASHBOARD, SIDEBAR};
 
 /// An action's keys in `config.toml`, by action name, for one section.
 pub type Given = BTreeMap<String, Vec<String>>;
 
+/// The `[keys.…]` sections as `config.toml` gives them. `direct` is `None`
+/// while `[keys.direct]` is not written at all.
+#[derive(Debug, Default)]
+pub struct GivenKeys {
+    pub commands: Given,
+    pub direct: Option<Given>,
+    pub sidebar: Given,
+    pub dashboard: Given,
+}
+
 /// Warnings about settings that work but may surprise.
 pub type Warnings = Vec<String>;
-
-/// Default keys by action name, for a section whose defaults are not its
-/// table's (the direct chords share the commands' table).
-pub type Defaults = &'static [(&'static str, &'static [&'static str])];
 
 /// A `[keys.<name>]` section: its actions, and the modifiers a key pressed
 /// may have on top of the key bound and still match it.
@@ -31,19 +37,18 @@ pub struct Section<A: 'static> {
     pub name: &'static str,
     pub table: &'static [Binding<A>],
     pub ignored: KeyModifiers,
-    /// Default keys instead of the table's; an action left out has none.
-    pub defaults: Option<Defaults>,
+    /// Whether the section's defaults are the table's direct chords
+    /// instead of its keys.
+    pub chords: bool,
 }
 
 impl<A> Section<A> {
     /// The default keys of `b`.
     fn default_keys(&self, b: &Binding<A>) -> &'static [&'static str] {
-        match self.defaults {
-            None => b.keys,
-            Some(defaults) => defaults
-                .iter()
-                .find(|(name, _)| *name == b.name)
-                .map_or(&[], |(_, keys)| keys),
+        if self.chords {
+            b.chords
+        } else {
+            b.keys
         }
     }
 }
@@ -53,7 +58,7 @@ pub const COMMAND_KEYS: Section<Command> = Section {
     name: "commands",
     table: COMMANDS,
     ignored: KeyModifiers::SHIFT,
-    defaults: None,
+    chords: false,
 };
 
 /// Without the prefix, a chord matches exactly: a key not bound goes to
@@ -62,7 +67,7 @@ pub const DIRECT_KEYS: Section<Command> = Section {
     name: "direct",
     table: COMMANDS,
     ignored: KeyModifiers::NONE,
-    defaults: Some(DIRECT),
+    chords: true,
 };
 
 /// In the sidebar and the dashboard, Ctrl and Shift do not matter.
@@ -70,14 +75,14 @@ pub const SIDEBAR_KEYS: Section<SidebarAction> = Section {
     name: "sidebar",
     table: SIDEBAR,
     ignored: KeyModifiers::CONTROL.union(KeyModifiers::SHIFT),
-    defaults: None,
+    chords: false,
 };
 
 pub const DASHBOARD_KEYS: Section<DashboardAction> = Section {
     name: "dashboard",
     table: DASHBOARD,
     ignored: KeyModifiers::CONTROL.union(KeyModifiers::SHIFT),
-    defaults: None,
+    chords: false,
 };
 
 /// Direct chords that take a control character from the terminal
@@ -142,6 +147,14 @@ impl<A: Copy> Keys<A> {
     /// Each binding with its keys now, in table order.
     pub fn bindings(&self) -> impl Iterator<Item = (&'static Binding<A>, &[Key])> {
         self.bound.iter().map(|(b, keys)| (*b, keys.as_slice()))
+    }
+
+    /// The keys the action named `name` has now (none if it is not here).
+    fn keys_of(&self, name: &str) -> &[Key] {
+        self.bound
+            .iter()
+            .find(|(b, _)| b.name == name)
+            .map_or(&[], |(_, keys)| keys.as_slice())
     }
 
     /// The section with `given`'s keys instead of the defaults; `""` or
@@ -305,31 +318,37 @@ pub struct Keymap {
 
 impl Keymap {
     /// The keys `config.toml` gives, the defaults for the rest, and
-    /// warnings about the Alt keys given.
-    pub fn configured(
-        prefix: Key,
-        [commands, direct, sidebar, dashboard]: [&Given; 4],
-    ) -> Result<(Self, Warnings)> {
-        let (commands, mut warnings) = Keys::configured(&COMMAND_KEYS, commands, prefix)?;
-        let (chords, more) = Keys::configured(&DIRECT_KEYS, direct, prefix)?;
-        warnings.extend(more);
-        let (sidebar, more) = Keys::configured(&SIDEBAR_KEYS, sidebar, prefix)?;
-        warnings.extend(more);
-        let (dashboard, more) = Keys::configured(&DASHBOARD_KEYS, dashboard, prefix)?;
-        warnings.extend(more);
+    /// warnings: about the Alt keys given, and, while `[keys.direct]` is
+    /// not written at all, about the control characters its defaults take
+    /// from the terminal (written, even empty, the user chose them).
+    pub fn configured(prefix: Key, given: &GivenKeys) -> Result<(Self, Warnings)> {
+        let mut warnings = Warnings::new();
+        let no_direct = Given::new();
+        let direct_given = given.direct.as_ref().unwrap_or(&no_direct);
         let keymap = Self {
-            commands,
-            direct: chords,
-            sidebar,
-            dashboard,
+            commands: section(&COMMAND_KEYS, &given.commands, prefix, &mut warnings)?,
+            direct: section(&DIRECT_KEYS, direct_given, prefix, &mut warnings)?,
+            sidebar: section(&SIDEBAR_KEYS, &given.sidebar, prefix, &mut warnings)?,
+            dashboard: section(&DASHBOARD_KEYS, &given.dashboard, prefix, &mut warnings)?,
         };
+        if given.direct.is_none() {
+            warnings.extend(keymap.control_chars_warning());
+        }
         Ok((keymap, warnings))
     }
 
+    /// Each command with its keys after the prefix and its direct chords.
+    pub fn commands_with_chords(
+        &self,
+    ) -> impl Iterator<Item = (&'static Binding<Command>, &[Key], &[Key])> {
+        self.commands
+            .bindings()
+            .map(|(b, keys)| (b, keys, self.direct.keys_of(b.name)))
+    }
+
     /// A warning naming the direct chords that are control characters the
-    /// terminal would get otherwise (`C-h` is Backspace), if any. For
-    /// when `[keys.direct]` is not set: set, the user chose them.
-    pub fn control_chars_warning(&self) -> Option<String> {
+    /// terminal would get otherwise (`C-h` is Backspace), if any.
+    fn control_chars_warning(&self) -> Option<String> {
         let taken: Vec<String> = self
             .direct
             .bindings()
@@ -367,6 +386,27 @@ impl Default for Keymap {
     }
 }
 
+/// `section` with `given`'s keys, adding its warnings to `warnings`.
+fn section<A: Copy>(
+    section: &'static Section<A>,
+    given: &Given,
+    prefix: Key,
+    warnings: &mut Warnings,
+) -> Result<Keys<A>> {
+    let (keys, more) = Keys::configured(section, given, prefix)?;
+    warnings.extend(more);
+    Ok(keys)
+}
+
+/// A `[keys.<section>]` table from `(action, keys)` pairs, for tests.
+#[cfg(test)]
+pub fn given(pairs: &[(&str, &[&str])]) -> Given {
+    pairs
+        .iter()
+        .map(|(n, keys)| (n.to_string(), keys.iter().map(|k| k.to_string()).collect()))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -382,13 +422,6 @@ mod tests {
 
     fn ctrl_a() -> Key {
         Key::parse("C-a").unwrap()
-    }
-
-    fn given(pairs: &[(&str, &[&str])]) -> Given {
-        pairs
-            .iter()
-            .map(|(n, keys)| (n.to_string(), keys.iter().map(|k| k.to_string()).collect()))
-            .collect()
     }
 
     fn commands(pairs: &[(&str, &[&str])]) -> Result<Keys<Command>> {
@@ -431,13 +464,14 @@ mod tests {
         check(&DIRECT_KEYS);
         check(&SIDEBAR_KEYS);
         check(&DASHBOARD_KEYS);
-        // Every direct default names a command.
-        for (name, _) in DIRECT {
-            assert!(COMMANDS.iter().any(|b| b.name == *name), "{name}");
-        }
         // Valid together: no key twice, none the default prefix, no
-        // warning (the direct chords' Alt is paddock's choice).
-        let (defaults, warnings) = Keymap::configured(ctrl_a(), [&Given::new(); 4]).unwrap();
+        // warning (the direct chords' Alt is paddock's choice) once
+        // `[keys.direct]` is written.
+        let written = GivenKeys {
+            direct: Some(Given::new()),
+            ..GivenKeys::default()
+        };
+        let (defaults, warnings) = Keymap::configured(ctrl_a(), &written).unwrap();
         assert_eq!(defaults, Keymap::default());
         assert!(warnings.is_empty(), "{warnings:?}");
     }
@@ -453,10 +487,9 @@ mod tests {
         assert_eq!(keys.action(&key(KeyCode::Char('j'), ctrl)), focus(Down));
         assert_eq!(keys.action(&key(KeyCode::Char('k'), ctrl)), focus(Up));
         assert_eq!(keys.action(&key(KeyCode::Char('l'), ctrl)), focus(Right));
-        let prev = keys.action(&key(KeyCode::Char('['), ctrl_alt));
-        assert_eq!(prev, Some(Command::PreviousTab));
-        let next = keys.action(&key(KeyCode::Char(']'), ctrl_alt));
-        assert_eq!(next, Some(Command::NextTab));
+        // Cycling tabs has no chord: `C-M-[` is two Esc outside kitty.
+        assert_eq!(keys.action(&key(KeyCode::Char('['), ctrl_alt)), None);
+        assert_eq!(keys.action(&key(KeyCode::Char(']'), ctrl_alt)), None);
         let new = keys.action(&key(KeyCode::Char('c'), ctrl_alt));
         assert_eq!(new, Some(Command::NewTab));
         let split = keys.action(&key(KeyCode::Char('\\'), ctrl));
@@ -545,6 +578,47 @@ mod tests {
             warning(&[("focus_left", &[""]), ("focus_down", &[""])]),
             None
         );
+        // `Keymap::configured` warns only while `[keys.direct]` is not
+        // written; written, even empty, the user chose the chords.
+        let warnings = |direct: Option<Given>| {
+            let written = GivenKeys {
+                direct,
+                ..GivenKeys::default()
+            };
+            Keymap::configured(ctrl_a(), &written).unwrap().1
+        };
+        assert_eq!(
+            warnings(None),
+            ["[keys.direct] takes C-h and C-j from the terminal"]
+        );
+        assert!(warnings(Some(Given::new())).is_empty());
+        assert!(warnings(Some(given(&[("close", &["C-m"])]))).is_empty());
+    }
+
+    #[test]
+    fn each_command_comes_with_its_direct_chords() {
+        let rows: Vec<(&str, String, String)> = Keymap::default()
+            .commands_with_chords()
+            .map(|(b, keys, chords)| (b.name, label(keys), label(chords)))
+            .collect();
+        assert_eq!(rows.len(), COMMANDS.len());
+        let row = |name: &str| {
+            let (_, keys, chords) = rows.iter().find(|(n, _, _)| *n == name)?;
+            Some((keys.as_str(), chords.as_str()))
+        };
+        assert_eq!(row("new_tab"), Some(("c", "C-M-c")));
+        assert_eq!(row("focus_right"), Some(("l Right", "C-l")));
+        assert_eq!(row("next_tab"), Some(("n", "")));
+        // Found by name, whatever order `[keys.direct]` keeps.
+        let remapped = GivenKeys {
+            direct: Some(given(&[("help", &["F1"]), ("focus_right", &[""])])),
+            ..GivenKeys::default()
+        };
+        let (keymap, _) = Keymap::configured(ctrl_a(), &remapped).unwrap();
+        let help = keymap
+            .commands_with_chords()
+            .find(|(b, _, _)| b.name == "help");
+        assert_eq!(help.map(|(_, _, c)| label(c)).as_deref(), Some("F1"));
     }
 
     #[test]

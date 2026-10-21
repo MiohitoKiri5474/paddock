@@ -119,7 +119,7 @@ impl PrefixKeys {
     /// prefix did not arm: the caller decides where it would go else (a
     /// float gets every key but the prefix).
     pub fn direct(&self, key: &KeyEvent) -> Option<Command> {
-        self.direct.get(key).map(|(c, i)| completed(c, i))
+        self.direct.get(key).map(|(c, i)| nth_key_command(c, i))
     }
 
     /// The float whose key `key` is: exactly, else, as for commands,
@@ -157,13 +157,13 @@ impl PrefixKeys {
                 KeyAction::Command(Command::ToggleFloat(f))
             });
         };
-        KeyAction::Command(completed(command, i))
+        KeyAction::Command(nth_key_command(command, i))
     }
 }
 
-/// `command` as its `i`th key means it: `go_to_tab`'s Nth key goes to
-/// tab N.
-fn completed(command: Command, i: usize) -> Command {
+/// What the `i`th key bound to `command` runs: `command` itself, except
+/// that `go_to_tab`'s Nth key goes to tab N.
+fn nth_key_command(command: Command, i: usize) -> Command {
     if let Command::GoToTab(_) = command {
         Command::GoToTab(i)
     } else {
@@ -174,7 +174,7 @@ fn completed(command: Command, i: usize) -> Command {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::input::keymap::{COMMAND_KEYS, DIRECT_KEYS};
+    use crate::input::keymap::{given, COMMAND_KEYS, DIRECT_KEYS};
     use crossterm::event::{KeyCode, KeyModifiers};
 
     fn k(c: char, m: KeyModifiers) -> KeyEvent {
@@ -427,7 +427,8 @@ mod tests {
             Some(Command::Focus(Direction::Right))
         );
         assert_eq!(p.direct(&k('c', ctrl_alt)), Some(Command::NewTab));
-        assert_eq!(p.direct(&k(']', ctrl_alt)), Some(Command::NextTab));
+        // Cycling tabs has no chord by default.
+        assert_eq!(p.direct(&k(']', ctrl_alt)), None);
         // A terminal without the kitty protocol reports Ctrl+- as Ctrl+7.
         assert_eq!(p.direct(&k('7', ctrl)), Some(Command::SplitRows));
         assert_eq!(p.direct(&k('\\', ctrl)), Some(Command::SplitColumns));
@@ -435,12 +436,9 @@ mod tests {
         assert_eq!(p.direct(&k('l', KeyModifiers::NONE)), None);
         assert_eq!(p.direct(&k('c', ctrl)), None);
         let shift_right = KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT);
-        let direct = [("focus_right", &["Right"][..])];
-        let given: crate::input::keymap::Given = direct
-            .iter()
-            .map(|(n, k)| (n.to_string(), k.iter().map(|k| k.to_string()).collect()))
-            .collect();
-        let (keys, _) = Keys::configured(&DIRECT_KEYS, &given, Key::parse("C-a").unwrap()).unwrap();
+        let right_only = given(&[("focus_right", &["Right"])]);
+        let (keys, _) =
+            Keys::configured(&DIRECT_KEYS, &right_only, Key::parse("C-a").unwrap()).unwrap();
         let p = PrefixKeys::new(
             Key::parse("C-a").unwrap(),
             Keys::defaults(&COMMAND_KEYS),

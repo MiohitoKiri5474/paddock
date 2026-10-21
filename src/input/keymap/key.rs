@@ -42,19 +42,12 @@ const MODIFIERS: &[(char, KeyModifiers)] = &[
 /// The highest function key.
 const MAX_F: u8 = 12;
 
-/// Characters that are one key with Ctrl, as terminals send one control
-/// byte for each (`C--` and `C-_` are both 0x1f), by the one they are
-/// written as: `C-_` reads and prints as `C--`. Includes the digits
-/// crossterm reports those bytes as, so a terminal without the kitty
-/// protocol matches too.
-const CTRL_ALIASES: &[(char, &str)] = &[
-    (' ', "@2"),
-    ('[', "3"),
-    ('\\', "4"),
-    (']', "5"),
-    ('^', "6"),
-    ('-', "_/7"),
-];
+/// Characters that are one key with Ctrl, by the one they are written as:
+/// terminals send `C--` and `C-_` as one byte (0x1f), so `C-_` reads and
+/// prints as `C--`. Without the kitty protocol crossterm reports 0x1c to
+/// 0x1f as `C-4` to `C-7`, so those digits match too. Others stay apart:
+/// under kitty `C-/`, `C-3` and `C-2` arrive as keys of their own.
+const CTRL_ALIASES: &[(char, &str)] = &[('\\', "4"), (']', "5"), ('^', "6"), ('-', "_7")];
 
 const SYNTAX: &str = "expected a character, a name such as Enter, Tab, Esc, Space, Left \
                       or F1, optionally after C- (Ctrl), S- (Shift) or M- (Alt)";
@@ -243,7 +236,7 @@ mod tests {
             ("C-\\", KeyCode::Char('\\'), ctrl),
             ("C-4", KeyCode::Char('\\'), ctrl),
             ("C-5", KeyCode::Char(']'), ctrl),
-            ("C-@", KeyCode::Char(' '), ctrl),
+            ("C-6", KeyCode::Char('^'), ctrl),
             ("_", KeyCode::Char('_'), none),
             ("S-a", KeyCode::Char('A'), none),
             ("s-a", KeyCode::Char('A'), none),
@@ -274,6 +267,13 @@ mod tests {
         // Without Ctrl, the characters stay apart.
         assert_ne!(Key::parse("_").unwrap(), Key::parse("-").unwrap());
         assert_ne!(Key::parse("M-_").unwrap(), Key::parse("M--").unwrap());
+        // Keys a kitty terminal sends apart stay apart, and print as written.
+        for (one, other) in [("C-/", "C--"), ("C-3", "C-["), ("C-2", "C-Space")] {
+            let (a, b) = (Key::parse(one).unwrap(), Key::parse(other).unwrap());
+            assert_ne!(a, b, "{one} {other}");
+            assert_eq!(a.name(), one);
+        }
+        assert_eq!(Key::parse("C-@").unwrap().name(), "C-@");
     }
 
     #[test]

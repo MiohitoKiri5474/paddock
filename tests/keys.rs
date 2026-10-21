@@ -186,16 +186,9 @@ fn direct_chords_work_without_the_prefix() {
     paddock.send(b"\x0a");
     wait_for_focus(&paddock, &sandbox, "2");
 
-    // `C-M-c` opens a tab; `C-M-]` and `C-M-[` cycle. A terminal without
-    // the kitty protocol sends `C-M-]` as Esc and 0x1d; `C-M-[` reaches
-    // paddock only under that protocol (else it is two Esc), so it is
-    // sent as the protocol does.
+    // `C-M-c` (Esc and 0x03) opens a tab, which gets the keyboard.
     paddock.send(b"\x1b\x03");
     paddock.wait_for_tabs(&["1:home", "2:home"]);
-    paddock.wait_for_current_tab("2:home");
-    paddock.send(b"\x1b\x1d");
-    paddock.wait_for_current_tab("1:home");
-    paddock.send(b"\x1b[91;7u");
     paddock.wait_for_current_tab("2:home");
 
     // Under the kitty protocol `C--` may come as Ctrl+Shift+_: one key.

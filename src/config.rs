@@ -39,7 +39,7 @@ mod floats;
 
 pub use floats::{Float, Floats};
 
-use crate::input::keymap::{Given, Key, Keymap, Warnings};
+use crate::input::keymap::{Given, GivenKeys, Key, Keymap, Warnings};
 use crate::ui::tab_bar::TabColors;
 use anyhow::{bail, Context, Result};
 use ratatui::style::Color;
@@ -200,20 +200,13 @@ impl Config {
     pub fn parse(text: &str) -> Result<Self> {
         let raw: RawConfig = toml::from_str(text)?;
         let prefix = Key::parse_prefix(raw.keys.prefix.as_deref().unwrap_or(DEFAULT_PREFIX))?;
-        let direct_set = raw.keys.direct.is_some();
-        let sections = [
-            raw.keys.commands,
-            raw.keys.direct.unwrap_or_default(),
-            raw.keys.sidebar,
-            raw.keys.dashboard,
-        ]
-        .map(given);
-        let (keys, mut warnings) = Keymap::configured(prefix, sections.each_ref())?;
-        // Set at all, even empty, the user chose the direct chords and
-        // knows which control characters they take.
-        if !direct_set {
-            warnings.extend(keys.control_chars_warning());
-        }
+        let written = GivenKeys {
+            commands: given(raw.keys.commands),
+            direct: raw.keys.direct.map(given),
+            sidebar: given(raw.keys.sidebar),
+            dashboard: given(raw.keys.dashboard),
+        };
+        let (keys, warnings) = Keymap::configured(prefix, &written)?;
         let floats = Floats::configured(&raw.floats, prefix, &keys.commands)?;
         let c = raw.colors;
         let tabs = TabColors::default();
@@ -242,15 +235,16 @@ impl Config {
 
 impl Default for Config {
     fn default() -> Self {
+        let prefix = Key::parse_prefix(DEFAULT_PREFIX).expect("the default prefix parses");
+        // As a config with no keys reads: the default direct chords take
+        // `C-h` and `C-j` from the terminal, which an unwritten
+        // `[keys.direct]` warns of.
+        let (keys, warnings) =
+            Keymap::configured(prefix, &GivenKeys::default()).expect("the default keys are valid");
         Self {
-            prefix: Key::parse_prefix(DEFAULT_PREFIX).expect("the default prefix parses"),
-            keys: Keymap::default(),
-            // The default direct chords take `C-h` and `C-j` from the
-            // terminal, which an unset `[keys.direct]` warns of.
-            warnings: Keymap::default()
-                .control_chars_warning()
-                .into_iter()
-                .collect(),
+            prefix,
+            keys,
+            warnings,
             current_space: DEFAULT_CURRENT_SPACE,
             tabs: TabColors::default(),
             sidebar_width: DEFAULT_SIDEBAR_WIDTH,

@@ -124,8 +124,6 @@ Some commands also fire on one chord, no prefix (`[keys.direct]`), whenever a te
 | Key | Action | Name |
 |---|---|---|
 | `C-M-c` | new tab in this space | `new_tab` |
-| `C-M-]` | next tab | `next_tab` |
-| `C-M-[` | previous tab | `previous_tab` |
 | `C-\` | split side by side | `split_right` |
 | `C--` | split top and bottom | `split_down` |
 | `C-h` | focus left | `focus_left` |
@@ -133,7 +131,7 @@ Some commands also fire on one chord, no prefix (`[keys.direct]`), whenever a te
 | `C-k` | focus up | `focus_up` |
 | `C-l` | focus right | `focus_right` |
 
-`C-h`, `C-j`, `C-k` and `C-l` are Backspace, Enter, clear and kill-line in many programs, and paddock takes them: a notice at start says so until you set `[keys.direct]` yourself (even empty, or to the same chords; `focus_left = ""` gives `C-h` back to the terminal). The `C-M-` chords need a terminal that sends Alt; `C-M-[` works only under the kitty keyboard protocol (elsewhere it is two `Esc`). A direct chord matches exactly as bound (not with an extra Shift), and may be the same key as a `[keys.commands]` one, since those need the prefix first. The help (`C-a ?`) shows each command's chord after it in brackets.
+`C-h`, `C-j`, `C-k` and `C-l` are Backspace, Enter, clear and kill-line in many programs, and paddock takes them: a notice at start says so until you set `[keys.direct]` yourself (even empty, or to the same chords; `focus_left = ""` gives `C-h` back to the terminal). `C-M-c` needs a terminal that sends Alt, and paddock gives no warning about it (see [Configure](#configure)). Next and previous tab have no chord by default (`C-a n`, `C-a p`); `C-M-[` would reach paddock only under the kitty keyboard protocol (elsewhere it is two `Esc`). A direct chord matches exactly as bound (not with an extra Shift), and may be the same key as a `[keys.commands]` one, since those need the prefix first. The help (`C-a ?`) shows each command's chord after it in brackets.
 
 Floats (`[floats]`): `C-a g` shows lazygit in a box over the whole screen, sidebar included, framed like the prompts and titled with its command; `C-a g` again hides it and the program keeps running, so showing it again brings back the same program and state. When the program exits, the float closes, and the next `C-a g` starts it again. Each space has its own float per key, started in the focused terminal's directory; it lives in the space's tmux session (so it survives detaching) but is never a tab, never in `C-a Tab`'s history, and paddock does not follow Claude in it. One float shows at a time. While it shows, every key, paste and mouse event inside it goes to it, except the prefix: `C-a` commands still work, and one that changes the page or gives the sidebar or dashboard the keyboard hides the float first. A click outside it does nothing. A float whose key you remove from `[floats]` is closed, with its program, the next time paddock opens. Floats are tmux windows, so `tmux -L paddock attach` lists them next to the tabs.
 
@@ -218,10 +216,10 @@ Once you resize the sidebar (`C-a {`, `C-a }` or dragging its border), paddock s
 - a character (`c`, `|`, `$`, `{`) or a name (`Tab`, `Enter`, `Esc`, `Space`, `Backspace`, `Delete`, `Insert`, `Home`, `End`, `PageUp`, `PageDown`, `Left`, `Down`, `Up`, `Right`, `F1`-`F12`); names in any case
 - optionally after `C-` (Ctrl), `S-` (Shift) or `M-` (Alt), in any case (`c-n` is `C-n`)
 - `C-` with a letter is the same key in either case (`C-A` is `C-a`: terminals send them alike); `C-S-` with a character is refused for the same reason
-- `C--` and `C-_` are one key, as are `C-\` and `C-4`, `C-]` and `C-5`, `C-^` and `C-6`, `C-Space`, `C-@` and `C-2`: terminals send one control byte for each pair, and paddock prints the first
+- `C--`, `C-_` and `C-7` are one key, as are `C-\` and `C-4`, `C-]` and `C-5`, `C-^` and `C-6`: terminals send one control byte for each group, and paddock prints the first. Other Ctrl keys stay apart (`C-/`, `C-3` and `C-2` are their own keys)
 - `S-` goes with a letter (`S-a` is `A`) or a named key (`S-Tab`); for other characters write the shifted one itself (`!`, not `S-1`)
-- `M-` works, with a warning at start and again on leaving, but not every terminal sends it, so paddock's own keys avoid it, except the direct chords, which have no bare key to use (those defaults give no warning)
-- the prefix must be `C-` with a letter, `Space`, or one of `\ ] ^ _`
+- `M-` works, but not every terminal sends it. A key you bind with `M-` gives a warning at start and again on leaving. paddock's own keys avoid `M-`, except the direct chord `C-M-c` (new tab), and that default gives no warning: if your terminal does not send Alt, it does nothing
+- the prefix must be `C-` with a letter, `Space`, or one of `\ ] ^ _` (`C-_` is `C--`)
 
 After the prefix, Shift does not matter for a key bound without it (Shift+arrows move focus too); in the sidebar and the dashboard, neither do Ctrl and Shift. A key bound with the modifier wins. A direct chord matches only as bound.
 
