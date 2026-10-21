@@ -34,6 +34,18 @@ pub fn keyed_external(r: HookRecord) -> Option<HookRecord> {
     Some(HookRecord { pane, ..r })
 }
 
+/// A server log's new records and the external log's, in the order they
+/// happened (by `ts`; each log's own order breaks ties), the external ones
+/// keyed (see [`keyed_external`]). Replaying one log after the other would
+/// let an old external record bring back a session since seen in a pane.
+pub fn merged(server: Vec<HookRecord>, external: Vec<HookRecord>) -> Vec<HookRecord> {
+    let mut all = server;
+    all.extend(external.into_iter().filter_map(keyed_external));
+    // Stable: records with the same `ts` keep their log's order.
+    all.sort_by_key(|r| r.ts);
+    all
+}
+
 /// How big the external log may grow before [`compact`] trims it.
 pub const EXTERNAL_MAX_BYTES: u64 = 4 << 20;
 

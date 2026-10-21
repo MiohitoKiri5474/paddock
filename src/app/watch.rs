@@ -81,13 +81,7 @@ pub fn start(server: &Server, state_dir: &Path, tx: &Sender<Event>) -> Result<Se
     let mut external = log::Reader::new(external);
     let events = tx.clone();
     std::thread::spawn(move || loop {
-        let mut records = reader.read_new();
-        records.extend(
-            external
-                .read_new()
-                .into_iter()
-                .filter_map(log::keyed_external),
-        );
+        let records = log::merged(reader.read_new(), external.read_new());
         if !records.is_empty() && events.send(Event::Hooks(records)).is_err() {
             break;
         }

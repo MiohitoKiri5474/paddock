@@ -244,6 +244,31 @@ mod tests {
     }
 
     #[test]
+    fn replay_merges_the_logs_so_an_old_external_record_stays_behind_a_pane() {
+        use super::super::log::{merged, record};
+        // S1 ran outside paddock (ts 5), then was resumed in pane %1
+        // (ts 10); the server's log is read first.
+        let server = vec![rec("SessionStart", 10)];
+        let external = vec![record(
+            "Stop",
+            "",
+            &format!(r#"{{"session_id":"{S1}","cwd":"/w/api"}}"#),
+            5,
+        )];
+        let records = merged(server, external);
+        let order: Vec<(&str, u64)> = records.iter().map(|r| (r.pane.as_str(), r.ts)).collect();
+        let key = external_key(S1);
+        assert_eq!(order, [(key.as_str(), 5), ("%1", 10)]);
+        let mut s = Sessions::default();
+        for r in &records {
+            s.apply(r);
+        }
+        assert!(s.get(&key).is_none(), "not brought back");
+        assert!(s.externals(10, MIN).is_empty());
+        assert_eq!(state(&s), State::Idle);
+    }
+
+    #[test]
     fn pruning_an_external_session_drops_its_dismissals() {
         let mut s = Sessions::default();
         s.apply(&ext("Stop", "e1", 1));
