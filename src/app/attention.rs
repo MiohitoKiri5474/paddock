@@ -6,6 +6,7 @@
 //! nor repeat its notification.
 
 use super::rows::Row;
+use super::sidebar::Pick;
 use super::state::{App, Mode};
 use super::Event;
 use crate::config::Notify;
@@ -240,6 +241,27 @@ impl App {
         let panes: Vec<String> = window.panes.iter().map(|p| p.id.clone()).collect();
         for pane in panes {
             self.sessions.see(&pane);
+        }
+    }
+
+    /// An external session has no tab to look at: its finished turn turns
+    /// idle once you look at its row instead, selected in the dashboard, or
+    /// in AGENTS while the sidebar has the keyboard (with the outer window
+    /// focused).
+    pub(super) fn see_selected_external(&mut self) {
+        if !self.attention.window_focused {
+            return;
+        }
+        let key = match &self.mode {
+            Mode::Dashboard(d) => self.dashboard_row(d).map(|r| r.pane),
+            Mode::Sidebar(s) => match s.anchored(&self.sidebar_picks()).pick {
+                Some(Pick::Agent(key)) => Some(key),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(key) = key.filter(|k| is_external(k)) {
+            self.sessions.see(&key);
         }
     }
 

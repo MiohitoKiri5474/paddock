@@ -269,6 +269,28 @@ mod tests {
     }
 
     #[test]
+    fn a_finished_external_turn_stays_done_until_its_row_is_seen() {
+        let mut s = Sessions::default();
+        let key = external_key("e1");
+        s.apply(&ext("Stop", "e1", 1));
+        let state = |s: &Sessions| s.get(&key).unwrap().state;
+        assert_eq!(state(&s), State::Done);
+        // Nothing but looking clears it: not a later idle reminder, nor a
+        // `claude agents --json` snapshot saying idle.
+        s.apply(&HookRecord {
+            notification_type: Some("idle_prompt".into()),
+            ..ext("Notification", "e1", 2)
+        });
+        s.reconcile(10 * MIN, &[agent("e1", "idle", None)]);
+        assert_eq!(state(&s), State::Done);
+        s.see(&key);
+        assert_eq!(state(&s), State::Idle);
+        // The next finished turn is done again.
+        s.apply(&ext("Stop", "e1", 10 * MIN + 1));
+        assert_eq!(state(&s), State::Done);
+    }
+
+    #[test]
     fn pruning_an_external_session_drops_its_dismissals() {
         let mut s = Sessions::default();
         s.apply(&ext("Stop", "e1", 1));

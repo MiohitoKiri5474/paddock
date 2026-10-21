@@ -138,6 +138,7 @@ pub fn run(
 fn follow_up(app: &mut App, git: &mut GitFeed, effects: &EventEffects) {
     // Any event may show a tab or bring the window back.
     app.see_current();
+    app.see_selected_external();
     // Pane output changes the space or tab shown only through a refresh,
     // which notes the page itself.
     if !effects.output {

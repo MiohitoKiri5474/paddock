@@ -216,7 +216,8 @@ fn the_sidebar_refuses_to_open_an_external_agent() {
         wait_anywhere(&paddock, notice);
     }
     // A click on it says the same, and nothing was closed.
-    let y = row_of(&paddock, &agent("web", "done"));
+    // Selected in the sidebar, its finished turn was seen.
+    let y = row_of(&paddock, &agent("web", "idle"));
     paddock.click_screen(5, y);
     wait_anywhere(&paddock, "external: open it in its own terminal");
     assert_eq!(sandbox.tmux(&["list-windows", "-a"]).lines().count(), 1);
@@ -295,4 +296,39 @@ fn external_false_hides_the_group_and_its_notifications() {
     assert!(!paddock.full_screen().contains("EXTERNAL"));
     assert!(!paddock.full_screen().contains("web"));
     assert!(sandbox.notifications().is_empty());
+}
+
+/// Whether the sidebar still shows `line` after a moment.
+fn still_shows(paddock: &Paddock, line: &str) -> bool {
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    sidebar(paddock).iter().any(|l| l == line)
+}
+
+#[test]
+fn a_done_external_turn_turns_idle_once_its_dashboard_row_is_selected() {
+    let sandbox = Sandbox::new();
+    let mut paddock = ready(&sandbox);
+    outside(&sandbox, "Stop", "e1", "/w/web");
+    let done = agent("web", "done");
+    wait_for_sidebar(&paddock, "done", |l| l.contains(&done));
+    // It has no tab: looking at the terminal does not see it.
+    assert!(still_shows(&paddock, &done));
+    open_dashboard(&mut paddock);
+    let idle = agent("web", "idle");
+    wait_for_sidebar(&paddock, "seen in the dashboard", |l| l.contains(&idle));
+}
+
+#[test]
+fn a_done_external_turn_turns_idle_once_selected_in_the_sidebar() {
+    let sandbox = Sandbox::new();
+    let mut paddock = ready(&sandbox);
+    outside(&sandbox, "Stop", "e1", "/w/web");
+    let done = agent("web", "done");
+    wait_for_sidebar(&paddock, "done", |l| l.contains(&done));
+    // The sidebar on space-1: not on the agent yet.
+    paddock.command(b"s");
+    assert!(still_shows(&paddock, &done));
+    paddock.send(b"j");
+    let idle = agent("web", "idle");
+    wait_for_sidebar(&paddock, "seen in the sidebar", |l| l.contains(&idle));
 }

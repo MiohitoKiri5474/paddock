@@ -77,7 +77,7 @@ The dashboard list is a table under a dim header: NAME (the session's label, its
 
 ### States
 
-- Session: running, waiting, done, idle, or unknown. A session that ended (Claude quit) has no row. A main agent that finishes a turn (`Stop`) is done while you are not looking at its tab (the current space's current tab, outer window focused), and turns idle once you do. Done is not saved: it is per running paddock.
+- Session: running, waiting, done, idle, or unknown. A session that ended (Claude quit) has no row. A main agent that finishes a turn (`Stop`) is done while you are not looking at its tab (the current space's current tab, outer window focused), and turns idle once you do. An external session has no tab: it turns idle once its row is selected in the dashboard, or in AGENTS while the sidebar has the keyboard (window focused). Done is not saved: it is per running paddock.
 - Subagent task: running, waiting, done, or stopped.
 - Compacting counts as running. Sort order: waiting, done, idle, running, unknown.
 - Task rows within a session sort waiting, running, done, stopped, ties in tree order; the main agent's task row has its session's state (done and idle count as done).
