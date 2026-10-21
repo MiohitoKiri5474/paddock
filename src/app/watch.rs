@@ -7,6 +7,7 @@ use super::Event;
 use crate::git;
 use crate::hooks::now_ms;
 use crate::sessions::{agents, log};
+use crate::tmux::structure::FLOAT_OPTION;
 use crate::tmux::Server;
 use anyhow::{Context, Result};
 use std::path::Path;
@@ -43,14 +44,24 @@ pub struct Place {
 /// Space `id`'s directory: that of its first tab's first pane, else the
 /// session's start directory.
 fn space_dir(server: &Server, id: &str) -> Option<String> {
-    let first = format!("{id}:^");
+    let format = format!("#{{{FLOAT_OPTION}}}\x1f#{{pane_current_path}}");
     let pane = server
-        .run(&["list-panes", "-t", &first, "-F", "#{pane_current_path}"])
+        .run(&["list-panes", "-s", "-t", id, "-F", &format])
         .ok()
-        .and_then(|out| out.lines().next().map(str::to_string))
-        .filter(|p| !p.is_empty());
+        .and_then(|out| first_tab_dir(&out));
     pane.or_else(|| server.display(id, "#{session_path}").ok())
         .filter(|p| !p.is_empty())
+}
+
+/// The first directory in `list-panes -s` output of float marker and
+/// directory, skipping floats' panes: a float is never the first tab,
+/// even when tmux lists it first.
+fn first_tab_dir(out: &str) -> Option<String> {
+    out.lines()
+        .filter_map(|l| l.split_once('\x1f'))
+        .find(|(float, _)| float.is_empty())
+        .map(|(_, dir)| dir.to_string())
+        .filter(|dir| !dir.is_empty())
 }
 
 /// Read each of `spaces`' directory and branch.
@@ -142,4 +153,21 @@ fn read_watched(server: &Server, watched: &Watched, events: &Sender<Event>) -> b
         .map(|(dir, branch)| ((dir.clone(), branch.clone()), git::details(dir, branch)))
         .collect();
     events.send(Event::Details(read)).is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_space_s_directory_is_its_first_tab_s_never_a_float_s() {
+        let out = "g\x1f/w/float\n\x1f/w/tab\n\x1f/w/second\n";
+        assert_eq!(first_tab_dir(out).as_deref(), Some("/w/tab"));
+        assert_eq!(
+            first_tab_dir("\x1f/w/tab\ng\x1f/w/float\n").as_deref(),
+            Some("/w/tab")
+        );
+        assert_eq!(first_tab_dir("g\x1f/w/float\n"), None);
+        assert_eq!(first_tab_dir("\x1f\n"), None);
+    }
 }

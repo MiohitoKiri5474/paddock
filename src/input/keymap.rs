@@ -75,9 +75,19 @@ impl<A: Copy> Keys<A> {
     /// goes to the tab of that number): the key exactly as bound, else
     /// without the section's ignored modifiers.
     pub fn get(&self, event: &KeyEvent) -> Option<(A, usize)> {
-        let key = Key::of(event);
-        self.find(key)
-            .or_else(|| self.find(key.without(self.section.ignored)))
+        self.reached_by(Key::of(event)).map(|(b, i)| (b.action, i))
+    }
+
+    /// The binding pressing `key` reaches, and which of its keys that is:
+    /// the key exactly as bound, else without the section's ignored
+    /// modifiers.
+    pub fn reached_by(&self, key: Key) -> Option<(&'static Binding<A>, usize)> {
+        key.lookup(self.section.ignored, |k| self.find(k))
+    }
+
+    /// The modifiers a key pressed may have on top of the key bound.
+    pub fn ignored(&self) -> KeyModifiers {
+        self.section.ignored
     }
 
     /// What `event` does, if anything.
@@ -85,10 +95,10 @@ impl<A: Copy> Keys<A> {
         self.get(event).map(|(action, _)| action)
     }
 
-    fn find(&self, key: Key) -> Option<(A, usize)> {
+    fn find(&self, key: Key) -> Option<(&'static Binding<A>, usize)> {
         self.bound.iter().find_map(|(b, keys)| {
             let i = keys.iter().position(|k| *k == key)?;
-            Some((b.action, i))
+            Some((*b, i))
         })
     }
 

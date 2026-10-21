@@ -75,14 +75,28 @@ impl App {
 
     /// Read space `id`'s windows and panes again from tmux: new panes get a
     /// terminal (they start empty, so there is nothing to seed), ended ones
-    /// lose theirs, and every terminal takes its pane's size.
+    /// lose theirs, and every terminal takes its pane's size. Floats' panes
+    /// count too; a float that ended is no longer shown.
     pub(super) fn refresh(&mut self, id: &str) -> Result<()> {
         let Some(i) = self.spaces.iter().position(|it| it.id == id) else {
             return Ok(());
         };
         let structure = self.server.structure(id)?;
+        if structure.windows.is_empty() && !structure.floats.is_empty() {
+            // The last tab closed and only floats keep the session: the
+            // space closes with its last tab, its floats with it.
+            return self.server.kill_session(id);
+        }
+        if structure.float_active {
+            // A float is never the current window: tmux made it current
+            // when the current tab closed, so show the tab before it.
+            if let Some(tab) = structure.windows.get(structure.current) {
+                self.server.select(&tab.id, None)?;
+            }
+        }
+        self.remember_float_panes(&structure);
         let mut kept = Vec::new();
-        for pane in structure.windows.iter().flat_map(|w| &w.panes) {
+        for pane in structure.all_windows().flat_map(|w| &w.panes) {
             let size = clamp((pane.rect.width, pane.rect.height));
             self.terminals
                 .entry(pane.id.clone())
@@ -99,6 +113,7 @@ impl App {
             self.terminals.remove(&pane);
         }
         self.spaces[i].structure = structure;
+        self.forget_ended_float_noting_quick_exit();
         Ok(())
     }
 
@@ -313,6 +328,7 @@ impl App {
         for pane in space.panes() {
             self.terminals.remove(pane);
         }
+        self.forget_ended_float_noting_quick_exit();
         space.detach();
         if i < self.current || self.current >= self.spaces.len() {
             self.current = self.current.saturating_sub(1);

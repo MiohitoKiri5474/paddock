@@ -183,8 +183,13 @@ pub fn next_needing<'a>(rows: &'a [Row], focused: Option<&str>) -> Option<&'a Ro
 
 impl App {
     /// Apply recorded hook events and notify about the ones that need you.
+    /// Events from floats are left out: paddock does not follow Claude there.
     pub(super) fn hooks(&mut self, records: &[HookRecord]) {
-        for r in records {
+        let followed: Vec<&HookRecord> = records
+            .iter()
+            .filter(|r| !self.is_float_pane(&r.pane))
+            .collect();
+        for r in followed {
             self.sessions.apply(r);
             let Some(alert) = self.attention.alerts.on_hook(r) else {
                 continue;
@@ -215,9 +220,10 @@ impl App {
     }
 
     /// Turns done in the tab you are looking at (the current space's
-    /// current tab, with the outer window focused) become idle.
+    /// current tab, with the outer window focused and no float over it)
+    /// become idle.
     pub(super) fn see_current(&mut self) {
-        if !self.attention.window_focused {
+        if !self.looking_at_tab() {
             return;
         }
         let Some(window) = self.current_space().and_then(|i| i.current_window()) else {
@@ -230,9 +236,15 @@ impl App {
     }
 
     /// Whether you are looking at the terminal with pane `pane`: it is
-    /// focused and paddock's window has the focus.
+    /// focused, paddock's window has the focus, and no float is over it.
     fn focused_on(&self, pane: &str) -> bool {
-        self.attention.window_focused && self.is_current_pane(pane)
+        self.looking_at_tab() && self.is_current_pane(pane)
+    }
+
+    /// Whether you are looking at the current tab: paddock's window has
+    /// the focus and no float is shown (the float has the keyboard then).
+    fn looking_at_tab(&self) -> bool {
+        self.attention.window_focused && self.float_pane().is_none()
     }
 
     fn notify(&mut self, pane: &str, alert: Alert) {

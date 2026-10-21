@@ -55,15 +55,21 @@ pub fn area(screen: Rect) -> Rect {
     }
 }
 
+/// The popup's border: rounded, in `accent`, with `title` centred in its
+/// top. Floats are framed the same way.
+pub fn frame(title: &str, accent: Color) -> Block<'_> {
+    Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(accent))
+        .title(Line::from(title).centered())
+}
+
 impl Prompt<'_> {
     /// Draw the box at `popup` (see [`area`]). Returns the cursor while
     /// typing.
     pub fn render(&self, popup: Rect, buf: &mut Buffer) -> Option<Position> {
         Clear.render(popup, buf);
-        let block = Block::bordered()
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(self.accent))
-            .title(Line::from(self.title).centered());
+        let block = frame(self.title, self.accent);
         let inner = block.inner(popup);
         block.render(popup, buf);
         let text = Rect {

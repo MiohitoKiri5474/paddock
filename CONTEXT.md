@@ -26,6 +26,10 @@ The panel on the left, which can be shown or hidden: SPACES, one line per space 
 **Agent**:
 A main agent in the sidebar's AGENTS section. Subagents show only in the dashboard.
 
+**Float**:
+A program shown in a box over the whole screen and hidden again by the prefix and its key, kept running while hidden. Each space has its own float per key. It is a tmux window of the space's session marked as a float, never a tab.
+_Avoid_: popup (that is the prompt), overlay
+
 **Session view**:
 The main area, showing the current tab's terminals.
 
