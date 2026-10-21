@@ -12,6 +12,7 @@ mod sessions;
 mod terminal;
 mod tmux;
 mod ui;
+mod worktree;
 
 const USAGE: &str = "usage: paddock [keys|hooks install|hooks uninstall]";
 

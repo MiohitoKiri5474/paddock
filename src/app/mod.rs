@@ -24,6 +24,7 @@ mod worktrees;
 
 pub use dashboard::DashboardFilter;
 pub use rows::{Row, RowId, TaskDetails, TaskRow};
+pub(crate) use view::HomePaths;
 
 use crate::config::Config;
 use crate::git::{Details, Status};

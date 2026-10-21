@@ -10,66 +10,12 @@
 use super::sidebar::Pick;
 use super::state::{App, CloseTarget, Mode, NameTarget, Panel};
 use super::view::HomePaths;
-use crate::git::{self, WorkingTree, Worktree};
+use crate::git::{self, WorkingTree};
 use crate::sessions::State;
-use anyhow::{anyhow, bail, Result};
+use crate::worktree::{self as shared, space_name, Risks, WorktreeSpace, RISK_DEADLINE};
+use anyhow::{bail, Result};
 use crossterm::event::{KeyCode, KeyEvent};
-use std::path::{Path, PathBuf};
-use std::sync::mpsc;
-use std::time::Duration;
-
-/// How long the whole check of what a delete would lose may take; the
-/// second question waits for it.
-const RISK_DEADLINE: Duration = Duration::from_secs(5);
-/// What the questions call a base whose name is not known.
-const BASE: &str = "its base";
-
-/// A worktree space, as deleting it needs: its tmux session, every space
-/// in that worktree (it first, read again before deleting), its
-/// worktree's directory and branch (`None` if detached), and the
-/// repository's main checkout, where git runs once the worktree is gone.
-// ponytail: paths are `String` here and in `git` (as tmux and git print
-// them) but `PathBuf` in config and `worktree_path`; one type would do.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WorktreeSpace {
-    pub space: String,
-    pub spaces: Vec<String>,
-    pub path: String,
-    pub branch: Option<String>,
-    pub main: String,
-}
-
-impl WorktreeSpace {
-    /// What the questions call it: its branch, else (detached) its directory's name.
-    pub fn label(&self) -> &str {
-        self.branch
-            .as_deref()
-            .unwrap_or_else(|| git::dir_name(&self.path))
-    }
-}
-
-/// What deleting a worktree would lose, beyond its ignored files.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Risks {
-    /// Uncommitted changes (untracked files count).
-    pub dirty: bool,
-    /// The base's name, if commits checked out there are not in it.
-    pub unmerged: Option<String>,
-    /// The check did not finish in time: nothing is known, so both of
-    /// the above are assumed.
-    pub late: bool,
-}
-
-impl Risks {
-    /// What a check that did not finish in time assumes: every risk.
-    fn unknown() -> Self {
-        Self {
-            dirty: true,
-            unmerged: Some(BASE.into()),
-            late: true,
-        }
-    }
-}
+use std::path::PathBuf;
 
 /// The delete question: about `target`; the second time, `risks` holds
 /// what would be lost; `back` is the panel asked from, to return to.
@@ -150,20 +96,6 @@ pub enum SpaceEntry {
     RepoHeader(String),
 }
 
-/// The name a space in worktree `w` of repository `repo` gets:
-/// `<repo>/<branch>`, or `<repo>` for the main checkout, or the
-/// directory's name after the repository for a detached one.
-fn space_name(repo: &str, main: &str, w: &Worktree) -> String {
-    if w.path == main {
-        return repo.to_string();
-    }
-    let name = w
-        .branch
-        .as_deref()
-        .unwrap_or_else(|| git::dir_name(&w.path));
-    format!("{repo}/{name}")
-}
-
 impl App {
     /// The directory an action on `pick` starts from: the space's, or the
     /// agent's pane's; without a pick, the focused terminal's. Read now.
@@ -214,26 +146,10 @@ impl App {
     /// left half-made: if the space fails, the worktree goes again, and
     /// the branch too if it was made for it.
     pub fn new_worktree(&mut self, tree: &WorkingTree, branch: &str) -> Result<()> {
-        let branch = branch.trim();
-        if !git::valid_branch(&tree.top, branch) {
-            bail!("{branch:?} is not a valid branch name");
-        }
-        let repo = tree.repo();
-        let path = git::worktree_path(&self.worktrees.directory, repo, branch);
-        if path.exists() {
-            bail!("{} exists", path.display());
-        }
-        // From the focused working tree: a new branch starts at its HEAD.
-        let created = git::add_worktree(&tree.top, &path, branch).map_err(|e| anyhow!(e))?;
-        let name = format!("{repo}/{branch}");
-        if let Err(e) = self.new_space_in(&name, path.clone()) {
-            // Best effort: it was made a moment ago, with nothing in it.
-            let _ = git::remove_worktree(&tree.main, &path.to_string_lossy(), true);
-            if created {
-                let _ = git::delete_branch(&tree.main, branch);
-            }
-            return Err(e);
-        }
+        let directory = self.worktrees.directory.clone();
+        shared::create(&directory, tree, branch, |name, path| {
+            self.new_space_in(name, path)
+        })?;
         Ok(())
     }
 
@@ -304,12 +220,12 @@ impl App {
     }
 
     /// Space `id` as a worktree space paddock may delete, read now: its
-    /// directory is in a linked worktree paddock made (see [`is_ours`]).
+    /// directory is in a linked worktree paddock made (see [`shared::is_ours`]).
     /// The main checkout, and worktrees elsewhere (Claude's own), never
     /// are.
     pub(super) fn worktree_space(&self, id: &str) -> Option<WorktreeSpace> {
         let tree = self.tree_now(id)?;
-        if !tree.is_linked() || !is_ours(&self.worktrees.directory, &tree) {
+        if !tree.is_linked() || !shared::is_ours(&self.worktrees.directory, &tree) {
             return None;
         }
         Some(WorktreeSpace {
@@ -321,24 +237,11 @@ impl App {
         })
     }
 
-    /// Every space whose working tree is the one at `top`, read now. If
-    /// git does not answer in time for any space, it fails: a space is
-    /// never skipped unread.
-    // ponytail: a space belongs to the worktree of its first tab's first
-    // pane; a space whose other panes are in the worktree is missed.
+    /// Every space whose working tree is the one at `top`, read now (see
+    /// [`shared::spaces_in`]).
     fn spaces_in(&self, top: &str) -> Result<Vec<String>> {
-        let mut found = Vec::new();
-        for space in &self.spaces {
-            let Some(dir) = self.space_dir_now(&space.id) else {
-                continue;
-            };
-            let tree = git::working_tree_in_time(&dir.to_string_lossy())
-                .map_err(|_| anyhow!("couldn't read every space in time: nothing deleted"))?;
-            if tree.is_some_and(|t| t.top == top) {
-                found.push(space.id.clone());
-            }
-        }
-        Ok(found)
+        let ids: Vec<String> = self.spaces.iter().map(|s| s.id.clone()).collect();
+        Ok(shared::spaces_in(&self.server, &ids, top)?)
     }
 
     /// `delete_worktree`: ask before deleting space `id` with its worktree
@@ -424,27 +327,8 @@ impl App {
         target: &WorktreeSpace,
         confirmed: Option<&Risks>,
     ) -> Result<()> {
-        let path = &target.path;
-        let label = target.label();
-        let force = confirmed.is_some_and(|r| r.dirty);
-        if !force && git::is_dirty(path) {
-            bail!("{label} has uncommitted changes now: nothing deleted");
-        }
-        let unmerged_ok = confirmed.is_some_and(|r| r.unmerged.is_some());
-        if !unmerged_ok && !git::in_base(path, "HEAD") {
-            bail!("{label} has commits not in its base now: nothing deleted");
-        }
-        let alive: Vec<String> = self.server.sessions().into_iter().map(|s| s.id).collect();
-        for space in target.spaces.iter().filter(|s| alive.contains(s)) {
-            self.server.kill_session(space)?;
-        }
-        // The path first: a notice cut to the tab bar still names it.
-        git::remove_worktree(&target.main, path, force)
-            .map_err(|e| anyhow!("space closed; {} left: {e}", HomePaths::new().show(path)))?;
-        if let Some(branch) = &target.branch {
-            if let Err(e) = git::delete_branch(&target.main, branch) {
-                self.notice = Some(format!("worktree removed; branch {branch} kept: {e}"));
-            }
+        if let Some(notice) = shared::remove(&self.server, target, confirmed)? {
+            self.notice = Some(notice);
         }
         Ok(())
     }
@@ -465,41 +349,7 @@ impl App {
 /// and commits checked out there that are not in the base (a branch's or
 /// a detached HEAD's).
 fn delete_risks(target: &WorktreeSpace) -> Option<Risks> {
-    risks_within(&target.path, RISK_DEADLINE)
-}
-
-/// What deleting the worktree at `path` would lose, read in at most
-/// `limit` all told (its several git reads share it). Not known in time,
-/// it counts as every risk, so the user is still asked.
-fn risks_within(path: &str, limit: Duration) -> Option<Risks> {
-    let (tx, rx) = mpsc::channel();
-    let path = path.to_string();
-    // Left to finish on its own if late: each read has its own timeout.
-    std::thread::spawn(move || {
-        let dirty = git::is_dirty(&path);
-        let unmerged = (!git::in_base(&path, "HEAD"))
-            .then(|| git::default_branch(&path).unwrap_or_else(|| BASE.into()));
-        let risky = dirty || unmerged.is_some();
-        let _ = tx.send(risky.then_some(Risks {
-            dirty,
-            unmerged,
-            late: false,
-        }));
-    });
-    rx.recv_timeout(limit)
-        .unwrap_or_else(|_| Some(Risks::unknown()))
-}
-
-/// Whether the worktree at `top` is one paddock made, and so may delete:
-/// `<directory>/<repo>/<name>`, as `C-a W` lays them out, exactly. A
-/// worktree deeper down (a repository's `.claude/worktrees/agent-*` when
-/// repositories live under `directory`) is not, nor one right inside its
-/// own main checkout (a repository at `<directory>/<repo>` holding one).
-fn is_ours(directory: &Path, tree: &WorkingTree) -> bool {
-    let directory = git::resolved(&directory.to_string_lossy());
-    let parent = Path::new(&tree.top).parent();
-    parent.and_then(Path::parent) == Some(Path::new(&directory))
-        && parent != Some(Path::new(&tree.main))
+    shared::risks_within(&target.path, RISK_DEADLINE)
 }
 
 /// The sidebar order of spaces whose working trees are `trees` (by space
@@ -589,55 +439,6 @@ mod tests {
         // Two spaces in the main checkout: the first gets the worktrees.
         let got = group(&[Some(&api), Some(&api), Some(&api_x)]);
         assert_eq!(got, [space(0, false), space(2, true), space(1, false)]);
-    }
-
-    fn wt(path: &str, branch: Option<&str>) -> Worktree {
-        Worktree {
-            path: path.into(),
-            branch: branch.map(str::to_string),
-        }
-    }
-
-    #[test]
-    fn a_worktree_space_is_named_after_its_repository_and_branch() {
-        assert_eq!(
-            space_name("api", "/r/api", &wt("/r/api", Some("main"))),
-            "api"
-        );
-        assert_eq!(
-            space_name("api", "/r/api", &wt("/w/api/feat-x", Some("feat/x"))),
-            "api/feat/x"
-        );
-        assert_eq!(
-            space_name("api", "/r/api", &wt("/w/api/loose", None)),
-            "api/loose"
-        );
-    }
-
-    #[test]
-    fn only_worktrees_laid_out_as_paddock_makes_them_are_its_own() {
-        let dir = Path::new("/nonexistent/code");
-        let elsewhere = "/r/repo";
-        let ours = |top: &str, main: &str| is_ours(dir, &tree(top, main));
-        assert!(ours("/nonexistent/code/repo/feat-x", elsewhere));
-        assert!(!ours(
-            "/nonexistent/code/repo/.claude/worktrees/agent-x",
-            "/nonexistent/code/repo"
-        ));
-        assert!(!ours("/elsewhere/repo/feat-x", elsewhere));
-        // A repository at `<directory>/<repo>` with a worktree right in it.
-        assert!(!ours(
-            "/nonexistent/code/repo/feat-x",
-            "/nonexistent/code/repo"
-        ));
-    }
-
-    #[test]
-    fn a_risk_check_past_its_deadline_counts_as_every_risk() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().to_string_lossy().into_owned();
-        let late = risks_within(&dir, Duration::ZERO);
-        assert_eq!(late, Some(Risks::unknown()));
     }
 
     #[test]

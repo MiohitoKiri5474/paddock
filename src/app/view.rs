@@ -16,7 +16,7 @@ use std::borrow::Cow;
 const CLAUDE: &str = "claude";
 
 /// The home directory, for showing paths with `~`.
-pub(super) struct HomePaths {
+pub(crate) struct HomePaths {
     home: String,
     /// tmux reports directories with symlinks resolved (`/tmp` is
     /// `/private/tmp` on macOS), so home may be written either way.
@@ -24,14 +24,14 @@ pub(super) struct HomePaths {
 }
 
 impl HomePaths {
-    pub(super) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let home = std::env::var("HOME").unwrap_or_default();
         let real_home = crate::git::resolved(&home);
         Self { home, real_home }
     }
 
     /// `path` with home, written either way, as `~`.
-    pub(super) fn show(&self, path: &str) -> String {
+    pub(crate) fn show(&self, path: &str) -> String {
         let short = tilde(path, &self.home);
         if short == path {
             tilde(path, &self.real_home)
