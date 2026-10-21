@@ -196,7 +196,7 @@ Mouse: click to focus a split, switch tabs (`+` after the tabs opens one, `<`/`>
 
 #### Copy mode
 
-`C-a [` puts the terminal you type into (the float shown, else the focused split) in copy mode: its view stops following the program, a cursor appears, and the keys of `[keys.copy]` move it over the whole history and the screen, select, copy and search. The program keeps running; what it writes meanwhile shows when you leave. The bottom line reads ` COPY  line N/M` (with `match i/n` after a search) and as many of the keys as fit; it moves to the top while the cursor is on the bottom row. `C-a /` opens copy mode with the search prompt already open.
+`C-a [` puts the terminal you type into (the float shown, else the focused split) in copy mode: its view stops following the program, a cursor appears, and the keys of `[keys.copy]` move it over the whole history and the screen, select, copy and search. The program keeps running; what it writes meanwhile shows when you leave. The bottom line reads ` COPY  line N/M ` (with ` match i/n ` after a search) and as many of the keys as fit; it moves to the top while the cursor is on the bottom row. `C-a /` opens copy mode with the search prompt already open.
 
 | Key | Action | Name |
 |---|---|---|
@@ -210,7 +210,7 @@ Mouse: click to focus a split, switch tabs (`+` after the tabs opens one, `<`/`>
 | `0` | start of the line | `line_start` |
 | `$` | end of the line | `line_end` |
 | `g` | top of the history | `top` |
-| `G` | bottom of the screen | `bottom` |
+| `G` | bottom of history | `bottom` |
 | `C-u` | half a page up | `half_page_up` |
 | `C-d` | half a page down | `half_page_down` |
 | `C-b` | a page up | `page_up` |
@@ -224,7 +224,7 @@ Mouse: click to focus a split, switch tabs (`+` after the tabs opens one, `<`/`>
 | `N` | previous match | `previous_match` |
 | `Esc` `q` | leave without copying | `leave` |
 
-`y` copies the selection to the clipboard the way dragging does (a line selection without its last newline) and leaves; with nothing selected it just leaves. `v` or `V` again stops selecting; the other switches kind. A search is plain text, case-insensitive unless it has an uppercase letter (as in the finder), over the whole history and screen, rows wrapped into one line counting as one; its prompt is edited like the others (`Enter` searches, `Esc` closes it), and paste goes into it. `Enter` jumps to the nearest match back up from the cursor for `/`, down for `?`; `n` goes on the same way, `N` the other, both wrapping around. Every match on screen is highlighted; with none, a notice says so and the cursor stays. The prefix works in copy mode, and a command leaves it first; direct chords do not fire. The wheel over the terminal scrolls the copy view; a click or drag leaves copy mode and acts as usual. Copy mode also ends when its terminal closes or leaves the screen, when the terminal is resized, and if more than 8 MiB of output piles up meanwhile (with a notice). A default copy key that is your prefix (`C-b` under `prefix = "C-b"`) is left out.
+`y` copies the selection to the clipboard the way dragging does (a line selection without its last newline) and leaves; with nothing selected it just leaves. `v` or `V` again stops selecting; the other switches kind. A search is plain text, case-insensitive unless it has an uppercase letter (as in the finder), over the whole history and screen, rows wrapped into one line counting as one; its prompt is edited like the others (`Enter` searches, `Esc` closes it), and paste goes into it. `Enter` jumps to the nearest match back up from the cursor for `/`, down for `?`; `n` goes on the same way, `N` the other, both wrapping around. Every match on screen is highlighted; with none, a notice says so and the cursor stays. The prefix works in copy mode, except in the search prompt, which takes every key as the other prompts do; a command leaves copy mode first. Direct chords do not fire. The wheel over the terminal scrolls the copy view; a click or drag leaves copy mode and acts as usual. Copy mode also ends when its terminal closes or leaves the screen, when the terminal is resized, and if more than 8 MiB of output piles up meanwhile (with a notice). A default copy key that is your prefix (`C-b` under `prefix = "C-b"`) is left out.
 
 #### Direct
 

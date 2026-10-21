@@ -426,7 +426,7 @@ pub const COPY: &[Binding<CopyAction>] = &[
         "bottom",
         CopyAction::Move(Motion::Bottom),
         &["G"],
-        "bottom of the screen",
+        "bottom of history",
     ),
     bind(
         "half_page_up",
