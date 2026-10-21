@@ -1,0 +1,49 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    # ponytail: Apple Silicon only; macos-latest is arm64. Add an x86_64 job if anyone asks.
+    runs-on: macos-latest
+    env:
+      TAG: ${{ github.ref_name }}
+      TARGET: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+      # The tag must name the version in Cargo.toml, so the binary reports what the release says.
+      - name: Check tag matches Cargo.toml
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+          if [ "$TAG" != "v$version" ]; then
+            echo "::error::tag $TAG does not match Cargo.toml version $version"
+            exit 1
+          fi
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      # Some unit tests drive a real tmux server.
+      - name: Install tmux
+        run: brew install tmux
+      - name: Unit tests
+        run: cargo test --bin paddock --locked
+      - name: Build release binary
+        run: cargo build --release --locked --target "$TARGET"
+      - name: Package
+        run: |
+          archive="paddock-$TAG-$TARGET.tar.gz"
+          # ponytail: files sit at the archive root, so `tar xzf` drops `paddock` right there.
+          tar -czf "$archive" -C "target/$TARGET/release" paddock -C "$PWD" LICENSE README.md
+          shasum -a 256 "$archive" > "$archive.sha256"
+      # A draft pre-release: check the notes and the tarball, then publish by hand.
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$TAG" --draft --prerelease --generate-notes --title "$TAG" \
+            "paddock-$TAG-$TARGET.tar.gz" "paddock-$TAG-$TARGET.tar.gz.sha256"

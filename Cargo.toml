@@ -1,9 +1,11 @@
 [package]
 name = "paddock"
-version = "0.1.0"
+version = "0.0.1"
 edition = "2021"
 rust-version = "1.85"
 description = "A terminal workspace for running Claude Code"
+license = "MIT"
+repository = "https://github.com/MiohitoKiri5474/paddock"
 publish = false
 
 [[bin]]

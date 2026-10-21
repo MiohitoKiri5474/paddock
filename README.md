@@ -6,15 +6,44 @@ Design: [docs/design.md](docs/design.md). Glossary: [CONTEXT.md](CONTEXT.md). De
 
 ## Requirements
 
-- macOS
-- tmux (tested with 3.8)
-- Rust 1.85+
+- macOS (the release binary is for Apple Silicon only)
+- tmux (tested with 3.8): `brew install tmux`
 - Claude Code (for session tracking)
+- Rust 1.85+, only to build from source
 
 ## Install
 
+Pick one of these, then install the hooks (below).
+
+**Release tarball** (Apple Silicon). Download `paddock-v0.0.1-aarch64-apple-darwin.tar.gz` from [Releases](https://github.com/MiohitoKiri5474/paddock/releases), then:
+
+```sh
+tar xzf paddock-v0.0.1-aarch64-apple-darwin.tar.gz
+xattr -d com.apple.quarantine paddock   # unsigned binary: lets Gatekeeper run it ("No such xattr" is fine)
+sudo mv paddock /usr/local/bin/         # or anywhere on your PATH
+```
+
+**Homebrew** (installs tmux too):
+
+```sh
+brew install MiohitoKiri5474/paddock/paddock
+```
+
+**Cargo**, from a tag:
+
+```sh
+cargo install --git https://github.com/MiohitoKiri5474/paddock --tag v0.0.1 --locked
+```
+
+**From source**, in a clone:
+
 ```sh
 cargo install --path . --locked     # installs ~/.cargo/bin/paddock
+```
+
+Then install the Claude Code hooks:
+
+```sh
 cp ~/.claude/settings.json ~/.claude/settings.json.bak
 paddock hooks install               # adds paddock's hooks to ~/.claude/settings.json
 ```
@@ -150,7 +179,7 @@ paddock refuses to start, naming the file and the setting, on an unknown action 
 paddock hooks uninstall
 tmux -L paddock kill-server         # ends every paddock terminal
 rm -rf ~/.local/state/paddock ~/.config/paddock
-cargo uninstall paddock
+cargo uninstall paddock             # or brew uninstall paddock, or delete the binary you moved
 ```
 
 ## Develop
@@ -160,4 +189,12 @@ cargo clippy --all-targets -- -D warnings
 cargo test                          # unit + end-to-end tests (real tmux on a temp socket)
 ```
 
-CI runs the unit tests on macOS and uploads a release binary when they pass.
+CI runs the unit tests on macOS and uploads a release binary when they pass. Pushing a `v*` tag that matches the version in `Cargo.toml` builds the Apple Silicon tarball and opens a draft pre-release.
+
+## License
+
+MIT, see [LICENSE](LICENSE).
+
+## Credits
+
+paddock's look and much of its behaviour (spaces in a sidebar with an agents section, the filled-block tab bar) are inspired by [herdr](https://github.com/herdrdev/herdr). paddock is a separate implementation and contains none of herdr's code.
