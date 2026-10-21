@@ -242,6 +242,35 @@ After the prefix, Shift does not matter for a key bound without it (Shift+arrows
 
 paddock refuses to start, naming the file and the setting, on an unknown action or section, a key it cannot read, a key listed twice for one action, a key bound to two actions in the same section (unbind one with `""`, even a default), or the prefix key inside a `[keys.…]` section. In `[floats]` the keys use the same syntax and are refused the same way when they cannot be read, are listed twice, are the prefix, or are bound in `[keys.commands]` (the default `G` too: write `G = ""` to free it); `width` and `height` are whole percents from 1 to 100. `g` now opens the finder, so a float you had on `[floats] g` must move to another key (lazygit's default moved to `G`).
 
+## Worktree command
+
+`paddock worktree` does what `C-a W`, `C-a O` and sidebar `x` do, for scripts and agents. It drives paddock's hidden tmux server directly (starting it if needed), so it works whether paddock is open or not; an open paddock shows the spaces it makes and drops the ones it closes. Nothing prompts or needs a terminal.
+
+```sh
+paddock worktree new feat/x            # new worktree at <[worktrees] directory>/<repo>/feat-x and a space repo/feat/x; prints the path
+paddock worktree new feat/x --no-space # the worktree alone
+paddock worktree open feat/x           # a space for a worktree that has none (or by path)
+paddock worktree list                  # one aligned line per worktree
+paddock worktree rm feat/x             # close its spaces, remove it, delete the branch if merged
+```
+
+- Every command takes `--json` (a stable JSON object, or an array for `list`) and `--from <dir>` (the repository of `<dir>`; the current directory's without it). `paddock worktree --help` lists them.
+- `new` checks the branch out if it exists, else creates it at the current tree's HEAD. If anything fails, nothing is left half-made. With `--json`: `{"path","branch","repo","space"}`.
+- `list --json` rows: `path`, `branch` (`null` if detached), `main`, `ours` (paddock made it), `space`, `dirty`, `merged` (into the base), `agents` (the states of the Claude sessions in its spaces).
+- `rm` refuses, naming the risk, when the worktree has uncommitted changes (unless `--discard-changes`), commits not in its base (unless `--discard-commits`; a detached HEAD's too), a Claude running or waiting in it, or when it is the main checkout, a worktree paddock did not make, or holds the caller's current directory or terminal. It removes with `git worktree remove` (`--force` only with `--discard-changes`) and deletes the branch with `git branch -d`: an unmerged branch is kept, with a notice.
+- Exit codes: `0` ok, `1` usage or config error, `2` git or tmux error (git's reason on stderr), `3` refused for a risk, `4` timeout (nothing deleted). Errors are one line on stderr.
+
+## Claude Code plugin
+
+This repository is also a Claude Code plugin marketplace. Its `paddock` plugin carries a skill, `paddock-worktrees`, that teaches Claude when and how to use `paddock worktree` (check `list` first, work in the path `new` returns, delete only when asked or merged, never pass `--discard-*` without your say-so, and ask you on exit code 3), plus two slash commands, `/paddock:worktree-new <branch>` and `/paddock:worktree-list`. In Claude Code:
+
+```text
+/plugin marketplace add MiohitoKiri5474/paddock
+/plugin install paddock@paddock
+```
+
+The plugin needs `paddock` on your `PATH`. It does not carry the hooks: keep using `paddock hooks install` for those.
+
 ## Files
 
 - State: `~/.local/state/paddock/` (current space and sidebar width, event logs, dismissed rows, `hook-errors.log`); tabs and splits live in tmux
