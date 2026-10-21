@@ -1,5 +1,7 @@
-//! Claude Code hooks: `paddock hooks install|uninstall` edits Claude's
-//! `settings.json`, and `paddock hook <event>` records one event.
+//! Claude Code hooks: the paddock plugin carries them
+//! (`plugins/paddock/hooks/hooks.json`); `paddock hooks install|uninstall`
+//! edits Claude's `settings.json` for users without it; `paddock hook <event>`
+//! records one event.
 
 use crate::git;
 use crate::paths::Paths;
@@ -26,6 +28,19 @@ pub const EVENTS: &[&str] = &[
 
 /// Hooks of the tmux plugin paddock replaces; install removes them.
 const LEGACY: &str = "tmux-claude-session-manager";
+
+/// The paddock plugin's key in Claude's `enabledPlugins` (`<plugin>@<marketplace>`).
+const PLUGIN_KEY: &str = "paddock@paddock";
+
+/// Set to [`PLUGIN_SOURCE`] by the plugin's hook commands. A plugin hook
+/// defers to paddock's hooks in `settings.json`, so an event is recorded once
+/// when both are installed.
+const SOURCE_VAR: &str = "PADDOCK_HOOK_SOURCE";
+const PLUGIN_SOURCE: &str = "plugin";
+
+/// Restarting running Claude sessions makes them run the hooks as they are
+/// now: a session may not reload `settings.json` hooks at once.
+const RESTART: &str = "Restart running Claude sessions so they use the hooks as they are now.";
 
 /// Claude's user settings: `$CLAUDE_CONFIG_DIR/settings.json`, else
 /// `~/.claude/settings.json`.
@@ -122,6 +137,35 @@ pub fn uninstall(mut settings: Value) -> Value {
     settings
 }
 
+/// Whether the settings hold one of paddock's hooks for `event`.
+fn has_hook(settings: &Value, event: &str) -> bool {
+    settings["hooks"][event]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|g| g["hooks"].as_array())
+        .flatten()
+        .filter_map(|h| h["command"].as_str())
+        .any(is_ours)
+}
+
+/// Whether the settings enable the paddock plugin.
+fn plugin_enabled(settings: &Value) -> bool {
+    settings["enabledPlugins"][PLUGIN_KEY].as_bool() == Some(true)
+}
+
+/// Whether a hook from `source` (`$PADDOCK_HOOK_SOURCE`) records `event`:
+/// the plugin's hook is skipped when `settings` hold paddock's own hook for
+/// that event, since that one records it. Without readable settings (`None`)
+/// Claude runs no settings hooks, so the plugin's hook records.
+fn should_record(source: &str, settings: Option<&Value>, event: &str) -> bool {
+    source != PLUGIN_SOURCE || !settings.is_some_and(|s| has_hook(s, event))
+}
+
+fn read_settings(path: &Path) -> Option<Value> {
+    serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
+}
+
 /// Edit a settings file in place; a missing file counts as `{}`. The file is
 /// replaced atomically.
 pub fn edit_file(path: &Path, f: impl FnOnce(Value) -> Result<Value>) -> Result<()> {
@@ -164,12 +208,22 @@ pub fn command(action: &str) -> Result<()> {
         "install" => {
             let exe = std::env::current_exe().context("cannot find paddock's own path")?;
             let exe = exe.to_string_lossy().into_owned();
+            let plugin = read_settings(&path).is_some_and(|s| plugin_enabled(&s));
             edit_file(&path, |s| install(s, &exe))?;
             println!("paddock hooks installed in {}", path.display());
+            if plugin {
+                println!(
+                    "note: the paddock plugin is enabled and carries these hooks too; \
+                     paddock records each event once, from these. To keep only the \
+                     plugin's, run `paddock hooks uninstall`."
+                );
+            }
+            println!("{RESTART}");
         }
         "uninstall" => {
             edit_file(&path, |s| Ok(uninstall(s)))?;
             println!("paddock hooks removed from {}", path.display());
+            println!("{RESTART}");
         }
         other => bail!("unknown hooks action {other:?}: use install or uninstall"),
     }
@@ -200,11 +254,16 @@ fn record(event: &str) -> Result<()> {
     // Always drain stdin, so Claude never writes into a closed pipe.
     let mut payload = String::new();
     std::io::stdin().read_to_string(&mut payload)?;
-    let var = |k: &str| std::env::var(k).unwrap_or_default();
-    let paths = Paths::from_env()?;
-    let Some((pid, pane)) = log::terminal(&var("TMUX"), &var("TMUX_PANE"), &paths.socket) else {
+    let var = |k: &str| std::env::var(k).ok();
+    let text = |k: &str| var(k).unwrap_or_default();
+    let paths = Paths::resolve(var)?;
+    let Some((pid, pane)) = log::terminal(&text("TMUX"), &text("TMUX_PANE"), &paths.socket) else {
         return Ok(()); // not in paddock: an external session
     };
+    let settings = settings_path(var).ok().and_then(|p| read_settings(&p));
+    if !should_record(&text(SOURCE_VAR), settings.as_ref(), event) {
+        return Ok(()); // settings.json's paddock hook records this one
+    }
     let mut r = log::record(event, &pane, &payload, now_ms());
     if sessions::needs_branch(&r) {
         r.branch = r.cwd.as_deref().and_then(git::task_branch);
@@ -312,6 +371,86 @@ mod tests {
         assert!(!is_ours("paddock-other hook Stop"));
         assert!(!is_ours("echo paddock hook Stop"));
         assert!(is_ours("paddock hook Stop"));
+    }
+
+    /// The plugin hooks' `timeout`, in seconds.
+    const PLUGIN_TIMEOUT_S: u64 = 10;
+
+    /// The plugin's command for `event`: quiet and exit 0 when `paddock` is
+    /// not on PATH (stdin drained), nothing printed when it is.
+    fn plugin_command(event: &str) -> String {
+        format!(
+            "command -v paddock >/dev/null 2>&1 || {{ cat >/dev/null; exit 0; }}; \
+             export {SOURCE_VAR}={PLUGIN_SOURCE}; paddock hook {event} >/dev/null 2>&1 || true"
+        )
+    }
+
+    /// `plugins/paddock/hooks/hooks.json` has exactly `EVENTS`, with the
+    /// groups (matchers) `install` writes and the plugin's command: the two
+    /// sources cannot drift apart.
+    #[test]
+    fn the_plugin_hooks_file_matches_events_and_install() {
+        let file: Value =
+            serde_json::from_str(include_str!("../plugins/paddock/hooks/hooks.json")).unwrap();
+        let settings = install(json!({}), "paddock").unwrap();
+        let mut expected = Map::new();
+        for event in EVENTS {
+            let mut groups = settings["hooks"][event].clone();
+            for g in groups.as_array_mut().unwrap() {
+                g["hooks"][0]["command"] = Value::String(plugin_command(event));
+                // A hung `paddock` stalls Claude 10 s at most (default 600).
+                // SessionEnd keeps Claude's 1.5 s budget, which a longer
+                // timeout would raise.
+                if *event != "SessionEnd" {
+                    g["hooks"][0]["timeout"] = json!(PLUGIN_TIMEOUT_S);
+                }
+            }
+            expected.insert((*event).to_string(), groups);
+        }
+        assert_eq!(file["hooks"], Value::Object(expected));
+        let mut keys: Vec<&String> = file.as_object().unwrap().keys().collect();
+        keys.sort();
+        assert_eq!(keys, ["description", "hooks"]);
+    }
+
+    #[test]
+    fn a_plugin_hook_defers_to_paddocks_hook_in_settings() {
+        let both = install(json!({}), EXE).unwrap();
+        for event in EVENTS {
+            assert!(should_record("", Some(&both), event), "settings' own hook");
+            assert!(!should_record(PLUGIN_SOURCE, Some(&both), event), "{event}");
+        }
+        // Settings with no paddock hook for this event, or none at all.
+        assert!(should_record(PLUGIN_SOURCE, Some(&supacode()), "Stop"));
+        assert!(should_record(PLUGIN_SOURCE, Some(&json!({})), "Stop"));
+        assert!(should_record(PLUGIN_SOURCE, None, "Stop"));
+        let only_stop = json!({"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "paddock hook Stop"}]}]}});
+        assert!(!should_record(PLUGIN_SOURCE, Some(&only_stop), "Stop"));
+        assert!(should_record(
+            PLUGIN_SOURCE,
+            Some(&only_stop),
+            "SessionStart"
+        ));
+        // Hooks paddock cannot read count as none.
+        assert!(should_record(
+            PLUGIN_SOURCE,
+            Some(&json!({"hooks": {"Stop": "oops"}})),
+            "Stop"
+        ));
+    }
+
+    #[test]
+    fn the_plugin_counts_as_enabled_only_when_set_to_true() {
+        assert!(plugin_enabled(
+            &json!({"enabledPlugins": {"paddock@paddock": true}})
+        ));
+        assert!(!plugin_enabled(
+            &json!({"enabledPlugins": {"paddock@paddock": false}})
+        ));
+        assert!(!plugin_enabled(
+            &json!({"enabledPlugins": {"paddock@other": true}})
+        ));
+        assert!(!plugin_enabled(&supacode()));
     }
 
     #[test]

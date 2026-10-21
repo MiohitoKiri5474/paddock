@@ -13,7 +13,7 @@ Design: [docs/design.md](docs/design.md). Glossary: [CONTEXT.md](CONTEXT.md). De
 
 ## Install
 
-Pick one of these, then install the hooks (below).
+Pick one of these, then connect Claude Code (below).
 
 **Homebrew** (recommended; installs tmux too):
 
@@ -47,18 +47,50 @@ If it fails with `failed to authenticate when downloading repository: git@github
 cargo install --path . --locked     # installs ~/.cargo/bin/paddock
 ```
 
-Then install the Claude Code hooks:
+### Connect Claude Code
+
+paddock tracks Claude sessions through Claude Code hooks. Install the paddock plugin, which carries them, in Claude Code:
+
+```text
+/plugin marketplace add MiohitoKiri5474/paddock
+/plugin install paddock@paddock
+```
+
+Then restart running Claude sessions. The plugin's hooks run `paddock` from your `PATH`, so make sure `which paddock` finds it in the shell you start Claude from (Homebrew and `cargo install` put it there). Without `paddock` on `PATH` the hooks do nothing, quietly. The plugin also carries the worktree skills (see [Claude Code plugin](#claude-code-plugin)).
+
+**Fallback, without the plugin**: write the hooks into `~/.claude/settings.json` instead.
 
 ```sh
 cp ~/.claude/settings.json ~/.claude/settings.json.bak
 paddock hooks install               # adds paddock's hooks to ~/.claude/settings.json
 ```
 
-`hooks install` keeps other hooks (for example Supacode's), removes the old tmux-claude-session-manager hooks, and records the binary's full path, so install from a stable location. Re-run it after upgrading paddock or moving its binary.
+`hooks install` keeps other hooks (for example Supacode's), removes the old tmux-claude-session-manager hooks, and records the binary's full path, so install from a stable location. Re-run it after upgrading paddock or moving its binary. It says so when the plugin is enabled in that file.
+
+Both at once records each event once, as long as the `paddock` on your `PATH` is the release that added the plugin's hooks or newer: the plugin's hook steps aside when `settings.json` holds paddock's hook for that event. An older `paddock` records each event twice.
+
+### Move from `hooks install` to the plugin
+
+1. Upgrade paddock first (`brew upgrade paddock`, or reinstall it the way you installed it), so the `paddock` on `PATH` knows the plugin's hooks. Then get the plugin with its hooks. If you have the plugin already (an earlier one has no hooks), update it from your shell:
+
+   ```sh
+   claude plugin marketplace update paddock
+   claude plugin update paddock@paddock
+   ```
+
+   Otherwise install it (see [Connect Claude Code](#connect-claude-code)).
+2. Restart running Claude sessions, or run `/reload-plugins` in each; that loads the updated plugin, hooks included. Both sets of hooks now run, and each event is still recorded once.
+3. Remove the settings hooks, then restart running Claude sessions (`/reload-plugins` does not reload settings hooks):
+
+   ```sh
+   paddock hooks uninstall             # removes only paddock's hooks from ~/.claude/settings.json
+   ```
+
+Config and state are kept.
 
 ### Switch install method
 
-The hooks point at the old binary by its full path, so remove them with it before it goes, then install them again with the new one. For example, from Cargo to Homebrew:
+With the plugin, nothing else changes: the new `paddock` only has to be on `PATH`. With `hooks install`, the hooks point at the old binary by its full path, so remove them with it before it goes, then install them again with the new one. For example, from Cargo to Homebrew:
 
 ```sh
 # Detach paddock first (C-a d); your terminals keep running in tmux.
@@ -264,14 +296,14 @@ paddock worktree rm feat/x             # close its spaces, remove it, delete the
 
 ## Claude Code plugin
 
-This repository is also a Claude Code plugin marketplace. Its `paddock` plugin carries a skill, `paddock-worktrees`, that teaches Claude when and how to use `paddock worktree` (check `list` first, work in the path `new` returns, delete only when asked or merged, never pass `--discard-*` without your say-so, and ask you on exit code 3), plus two slash commands, `/paddock:worktree-new <branch>` and `/paddock:worktree-list`. In Claude Code:
+This repository is also a Claude Code plugin marketplace. Its `paddock` plugin carries paddock's hooks (see [Connect Claude Code](#connect-claude-code)) and a skill, `paddock-worktrees`, that teaches Claude when and how to use `paddock worktree` (check `list` first, work in the path `new` returns, delete only when asked or merged, never pass `--discard-*` without your say-so, and ask you on exit code 3), plus two slash commands, `/paddock:worktree-new <branch>` and `/paddock:worktree-list`. In Claude Code:
 
 ```text
 /plugin marketplace add MiohitoKiri5474/paddock
 /plugin install paddock@paddock
 ```
 
-The plugin needs `paddock` on your `PATH`. It does not carry the hooks: keep using `paddock hooks install` for those.
+The plugin needs `paddock` on your `PATH`.
 
 ## Files
 
