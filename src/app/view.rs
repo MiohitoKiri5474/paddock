@@ -54,7 +54,8 @@ impl App {
         rows.iter().filter(|r| !r.closed).collect()
     }
 
-    /// Each agent: its label, state, and its space and tab.
+    /// Each agent: its label, state, its space and tab, and whether it is
+    /// in the focused terminal.
     pub(super) fn sidebar_agents(&self, rows: &[Row]) -> Vec<AgentLine> {
         self.agents(rows)
             .into_iter()
@@ -62,6 +63,7 @@ impl App {
                 label: r.label.clone(),
                 state: r.state,
                 place: self.place_of(r).unwrap_or_default(),
+                current: self.is_current_pane(&r.pane),
             })
             .collect()
     }

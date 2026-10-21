@@ -27,7 +27,7 @@ paddock hooks install               # adds paddock's hooks to ~/.claude/settings
 paddock          # open (a second launch offers to take over)
 ```
 
-The sidebar has two sections. SPACES lists your spaces, each with its directory and git branch on a dim second line: each space is a tmux session on paddock's hidden server, its tabs are the session's windows and its splits their panes, so `tmux -L paddock attach` shows the same thing. AGENTS lists every main Claude session in any space, with its state (waiting, done, idle, running, stopped) and the space and tab it runs in. Open a tab with `C-a c` and run `claude` in it; the dashboard (`C-a o`) shows the branches it and its subagents work on. A turn that ends while you look elsewhere is `done` until you look at its tab, then `idle`. You get a macOS notification when a session starts waiting or a main agent finishes a turn.
+The sidebar has two sections. SPACES lists your spaces, each with its directory and git branch on a dim second line: each space is a tmux session on paddock's hidden server, its tabs are the session's windows and its splits their panes, so `tmux -L paddock attach` shows the same thing. AGENTS lists every main Claude session in any space, with its state (waiting, done, idle, running, stopped) and the space and tab it runs in. The space you are in and the agent in the focused terminal have a darker background (`[colors] current_space`), and `C-a s` puts the sidebar's selection on that agent (else on that space). Open a tab with `C-a c` and run `claude` in it; the dashboard (`C-a o`) shows the branches it and its subagents work on. A turn that ends while you look elsewhere is `done` until you look at its tab, then `idle`. You get a macOS notification when a session starts waiting or a main agent finishes a turn.
 
 ### Keys
 
@@ -54,7 +54,7 @@ Every key is an action with a name you can rebind (see [Configure](#configure));
 | `=` | even out the focused split | `equalize` |
 | `x` | close pane (asks if busy) | `close` |
 | `f` | fork Claude into a new tab | `fork` |
-| `s` | focus sidebar on agents | `focus_sidebar` |
+| `s` | focus sidebar on current agent | `focus_sidebar` |
 | `w` | focus sidebar on the space | `focus_spaces` |
 | `b` | show or hide sidebar | `toggle_sidebar` |
 | `{` | sidebar narrower | `sidebar_narrower` |
@@ -115,7 +115,7 @@ back = ["Esc", "q"]
 interact = "i"
 
 [colors]
-current_space = 236       # the current space's background: 256-colour index or "#rrggbb" (also read as current_item)
+current_space = 236       # the current space's and agent's background: 256-colour index or "#rrggbb" (also read as current_item)
 tab_bar = 235             # the tab bar's row
 tab = 237                 # a tab that is not current
 tab_current = 4           # the current tab and the popup border (default: the terminal's blue)

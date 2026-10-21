@@ -1,5 +1,6 @@
 //! Applying outer-terminal input to the app, depending on its mode.
 
+use super::sidebar::SidebarTarget;
 use super::state::{App, Mode, NameTarget, Panel, Renamed};
 use crate::input::line::LineEdit;
 use crate::input::{encode_key, encode_paste, Command, KeyAction};
@@ -113,8 +114,8 @@ impl App {
             Command::Equalise => self.report(|app| app.equalise()),
             Command::Help => self.mode = Mode::Help,
             Command::Detach => return Ok(Flow::Quit),
-            Command::FocusSidebar => self.focus_sidebar(false),
-            Command::FocusSpaces => self.focus_sidebar(true),
+            Command::FocusSidebar => self.focus_sidebar(SidebarTarget::Here),
+            Command::FocusSpaces => self.focus_sidebar(SidebarTarget::Spaces),
             Command::MoveTab(step) => self.report(|app| app.move_tab(step)),
             Command::LastPage => self.last_page(),
             Command::ResizeSidebar(step) => self.resize_sidebar(step),

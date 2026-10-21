@@ -4,7 +4,7 @@
 
 mod harness;
 
-use harness::{Paddock, Sandbox, PROMPT};
+use harness::{Paddock, Sandbox, CURRENT_ITEM, PROMPT};
 
 /// A launched paddock with its first shell ready.
 fn ready(sandbox: &Sandbox) -> Paddock {
@@ -148,9 +148,12 @@ fn the_current_space_has_its_own_background() {
     paddock.command(b"C\r");
     wait_for_spaces(&paddock, &["space-1", "space-2"]);
 
-    let grey = vt100::Color::Idx(236);
-    assert_eq!(paddock.colors(3, 5).1, grey, "current: space-2");
-    assert_eq!(paddock.colors(4, 20).1, grey, "across both its lines");
+    assert_eq!(paddock.colors(3, 5).1, CURRENT_ITEM, "current: space-2");
+    assert_eq!(
+        paddock.colors(4, 20).1,
+        CURRENT_ITEM,
+        "across both its lines"
+    );
     assert_eq!(paddock.colors(1, 5).1, vt100::Color::Default);
 }
 
@@ -659,7 +662,7 @@ fn c_a_tab_skips_a_closed_page_for_an_older_one() {
 
     // The current space's background is on space-1 again.
     paddock.wait_for("space-1 current", |_| {
-        paddock.colors(1, 5).1 == vt100::Color::Idx(236)
+        paddock.colors(1, 5).1 == CURRENT_ITEM
     });
     paddock.type_line("echo back-in-a1");
     paddock.wait_for_text("back-in-a1\n");

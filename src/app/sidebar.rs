@@ -27,6 +27,16 @@ pub fn wish(width: i32) -> u16 {
     u16::try_from(width).unwrap_or(MAX_SIDEBAR)
 }
 
+/// Where `C-a s` and `C-a w` put the sidebar's cursor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SidebarTarget {
+    /// The agent in the focused terminal if it is one, else the current
+    /// space.
+    Here,
+    /// The current space.
+    Spaces,
+}
+
 /// What a sidebar line stands for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Pick {
@@ -103,16 +113,20 @@ impl App {
         spaces.chain(agents).collect()
     }
 
-    /// Give the sidebar the keyboard: on the current space if `on_space`,
-    /// else on the first agent (the one that needs you most), if any.
-    pub(super) fn focus_sidebar(&mut self, on_space: bool) {
+    /// Give the sidebar the keyboard, showing it if hidden, on the line
+    /// `target` names.
+    pub(super) fn focus_sidebar(&mut self, target: SidebarTarget) {
         self.sidebar_hidden = false;
         let picks = self.sidebar_picks();
-        let first_agent = picks.iter().position(|p| matches!(p, Pick::Agent(_)));
-        let index = match first_agent {
-            Some(i) if !on_space => i,
-            _ => self.current,
+        let focused_agent = match target {
+            SidebarTarget::Spaces => None,
+            SidebarTarget::Here => picks
+                .iter()
+                .position(|p| matches!(p, Pick::Agent(pane) if self.is_current_pane(pane))),
         };
+        // Spaces come first in the picks, so the current space's index is
+        // also its pick index.
+        let index = focused_agent.unwrap_or(self.current);
         self.mode = Mode::Sidebar(Selection {
             pick: picks.get(index).cloned(),
             index,

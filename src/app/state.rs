@@ -21,6 +21,7 @@ use crate::input::line::LineEdit;
 use crate::input::PrefixKeys;
 use crate::sessions::{dismissed, Session, Sessions, State};
 use crate::terminal::Terminal;
+use crate::tmux::structure::Window;
 use crate::tmux::Server;
 use crate::ui::tab_bar::TabColors;
 use anyhow::Result;
@@ -427,9 +428,20 @@ impl App {
         self.spaces.iter().position(|i| i.window_of(pane).is_some())
     }
 
+    /// The current tab: the current space's current window.
+    pub(super) fn focused_window(&self) -> Option<&Window> {
+        self.current_space()?.current_window()
+    }
+
     /// The focused pane of the current tab.
     pub fn current_pane(&self) -> Option<String> {
-        Some(self.current_space()?.current_window()?.active.clone())
+        Some(self.focused_window()?.active.clone())
+    }
+
+    /// Whether pane `pane` is the focused pane of the current tab, whatever
+    /// the outer window's focus.
+    pub(super) fn is_current_pane(&self, pane: &str) -> bool {
+        self.focused_window().is_some_and(|w| w.active == pane)
     }
 
     /// Send bytes to pane `pane`'s program, returning its view to the live
