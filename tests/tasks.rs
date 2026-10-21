@@ -433,18 +433,23 @@ fn a_session_that_ends_while_paddock_is_closed_is_gone_with_its_tasks_on_reopen(
     hook("SubagentStop-subagent", "SubagentStop", AGENT_A);
     // The session ends while agent B still runs.
     hook("SessionEnd", "SessionEnd", AGENT_A);
-    // Another session, in the second tab, goes on: once it is listed, the
-    // whole event log has been read.
-    let other = |event: &str| {
-        let text =
-            payload(event, &dir, None).replace(SESSION, "22222222-2222-4333-8444-555555555555");
-        sandbox.hook("space-1:1", event, &text);
-    };
-    other("SessionStart");
-    other("Stop");
+    witness(&sandbox, "space-1:1", &dir);
 
     let mut again = ready(&sandbox);
     wait_for_list(&mut again, &[&session("idle")]);
+}
+
+/// Another session, in the terminal tmux target `terminal` names, that
+/// starts and goes idle on `dir`'s default branch, so without tasks. Hooked
+/// last while paddock is closed, its row on reopen shows the whole event log
+/// has been read.
+fn witness(sandbox: &Sandbox, terminal: &str, dir: &Path) {
+    git(dir, &["switch", "-q", "main"]);
+    for event in ["SessionStart", "Stop"] {
+        let text =
+            payload(event, dir, None).replace(SESSION, "22222222-2222-4333-8444-555555555555");
+        sandbox.hook(terminal, event, &text);
+    }
 }
 
 // Ticket 10: rows stay, across new conversations and reopening, until
@@ -554,8 +559,11 @@ fn a_closed_terminals_rows_leave_at_once_and_stay_gone_after_reopening() {
     assert_eq!(tabs(&sandbox), 1);
 
     // Replaying the event log does not bring them back.
-    let mut again = reopen(&sandbox, paddock);
-    wait_for_list(&mut again, &[]);
+    paddock.detach_keys();
+    assert!(paddock.wait_exit());
+    witness(&sandbox, "space-1:0", &dir);
+    let mut again = ready(&sandbox);
+    wait_for_list(&mut again, &[&session("idle")]);
 }
 
 #[test]
@@ -563,15 +571,25 @@ fn a_session_whose_claude_quit_leaves_with_its_task_rows() {
     let sandbox = Sandbox::new();
     let dir = repo(&sandbox);
     let mut paddock = ready(&sandbox);
-    work_on(&sandbox, "space-1", &dir, &["feat/one"]);
-    wait_for_list(&mut paddock, &[&session("idle"), "feat/one"]);
+    paddock.command(b"c");
+    paddock.wait_for_current_tab("2:home");
+    work_on(&sandbox, "space-1:0", &dir, &["feat/one"]);
+    // Its turn ended in a tab you are not looking at: done.
+    wait_for_list(&mut paddock, &[&session("done"), "feat/one"]);
 
-    sandbox.hook("space-1", "SessionEnd", &payload("SessionEnd", &dir, None));
+    sandbox.hook(
+        "space-1:0",
+        "SessionEnd",
+        &payload("SessionEnd", &dir, None),
+    );
     wait_for_list(&mut paddock, &[]);
-    assert_eq!(tabs(&sandbox), 1, "terminal kept");
+    assert_eq!(tabs(&sandbox), 2, "terminal kept");
 
-    let mut again = reopen(&sandbox, paddock);
-    wait_for_list(&mut again, &[]);
+    paddock.detach_keys();
+    assert!(paddock.wait_exit());
+    witness(&sandbox, "space-1:1", &dir);
+    let mut again = ready(&sandbox);
+    wait_for_list(&mut again, &[&session("idle")]);
 }
 
 #[test]
