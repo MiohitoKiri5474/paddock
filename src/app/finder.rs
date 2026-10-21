@@ -180,17 +180,18 @@ fn place_detail(path: Option<&str>, branch: Option<&str>) -> String {
         .join("  ")
 }
 
-/// A tab's directory and branch: those of the Claude in its focused pane
-/// (`claude`) where known, else its space's (the first tab's), which needs
-/// no round trip to tmux.
+/// A tab's directory and branch, taken as a pair from one place: the
+/// Claude's in its focused pane (`claude`) when its directory is known,
+/// else its space's (the first tab's), which needs no round trip to tmux.
+/// A branch is never paired with another place's directory.
 fn tab_place(
-    (path, branch): (Option<String>, Option<String>),
+    claude: (Option<String>, Option<String>),
     space: &SpaceLine,
 ) -> (Option<String>, Option<String>) {
-    (
-        path.or_else(|| space.path.clone()),
-        branch.or_else(|| space.branch.clone()),
-    )
+    match claude {
+        (Some(path), branch) => (Some(path), branch),
+        (None, _) => (space.path.clone(), space.branch.clone()),
+    }
 }
 
 /// The branch row `r`'s main agent works on, if known.
@@ -528,6 +529,16 @@ mod tests {
         assert_eq!(
             tab_place(claude, &space),
             (Some("~/wt/fix".into()), Some("fix/css".into()))
+        );
+        // Claude's directory known but no main task yet: never the
+        // space's branch beside Claude's directory.
+        let no_task = (Some("~/wt/fix".into()), None);
+        assert_eq!(tab_place(no_task, &space), (Some("~/wt/fix".into()), None));
+        // A branch without a directory is not a place: the space's pair.
+        let no_path = (None, Some("fix/css".into()));
+        assert_eq!(
+            tab_place(no_path, &space),
+            (Some("~/project/api".into()), Some("feat/login".into()))
         );
         // A branch query finds the tab.
         let (path, branch) = tab_place((None, None), &space);
