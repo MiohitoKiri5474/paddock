@@ -1,24 +1,24 @@
-//! The Claude session rows: a session row per pane where Claude runs or ran,
-//! each with its task rows, in display order. They feed the spaces'
-//! and tabs' states, `C-a a` and the dashboard.
+//! The Claude session rows: a session row per open pane whose session has
+//! not ended, each with its task rows, in display order. They feed the
+//! spaces' and tabs' states, the sidebar's agents, `C-a a` and the
+//! dashboard. A session that ended (its pane closed, or Claude quit) has no
+//! row.
 
 use crate::git::{Details, Status};
 use crate::sessions::{self, Sessions, State, SubagentTask, Task, TaskState};
 use std::collections::HashMap;
 
-/// One Claude session, in the pane it runs (or ran) in.
+/// One Claude session, in the pane it runs in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Row {
     pub pane: String,
-    /// The pane's space (tmux session id); empty once closed.
+    /// The pane's space (tmux session id).
     pub space: String,
-    /// The pane's tab (tmux window id); empty once closed.
+    /// The pane's tab (tmux window id).
     pub window: String,
     pub label: String,
     pub state: State,
     pub tasks: Vec<TaskRow>,
-    /// The pane was closed: `space` and `window` are empty.
-    pub closed: bool,
 }
 
 /// A selectable line: pane `pane`'s session row. Task rows belong to
@@ -96,8 +96,7 @@ fn sort_tasks(mut tasks: Vec<TaskRow>, session: State) -> Vec<TaskRow> {
 }
 
 /// The task rows of a session in state `session`, with their git status.
-/// In a closed pane, no subagent works on.
-fn task_rows(tasks: Vec<&Task>, status: &TaskStatus, session: State, closed: bool) -> Vec<TaskRow> {
+fn task_rows(tasks: Vec<&Task>, status: &TaskStatus, session: State) -> Vec<TaskRow> {
     let rows = tasks
         .into_iter()
         .map(|task| TaskRow {
@@ -106,30 +105,24 @@ fn task_rows(tasks: Vec<&Task>, status: &TaskStatus, session: State, closed: boo
             status: status
                 .get(&(task.cwd.clone(), task.branch.clone()))
                 .copied(),
-            subagent: task.subagent.clone().map(|mut sub| {
-                if closed && matches!(sub.state, TaskState::Running | TaskState::Waiting) {
-                    sub.state = TaskState::Stopped;
-                }
-                sub
-            }),
+            subagent: task.subagent.clone(),
         })
         .collect();
     sort_tasks(rows, session)
 }
 
-/// Session rows not dismissed, of the given panes and of closed ones, sorted
-/// by state, then by space and tab (closed panes last), each with its task
-/// rows sorted by state.
+/// Session rows of the given (open) panes, sorted by state, then by space
+/// and tab, each with its task rows sorted by state. Sessions that ended
+/// or were dismissed get none (see [`Sessions::shown`]); nor do sessions of
+/// panes not given: their terminal was closed, so they ended with it.
 pub fn rows<'a>(
     sessions: &Sessions,
     status: &TaskStatus,
     panes: impl IntoIterator<Item = Placed<'a>>,
 ) -> Vec<Row> {
-    let mut placed = Vec::new();
     let mut rows: Vec<((usize, usize), Row)> = panes
         .into_iter()
         .filter_map(|p| {
-            placed.push(p.pane);
             let (s, tasks) = sessions.shown(p.pane)?;
             let row = Row {
                 pane: p.pane.to_string(),
@@ -137,36 +130,19 @@ pub fn rows<'a>(
                 window: p.window.to_string(),
                 label: sessions::label(s, p.tab_name),
                 state: s.state,
-                tasks: task_rows(tasks, status, s.state, false),
-                closed: false,
+                tasks: task_rows(tasks, status, s.state),
             };
             Some((p.order, row))
         })
         .collect();
-    let mut closed: Vec<&str> = sessions.panes().filter(|p| !placed.contains(p)).collect();
-    closed.sort_by_key(|p| p.trim_start_matches('%').parse::<u32>().unwrap_or(u32::MAX));
-    rows.extend(closed.into_iter().filter_map(|pane| {
-        let (s, tasks) = sessions.shown(pane)?;
-        let row = Row {
-            pane: pane.to_string(),
-            space: String::new(),
-            window: String::new(),
-            label: sessions::label(s, None),
-            // Claude no longer runs there.
-            state: State::Stopped,
-            tasks: task_rows(tasks, status, State::Stopped, true),
-            closed: true,
-        };
-        Some(((0, 0), row))
-    }));
-    rows.sort_by_key(|(order, r)| (r.state.rank(), r.closed, *order));
+    rows.sort_by_key(|(order, r)| (r.state.rank(), *order));
     rows.into_iter().map(|(_, r)| r).collect()
 }
 
-/// The most urgent state of the open rows `matching`, if any.
+/// The most urgent state of the rows `matching`, if any.
 pub fn most_urgent<'a>(rows: &'a [Row], matching: impl Fn(&Row) -> bool + 'a) -> Option<State> {
     rows.iter()
-        .filter(|r| !r.closed && matching(r))
+        .filter(|r| matching(r))
         .map(|r| r.state)
         .min_by_key(|s| s.rank())
 }
@@ -254,14 +230,15 @@ mod tests {
     }
 
     #[test]
-    fn rows_cover_sessions_sorted_by_state_then_item_and_tab_closed_panes_last() {
+    fn rows_cover_live_sessions_in_open_panes_sorted_by_state_then_item_and_tab() {
         use crate::sessions::HookRecord;
         let mut s = Sessions::default();
         for (pane, event, cwd) in [
-            ("%1", "SessionEnd", "/w/a"),
+            ("%1", "SessionEnd", "/w/ended"),
             ("%2", "Stop", "/w/b"),
             ("%3", "PermissionRequest", "/w/c"),
             ("%4", "Stop", "/w/d"),
+            ("%8", "UserPromptSubmit", "/w/e"),
             ("%10", "Stop", "/w/ten"),
             ("%9", "PermissionRequest", "/w/gone"),
             ("%6", "Stop", "/w/dismissed"),
@@ -289,46 +266,67 @@ mod tests {
             placed("$2", "@3", (1, 1), "%4"),
             placed("$3", "@5", (2, 0), "%5"),
             placed("$3", "@6", (2, 1), "%6"),
+            placed("$3", "@7", (2, 2), "%8"),
         ];
-        let got: Vec<(String, String, String, State, bool)> = rows(&s, &TaskStatus::new(), panes)
+        let got: Vec<(String, String, String, State)> = rows(&s, &TaskStatus::new(), panes)
             .into_iter()
-            .map(|r| (r.label, r.space, r.window, r.state, r.closed))
+            .map(|r| (r.label, r.space, r.window, r.state))
             .collect();
-        // Claude no longer runs in a closed pane: its row is stopped.
+        // Claude quit in %1, and %7, %9 and %10 were closed: they ended.
         let want = [
-            ("c", "$2", "@3", State::Waiting, false),
-            ("api", "$2", "@2", State::Done, false),
-            ("d", "$2", "@3", State::Done, false),
-            ("a", "$1", "@1", State::Stopped, false),
-            ("gone", "", "", State::Stopped, true),
-            ("ten", "", "", State::Stopped, true),
+            ("c", "$2", "@3", State::Waiting),
+            ("api", "$2", "@2", State::Done),
+            ("d", "$2", "@3", State::Done),
+            ("e", "$3", "@7", State::Running),
         ];
-        let want: Vec<(String, String, String, State, bool)> = want
+        let want: Vec<(String, String, String, State)> = want
             .iter()
-            .map(|&(l, i, w, s, c)| (l.into(), i.into(), w.into(), s, c))
+            .map(|&(l, i, w, s)| (l.into(), i.into(), w.into(), s))
             .collect();
         assert_eq!(got, want);
     }
 
     #[test]
-    fn the_most_urgent_open_row_gives_the_state() {
-        let row = |space: &str, state, closed| Row {
+    fn a_new_claude_in_a_terminal_whose_session_ended_gets_a_row() {
+        use crate::sessions::HookRecord;
+        let mut s = Sessions::default();
+        let record = |event: &str, session: &str, ts| HookRecord {
+            event: event.into(),
+            pane: "%1".into(),
+            session_id: Some(session.into()),
+            cwd: Some("/w/a".into()),
+            ts,
+            ..Default::default()
+        };
+        let labels = |s: &Sessions| -> Vec<(String, State)> {
+            rows(s, &TaskStatus::new(), [placed("$1", "@1", (0, 0), "%1")])
+                .into_iter()
+                .map(|r| (r.label, r.state))
+                .collect()
+        };
+        s.apply(&record("Stop", "s1", 1));
+        s.apply(&record("SessionEnd", "s1", 2));
+        assert_eq!(labels(&s), []);
+        s.apply(&record("SessionStart", "s2", 3));
+        assert_eq!(labels(&s), [("a".to_string(), State::Idle)]);
+    }
+
+    #[test]
+    fn the_most_urgent_matching_row_gives_the_state() {
+        let row = |space: &str, state| Row {
             pane: "%1".into(),
             space: space.into(),
             window: "@1".into(),
             label: String::new(),
             state,
             tasks: Vec::new(),
-            closed,
         };
         let rows = [
-            row("$1", State::Running, false),
-            row("$1", State::Idle, false),
-            row("", State::Stopped, true),
-            row("$2", State::Waiting, false),
+            row("$1", State::Running),
+            row("$1", State::Idle),
+            row("$2", State::Waiting),
         ];
         assert_eq!(most_urgent(&rows, |r| r.space == "$1"), Some(State::Idle));
-        assert_eq!(most_urgent(&rows, |r| r.space.is_empty()), None);
         assert_eq!(most_urgent(&rows, |r| r.space == "$9"), None);
     }
 
@@ -372,22 +370,6 @@ mod tests {
     }
 
     #[test]
-    fn a_closed_panes_subagent_tasks_are_stopped() {
-        use crate::sessions::HookRecord;
-        let mut s = Sessions::default();
-        s.apply(&HookRecord {
-            event: "PermissionRequest".into(),
-            pane: "%1".into(),
-            agent_id: Some("a1".into()),
-            cwd: Some("/r/wt".into()),
-            branch: Some("fix/a".into()),
-            ..Default::default()
-        });
-        let got = &rows(&s, &TaskStatus::new(), [])[0].tasks[0];
-        assert_eq!(got.subagent.as_ref().unwrap().state, TaskState::Stopped);
-    }
-
-    #[test]
     fn row_ids_are_the_session_rows_only() {
         let task = |branch: &str| TaskRow {
             branch: branch.into(),
@@ -410,7 +392,6 @@ mod tests {
             label: String::new(),
             state: State::Idle,
             tasks,
-            closed: false,
         };
         let rows = [
             row("%1", vec![task("a"), sub, task("b")]),
