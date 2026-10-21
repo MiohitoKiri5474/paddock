@@ -559,7 +559,7 @@ mod tests {
     fn a_rows_preview_without_its_terminal_says_so() {
         let area = Rect::new(0, 0, 40, 12);
         let mut buf = Buffer::empty(area);
-        let rows = [row("gone", State::Stopped, vec![])];
+        let rows = [row("gone", State::Idle, vec![])];
         let selected = RowId {
             pane: "%gone".into(),
         };

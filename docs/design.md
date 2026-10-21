@@ -52,7 +52,7 @@ Not in scope for now: agents other than Claude Code, Linux, remote machines, a s
 - Task rows are the main agent's branch plus each subagent's branch, labelled with the subagent's task description.
 - Plain shells and the default branch get no row.
 - Everything under a session belongs to it: a session and its task rows form a block, with a blank line between two blocks. Only sessions are selected: moving skips task rows, the whole selected block gets the current space's background (`[colors] current_space`, as in the sidebar; each line keeps its own colours as text), scrolling keeps the whole block in sight where it fits, and every key acts on the session; dismissing it dismisses its task rows with it.
-- Rows stay until dismissed (`D`) or until their session ends: its terminal (pane, tab or space) is closed, or Claude quits in it (`SessionEnd`: the session is stopped). A session that ended leaves at once with its task rows, everywhere rows are used (the dashboard, the sidebar's AGENTS, the dots and tab markers, `C-a a`), and replaying the event log on reopen does not bring it back. If it was selected, the session that took its place is selected, and interactive preview ends. A new Claude in the same terminal is a new session and gets a row. `/clear` (`SessionEnd` with reason `clear`) only starts a new conversation in the same Claude, so its row stays. There is no setting to keep ended sessions.
+- Rows stay until dismissed (`D`) or until their session ends: its terminal (pane, tab or space) is closed, or Claude quits in it (`SessionEnd`: the session is stopped). A session that ended leaves at once with its task rows, everywhere rows are used (the dashboard, the sidebar's AGENTS, the dots and tab markers, `C-a a`), and replaying the event log on reopen does not bring it back. If it was selected, the session that took its place is selected, and interactive preview ends. A new Claude in the same terminal is a new session and gets a row. `/clear` (`SessionEnd` with reason `clear`) only starts a new conversation in the same Claude, so its row stays; subagents still at work belong to the conversation that ended, so their tasks stop all the same. A hook that lands after `SessionEnd` (a subagent's, or a tool's racing it) does not bring an ended session back; only `SessionStart` (a resume) does. There is no setting to keep ended sessions.
 - External sessions appear dimmed in a group at the bottom (v1.2).
 
 ### Fields
@@ -67,7 +67,7 @@ The dashboard list is a table under a dim header: NAME (the session's label, its
 
 ### States
 
-- Session: running, waiting, done, idle, or unknown. A stopped session (Claude quit) has no row. A main agent that finishes a turn (`Stop`) is done while you are not looking at its tab (the current space's current tab, outer window focused), and turns idle once you do. Done is not saved: it is per running paddock.
+- Session: running, waiting, done, idle, or unknown. A session that ended (Claude quit) has no row. A main agent that finishes a turn (`Stop`) is done while you are not looking at its tab (the current space's current tab, outer window focused), and turns idle once you do. Done is not saved: it is per running paddock.
 - Subagent task: running, waiting, done, or stopped.
 - Compacting counts as running. Sort order: waiting, done, idle, running, unknown.
 - Task rows within a session sort waiting, running, done, stopped, ties in tree order; the main agent's task row has its session's state (done and idle count as done).

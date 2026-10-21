@@ -409,6 +409,44 @@ fn subagent_work_done_while_paddock_is_closed_appears_on_reopen() {
     );
 }
 
+#[test]
+fn a_session_that_ends_while_paddock_is_closed_is_gone_with_its_tasks_on_reopen() {
+    let sandbox = Sandbox::new();
+    let dir = repo(&sandbox);
+    write_meta(&sandbox);
+    let (wt_a, wt_b) = (worktree(&dir, AGENT_A), worktree(&dir, AGENT_B));
+    let mut paddock = ready(&sandbox);
+    paddock.command(b"c");
+    paddock.wait_for_current_tab("2:home");
+    paddock.detach_keys();
+    assert!(paddock.wait_exit());
+
+    let hook = |name: &str, event: &str, agent: &str| {
+        sandbox.hook("space-1:0", event, &recorded(&sandbox, name, &dir, agent));
+    };
+    hook("UserPromptSubmit", "UserPromptSubmit", AGENT_A);
+    for (agent, wt, branch) in [(AGENT_A, &wt_a, "fix/a"), (AGENT_B, &wt_b, "fix/b")] {
+        hook("SubagentStart-subagent", "SubagentStart", agent);
+        git(wt, &["switch", "-q", "-c", branch]);
+        hook("PostToolUse-subagent", "PostToolUse", agent);
+    }
+    hook("SubagentStop-subagent", "SubagentStop", AGENT_A);
+    // The session ends while agent B still runs.
+    hook("SessionEnd", "SessionEnd", AGENT_A);
+    // Another session, in the second tab, goes on: once it is listed, the
+    // whole event log has been read.
+    let other = |event: &str| {
+        let text =
+            payload(event, &dir, None).replace(SESSION, "22222222-2222-4333-8444-555555555555");
+        sandbox.hook("space-1:1", event, &text);
+    };
+    other("SessionStart");
+    other("Stop");
+
+    let mut again = ready(&sandbox);
+    wait_for_list(&mut again, &[&session("idle")]);
+}
+
 // Ticket 10: rows stay, across new conversations and reopening, until
 // dismissed with `D` or until their session ends (ticket 20).
 

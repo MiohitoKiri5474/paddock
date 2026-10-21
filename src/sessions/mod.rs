@@ -22,12 +22,14 @@ pub enum State {
     /// The main agent finished a turn you have not looked at yet.
     Done,
     Idle,
+    /// Claude quit: the session ended, so it has no row.
     Stopped,
     Unknown,
 }
 
 impl State {
-    /// Sort order of rows: waiting, done, idle, running, stopped, then unknown.
+    /// Sort order of rows: waiting, done, idle, running, then unknown. A
+    /// stopped session (one that ended) has no row.
     pub fn rank(self) -> u8 {
         match self {
             State::Waiting => 0,
@@ -464,7 +466,9 @@ impl Sessions {
 
     /// Apply one recorded hook event.
     pub fn apply(&mut self, r: &HookRecord) {
-        self.fold(r);
+        if !self.fold(r) {
+            return;
+        }
         self.touch(&r.pane, None, r.ts);
         let branch = match &r.agent_id {
             Some(id) => self
@@ -478,13 +482,21 @@ impl Sessions {
         }
     }
 
-    fn fold(&mut self, r: &HookRecord) {
+    /// Fold in hook event `r`. Returns false if it was ignored: it came
+    /// late, from a session that already ended.
+    fn fold(&mut self, r: &HookRecord) -> bool {
         let s = self
             .by_pane
             .entry(r.pane.clone())
             .or_insert_with(|| Session::new(r.session_id.clone()));
         if r.session_id.is_some() && r.session_id != s.session_id {
             s.next(r.session_id.clone());
+        }
+        // A session that ended never runs again: a subagent's or a tool's
+        // hook landing after `SessionEnd` lags behind. Only a `SessionStart`
+        // (a resume) brings it back.
+        if s.state == State::Stopped && r.event != "SessionStart" {
+            return false;
         }
         // A subagent's directory is its worktree, not the session's.
         if r.cwd.is_some() && r.agent_id.is_none() {
@@ -503,7 +515,7 @@ impl Sessions {
         }
         if let Some(id) = &r.agent_id {
             s.apply_subagent(id, r);
-            return;
+            return true;
         }
         if r.event == "SessionEnd" {
             s.stop_subagents();
@@ -518,6 +530,7 @@ impl Sessions {
                 }),
             }
         }
+        true
     }
 
     /// Fold in a `claude agents --json` snapshot taken at `taken` (ms). It
@@ -1080,6 +1093,22 @@ mod tests {
             session_id: Some("newer".into()),
             ..rec("SessionStart", 10_001)
         });
+        assert_eq!(shown(&s), Some(vec!["feat/a"]));
+    }
+
+    #[test]
+    fn hooks_landing_after_a_session_ended_do_not_bring_it_back() {
+        let mut s = Sessions::default();
+        s.apply(&on("feat/a", "/r", 1));
+        s.apply(&rec("SessionEnd", 2));
+        s.apply(&sub("PermissionRequest", "a1", WT_A, None, 3));
+        s.apply(&on("feat/late", "/r", 4));
+        assert_eq!(state(&s), State::Stopped);
+        assert_eq!(shown(&s), None);
+        assert_eq!(tasks(&s), [("feat/a", "/r")]);
+        // Claude resuming the same conversation brings it back.
+        s.apply(&rec("SessionStart", 5));
+        assert_eq!(state(&s), State::Idle);
         assert_eq!(shown(&s), Some(vec!["feat/a"]));
     }
 

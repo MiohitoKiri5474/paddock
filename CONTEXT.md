@@ -42,6 +42,10 @@ A live picture of a session's screen inside the dashboard. In interactive previe
 A Claude Code conversation running, or that ran, in a terminal. One running outside paddock's terminals is an external session.
 _Avoid_: agent (too broad), terminal, tmux session
 
+**Ended**:
+A session whose terminal was closed or whose Claude quit. It leaves the dashboard and the sidebar; a new Claude in the same terminal is a new session. `/clear` does not end it.
+_Avoid_: stopped (a subagent task's state)
+
 **Main agent**:
 The Claude you talk to directly in a session.
 _Avoid_: parent agent
@@ -71,7 +75,7 @@ The main agent finished its turn while you looked at another tab; it turns idle 
 The main agent finished its turn and is ready for your next prompt.
 
 **Stopped**:
-Claude no longer runs in that terminal, or the session ended while a subagent was still running. A stopped session leaves the dashboard and the sidebar.
+A subagent task whose session ended while it was still running.
 
 **Unknown**:
 No state has been reported yet.
