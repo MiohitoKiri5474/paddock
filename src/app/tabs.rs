@@ -31,6 +31,12 @@ impl App {
     /// and make it current.
     pub fn new_space_named(&mut self, name: &str) -> Result<()> {
         let dir = self.new_dir();
+        self.new_space_in(name, dir)
+    }
+
+    /// Start a shell in `dir` in a new space named `name` at the end of
+    /// the sidebar and make it current.
+    pub fn new_space_in(&mut self, name: &str, dir: PathBuf) -> Result<()> {
         let area = self.area();
         let session = self
             .server
@@ -42,6 +48,26 @@ impl App {
         }
         self.current = self.spaces.len() - 1;
         Ok(())
+    }
+
+    /// Attach, as spaces at the end of the sidebar, the sessions made on
+    /// the hidden server by someone else (`paddock worktree new`, `tmux
+    /// new-session`); the current space stays. Every space's client hears
+    /// of a new session, so one already attached is skipped. A session
+    /// that ended before it could be attached is no news.
+    pub(super) fn attach_new_sessions(&mut self) {
+        let known: Vec<String> = self.spaces.iter().map(|s| s.id.clone()).collect();
+        for session in self.server.sessions() {
+            if known.contains(&session.id) {
+                continue;
+            }
+            if let Err(e) = self.attach(&session.id) {
+                let alive = self.server.sessions().iter().any(|s| s.id == session.id);
+                if alive {
+                    self.notice = Some(format!("{e:#}"));
+                }
+            }
+        }
     }
 
     /// Start a shell in a new tab of the current space and make it current.
@@ -194,15 +220,17 @@ impl App {
     }
 
     /// Act on a name typed into the prompt for `target`: rename the current
-    /// tab or space, or start a new space (a blank name keeps the default,
-    /// or the old name).
-    pub fn submit_name(&mut self, target: NameTarget, name: &str) -> Result<()> {
+    /// tab or space, start a new space (a blank name keeps the default, or
+    /// the old name), or check a branch out in a new worktree.
+    pub fn submit_name(&mut self, target: &NameTarget, name: &str) -> Result<()> {
         let name = name.trim();
         match target {
             NameTarget::NewSpace if name.is_empty() => self.new_space(),
             NameTarget::NewSpace => self.new_space_named(name),
             NameTarget::Rename(_) if name.is_empty() => Ok(()),
-            NameTarget::Rename(what) => self.rename(what, name),
+            NameTarget::Rename(what) => self.rename(*what, name),
+            NameTarget::NewWorktree(_) if name.is_empty() => Ok(()),
+            NameTarget::NewWorktree(tree) => self.new_worktree(tree, name),
         }
     }
 
@@ -223,9 +251,9 @@ impl App {
         self.refresh(&id)
     }
 
-    /// What the prompt for `target` starts with: the current name, or the
-    /// default for a new space.
-    pub fn name_of(&self, target: NameTarget) -> String {
+    /// What the prompt for `target` starts with: the current name, the
+    /// default for a new space, or nothing for a branch.
+    pub fn name_of(&self, target: &NameTarget) -> String {
         let space = self.current_space();
         match target {
             NameTarget::Rename(Renamed::Space) => space.map(|i| i.name().to_string()),
@@ -233,6 +261,7 @@ impl App {
                 .and_then(|i| i.current_window())
                 .map(|w| w.name.clone()),
             NameTarget::NewSpace => Some(self.new_space_name()),
+            NameTarget::NewWorktree(_) => None,
         }
         .unwrap_or_default()
     }
@@ -270,7 +299,7 @@ impl App {
 
     /// Ask before closing `target`, where Claude is `state`. A panel with
     /// the keyboard (the sidebar or the dashboard) gets it back after.
-    fn ask_close(&mut self, target: CloseTarget, state: State) {
+    pub(super) fn ask_close(&mut self, target: CloseTarget, state: State) {
         let back = std::mem::replace(&mut self.mode, Mode::Normal).into_panel();
         self.mode = Mode::ConfirmClose {
             target,
@@ -284,6 +313,9 @@ impl App {
         match target {
             CloseTarget::Pane(pane) => self.server.kill_pane(pane),
             CloseTarget::Space(id) => self.server.kill_session(id),
+            CloseTarget::Worktree { target, confirmed } => {
+                self.remove_worktree_space(target, confirmed.as_ref())
+            }
         }
     }
 

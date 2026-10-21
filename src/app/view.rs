@@ -3,10 +3,12 @@
 
 use super::rows::{most_urgent, Row};
 use super::state::{App, CloseTarget, Mode};
+use super::worktrees::SpaceEntry;
+use crate::paths::HomePaths;
 use crate::sessions::State;
 use crate::tmux::structure::Window;
 use crate::ui::prompt::{self, Body, Prompt};
-use crate::ui::sidebar::{tilde, AgentLine, SpaceLine};
+use crate::ui::sidebar::{AgentLine, Entry, SpaceLine};
 use crate::ui::tab_bar::{self, Tab, TabBar};
 use ratatui::layout::Rect;
 use std::borrow::Cow;
@@ -15,23 +17,29 @@ use std::borrow::Cow;
 const CLAUDE: &str = "claude";
 
 impl App {
-    /// Each space: its name, the most urgent state of its agents, whether
-    /// it is current, and its directory and branch once read.
-    pub(super) fn sidebar_spaces(&self, rows: &[Row]) -> Vec<SpaceLine> {
-        let home = std::env::var("HOME").unwrap_or_default();
-        // tmux reports directories with symlinks resolved (`/tmp` is
-        // `/private/tmp` on macOS), so home may be written either way.
-        let real_home = std::fs::canonicalize(&home)
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|_| home.clone());
-        let show = |path: &str| {
-            let short = tilde(path, &home);
-            if short == path {
-                tilde(path, &real_home)
-            } else {
-                short
-            }
-        };
+    /// SPACES as drawn: each space (its name, the most urgent state of its
+    /// agents, whether it is current, and its directory and branch once
+    /// read) in sidebar order, worktree spaces under their repository, with
+    /// a header for a repository whose main checkout has no space.
+    pub(super) fn sidebar_spaces(&self, rows: &[Row]) -> Vec<Entry> {
+        let lines = self.space_lines(rows);
+        self.space_entries()
+            .into_iter()
+            .map(|entry| match entry {
+                SpaceEntry::RepoHeader(name) => Entry::RepoHeader(name),
+                SpaceEntry::Space { index, linked } => Entry::Space(SpaceLine {
+                    linked,
+                    ..lines[index].clone()
+                }),
+            })
+            .collect()
+    }
+
+    /// Each space as the sidebar draws it, in the spaces' own order (not
+    /// grouped): its name, the most urgent state of its agents, whether it
+    /// is current, and its directory and branch once read.
+    pub(super) fn space_lines(&self, rows: &[Row]) -> Vec<SpaceLine> {
+        let home = HomePaths::new();
         self.spaces
             .iter()
             .enumerate()
@@ -41,8 +49,9 @@ impl App {
                     name: space.name().to_string(),
                     state: most_urgent(rows, |r| r.space == space.id),
                     current: i == self.current,
-                    path: place.map(|p| show(&p.path)),
+                    path: place.map(|p| home.show(&p.path)),
                     branch: place.and_then(|p| p.branch.clone()),
+                    linked: false,
                 }
             })
             .collect()
@@ -56,23 +65,23 @@ impl App {
             .map(|r| AgentLine {
                 label: r.label.clone(),
                 state: r.state,
-                place: self.place_of(r).unwrap_or_default(),
+                place: self.place_of(r, " · ").unwrap_or_default(),
                 current: self.is_current_pane(&r.pane),
             })
             .collect()
     }
 
-    /// Where row `r` runs, as `space · tab`.
-    fn place_of(&self, r: &Row) -> Option<String> {
+    /// Where row `r` runs: its space and tab, `sep` between them.
+    pub(super) fn place_of(&self, r: &Row, sep: &str) -> Option<String> {
         let space = self.spaces.iter().find(|i| i.id == r.space)?;
         let w = space.windows().iter().find(|w| w.id == r.window)?;
-        Some(format!("{} · {}", space.name(), self.tab_name(w)))
+        Some(format!("{}{sep}{}", space.name(), self.tab_name(w)))
     }
 
     /// A tab's name as shown: tmux's, except that a tab tmux names (not
     /// renamed by the user) whose focused pane runs Claude is called
     /// `claude`, whatever process name tmux sees.
-    fn tab_name(&self, w: &Window) -> String {
+    pub(super) fn tab_name(&self, w: &Window) -> String {
         let claude = self.session_in(&w.active).is_some_and(|s| {
             matches!(
                 s.state,
@@ -115,8 +124,8 @@ impl App {
         }
     }
 
-    /// The prompt popup, while it is open: asking for a name, or asking
-    /// before a close.
+    /// The prompt popup, while it is open: asking for a name, asking
+    /// before a close or a delete, or listing worktrees to open.
     pub(super) fn prompt(&self) -> Option<Prompt<'_>> {
         let (title, body) = match &self.mode {
             Mode::Naming { target, line, .. } => (target.title(), Body::Input(line)),
@@ -124,6 +133,14 @@ impl App {
                 self.close_title(target),
                 Body::Message(format!("Claude is {}: close? y/n", state.label())),
             ),
+            Mode::OpenWorktree(list) => (
+                " Open worktree ",
+                Body::List {
+                    items: list.candidates.iter().map(|c| c.line.clone()).collect(),
+                    selected: list.selected,
+                },
+            ),
+            Mode::ConfirmDelete(q) => (" Delete worktree ", Body::Message(q.text())),
             _ => return None,
         };
         Some(Prompt {
@@ -137,6 +154,7 @@ impl App {
     /// its tab closes the tab, and alone in its space's only tab, the space.
     fn close_title(&self, target: &CloseTarget) -> &'static str {
         let CloseTarget::Pane(pane) = target else {
+            // A space, or a worktree space.
             return " Close space ";
         };
         let found = self.spaces.iter().find_map(|s| {
@@ -153,7 +171,9 @@ impl App {
     /// Where the prompt popup is on the screen: drawn there, and clicks
     /// are judged against it.
     pub(super) fn prompt_area(&self) -> Rect {
-        prompt::area(Rect::new(0, 0, self.screen.0, self.screen.1))
+        let screen = Rect::new(0, 0, self.screen.0, self.screen.1);
+        self.prompt()
+            .map_or_else(|| prompt::area(screen), |p| p.area(screen))
     }
 
     /// The tab bar's parts as drawn now, for clicks.

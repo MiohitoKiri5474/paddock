@@ -42,6 +42,13 @@ const MODIFIERS: &[(char, KeyModifiers)] = &[
 /// The highest function key.
 const MAX_F: u8 = 12;
 
+/// Characters that are one key with Ctrl, by the one they are written as:
+/// terminals send `C--` and `C-_` as one byte (0x1f), so `C-_` reads and
+/// prints as `C--`. Without the kitty protocol crossterm reports 0x1c to
+/// 0x1f as `C-4` to `C-7`, so those digits match too. Others stay apart:
+/// under kitty `C-/`, `C-3` and `C-2` arrive as keys of their own.
+const CTRL_ALIASES: &[(char, &str)] = &[('\\', "4"), (']', "5"), ('^', "6"), ('-', "_7")];
+
 const SYNTAX: &str = "expected a character, a name such as Enter, Tab, Esc, Space, Left \
                       or F1, optionally after C- (Ctrl), S- (Shift) or M- (Alt)";
 
@@ -75,7 +82,7 @@ impl Key {
         let ctrl = mods.contains(KeyModifiers::CONTROL);
         match code {
             KeyCode::Char(c) if ctrl => Self {
-                code: KeyCode::Char(c.to_ascii_lowercase()),
+                code: KeyCode::Char(ctrl_char(c.to_ascii_lowercase())),
                 mods: mods - KeyModifiers::SHIFT,
             },
             // The character already says whether Shift was down.
@@ -117,7 +124,7 @@ impl Key {
         };
         let key = Self::parse(spec).map_err(|_| anyhow::anyhow!(invalid()))?;
         let usable =
-            matches!(key.code, KeyCode::Char(c) if c.is_ascii_lowercase() || " \\]^_".contains(c));
+            matches!(key.code, KeyCode::Char(c) if c.is_ascii_lowercase() || " \\]^-".contains(c));
         if key.mods != KeyModifiers::CONTROL || !usable {
             bail!(invalid());
         }
@@ -147,6 +154,14 @@ impl Key {
     pub fn uses_alt(&self) -> bool {
         self.mods.contains(KeyModifiers::ALT)
     }
+}
+
+/// `c` as the character its Ctrl key is written with (`_` as `-`).
+fn ctrl_char(c: char) -> char {
+    CTRL_ALIASES
+        .iter()
+        .find(|(_, aliases)| aliases.contains(c))
+        .map_or(c, |(canonical, _)| *canonical)
 }
 
 /// The modifiers written before the key in `spec`, and the rest.
@@ -216,6 +231,13 @@ mod tests {
             ("c-n", KeyCode::Char('n'), ctrl),
             ("C-A", KeyCode::Char('a'), ctrl),
             ("C--", KeyCode::Char('-'), ctrl),
+            ("C-_", KeyCode::Char('-'), ctrl),
+            ("C-7", KeyCode::Char('-'), ctrl),
+            ("C-\\", KeyCode::Char('\\'), ctrl),
+            ("C-4", KeyCode::Char('\\'), ctrl),
+            ("C-5", KeyCode::Char(']'), ctrl),
+            ("C-6", KeyCode::Char('^'), ctrl),
+            ("_", KeyCode::Char('_'), none),
             ("S-a", KeyCode::Char('A'), none),
             ("s-a", KeyCode::Char('A'), none),
             ("S-Tab", KeyCode::Tab, KeyModifiers::SHIFT),
@@ -226,6 +248,32 @@ mod tests {
         for (spec, code, mods) in cases {
             assert_eq!(Key::parse(spec).unwrap(), Key { code, mods }, "{spec}");
         }
+    }
+
+    #[test]
+    fn ctrl_keys_sent_as_one_control_byte_are_one_key() {
+        let ctrl = KeyModifiers::CONTROL;
+        let of = |c, m| Key::of(&key(c, m));
+        // Ctrl+- is 0x1f, which crossterm reports as Ctrl+7 without the
+        // kitty protocol and as `_` with Shift under it.
+        let minus = Key::parse("C--").unwrap();
+        assert_eq!(of(KeyCode::Char('7'), ctrl), minus);
+        assert_eq!(of(KeyCode::Char('_'), ctrl | KeyModifiers::SHIFT), minus);
+        assert_eq!(minus.name(), "C--");
+        assert_eq!(Key::parse("C-_").unwrap().name(), "C--");
+        let backslash = Key::parse("C-\\").unwrap();
+        assert_eq!(of(KeyCode::Char('4'), ctrl), backslash);
+        assert_eq!(backslash.name(), "C-\\");
+        // Without Ctrl, the characters stay apart.
+        assert_ne!(Key::parse("_").unwrap(), Key::parse("-").unwrap());
+        assert_ne!(Key::parse("M-_").unwrap(), Key::parse("M--").unwrap());
+        // Keys a kitty terminal sends apart stay apart, and print as written.
+        for (one, other) in [("C-/", "C--"), ("C-3", "C-["), ("C-2", "C-Space")] {
+            let (a, b) = (Key::parse(one).unwrap(), Key::parse(other).unwrap());
+            assert_ne!(a, b, "{one} {other}");
+            assert_eq!(a.name(), one);
+        }
+        assert_eq!(Key::parse("C-@").unwrap().name(), "C-@");
     }
 
     #[test]
@@ -286,6 +334,8 @@ mod tests {
         assert_eq!(Key::parse_prefix("c-a").unwrap(), ctrl('a'));
         assert_eq!(Key::parse_prefix("C-Space").unwrap(), ctrl(' '));
         assert_eq!(Key::parse_prefix("C-]").unwrap(), ctrl(']'));
+        assert_eq!(Key::parse_prefix("C-_").unwrap(), ctrl('-'));
+        assert_eq!(Key::parse_prefix("C--").unwrap(), ctrl('-'));
         for bad in [
             "a", "C-", "C-ab", "M-a", "C-1", "ctrl-a", "C-M-a", "C-Left", "F1",
         ] {

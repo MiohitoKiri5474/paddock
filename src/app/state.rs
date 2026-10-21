@@ -1,10 +1,11 @@
 //! What the running app holds: the spaces (tmux sessions, ADR 0006),
 //! each with its tabs (windows) and splits (panes) as tmux has them, a
 //! terminal per pane, the Claude sessions in them, and what the keyboard is
-//! doing (typing into the focused pane, naming, reading help).
+//! doing (typing into the focused pane, naming, finding, reading help).
 
 use super::attention::Attention;
 use super::dashboard::Dashboard;
+use super::finder::Finder;
 use super::floats::Shown;
 use super::mouse::Press;
 use super::pages::Pages;
@@ -14,8 +15,10 @@ use super::sidebar::clamp_width;
 use super::sidebar::Selection;
 use super::space::Space;
 use super::watch::Place;
+use super::worktrees::{DeleteQuestion, WorktreeList};
 use super::Event;
-use crate::config::{Config, Floats};
+use crate::config::{Config, Floats, Worktrees};
+use crate::git::WorkingTree;
 use crate::hooks::now_ms;
 use crate::input::keymap::Keymap;
 use crate::input::line::LineEdit;
@@ -25,6 +28,7 @@ use crate::terminal::Terminal;
 use crate::tmux::structure::Window;
 use crate::tmux::Server;
 use crate::ui::tab_bar::TabColors;
+use crate::worktree::{Risks, WorktreeSpace};
 use anyhow::Result;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
@@ -56,6 +60,18 @@ pub enum Mode {
     },
     /// The dashboard is open.
     Dashboard(Dashboard),
+    /// The prompt lists the repository's worktrees without a space, to
+    /// open one.
+    OpenWorktree(WorktreeList),
+    /// Asking before deleting a worktree space with its worktree and
+    /// branch.
+    ConfirmDelete(DeleteQuestion),
+    /// The finder is open; `back` is the panel it was opened from, to
+    /// return to on `Esc`.
+    Finder {
+        finder: Finder,
+        back: Option<Panel>,
+    },
 }
 
 /// A panel that had the keyboard when the prompt opened, and gets it back
@@ -88,30 +104,68 @@ impl Mode {
         }
     }
 
-    /// The panel the open prompt returns to, if any.
-    pub fn back_panel(&self) -> Option<&Panel> {
+    /// While a box over the screen that gives the keyboard back is open
+    /// (the prompt popup or the finder), the panel it was opened from, if
+    /// any; `None` while none is open. Every such mode is listed here and
+    /// in [`Self::overlay_back_mut`] only.
+    fn overlay_back(&self) -> Option<&Option<Panel>> {
         match self {
-            Mode::Naming { back, .. } | Mode::ConfirmClose { back, .. } => back.as_ref(),
-            _ => None,
+            Mode::Naming { back, .. }
+            | Mode::ConfirmClose { back, .. }
+            | Mode::OpenWorktree(WorktreeList { back, .. })
+            | Mode::ConfirmDelete(DeleteQuestion { back, .. })
+            | Mode::Finder { back, .. } => Some(back),
+            Mode::Normal | Mode::Help | Mode::Sidebar(_) | Mode::Dashboard(_) => None,
         }
     }
 
-    /// The panel the open prompt returns to, to change it in place.
-    pub fn back_panel_mut(&mut self) -> Option<&mut Panel> {
+    /// [`Self::overlay_back`], to change it.
+    fn overlay_back_mut(&mut self) -> Option<&mut Option<Panel>> {
         match self {
-            Mode::Naming { back, .. } | Mode::ConfirmClose { back, .. } => back.as_mut(),
-            _ => None,
+            Mode::Naming { back, .. }
+            | Mode::ConfirmClose { back, .. }
+            | Mode::OpenWorktree(WorktreeList { back, .. })
+            | Mode::ConfirmDelete(DeleteQuestion { back, .. })
+            | Mode::Finder { back, .. } => Some(back),
+            Mode::Normal | Mode::Help | Mode::Sidebar(_) | Mode::Dashboard(_) => None,
         }
+    }
+
+    /// The panel the open prompt (or finder) returns to, if any.
+    pub fn back_panel(&self) -> Option<&Panel> {
+        self.overlay_back()?.as_ref()
+    }
+
+    /// The panel the open prompt (or finder) returns to, to change it in
+    /// place.
+    pub fn back_panel_mut(&mut self) -> Option<&mut Panel> {
+        self.overlay_back_mut()?.as_mut()
+    }
+
+    /// Whether the prompt popup is open: every key and click goes to it.
+    /// The finder has keys, clicks and paste of its own.
+    pub fn is_prompt(&self) -> bool {
+        self.overlay_back().is_some() && !matches!(self, Mode::Finder { .. })
+    }
+
+    /// Close the open prompt (or finder) as `Esc` would: the mode that
+    /// gives the keyboard back to the panel it was opened from. `None`,
+    /// changing nothing, if none is open.
+    pub fn cancel_prompt(&mut self) -> Option<Self> {
+        let back = self.overlay_back_mut()?.take();
+        Some(Mode::back_to(back))
     }
 }
 
 /// What a name is asked for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NameTarget {
     /// Renaming the current tab or space.
     Rename(Renamed),
     /// A new space.
     NewSpace,
+    /// A branch to check out in a new worktree of this repository.
+    NewWorktree(WorkingTree),
 }
 
 /// What a rename is for.
@@ -125,11 +179,12 @@ pub enum Renamed {
 
 impl NameTarget {
     /// The prompt's title.
-    pub fn title(self) -> &'static str {
+    pub fn title(&self) -> &'static str {
         match self {
             NameTarget::Rename(Renamed::Tab) => " Rename tab ",
             NameTarget::Rename(Renamed::Space) => " Rename space ",
             NameTarget::NewSpace => " New space ",
+            NameTarget::NewWorktree(_) => " New worktree ",
         }
     }
 }
@@ -141,6 +196,12 @@ pub enum CloseTarget {
     Pane(String),
     /// A whole space (`$N`) with all its tabs.
     Space(String),
+    /// A worktree space, whose worktree and branch go with it; `confirmed`
+    /// is what the user said yes to losing.
+    Worktree {
+        target: WorktreeSpace,
+        confirmed: Option<Risks>,
+    },
 }
 
 pub struct App {
@@ -198,6 +259,8 @@ pub struct App {
     /// Every float pane seen, closed ones included: their late hooks are
     /// left out too.
     pub(super) float_panes: HashSet<String>,
+    /// Where new worktrees are checked out.
+    pub(super) worktrees: Worktrees,
 }
 
 /// The part of a screen of `(cols, rows)` that shows the current tab's
@@ -251,6 +314,7 @@ impl App {
             prefix: PrefixKeys::new(
                 config.prefix,
                 config.keys.commands.clone(),
+                config.keys.direct.clone(),
                 config.floats.list.iter().map(|f| f.key).collect(),
             ),
             prefix_name: config.prefix.name(),
@@ -278,6 +342,7 @@ impl App {
             floats: config.floats.clone(),
             float: None,
             float_panes: HashSet::new(),
+            worktrees: config.worktrees.clone(),
         };
         app.load_dismissed();
         app.open_spaces()?;

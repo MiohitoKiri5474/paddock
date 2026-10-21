@@ -5,7 +5,7 @@
 //! [floats]
 //! width = 80        # percent of the screen
 //! height = 80
-//! g = "lazygit"     # the default; "" removes it
+//! G = "lazygit"     # the default; "" removes it
 //! y = "yazi"
 //! ```
 
@@ -18,7 +18,7 @@ pub const DEFAULT_SIZE: u16 = 80;
 /// The largest width or height: the whole screen.
 const MAX_PERCENT: i64 = 100;
 /// The floats every config starts with, as `(key, command)`.
-const DEFAULTS: &[(&str, &str)] = &[("g", "lazygit")];
+const DEFAULTS: &[(&str, &str)] = &[("G", "lazygit")];
 /// The `[floats]` setting for the box's width, which is not a key.
 const WIDTH: &str = "width";
 /// The `[floats]` setting for the box's height, which is not a key.
@@ -211,19 +211,19 @@ mod tests {
     }
 
     #[test]
-    fn lazygit_on_g_at_80_percent_by_default() {
+    fn lazygit_on_shift_g_at_80_percent_by_default() {
         let f = Floats::default();
-        assert_eq!(list(&f), [("g".to_string(), "lazygit")]);
+        assert_eq!(list(&f), [("G".to_string(), "lazygit")]);
         assert_eq!((f.width, f.height), (80, 80));
         assert_eq!(parse("").unwrap(), f);
     }
 
     #[test]
     fn floats_are_added_replaced_and_sized() {
-        let f = parse("width = 90\nheight = 50\ng = \"tig\"\nT = \"htop -d 5\"\n").unwrap();
+        let f = parse("width = 90\nheight = 50\nG = \"tig\"\nT = \"htop -d 5\"\n").unwrap();
         assert_eq!(
             list(&f),
-            [("g".to_string(), "tig"), ("T".to_string(), "htop -d 5")]
+            [("G".to_string(), "tig"), ("T".to_string(), "htop -d 5")]
         );
         assert_eq!((f.width, f.height), (90, 50));
         let ctrl = parse("C-y = \"yazi\"\n").unwrap();
@@ -232,8 +232,8 @@ mod tests {
 
     #[test]
     fn an_empty_command_removes_a_float() {
-        assert!(parse("g = \"\"\n").unwrap().list.is_empty());
-        assert!(parse("g = \"  \"\n").unwrap().list.is_empty());
+        assert!(parse("G = \"\"\n").unwrap().list.is_empty());
+        assert!(parse("G = \"  \"\n").unwrap().list.is_empty());
         assert_eq!(parse("y = \"\"\n").unwrap(), Floats::default());
     }
 
@@ -248,14 +248,14 @@ mod tests {
         let table: toml::Table = toml::from_str("c = \"htop\"\n").unwrap();
         assert!(Floats::configured(&table, prefix(), &commands).is_ok());
         // The default float clashes with a command moved onto its key.
-        let given: Given = [("new_tab".to_string(), vec!["g".to_string()])].into();
+        let given: Given = [("new_tab".to_string(), vec!["G".to_string()])].into();
         let (commands, _) = Keys::configured(&COMMAND_KEYS, &given, prefix()).unwrap();
         let none = toml::Table::new();
         let e = format!(
             "{:#}",
             Floats::configured(&none, prefix(), &commands).unwrap_err()
         );
-        assert!(e.contains("\"g\" is also bound to new_tab"), "{e}");
+        assert!(e.contains("\"G\" is also bound to new_tab"), "{e}");
     }
 
     #[test]
@@ -266,7 +266,9 @@ mod tests {
         // Reached by a command first, through its key without Shift.
         assert!(err("\"S-Tab\" = \"x\"\n").contains("also bound to last_page"));
         assert!(err("\"S-Left\" = \"x\"\n").contains("also bound to focus_left"));
-        assert!(err("g = 1\n").contains("expected a command"));
+        assert!(err("G = 1\n").contains("expected a command"));
+        // The finder's key.
+        assert!(err("g = \"tig\"\n").contains("also bound to finder"));
         for bad in ["0", "101", "\"80\"", "-5", "80.5"] {
             let e = err(&format!("width = {bad}\n"));
             assert!(
@@ -305,7 +307,7 @@ mod tests {
             text.starts_with("[floats]\nwidth = 70\nheight = 80\n"),
             "{text}"
         );
-        assert!(text.contains("g = \"lazygit\""), "{text}");
+        assert!(text.contains("G = \"lazygit\""), "{text}");
         let table: toml::Table = toml::from_str(&text).unwrap();
         let back = Floats::configured(
             table["floats"].as_table().unwrap(),

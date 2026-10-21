@@ -9,8 +9,8 @@ use harness::{Paddock, Sandbox, PROMPT};
 
 /// The float's title, as drawn in its top border.
 const TITLE: &str = " cat ";
-/// `[floats]` for these tests: `C-a g` runs `cat` instead of lazygit.
-const CONFIG: &str = "[floats]\ng = \"cat\"\n";
+/// `[floats]` for these tests: `C-a G` runs `cat` instead of lazygit.
+const CONFIG: &str = "[floats]\nG = \"cat\"\n";
 /// The box's top-left corner on the 100x30 test screen: 80% of each side,
 /// centred, over the sidebar.
 const CORNER: (usize, usize) = (10, 3);
@@ -80,7 +80,7 @@ fn the_key_shows_a_float_over_everything_and_hides_it_with_its_program_kept() {
     paddock.type_line(&format!("cd {}", work.display()));
     paddock.wait_for_tabs(&["1:work"]);
 
-    paddock.command(b"g");
+    paddock.command(b"G");
     wait_shown(&paddock);
     let pane = wait_for_float(&paddock, &sandbox);
     let corner = paddock.full_rows()[CORNER.1].chars().nth(CORNER.0);
@@ -99,12 +99,12 @@ fn the_key_shows_a_float_over_everything_and_hides_it_with_its_program_kept() {
 
     paddock.type_line("kept-state");
     wait_for_full_text(&paddock, "kept-state");
-    paddock.command(b"g");
+    paddock.command(b"G");
     wait_hidden(&paddock);
     paddock.type_line("echo in-the-shell");
     paddock.wait_for_text("in-the-shell\n");
 
-    paddock.command(b"g");
+    paddock.command(b"G");
     wait_shown(&paddock);
     wait_for_full_text(&paddock, "kept-state");
     assert_eq!(wait_for_float(&paddock, &sandbox), pane, "the same program");
@@ -117,7 +117,7 @@ fn keys_go_to_the_float_and_not_to_the_terminal_under_it() {
     let mut paddock = ready(&sandbox);
     let shell = tab_panes(&sandbox, "space-1").remove(0);
 
-    paddock.command(b"g");
+    paddock.command(b"G");
     wait_shown(&paddock);
     let pane = wait_for_float(&paddock, &sandbox);
     paddock.type_line("typed-into-the-float");
@@ -137,7 +137,7 @@ fn when_its_program_exits_the_float_closes_and_the_next_toggle_starts_it_again()
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
 
-    paddock.command(b"g");
+    paddock.command(b"G");
     wait_shown(&paddock);
     let first = wait_for_float(&paddock, &sandbox);
     // `C-d` on an empty line ends `cat`.
@@ -148,7 +148,7 @@ fn when_its_program_exits_the_float_closes_and_the_next_toggle_starts_it_again()
     paddock.wait_for_text("back-in-the-shell\n");
     paddock.wait_for_tabs(&["1:home"]);
 
-    paddock.command(b"g");
+    paddock.command(b"G");
     wait_shown(&paddock);
     let second = wait_for_float(&paddock, &sandbox);
     assert_ne!(first, second, "a new program");
@@ -159,7 +159,7 @@ fn a_command_that_changes_the_page_hides_the_float_and_tabs_never_include_it() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
 
-    paddock.command(b"g");
+    paddock.command(b"G");
     wait_shown(&paddock);
     wait_for_float(&paddock, &sandbox);
     paddock.command(b"c");
@@ -182,11 +182,11 @@ fn each_space_has_its_own_float() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
 
-    paddock.command(b"g");
+    paddock.command(b"G");
     wait_shown(&paddock);
     paddock.type_line("first-space");
     wait_for_full_text(&paddock, "first-space");
-    paddock.command(b"g");
+    paddock.command(b"G");
     wait_hidden(&paddock);
 
     paddock.command(b"C");
@@ -196,7 +196,7 @@ fn each_space_has_its_own_float() {
         sandbox.session_names() == ["space-1", "space-2"]
     });
     paddock.wait_for_text(PROMPT);
-    paddock.command(b"g");
+    paddock.command(b"G");
     wait_shown(&paddock);
     paddock.wait_for("a float in each space", |_| floats(&sandbox).len() == 2);
     assert!(!paddock.full_screen().contains("first-space"));
@@ -209,10 +209,10 @@ fn closing_the_last_tab_closes_its_space_with_the_float() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
 
-    paddock.command(b"g");
+    paddock.command(b"G");
     wait_shown(&paddock);
     wait_for_float(&paddock, &sandbox);
-    paddock.command(b"g");
+    paddock.command(b"G");
     wait_hidden(&paddock);
     // The only tab's shell exits: paddock has nothing left and quits.
     paddock.type_line("exit");
@@ -226,7 +226,7 @@ fn pasted_text_goes_to_the_float() {
     let mut paddock = ready(&sandbox);
     let shell = tab_panes(&sandbox, "space-1").remove(0);
 
-    paddock.command(b"g");
+    paddock.command(b"G");
     wait_shown(&paddock);
     let pane = wait_for_float(&paddock, &sandbox);
     paddock.send(b"\x1b[200~pasted-in\n\x1b[201~");
@@ -245,7 +245,7 @@ fn a_click_outside_the_float_does_nothing() {
     paddock.wait_for_tabs(&["1:home"]);
     let (plus, bar) = paddock.find("+").expect("the + after the tabs");
 
-    paddock.command(b"g");
+    paddock.command(b"G");
     wait_shown(&paddock);
     wait_for_float(&paddock, &sandbox);
     // `+` would open a tab, and the sidebar's space row would take the
@@ -276,10 +276,10 @@ fn claude_in_a_float_is_not_followed() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     let shell = tab_panes(&sandbox, "space-1").remove(0);
-    paddock.command(b"g");
+    paddock.command(b"G");
     wait_shown(&paddock);
     let pane = wait_for_float(&paddock, &sandbox);
-    paddock.command(b"g");
+    paddock.command(b"G");
     wait_hidden(&paddock);
     // Looking at another tab, so that the first one's wait notifies.
     paddock.command(b"c");
@@ -303,7 +303,7 @@ fn claude_in_a_float_is_not_followed() {
 #[test]
 fn a_float_on_the_semicolon_key_opens() {
     let sandbox = Sandbox::new();
-    sandbox.write_config("[floats]\ng = \"\"\n\";\" = \"cat\"\n");
+    sandbox.write_config("[floats]\nG = \"\"\n\";\" = \"cat\"\n");
     let mut paddock = sandbox.launch();
     paddock.wait_for_text(PROMPT);
 
@@ -319,11 +319,11 @@ fn a_float_on_the_semicolon_key_opens() {
 #[test]
 fn a_program_that_exits_at_once_gives_a_notice_and_never_a_tab() {
     let sandbox = Sandbox::new();
-    sandbox.write_config("[floats]\ng = \"exit 3\"\n");
+    sandbox.write_config("[floats]\nG = \"exit 3\"\n");
     let mut paddock = sandbox.launch();
     paddock.wait_for_text(PROMPT);
 
-    paddock.command(b"g");
+    paddock.command(b"G");
     paddock.wait_for_text("exit 3 exited at once");
     assert!(!paddock.full_screen().contains("can't find"));
     assert!(!paddock.full_screen().contains("installed"));
@@ -338,7 +338,7 @@ fn hooks_from_a_float_that_has_closed_are_still_left_out() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     let shell = tab_panes(&sandbox, "space-1").remove(0);
-    paddock.command(b"g");
+    paddock.command(b"G");
     wait_shown(&paddock);
     let pane = wait_for_float(&paddock, &sandbox);
     // `C-d` ends `cat`: the float closes before Claude's last hooks land.
@@ -374,14 +374,14 @@ fn hooks_from_a_float_that_has_closed_are_still_left_out() {
 fn a_float_whose_key_left_the_config_is_closed_at_the_next_start() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
-    paddock.command(b"g");
+    paddock.command(b"G");
     wait_shown(&paddock);
     wait_for_float(&paddock, &sandbox);
     paddock.detach_keys();
     assert!(paddock.wait_exit());
     assert_eq!(floats(&sandbox).len(), 1, "kept while detached");
 
-    sandbox.write_config("[floats]\ng = \"\"\n");
+    sandbox.write_config("[floats]\nG = \"\"\n");
     let again = sandbox.launch();
     again.wait_for_text(PROMPT);
     again.wait_for("the orphan float closed", |_| floats(&sandbox).is_empty());
@@ -394,7 +394,7 @@ fn the_tab_under_a_float_is_not_looked_at() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     let shell = tab_panes(&sandbox, "space-1").remove(0);
-    paddock.command(b"g");
+    paddock.command(b"G");
     wait_shown(&paddock);
     wait_for_float(&paddock, &sandbox);
 
@@ -407,7 +407,7 @@ fn the_tab_under_a_float_is_not_looked_at() {
 
 /// A float whose program asks for mouse reports (SGR) and echoes them.
 const MOUSE_CONFIG: &str = r#"[floats]
-g = "printf '\\033[?1000h\\033[?1006hready-for-mouse\\n'; exec cat"
+G = "printf '\\033[?1000h\\033[?1006hready-for-mouse\\n'; exec cat"
 "#;
 
 #[test]
@@ -418,7 +418,7 @@ fn clicks_and_the_wheel_inside_the_float_reach_its_pane() {
     paddock.wait_for_text(PROMPT);
     let shell = tab_panes(&sandbox, "space-1").remove(0);
 
-    paddock.command(b"g");
+    paddock.command(b"G");
     let pane = wait_for_float(&paddock, &sandbox);
     wait_for_full_text(&paddock, "ready-for-mouse");
     // Cell (5, 2) inside the box: 1-based (6, 3) in the float's pane.
@@ -431,4 +431,30 @@ fn clicks_and_the_wheel_inside_the_float_reach_its_pane() {
     });
     let shell_screen = sandbox.tmux(&["capture-pane", "-p", "-t", &shell]);
     assert!(!shell_screen.contains(";6;3"), "{shell_screen}");
+}
+
+#[test]
+fn the_finder_opens_over_a_float_and_cancelling_leaves_it_shown() {
+    let sandbox = Sandbox::new();
+    let mut paddock = ready(&sandbox);
+    paddock.command(b"G");
+    wait_shown(&paddock);
+    wait_for_float(&paddock, &sandbox);
+
+    paddock.command(b"g");
+    wait_for_full_text(&paddock, " Finder ");
+    paddock.send(b"\x1b");
+    paddock.wait_for_no_popup();
+    wait_shown(&paddock);
+    // The float has the keyboard again.
+    paddock.type_line("typed-after-the-finder");
+    wait_for_full_text(&paddock, "typed-after-the-finder");
+
+    // Picking a row hides it, as any page change does.
+    paddock.command(b"g");
+    wait_for_full_text(&paddock, " Finder ");
+    paddock.send(b"\r");
+    paddock.wait_for_no_popup();
+    wait_hidden(&paddock);
+    assert_eq!(floats(&sandbox).len(), 1, "its program kept");
 }

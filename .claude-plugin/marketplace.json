@@ -1,0 +1,14 @@
+{
+  "name": "paddock",
+  "description": "Claude Code plugins for paddock, a terminal workspace for running Claude Code",
+  "owner": {
+    "name": "MiohitoKiri5474"
+  },
+  "plugins": [
+    {
+      "name": "paddock",
+      "source": "./plugins/paddock",
+      "description": "Teaches Claude to manage git worktrees as paddock spaces with `paddock worktree`"
+    }
+  ]
+}

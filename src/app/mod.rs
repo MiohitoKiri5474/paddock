@@ -5,6 +5,7 @@
 mod attention;
 mod dashboard;
 mod event_loop;
+mod finder;
 mod floats;
 mod input;
 mod mouse;
@@ -19,7 +20,9 @@ mod state;
 mod tabs;
 mod view;
 mod watch;
+mod worktrees;
 
+pub use dashboard::DashboardFilter;
 pub use rows::{Row, RowId, TaskDetails, TaskRow};
 
 use crate::config::Config;

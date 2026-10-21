@@ -3,6 +3,7 @@
 
 use super::space::MIN_SIZE;
 use super::state::{App, Mode, Panel};
+use super::worktrees::SpaceEntry;
 use crate::input::keymap::SidebarAction;
 use crossterm::event::KeyEvent;
 
@@ -102,10 +103,14 @@ impl App {
         self.sidebar_wish.unwrap_or(self.sidebar_default)
     }
 
-    /// The sidebar's picks in line order: the spaces, then the agents.
+    /// The sidebar's picks in line order: the spaces (worktree spaces
+    /// under their repository), then the agents.
     pub(super) fn sidebar_picks(&self) -> Vec<Pick> {
         let rows = self.rows();
-        let spaces = self.spaces.iter().map(|i| Pick::Space(i.id.clone()));
+        let spaces = self.space_entries().into_iter().filter_map(|e| match e {
+            SpaceEntry::Space { index, .. } => Some(Pick::Space(self.spaces[index].id.clone())),
+            SpaceEntry::RepoHeader(_) => None,
+        });
         let agents = rows.iter().map(|r| Pick::Agent(r.pane.clone()));
         spaces.chain(agents).collect()
     }
@@ -121,9 +126,10 @@ impl App {
                 .iter()
                 .position(|p| matches!(p, Pick::Agent(pane) if self.is_current_pane(pane))),
         };
-        // Spaces come first in the picks, so the current space's index is
-        // also its pick index.
-        let index = focused_agent.unwrap_or(self.current);
+        let current = self.current_space().map(|s| Pick::Space(s.id.clone()));
+        let index = focused_agent
+            .or_else(|| picks.iter().position(|p| Some(p) == current.as_ref()))
+            .unwrap_or(0);
         self.mode = Mode::Sidebar(Selection {
             pick: picks.get(index).cloned(),
             index,
@@ -145,9 +151,11 @@ impl App {
 
     /// `[keys.sidebar]` (by default): `j`/`k` (or arrows) move over the
     /// spaces and agents; `Enter` shows a space's tabs or jumps to an
-    /// agent's pane, giving the keyboard back; `x` closes the space or the
-    /// agent's pane; `f` forks the agent (or the space's agent that needs
-    /// you most); `Esc` gives the keyboard back.
+    /// agent's pane, giving the keyboard back; `x` closes the space (a
+    /// worktree space: deletes it with its worktree and branch, asking)
+    /// or the agent's pane; `f` forks the agent (or the space's agent that
+    /// needs you most); `W` and `o` make or open a worktree of the space's
+    /// repository as a new space; `Esc` gives the keyboard back.
     pub(super) fn sidebar_key(&mut self, s: Selection, key: KeyEvent) {
         let picks = self.sidebar_picks();
         let s = s.anchored(&picks);
@@ -164,10 +172,27 @@ impl App {
                 // Asking takes the keyboard; otherwise the sidebar keeps it.
                 self.mode = Mode::Sidebar(s.clone());
                 match &s.pick {
-                    Some(Pick::Space(id)) => self.report(|app| app.close_space(id)),
+                    // A worktree space paddock made is deleted (asking);
+                    // any other space is closed. Read now, not from the
+                    // sidebar's last read.
+                    Some(Pick::Space(id)) => match self.worktree_space(id) {
+                        Some(target) => self.ask_delete(target),
+                        None => self.report(|app| app.close_space(id)),
+                    },
                     Some(Pick::Agent(pane)) => self.report(|app| app.close(pane)),
                     None => {}
                 }
+                return;
+            }
+            Some(SidebarAction::NewWorktree) => {
+                // The prompt takes the keyboard and gives it back here.
+                self.mode = Mode::Sidebar(s.clone());
+                self.start_new_worktree(s.pick.as_ref());
+                return;
+            }
+            Some(SidebarAction::OpenWorktree) => {
+                self.mode = Mode::Sidebar(s.clone());
+                self.start_open_worktree(s.pick.as_ref());
                 return;
             }
             Some(SidebarAction::Fork) => match self.agent_of(s.pick.as_ref()) {
