@@ -11,7 +11,7 @@ use super::floats::Shown;
 use super::mouse::Press;
 use super::pages::Pages;
 use super::rows::{
-    pane_only, rows, Externals, Placed, Row, RowId, TaskDetails, TaskStatus, EXTERNAL_DIR,
+    pane_only, rows, Externals, Placed, Row, RowId, TaskDetails, TaskPrs, TaskStatus, EXTERNAL_DIR,
     EXTERNAL_TYPE,
 };
 use super::saved;
@@ -251,6 +251,11 @@ pub struct App {
     pub(super) sessions: Sessions,
     pub(super) task_status: TaskStatus,
     pub(super) task_details: TaskDetails,
+    /// Each task's pull request, while `gh` knows one.
+    pub(super) task_prs: TaskPrs,
+    /// A `p` is opening a pull request (its `gh` still runs): another
+    /// press is ignored meanwhile, so they never stack.
+    pub(super) pr_opening: bool,
     /// Each space's directory and branch, by tmux session id, once read.
     pub(super) places: HashMap<String, Place>,
     /// The user hid the sidebar (`C-a b`).
@@ -358,6 +363,8 @@ impl App {
             sessions: Sessions::default(),
             task_status: TaskStatus::new(),
             task_details: TaskDetails::new(),
+            task_prs: TaskPrs::new(),
+            pr_opening: false,
             places: HashMap::new(),
             sidebar_hidden: false,
             sidebar_default: config.sidebar_width,

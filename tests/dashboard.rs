@@ -527,5 +527,7 @@ fn task_rows_show_base_diff_files_age_and_merged() {
     commit(&dir, "b");
     git(&dir, &["merge", "-q", "--no-edit", "feat/x"]);
     // No hook: the dashboard's own refresh picks this up.
-    paddock.wait_for("feat/x merged", |s| task_line(s, "feat/x").ends_with(" ✓"));
+    paddock.wait_for("feat/x merged", |s| {
+        task_line(s, "feat/x").ends_with(" merged")
+    });
 }

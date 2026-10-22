@@ -8,7 +8,8 @@
 mod table;
 
 use super::session_view;
-use crate::app::{DashboardFilter, Row, RowId, TaskDetails, TaskRow};
+use crate::app::{DashboardFilter, Row, RowId, TaskDetails, TaskPrs, TaskRow};
+use crate::github::PrState;
 use crate::sessions::{State, TaskState};
 use crate::terminal::emulator::Emulator;
 use ratatui::buffer::Buffer;
@@ -52,6 +53,8 @@ pub struct View<'a> {
     /// The keys, shown on the dashboard's last line.
     pub keys: &'a str,
     pub details: &'a TaskDetails,
+    /// Each task's pull request, while `gh` knows one.
+    pub prs: &'a TaskPrs,
     pub selected: Option<&'a RowId>,
     /// The selected row's terminal, once paddock has it.
     pub preview: Option<&'a Emulator>,
@@ -219,25 +222,45 @@ fn render_keys(keys: &str, area: Rect, buf: &mut Buffer) {
     buf.set_stringn(area.x, area.y, text, usize::from(area.width), dim);
 }
 
-/// A list line's cells and style: a session row's, or a task row's; none
-/// for a blank line.
-fn cells(view: &View, line: ListLine) -> Option<(table::Cells, Style)> {
+/// How a PR's number stands out, by its state: open green, draft dim,
+/// merged purple, closed red. Only its colour (or dimness) changes, so the
+/// line's background stays.
+fn pr_style(state: PrState) -> Style {
+    match state {
+        PrState::Open => Style::default().fg(Color::Green),
+        PrState::Draft => Style::default().add_modifier(Modifier::DIM),
+        PrState::Merged => Style::default().fg(Color::Magenta),
+        PrState::Closed => Style::default().fg(Color::Red),
+    }
+}
+
+/// A list line: its cells, its style, and its PR's number and state (the
+/// number is coloured by it).
+type Cells = (table::Cells, Style, Option<(u64, PrState)>);
+
+/// A list line's cells, style, and PR number and state (a task row's
+/// with a PR): a session row's, or a task row's; none for a blank line or
+/// the `external` line.
+fn cells(view: &View, line: ListLine) -> Option<Cells> {
     let (row, t) = match line {
         ListLine::Blank | ListLine::External => return None,
         ListLine::Session(row) => {
             let style = dim_if(row.external, style(row.state));
-            return Some((table::session(row), style));
+            return Some((table::session(row), style, None));
         }
         ListLine::Task(row, t) => (row, t),
     };
-    let details = view.details.get(&(t.cwd.clone(), t.branch.clone()));
+    let key = (t.cwd.clone(), t.branch.clone());
+    let details = view.details.get(&key);
+    let pr = view.prs.get(&key);
     let style = t
         .subagent
         .as_ref()
         .map_or(Style::default(), |s| task_style(s.state));
     Some((
-        table::task(t, details, view.now),
+        table::task(t, details, pr, view.now),
         dim_if(row.external, style),
+        pr.map(|p| (p.number, p.state)),
     ))
 }
 
@@ -293,7 +316,7 @@ fn render_list(view: &View, area: Rect, buf: &mut Buffer) -> Option<Position> {
     });
     let room = usize::from(area.height.saturating_sub(heads + LIST_FOOT));
     let skip = scroll(&lines, &block, room);
-    let shown: Vec<(usize, Option<(table::Cells, Style)>)> = lines
+    let shown: Vec<(usize, Option<Cells>)> = lines
         .iter()
         .enumerate()
         .skip(skip)
@@ -302,7 +325,11 @@ fn render_list(view: &View, area: Rect, buf: &mut Buffer) -> Option<Position> {
         .collect();
     let header = table::header();
     let all: Vec<&table::Cells> = std::iter::once(&header)
-        .chain(shown.iter().filter_map(|(_, l)| l.as_ref().map(|(c, _)| c)))
+        .chain(
+            shown
+                .iter()
+                .filter_map(|(_, l)| l.as_ref().map(|(c, ..)| c)),
+        )
         .collect();
     let widths = table::widths(&all, width);
     if header_y < area.bottom() {
@@ -319,7 +346,7 @@ fn render_list(view: &View, area: Rect, buf: &mut Buffer) -> Option<Position> {
             buf.set_stringn(area.x, y, EXTERNAL_GROUP, width, dim);
             continue;
         }
-        let Some((cells, style)) = l else {
+        let Some((cells, style, pr)) = l else {
             continue;
         };
         let style = if block.contains(i) {
@@ -329,6 +356,14 @@ fn render_list(view: &View, area: Rect, buf: &mut Buffer) -> Option<Position> {
         };
         // `line` is exactly `width` cells: its padding carries the style.
         buf.set_string(area.x, y, table::line(cells, &widths, width), style);
+        let number = pr.and_then(|(n, state)| Some((state, table::pr_number_at(n, &widths)?)));
+        if let Some((state, (x, w))) = number {
+            let x = area.x.saturating_add(u16::try_from(x).unwrap_or(u16::MAX));
+            let w = u16::try_from(w)
+                .unwrap_or(0)
+                .min(area.right().saturating_sub(x));
+            buf.set_style(Rect::new(x, y, w, 1), pr_style(state));
+        }
     }
     cursor
 }

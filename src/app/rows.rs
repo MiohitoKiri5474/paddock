@@ -9,6 +9,7 @@
 //! to, close, fork or type into them.
 
 use crate::git::{Details, Status};
+use crate::github::Pr;
 use crate::sessions::{self, AgentKind, Sessions, State, SubagentTask, Task, TaskState};
 use std::collections::HashMap;
 
@@ -105,6 +106,9 @@ pub type TaskStatus = HashMap<(String, String), Status>;
 
 /// Last known dashboard details of each task, by `(directory, branch)`.
 pub type TaskDetails = HashMap<(String, String), Details>;
+
+/// Last known pull request of each task, by `(directory, branch)`.
+pub type TaskPrs = HashMap<(String, String), Pr>;
 
 /// A pane as the rows see it: its space and window, their places in the
 /// sidebar and tab bar, the tab's name if the user gave it one, and its id.

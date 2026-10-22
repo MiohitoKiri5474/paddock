@@ -22,19 +22,24 @@ const MS_PER_SEC: u64 = 1000;
 /// What tmux tells every control client when a session is made or ends.
 const SESSIONS_CHANGED: &str = "%sessions-changed";
 
-/// Tells the git thread which task rows are on screen.
-struct GitFeed {
+/// Tells the git thread which task rows are on screen, and the pull
+/// requests' thread too while PR status is on.
+struct TaskFeed {
     tx: Sender<watch::Watched>,
+    prs: Option<Sender<watch::Watched>>,
     sent: watch::Watched,
 }
 
-impl GitFeed {
+impl TaskFeed {
     /// Send the tasks on screen if they changed, or always if `now`.
     fn update(&mut self, app: &App, now: bool) {
         let tasks = app.watched_tasks();
         if now || tasks != self.sent {
             // The thread only ends with the app.
             let _ = self.tx.send(tasks.clone());
+            if let Some(prs) = &self.prs {
+                let _ = prs.send(tasks.clone());
+            }
             self.sent = tasks;
         }
     }
@@ -84,7 +89,10 @@ impl EventEffects {
                     ..
                 }
             ),
-            rows_may_move: !matches!(event, Event::Tmux { .. } | Event::Git(_) | Event::Spaces(_)),
+            rows_may_move: !matches!(
+                event,
+                Event::Tmux { .. } | Event::Git(_) | Event::Spaces(_) | Event::Prs(_)
+            ),
         }
     }
 }
@@ -94,13 +102,15 @@ pub fn run(
     mut app: App,
     rx: &Receiver<Event>,
     git: Sender<watch::Watched>,
+    prs: Option<Sender<watch::Watched>>,
 ) -> Result<()> {
-    let mut git = GitFeed {
+    let mut feed = TaskFeed {
         tx: git,
+        prs,
         sent: watch::Watched::default(),
     };
     // The spaces' directories and branches are read at once.
-    git.update(&app, true);
+    feed.update(&app, true);
     let mut dirty = true;
     let mut last_draw = Instant::now()
         .checked_sub(FRAME)
@@ -125,7 +135,7 @@ pub fn run(
             (Flow::Continue, true)
         });
         dirty |= changed;
-        follow_up(&mut app, &mut git, &effects);
+        follow_up(&mut app, &mut feed, &effects);
         if flow == Flow::Quit {
             break;
         }
@@ -134,8 +144,8 @@ pub fn run(
 }
 
 /// Keep up with an event just handled (see `effects`): turns seen, the tab bar
-/// scrolled to the current tab, the dashboard's selection and git's tasks.
-fn follow_up(app: &mut App, git: &mut GitFeed, effects: &EventEffects) {
+/// scrolled to the current tab, the dashboard's selection and the tasks the git and PR threads read.
+fn follow_up(app: &mut App, feed: &mut TaskFeed, effects: &EventEffects) {
     // Copy mode ends with its terminal, or once that is off screen.
     app.check_copy();
     // Any event may show a tab or bring the window back.
@@ -149,7 +159,7 @@ fn follow_up(app: &mut App, git: &mut GitFeed, effects: &EventEffects) {
     }
     if effects.rows_may_move {
         app.anchor_dashboard();
-        git.update(app, effects.hooks);
+        feed.update(app, effects.hooks);
     }
 }
 
@@ -204,6 +214,14 @@ fn handle(
         }
         Event::Spaces(read) => {
             app.places.extend(read);
+            Ok((Flow::Continue, true))
+        }
+        Event::Prs(read) => {
+            app.store_prs(read);
+            Ok((Flow::Continue, true))
+        }
+        Event::PrOpened(number, result) => {
+            app.pr_opened(number, result);
             Ok((Flow::Continue, true))
         }
         Event::NotifyFailed(error) => {
@@ -424,6 +442,7 @@ fn draw_dashboard(app: &App, area: Rect, buf: &mut Buffer) -> Option<Position> {
         rows: &listed,
         keys: &keys,
         details: &app.task_details,
+        prs: &app.task_prs,
         selected: d.selected.as_ref(),
         preview: row
             .and_then(|r| app.terminals.get(&r.pane))

@@ -156,3 +156,7 @@ _Avoid_: diff
 
 **Base diff**:
 Lines added and removed on a task's branch compared with its base branch.
+
+**Pull request (PR)**:
+A task branch's GitHub pull request, as the GitHub CLI (`gh`) reports it: its number, state (open, draft, merged, closed), CI checks rolled up into one mark (`✓`, `✗`, `•`) and review decision. The newest one when a branch has several. paddock only reads it.
+_Avoid_: merge request, MR

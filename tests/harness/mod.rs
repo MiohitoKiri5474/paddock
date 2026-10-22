@@ -81,6 +81,7 @@ impl Sandbox {
         write_claude_stub(root.path());
         write_copy_stub(root.path());
         write_osascript_stub(root.path());
+        write_gh_stub(root.path());
         Self { root }
     }
 
@@ -112,7 +113,73 @@ impl Sandbox {
             // As if launched from inside someone's tmux pane.
             ("TMUX".into(), "/tmp/nope,1,0".into()),
             ("PADDOCK_OSASCRIPT".into(), p("bin/osascript")),
+            // Never the real gh: the stub answers from the sandbox (see
+            // `set_gh`); without `bin/gh`, as if gh were not installed.
+            ("PADDOCK_GH".into(), p("bin/gh")),
+            // Set in the user's shell, it must not reach gh (see
+            // `gh_repo_seen`).
+            ("GH_REPO".into(), "someone/else".into()),
         ]
+    }
+
+    /// The `GH_REPO` each call of the stub `gh` saw, `<unset>` for none.
+    pub fn gh_repo_seen(&self) -> Vec<String> {
+        std::fs::read_to_string(self.path("gh-env.log"))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// Make the stub's `gh pr view` take 3 s from now on.
+    pub fn slow_gh_view(&self) {
+        std::fs::write(self.path("gh.view-slow"), "").expect("slow gh view");
+    }
+
+    /// What the stub `gh pr list` prints from now on; until set, it fails
+    /// as a logged-out gh does.
+    pub fn set_gh(&self, json: &str) {
+        let tmp = self.path("gh.json.tmp");
+        std::fs::write(&tmp, json).expect("write gh");
+        std::fs::rename(tmp, self.path("gh.json")).expect("rename gh");
+    }
+
+    /// Make the stub `gh` hang (30 s) from now on.
+    pub fn slow_gh(&self) {
+        std::fs::write(self.path("gh.slow"), "").expect("slow gh");
+    }
+
+    /// Remove the stub `gh`: as if gh were not installed.
+    pub fn remove_gh(&self) {
+        std::fs::remove_file(self.path("bin/gh")).expect("remove gh");
+    }
+
+    /// Every call of the stub `gh` so far, one `<directory> <arguments>`
+    /// line each.
+    pub fn gh_calls(&self) -> Vec<String> {
+        std::fs::read_to_string(self.path("gh-calls.log"))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// Wait until the stub `gh` was called at least `n` times; returns the
+    /// calls.
+    pub fn wait_for_gh_calls(&self, n: usize) -> Vec<String> {
+        let start = Instant::now();
+        loop {
+            let calls = self.gh_calls();
+            if calls.len() >= n {
+                return calls;
+            }
+            assert!(
+                start.elapsed() < TIMEOUT,
+                "gh called {} times, not {n}: {calls:?}",
+                calls.len()
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 
     /// Run tmux against the sandbox's paddock server.
@@ -361,6 +428,29 @@ fn write_osascript_stub(root: &std::path::Path) {
     );
     let path = root.join("bin/osascript");
     std::fs::write(&path, script).expect("osascript stub");
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod stub");
+}
+
+/// A `gh` that appends `<directory> <arguments>` to `gh-calls.log` in the
+/// sandbox, then: hangs if `gh.slow` exists; for `pr view` exits 0 (as if
+/// a browser opened); else prints `gh.json`, or fails as a logged-out gh
+/// does without it.
+fn write_gh_stub(root: &std::path::Path) {
+    let dir = root.display();
+    let script = format!(
+        "#!/bin/sh\n\
+         printf '%s %s\\n' \"$(pwd -P)\" \"$*\" >> '{dir}/gh-calls.log'\n\
+         printf '%s\\n' \"${{GH_REPO-<unset>}}\" >> '{dir}/gh-env.log'\n\
+         [ -f '{dir}/gh.slow' ] && exec sleep 30\n\
+         [ \"$1 $2\" = 'pr view' ] && [ -f '{dir}/gh.view-slow' ] && exec sleep 3\n\
+         [ \"$1 $2\" = 'pr view' ] && exit 0\n\
+         [ -f '{dir}/gh.json' ] && exec cat '{dir}/gh.json'\n\
+         echo 'To get started with GitHub CLI, please run:  gh auth login' >&2\n\
+         exit 4\n"
+    );
+    let path = root.join("bin/gh");
+    std::fs::write(&path, script).expect("gh stub");
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod stub");
 }

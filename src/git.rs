@@ -30,14 +30,16 @@ const MAX_UNTRACKED: u64 = 1 << 20;
 // ponytail: the deadlines are per git call, not per key: `x` makes several
 // reads, `C-a O` some per space, a delete several mutations, all on the UI
 // thread. The upgrade is to run deletes and mutations off it.
-const READ_TIMEOUT: Duration = Duration::from_secs(5);
+pub const READ_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long adding or removing a worktree may take (a checkout of a big
 /// repository) before it counts as failed.
 // ponytail: a `worktree remove` killed at this deadline can leave a
 // half-deleted tree; git's own `worktree prune` cleans up after it.
 const MUTATION_TIMEOUT: Duration = Duration::from_secs(60);
-/// How an error from git missing its deadline starts.
-const LATE: &str = "git did not finish";
+/// What follows a program's name in its error when it missed its
+/// deadline: `git did not finish in 5s` (see [`late_reason`],
+/// [`is_late`]).
+const LATE: &str = " did not finish";
 /// How often to look whether git finished.
 const POLL: Duration = Duration::from_millis(5);
 
@@ -103,17 +105,19 @@ fn git_command(dir: &str, args: &[&str], env: &[(&str, &str)]) -> Command {
     command
 }
 
-/// Every git paddock runs ends here: start `command` and wait at most
+/// Every git paddock runs ends here (and `gh`, see [`crate::github`]):
+/// start `command` and wait at most
 /// `timeout` for it to exit and for its output to end, then give up (and
 /// kill git if it still runs). A process git leaves behind holding its
 /// pipes (a hook's `cmd &`) counts as not finished too. Returns stdout,
 /// or why it failed (see [`reason`]). Never prints: hooks must stay
 /// silent.
-fn wait(mut command: Command, timeout: Duration) -> Result<String, String> {
-    let late = || late_reason(timeout);
+pub fn wait(mut command: Command, timeout: Duration) -> Result<String, String> {
+    let program = command.get_program().to_string_lossy().into_owned();
+    let late = || late_reason(dir_name(&program), timeout);
     let mut child = command
         .spawn()
-        .map_err(|e| format!("cannot run git: {e}"))?;
+        .map_err(|e| format!("cannot run {program}: {e}"))?;
     // Read both pipes while waiting, so a long output never stalls git.
     let stdout = drain(child.stdout.take());
     let stderr = drain(child.stderr.take());
@@ -147,16 +151,19 @@ fn wait(mut command: Command, timeout: Duration) -> Result<String, String> {
     Err(reason(&said).unwrap_or_else(|| status.to_string()))
 }
 
-/// Why git failed when it did not finish within `timeout`.
-pub fn late_reason(timeout: Duration) -> String {
-    format!("{LATE} in {timeout:?}")
+/// Why `program` (its name: `git`, `gh`) failed when it did not finish
+/// within `timeout`.
+pub fn late_reason(program: &str, timeout: Duration) -> String {
+    format!("{program}{LATE} in {timeout:?}")
 }
 
 /// Whether `reason`, a failure from git, is git missing its deadline (see
 /// [`late_reason`]), not git refusing. A change's reason ends with its
 /// command, so only the start counts.
 pub fn is_late(reason: &str) -> bool {
-    reason.starts_with(LATE)
+    reason
+        .strip_prefix("git")
+        .is_some_and(|rest| rest.starts_with(LATE))
 }
 
 /// Read all of `pipe` (none: nothing) on a thread of its own; the text
@@ -311,7 +318,7 @@ pub fn working_tree_in_time(dir: &str) -> Result<Option<WorkingTree>, String> {
     // A failure other than the deadline means: not a repository.
     let read = |args: &[&str]| match run(dir, args, &[], READ_TIMEOUT) {
         Ok(out) => Ok(Some(out)),
-        Err(e) if e.starts_with(LATE) => Err(e),
+        Err(e) if is_late(&e) => Err(e),
         Err(_) => Ok(None),
     };
     let Some(top) = read(&["rev-parse", "--show-toplevel"])? else {
@@ -906,6 +913,15 @@ mod tests {
         // One in time gives its output.
         let big = super::run(dir, &["version"], &[], READ_TIMEOUT).unwrap();
         assert!(big.starts_with("git version"));
+    }
+
+    #[test]
+    fn a_late_reason_is_told_apart_by_its_start() {
+        let d = Duration::from_secs(5);
+        assert!(is_late(&late_reason("git", d)));
+        assert_eq!(late_reason("gh", d), "gh did not finish in 5s");
+        assert!(!is_late(&late_reason("gh", d)), "git's only");
+        assert!(!is_late("fatal: git did not finish"));
     }
 
     #[test]
