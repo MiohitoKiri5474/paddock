@@ -3,8 +3,9 @@
 //! filled block with its name centred, at least [`MIN_TAB`] cells wide, one
 //! blank column apart. The current tab has the accent colour; a name the
 //! user gave is bold; a tab holding a Claude that needs you gets a coloured
-//! `●`. A `+` after the last tab opens a new one. When the tabs do not fit,
-//! `<` and `>` scroll and `…` marks hidden tabs.
+//! `●`, and a zoomed tab a `Z` after its name. A `+` after the last tab
+//! opens a new one. When the tabs do not fit, `<` and `>` scroll and `…`
+//! marks hidden tabs.
 //!
 //! Drawing and clicks both go through [`layout`].
 
@@ -16,6 +17,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
 use std::borrow::Cow;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// The bar's row, a little darker than a tab.
 const DEFAULT_BAR: Color = Color::Indexed(235);
@@ -33,6 +35,8 @@ const BUTTON: u16 = 3;
 const GAP: u16 = 1;
 /// The width of `…`.
 const MORE: u16 = 1;
+/// After a zoomed tab's name, a space apart.
+const ZOOM_MARK: &str = "Z";
 
 /// One tab as the bar shows it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,6 +46,8 @@ pub struct Tab {
     pub state: State,
     /// The user named it (drawn bold).
     pub custom: bool,
+    /// One split fills it (`C-a z`); marked with [`ZOOM_MARK`].
+    pub zoomed: bool,
 }
 
 /// The bar's colours (`[colors]` in config.toml).
@@ -83,12 +89,45 @@ pub enum Part {
 /// counted from the bar's left edge.
 pub type Layout = Vec<(Part, u16, u16)>;
 
+/// Tab `tab`'s name, and [`ZOOM_MARK`] after it if it is zoomed.
+fn display_name(tab: &Tab) -> Cow<'_, str> {
+    if tab.zoomed {
+        Cow::Owned(format!("{} {ZOOM_MARK}", tab.name))
+    } else {
+        Cow::Borrowed(&tab.name)
+    }
+}
+
+/// [`display_name`] in `room` cells: a zoomed tab's name too long is cut
+/// so that [`ZOOM_MARK`] still shows whole after it. Other names are cut
+/// where the cells end.
+fn fitted_name(tab: &Tab, room: usize) -> Cow<'_, str> {
+    let full = display_name(tab);
+    if !tab.zoomed || full.width() <= room {
+        return full;
+    }
+    let mark = format!(" {ZOOM_MARK}");
+    let mut left = room.saturating_sub(mark.width());
+    let cut: String = tab
+        .name
+        .chars()
+        .take_while(|c| match left.checked_sub(c.width().unwrap_or(0)) {
+            Some(rest) => {
+                left = rest;
+                true
+            }
+            None => false,
+        })
+        .collect();
+    Cow::Owned(cut + &mark)
+}
+
 /// What tab `tab` shows: the marker if it needs you, then its name.
 fn label(tab: &Tab) -> String {
     if tab.state.needs_you() {
-        format!("{STATE_DOT} {}", tab.name)
+        format!("{STATE_DOT} {}", display_name(tab))
     } else {
-        tab.name.clone()
+        display_name(tab).into_owned()
     }
 }
 
@@ -265,7 +304,7 @@ impl TabBar<'_> {
         let x = cell.x + tab_width(tab).saturating_sub(width) / 2;
         let room = usize::from(cell.right().saturating_sub(x));
         if !tab.state.needs_you() {
-            buf.set_stringn(x, cell.y, &text, room, style);
+            buf.set_stringn(x, cell.y, fitted_name(tab, room), room, style);
             return;
         }
         // The marker in the state's colour, on the tab's background.
@@ -280,7 +319,8 @@ impl TabBar<'_> {
         };
         let (after, _) = buf.set_stringn(x, cell.y, STATE_DOT, room, marker);
         let room = usize::from(cell.right().saturating_sub(after));
-        buf.set_stringn(after, cell.y, format!(" {}", tab.name), room, style);
+        let name = fitted_name(tab, room.saturating_sub(1));
+        buf.set_stringn(after, cell.y, format!(" {name}"), room, style);
     }
 }
 
@@ -293,6 +333,7 @@ mod tests {
             name: name.into(),
             state: State::Unknown,
             custom: false,
+            zoomed: false,
         }
     }
 
@@ -383,6 +424,31 @@ mod tests {
         assert_eq!(buf[(2, 0)].fg, Color::Yellow);
         assert_eq!(buf[(2, 0)].bg, TabColors::default().tab);
         assert_eq!(buf[(11, 0)].fg, Color::Green);
+    }
+
+    #[test]
+    fn a_zoomed_tab_gets_a_z_after_its_name() {
+        let mut b = bar(&["a", "claude"], 1);
+        b.tabs[1].zoomed = true;
+        b.tabs[1].state = State::Waiting;
+        assert_eq!(tab_width(&b.tabs[1]), 14, "the name, a space and Z");
+        let buf = draw(&b, 40);
+        assert_eq!(text(&buf), "   a       ● claude Z    +");
+    }
+
+    #[test]
+    fn a_zoomed_tab_too_long_for_the_bar_keeps_its_z_and_loses_its_name_s_end() {
+        let mut b = bar(&["a-very-long-tab-name"], 0);
+        b.tabs[0].zoomed = true;
+        let buf = draw(&b, 20);
+        assert_eq!(text(&buf), " <    a-very-long- Z");
+        b.tabs[0].state = State::Waiting;
+        let buf = draw(&b, 20);
+        assert_eq!(text(&buf), " <    ● a-very-lon Z");
+        // Not zoomed, the name is cut where the cells end.
+        b.tabs[0].zoomed = false;
+        let buf = draw(&b, 20);
+        assert_eq!(text(&buf), " <    ● a-very-long-");
     }
 
     #[test]

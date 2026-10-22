@@ -1,5 +1,6 @@
 //! Drawing paddock's screen.
 
+pub mod copy;
 pub mod dashboard;
 pub mod finder;
 pub mod float;

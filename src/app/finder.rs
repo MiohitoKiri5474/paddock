@@ -196,10 +196,7 @@ fn tab_place(
 
 /// The branch row `r`'s main agent works on, if known.
 fn main_branch(r: &Row) -> Option<String> {
-    r.tasks
-        .iter()
-        .find(|t| t.subagent.is_none())
-        .map(|t| t.branch.clone())
+    r.main_branch().map(str::to_string)
 }
 
 impl App {
@@ -214,7 +211,7 @@ impl App {
     }
 
     /// The finder's rows as things are now: every space, every tab, then
-    /// every agent.
+    /// every agent (but external sessions).
     pub(super) fn finder_rows(&self) -> Vec<FinderRow> {
         let rows = self.rows();
         let home = HomePaths::new();
@@ -222,14 +219,24 @@ impl App {
         let mut out: Vec<FinderRow> = spaces
             .iter()
             .zip(&self.spaces)
-            .map(|(line, space)| FinderRow {
-                kind: Kind::Space,
-                name: line.name.clone(),
-                detail: place_detail(line.path.as_deref(), line.branch.as_deref()),
-                path: line.path.clone(),
-                branch: line.branch.clone(),
-                state: None,
-                target: Target::Space(space.id.clone()),
+            .map(|(line, space)| {
+                // Nothing until read.
+                let (path, branch) = match self.places.get(&space.id) {
+                    Some(place) => {
+                        let (root, branch) = place.root_shown(&home);
+                        (Some(root), branch)
+                    }
+                    None => (None, None),
+                };
+                FinderRow {
+                    kind: Kind::Space,
+                    name: line.name.clone(),
+                    detail: place_detail(path.as_deref(), branch.as_deref()),
+                    path,
+                    branch,
+                    state: None,
+                    target: Target::Space(space.id.clone()),
+                }
             })
             .collect();
         for (line, space) in spaces.iter().zip(&self.spaces) {
@@ -251,7 +258,9 @@ impl App {
                 });
             }
         }
-        out.extend(rows.iter().map(|r| self.agent_row(r, &home)));
+        // External sessions have nothing to show: the finder leaves them out.
+        let agents = rows.iter().filter(|r| !r.external);
+        out.extend(agents.map(|r| self.agent_row(r, &home)));
         out
     }
 

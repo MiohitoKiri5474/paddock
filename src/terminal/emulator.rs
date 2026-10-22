@@ -9,6 +9,9 @@ use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::{Config, Term, TermMode};
 use alacritty_terminal::vte::ansi::{Color as AnsiColor, NamedColor, Processor};
 
+mod copy;
+pub use copy::{Found, Motion, Spot};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Colour {
     Default,
@@ -241,9 +244,20 @@ impl Emulator {
         self.term.selection = None;
     }
 
-    /// The selected text: lines joined with `\n`, trailing spaces removed.
+    /// The selected text: lines joined with `\n`, trailing spaces removed
+    /// (a line selection without the newline after its last line).
     pub fn selected_text(&self) -> Option<String> {
-        self.term.selection_to_string().filter(|t| !t.is_empty())
+        let lines = self
+            .term
+            .selection
+            .as_ref()
+            .is_some_and(|s| s.ty == SelectionType::Lines);
+        let text = self.term.selection_to_string()?;
+        let text = match text.strip_suffix('\n') {
+            Some(cut) if lines => cut.to_string(),
+            _ => text,
+        };
+        Some(text).filter(|t| !t.is_empty())
     }
 
     /// The selected cells, for drawing.

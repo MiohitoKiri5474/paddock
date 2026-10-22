@@ -4,12 +4,18 @@
 //! Terminals are keyed by tmux pane id (`%N`). Each terminal shows its latest
 //! conversation only: an event from a new session id replaces the old one,
 //! keeping only the terminal's task rows.
+//!
+//! An external session (Claude running outside paddock's terminals) has no
+//! pane: it is keyed by [`external_key`] of its session id instead, so the
+//! same folding, dismissing and alerting apply to it.
 
 pub mod agents;
 pub mod dismissed;
+mod external;
 pub mod log;
 
 pub use dismissed::Dismissal;
+pub use external::{external_key, is_external};
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -73,6 +79,10 @@ impl State {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HookRecord {
     pub event: String,
+    /// The tmux pane (`%N`) the hook ran in. An external session's record
+    /// has none in the log (the field is left out); once read, it carries
+    /// the session's [`external_key`] here.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub pane: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
@@ -232,6 +242,10 @@ pub struct Session {
     pub tasks: Vec<Task>,
     /// When a hook event last set the state (ms since the epoch).
     pub hooked: Option<u64>,
+    /// When paddock last heard of it (ms since the epoch): its last hook
+    /// event, or the last `claude agents --json` snapshot listing it. An
+    /// external session quiet for longer than its timeout is gone.
+    pub alive: u64,
     /// Subagents seen, in the order they reached their current branch.
     subagents: Vec<Subagent>,
 }
@@ -251,6 +265,7 @@ impl Session {
             updated: 0,
             tasks: Vec::new(),
             hooked: None,
+            alive: 0,
             subagents: Vec::new(),
         }
     }
@@ -487,6 +502,7 @@ impl Sessions {
 
     /// Apply one recorded hook event.
     pub fn apply(&mut self, r: &HookRecord) {
+        self.leave_external(r);
         if !self.fold(r) {
             return;
         }
@@ -519,11 +535,17 @@ impl Sessions {
         if s.ended() && !restarts(r) {
             return false;
         }
+        s.alive = s.alive.max(r.ts);
         // A subagent's directory is its worktree, not the session's.
         if r.cwd.is_some() && r.agent_id.is_none() {
             s.cwd.clone_from(&r.cwd);
         }
-        if let Some(state) = state_after(r) {
+        let state = if external::ends(r) {
+            Some(State::Stopped)
+        } else {
+            state_after(r)
+        };
+        if let Some(state) = state {
             s.state = match state {
                 // A finished turn is done until you look at it (see
                 // `Sessions::see`); later idle reminders keep it done.
@@ -560,14 +582,7 @@ impl Sessions {
     /// one less than [`HOOK_GRACE`] older.
     pub fn reconcile(&mut self, taken: u64, agents: &[Agent]) {
         for a in agents {
-            let known = self
-                .by_pane
-                .iter()
-                .find(|(_, s)| s.session_id.as_deref() == Some(a.session_id.as_str()))
-                .map(|(p, _)| p.clone());
-            let Some(pane) = known.or_else(|| a.pane.clone()) else {
-                continue;
-            };
+            let pane = self.agent_key(a);
             let found = !self.by_pane.contains_key(&pane);
             let s = self
                 .by_pane
@@ -578,6 +593,9 @@ impl Sessions {
             // listing it lags behind.
             if same && s.ended() {
                 continue;
+            }
+            if same {
+                s.alive = s.alive.max(taken);
             }
             let fresh_hook = same && s.hooked.is_some_and(|h| taken <= h + HOOK_GRACE);
             if taken <= s.updated || fresh_hook {
@@ -599,6 +617,7 @@ impl Sessions {
                 s.state = state;
             }
             s.updated = taken;
+            s.alive = s.alive.max(taken);
             // A conversation no hook reported counts as an event of its row.
             if found || !same {
                 self.touch(&pane, None, taken);
@@ -630,9 +649,9 @@ pub fn label(session: &Session, tab: Option<&str>) -> String {
 mod tests {
     use super::*;
 
-    const S1: &str = "11111111-2222-4333-8444-555555555555";
+    pub(super) const S1: &str = "11111111-2222-4333-8444-555555555555";
 
-    fn rec(event: &str, ts: u64) -> HookRecord {
+    pub(super) fn rec(event: &str, ts: u64) -> HookRecord {
         HookRecord {
             event: event.into(),
             pane: "%1".into(),
@@ -643,11 +662,11 @@ mod tests {
         }
     }
 
-    fn state(s: &Sessions) -> State {
+    pub(super) fn state(s: &Sessions) -> State {
         s.get("%1").unwrap().state
     }
 
-    fn agent(id: &str, status: &str, pane: Option<&str>) -> Agent {
+    pub(super) fn agent(id: &str, status: &str, pane: Option<&str>) -> Agent {
         Agent {
             session_id: id.into(),
             name: None,

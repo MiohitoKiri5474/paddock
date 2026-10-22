@@ -3,6 +3,7 @@
 //! ```toml
 //! [keys]
 //! prefix = "C-b"
+//! repeat_ms = 500            # resize keys repeat without the prefix this long; 0: never
 //!
 //! [keys.commands]            # keys after the prefix, by action
 //! new_tab = "t"              # a key, a list of keys, or "" for none
@@ -13,6 +14,7 @@
 //!
 //! [keys.sidebar]             # while the sidebar has the keyboard
 //! [keys.dashboard]           # while the dashboard is open
+//! [keys.copy]                # in copy mode (`C-a [`)
 //!
 //! [colors]
 //! current_space = 236        # or "#303030": the current space's, agent's and dashboard selection's background
@@ -34,6 +36,13 @@
 //!
 //! [worktrees]
 //! directory = "~/.paddock/worktrees"   # new worktrees go to <directory>/<repo>/<branch>
+//!
+//! [spaces]
+//! new_tab_dir = "current"    # or "root": where new tabs and splits start
+//!
+//! [dashboard]
+//! external = true            # list Claude sessions outside paddock (the External group)
+//! external_timeout = 10      # minutes an external session stays without news
 //! ```
 //!
 //! `paddock keys` prints every action with its default keys.
@@ -49,20 +58,31 @@ use ratatui::style::Color;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 pub const FILE_NAME: &str = "config.toml";
 const DEFAULT_PREFIX: &str = "C-a";
+/// Milliseconds the resize keys work again without the prefix, as tmux's
+/// `repeat-time` does for `bind -r`.
+const DEFAULT_REPEAT_MS: u64 = 500;
 /// Columns the sidebar takes, border included, until resized.
 const DEFAULT_SIDEBAR_WIDTH: u16 = 32;
 /// A dark grey, a little darker than most dark themes' background.
 const DEFAULT_CURRENT_SPACE: Color = Color::Indexed(236);
 /// Where new worktrees go unless `[worktrees] directory` says otherwise.
 const DEFAULT_WORKTREES: &str = "~/.paddock/worktrees";
+/// Minutes an external session stays listed with no hook event and absent
+/// from `claude agents --json`.
+const DEFAULT_EXTERNAL_TIMEOUT_MIN: u64 = 10;
+const MS_PER_MIN: u64 = 60_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
     pub prefix: Key,
     pub keys: Keymap,
+    /// How long a repeating command's keys (resizing a split) work
+    /// without the prefix after it ran; zero for never.
+    pub repeat: Duration,
     /// Settings that work but may surprise, to show at start.
     pub warnings: Warnings,
     /// Background of the current space.
@@ -76,6 +96,42 @@ pub struct Config {
     pub floats: Floats,
     /// Where new worktrees are checked out.
     pub worktrees: Worktrees,
+    /// Where new tabs and splits start.
+    pub new_tab_dir: NewTabDir,
+    /// Whether and how long external sessions are listed.
+    pub external: External,
+}
+
+/// `[spaces] new_tab_dir`: where a new tab or split starts.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NewTabDir {
+    /// In the focused terminal's directory.
+    #[default]
+    Current,
+    /// In the space's root.
+    Root,
+}
+
+/// `[dashboard]`: the External group of Claude sessions running outside
+/// paddock's terminals, in the dashboard and the sidebar's AGENTS.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct External {
+    /// Whether the group shows (and its sessions notify).
+    pub shown: bool,
+    /// How long (ms) an external session stays with no hook event and
+    /// absent from `claude agents --json`: its Claude may have been killed
+    /// without a `SessionEnd`.
+    pub timeout: u64,
+}
+
+impl Default for External {
+    fn default() -> Self {
+        Self {
+            shown: true,
+            timeout: DEFAULT_EXTERNAL_TIMEOUT_MIN * MS_PER_MIN,
+        }
+    }
 }
 
 /// `[worktrees]`: where `C-a W` checks a new branch out.
@@ -160,6 +216,26 @@ struct RawConfig {
     floats: toml::Table,
     #[serde(default)]
     worktrees: RawWorktrees,
+    #[serde(default)]
+    spaces: RawSpaces,
+    #[serde(default)]
+    dashboard: RawDashboard,
+}
+
+/// A `[spaces]` table as written.
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct RawSpaces {
+    new_tab_dir: Option<NewTabDir>,
+}
+
+/// A `[dashboard]` table as written.
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct RawDashboard {
+    external: Option<bool>,
+    /// Minutes.
+    external_timeout: Option<u64>,
 }
 
 /// A `[worktrees]` table as written.
@@ -217,6 +293,7 @@ enum RawColor {
 #[serde(deny_unknown_fields)]
 struct RawKeys {
     prefix: Option<String>,
+    repeat_ms: Option<u64>,
     #[serde(default)]
     commands: RawSection,
     /// `None` while `[keys.direct]` is not written at all.
@@ -225,6 +302,8 @@ struct RawKeys {
     sidebar: RawSection,
     #[serde(default)]
     dashboard: RawSection,
+    #[serde(default)]
+    copy: RawSection,
 }
 
 /// An action's keys as written: one key, or a list of them.
@@ -269,6 +348,7 @@ impl Config {
             direct: raw.keys.direct.map(given),
             sidebar: given(raw.keys.sidebar),
             dashboard: given(raw.keys.dashboard),
+            copy: given(raw.keys.copy),
         };
         let (keys, warnings) = Keymap::configured(prefix, &written)?;
         let floats = Floats::configured(&raw.floats, prefix, &keys.commands)?;
@@ -280,9 +360,18 @@ impl Config {
         let worktrees = Worktrees::configured(directory, std::env::var("HOME").ok().as_deref())?;
         let c = raw.colors;
         let tabs = TabColors::default();
+        let external = External {
+            shown: raw.dashboard.external.unwrap_or(true),
+            timeout: match raw.dashboard.external_timeout {
+                None => External::default().timeout,
+                Some(0) => bail!("[dashboard] external_timeout: must be at least 1 (minutes)"),
+                Some(min) => min.saturating_mul(MS_PER_MIN),
+            },
+        };
         Ok(Self {
             prefix,
             keys,
+            repeat: Duration::from_millis(raw.keys.repeat_ms.unwrap_or(DEFAULT_REPEAT_MS)),
             warnings,
             current_space: colour(c.current_space, DEFAULT_CURRENT_SPACE)?,
             tabs: TabColors {
@@ -300,6 +389,8 @@ impl Config {
             },
             floats,
             worktrees,
+            new_tab_dir: raw.spaces.new_tab_dir.unwrap_or_default(),
+            external,
         })
     }
 }
@@ -315,6 +406,7 @@ impl Default for Config {
         Self {
             prefix,
             keys,
+            repeat: Duration::from_millis(DEFAULT_REPEAT_MS),
             warnings,
             current_space: DEFAULT_CURRENT_SPACE,
             tabs: TabColors::default(),
@@ -322,6 +414,8 @@ impl Default for Config {
             notify: Notify::default(),
             floats: Floats::default(),
             worktrees: Worktrees::default(),
+            new_tab_dir: NewTabDir::default(),
+            external: External::default(),
         }
     }
 }
@@ -333,7 +427,9 @@ pub fn default_keys_toml() -> String {
          # (~/.config/paddock/{FILE_NAME}); \"\" unbinds an action.\n\
          # Not configurable: the prefix pressed twice sends it to the terminal,\n\
          # and Esc always leaves typing into the dashboard preview.\n\
-         [keys]\nprefix = \"{DEFAULT_PREFIX}\"\n\n{}\n{}",
+         [keys]\nprefix = \"{DEFAULT_PREFIX}\"\n\
+         # ms the resize keys work again without the prefix; 0 turns it off\n\
+         repeat_ms = {DEFAULT_REPEAT_MS}\n\n{}\n{}",
         Keymap::default().toml(),
         Floats::default().toml()
     )
@@ -370,6 +466,21 @@ mod tests {
         assert_eq!(Config::parse("").unwrap().prefix, ctrl('a'));
         assert_eq!(Config::parse("[keys]\n").unwrap().prefix, ctrl('a'));
         assert_eq!(Config::default().prefix, ctrl('a'));
+    }
+
+    #[test]
+    fn the_repeat_window_is_500_ms_unless_set_and_0_turns_it_off() {
+        let ms = Duration::from_millis;
+        assert_eq!(Config::default().repeat, ms(500));
+        assert_eq!(Config::parse("").unwrap().repeat, ms(500));
+        let parse = |t: &str| Config::parse(&format!("[keys]\nrepeat_ms = {t}\n"));
+        assert_eq!(parse("300").unwrap().repeat, ms(300));
+        assert_eq!(parse("0").unwrap().repeat, Duration::ZERO);
+        for bad in ["-1", "\"500\"", "0.5"] {
+            assert!(parse(bad).is_err(), "{bad}");
+        }
+        let printed = Config::parse(&default_keys_toml()).unwrap();
+        assert_eq!(printed.repeat, ms(500));
     }
 
     #[test]
@@ -478,6 +589,31 @@ mod tests {
     }
 
     #[test]
+    fn external_sessions_show_for_ten_minutes_unless_configured() {
+        let on = External::default();
+        assert_eq!(
+            on,
+            External {
+                shown: true,
+                timeout: 600_000
+            }
+        );
+        assert_eq!(Config::parse("").unwrap().external, on);
+        let c = Config::parse("[dashboard]\nexternal = false\nexternal_timeout = 2\n").unwrap();
+        assert_eq!(
+            c.external,
+            External {
+                shown: false,
+                timeout: 120_000
+            }
+        );
+        let err = |t: &str| format!("{:#}", Config::parse(t).unwrap_err());
+        assert!(err("[dashboard]\nexternal_timeout = 0\n").contains("at least 1"));
+        assert!(Config::parse("[dashboard]\nexternal = 1\n").is_err());
+        assert!(Config::parse("[dashboard]\nexternals = true\n").is_err());
+    }
+
+    #[test]
     fn load_reports_the_file_and_tolerates_a_missing_one() {
         let dir = std::env::temp_dir().join(format!("paddock-config-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -495,6 +631,8 @@ mod tests {
     fn the_printed_default_keys_read_back_as_the_defaults() {
         let text = default_keys_toml();
         assert!(text.contains("[keys.commands]\nnew_tab = \"c\""), "{text}");
+        assert!(text.contains("resize_left = \"H\""), "{text}");
+        assert!(text.contains("repeat_ms = 500"), "{text}");
         assert!(
             text.contains("[keys.direct]\nnew_tab = \"C-M-c\""),
             "{text}"
@@ -663,6 +801,23 @@ mod tests {
         }
         let no_home = Worktrees::configured(None, None).unwrap_err();
         assert!(format!("{no_home:#}").contains("HOME"), "{no_home:#}");
+    }
+
+    #[test]
+    fn new_tabs_start_in_the_current_directory_unless_set_to_the_root() {
+        assert_eq!(Config::default().new_tab_dir, NewTabDir::Current);
+        assert_eq!(Config::parse("").unwrap().new_tab_dir, NewTabDir::Current);
+        let parse = |t: &str| Config::parse(&format!("[spaces]\nnew_tab_dir = {t}\n"));
+        assert_eq!(parse("\"root\"").unwrap().new_tab_dir, NewTabDir::Root);
+        assert_eq!(
+            parse("\"current\"").unwrap().new_tab_dir,
+            NewTabDir::Current
+        );
+        for bad in ["\"home\"", "\"Root\"", "1"] {
+            let err = format!("{:#}", parse(bad).unwrap_err());
+            assert!(err.contains("new_tab_dir"), "{bad}: {err}");
+        }
+        assert!(Config::parse("[spaces]\nnew_split_dir = \"root\"\n").is_err());
     }
 
     #[test]

@@ -256,6 +256,26 @@ fn dollar_renames_the_space() {
 }
 
 #[test]
+fn a_tab_and_a_space_keep_a_hash_in_their_name() {
+    let sandbox = Sandbox::new();
+    let mut paddock = ready(&sandbox);
+    paddock.wait_for_tabs(&["1:home"]); // named by tmux by now
+
+    // tmux expands formats in names: `v#S` would become `vspace-1`.
+    paddock.command(b",");
+    paddock.wait_for_popup("Rename tab", "home");
+    paddock.send(b"\x15v#S\r");
+    paddock.wait_for_tabs(&["1:v#S"]);
+    assert_eq!(windows(&sandbox, "space-1"), ["v#S"]);
+
+    paddock.command(b"$");
+    paddock.wait_for_popup("Rename space", "space-1");
+    paddock.send(b"\x15v#S\r");
+    wait_for_spaces(&paddock, &["v#S"]);
+    assert_eq!(sandbox.session_names(), ["v#S"]);
+}
+
+#[test]
 fn renaming_a_space_to_a_taken_name_shows_an_error_and_keeps_the_old_name() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);

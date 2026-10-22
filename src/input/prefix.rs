@@ -4,6 +4,7 @@
 
 use super::keymap::{Key, Keys};
 use crossterm::event::KeyEvent;
+use std::time::{Duration, Instant};
 
 /// What paddock does for a command key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -18,6 +19,8 @@ pub enum Command {
     GoToTab(usize),
     RenameTab,
     RenameSpace,
+    /// Make the focused terminal's directory the current space's root.
+    SetRoot,
     /// End the focused pane; its tab goes with its last pane, its space with
     /// its last tab.
     Close,
@@ -35,6 +38,13 @@ pub enum Command {
     SplitRows,
     Focus(Direction),
     Equalise,
+    /// Move the focused split's border this way by [`RESIZE_STEP`]
+    /// (tmux's `resize-pane -L/-D/-U/-R`). Its keys work again without
+    /// the prefix for a while (`[keys] repeat_ms`).
+    Resize(Direction),
+    /// Make the focused split fill its tab, or give the others their
+    /// places back.
+    Zoom,
     Help,
     Detach,
     /// Focus the sidebar on the agent in the focused terminal, if it is
@@ -57,12 +67,24 @@ pub enum Command {
     Finder,
     /// Show or hide float N (0-based, in `[floats]` order).
     ToggleFloat(usize),
+    /// Copy mode in the terminal typing goes to (the float shown, else the
+    /// focused pane): move, select and copy over its history by keyboard.
+    CopyMode,
+    /// Copy mode with the search prompt open.
+    Search,
 }
 
 impl Command {
+    /// Whether this command's keys work again without the prefix for a
+    /// while after it ran from the prefix, like tmux's `bind -r`.
+    pub fn repeats(self) -> bool {
+        matches!(self, Command::Resize(_))
+    }
+
     /// Whether a float shown stays shown through this command: those that
     /// change neither the page under it nor who has the keyboard, and the
-    /// finder, which draws over it and hides it only when a row is picked.
+    /// finder, which draws over it and hides it only when a row is picked,
+    /// and copy mode, which works in the float's pane.
     pub fn keeps_float(self) -> bool {
         matches!(
             self,
@@ -72,6 +94,8 @@ impl Command {
                 | Command::ResizeSidebar(_)
                 | Command::ToggleFloat(_)
                 | Command::Finder
+                | Command::CopyMode
+                | Command::Search
         )
     }
 }
@@ -97,6 +121,9 @@ pub enum KeyAction {
 /// Columns `C-a {` and `C-a }` take away or add.
 pub const SIDEBAR_STEP: i16 = 2;
 
+/// Columns (or rows) `C-a H/J/K/L` move a split's border by.
+pub const RESIZE_STEP: u16 = 2;
+
 pub struct PrefixKeys {
     prefix: Key,
     commands: Keys<Command>,
@@ -105,6 +132,11 @@ pub struct PrefixKeys {
     /// Each float's key, in `[floats]` order.
     floats: Vec<Key>,
     armed: bool,
+    /// How long a repeating command's keys work without the prefix after
+    /// it ran; zero turns that off.
+    repeat: Duration,
+    /// Until when they do, after the last one.
+    repeating_until: Option<Instant>,
 }
 
 impl PrefixKeys {
@@ -122,7 +154,15 @@ impl PrefixKeys {
             direct,
             floats,
             armed: false,
+            repeat: Duration::ZERO,
+            repeating_until: None,
         }
+    }
+
+    /// Let a repeating command's keys work without the prefix for
+    /// `repeat` after it ran (never, by default).
+    pub fn with_repeat(self, repeat: Duration) -> Self {
+        Self { repeat, ..self }
     }
 
     /// The command `key` is a direct chord of, if any. For a key the
@@ -150,6 +190,20 @@ impl PrefixKeys {
     }
 
     pub fn handle(&mut self, key: KeyEvent) -> KeyAction {
+        self.handle_at(key, Instant::now())
+    }
+
+    /// [`Self::handle`] for a key read at `now`. Within the repeat window,
+    /// a repeating command's key runs it again and keeps the window open;
+    /// any other key closes the window and is read as usual.
+    fn handle_at(&mut self, key: KeyEvent, now: Instant) -> KeyAction {
+        if let Some(until) = self.repeating_until.take() {
+            let again = self.commands.get(&key).map(|(c, i)| nth_key_command(c, i));
+            if let Some(command) = again.filter(|c| now < until && c.repeats()) {
+                self.repeating_until = Some(now + self.repeat);
+                return KeyAction::Command(command);
+            }
+        }
         if !self.armed {
             if self.is_prefix(&key) {
                 self.armed = true;
@@ -167,7 +221,11 @@ impl PrefixKeys {
                 KeyAction::Command(Command::ToggleFloat(f))
             });
         };
-        KeyAction::Command(nth_key_command(command, i))
+        let command = nth_key_command(command, i);
+        if command.repeats() && !self.repeat.is_zero() {
+            self.repeating_until = Some(now + self.repeat);
+        }
+        KeyAction::Command(command)
     }
 }
 
@@ -276,6 +334,7 @@ mod tests {
             after_prefix('=', none),
             KeyAction::Command(Command::Equalise)
         );
+        assert_eq!(after_prefix('z', none), KeyAction::Command(Command::Zoom));
         for (c, d) in [
             ('h', Direction::Left),
             ('j', Direction::Down),
@@ -329,6 +388,126 @@ mod tests {
     }
 
     #[test]
+    fn shifted_h_j_k_l_after_the_prefix_resize_the_split() {
+        for (c, d) in [
+            ('H', Direction::Left),
+            ('J', Direction::Down),
+            ('K', Direction::Up),
+            ('L', Direction::Right),
+        ] {
+            assert_eq!(
+                after_prefix(c, KeyModifiers::SHIFT),
+                KeyAction::Command(Command::Resize(d))
+            );
+        }
+        assert!(Command::Resize(Direction::Up).repeats());
+        assert!(!Command::Focus(Direction::Up).repeats());
+        assert!(!Command::Resize(Direction::Up).keeps_float());
+    }
+
+    /// `C-a` then `key` with a 500 ms repeat window, at `now`.
+    fn repeating(now: Instant, key: KeyEvent) -> (PrefixKeys, KeyAction) {
+        let mut p = ctrl_a().with_repeat(Duration::from_millis(500));
+        assert_eq!(
+            p.handle_at(k('a', KeyModifiers::CONTROL), now),
+            KeyAction::None
+        );
+        let action = p.handle_at(key, now);
+        (p, action)
+    }
+
+    #[test]
+    fn resize_keys_repeat_without_the_prefix_within_the_window() {
+        let t0 = Instant::now();
+        let ms = Duration::from_millis;
+        let shift = KeyModifiers::SHIFT;
+        let left = KeyAction::Command(Command::Resize(Direction::Left));
+        let (mut p, first) = repeating(t0, k('H', shift));
+        assert_eq!(first, left);
+        assert!(!p.armed());
+        assert_eq!(p.handle_at(k('H', shift), t0 + ms(400)), left);
+        // Each repeat opens the window again, and any resize key repeats.
+        assert_eq!(
+            p.handle_at(k('K', shift), t0 + ms(800)),
+            KeyAction::Command(Command::Resize(Direction::Up))
+        );
+        // Past the window, the key is typed again.
+        assert_eq!(
+            p.handle_at(k('H', shift), t0 + ms(1400)),
+            KeyAction::Forward(k('H', shift))
+        );
+        assert_eq!(
+            p.handle_at(k('H', shift), t0 + ms(1500)),
+            KeyAction::Forward(k('H', shift))
+        );
+    }
+
+    #[test]
+    fn another_key_in_the_repeat_window_ends_it_and_is_read_as_usual() {
+        let t0 = Instant::now();
+        let shift = KeyModifiers::SHIFT;
+        // `l` is a command after the prefix, but typed here.
+        let (mut p, _) = repeating(t0, k('L', shift));
+        let l = k('l', KeyModifiers::NONE);
+        assert_eq!(p.handle_at(l, t0), KeyAction::Forward(l));
+        assert_eq!(
+            p.handle_at(k('L', shift), t0),
+            KeyAction::Forward(k('L', shift))
+        );
+        // The prefix arms as usual.
+        let (mut p, _) = repeating(t0, k('L', shift));
+        assert_eq!(
+            p.handle_at(k('a', KeyModifiers::CONTROL), t0),
+            KeyAction::None
+        );
+        assert!(p.armed());
+        assert_eq!(
+            p.handle_at(k('H', shift), t0),
+            KeyAction::Command(Command::Resize(Direction::Left))
+        );
+        // Commands that do not repeat open no window.
+        let (mut p, _) = repeating(t0, k('h', KeyModifiers::NONE));
+        assert_eq!(
+            p.handle_at(k('H', shift), t0),
+            KeyAction::Forward(k('H', shift))
+        );
+    }
+
+    #[test]
+    fn a_zero_repeat_window_or_a_direct_chord_never_repeats() {
+        let t0 = Instant::now();
+        let shift = KeyModifiers::SHIFT;
+        let mut p = ctrl_a();
+        p.handle_at(k('a', KeyModifiers::CONTROL), t0);
+        assert_eq!(
+            p.handle_at(k('H', shift), t0),
+            KeyAction::Command(Command::Resize(Direction::Left))
+        );
+        assert_eq!(
+            p.handle_at(k('H', shift), t0),
+            KeyAction::Forward(k('H', shift))
+        );
+        // A direct chord is looked up apart from `handle`, so it opens no
+        // window either.
+        let resize_chord = given(&[("resize_left", &["C-M-h"])]);
+        let (direct, _) =
+            Keys::configured(&DIRECT_KEYS, &resize_chord, Key::parse("C-a").unwrap()).unwrap();
+        let mut p = PrefixKeys::new(
+            Key::parse("C-a").unwrap(),
+            Keys::defaults(&COMMAND_KEYS),
+            direct,
+            Vec::new(),
+        )
+        .with_repeat(Duration::from_millis(500));
+        let chord = k('h', KeyModifiers::CONTROL | KeyModifiers::ALT);
+        assert_eq!(p.direct(&chord), Some(Command::Resize(Direction::Left)));
+        assert_eq!(
+            p.handle_at(k('H', shift), t0),
+            KeyAction::Forward(k('H', shift))
+        );
+    }
+
+    #[test]
     fn float_keys_after_the_prefix_toggle_their_float() {
         let none = KeyModifiers::NONE;
         assert_eq!(
@@ -363,6 +542,8 @@ mod tests {
             Command::ToggleSidebar,
             Command::ToggleFloat(1),
             Command::Finder,
+            Command::CopyMode,
+            Command::Search,
         ] {
             assert!(c.keeps_float(), "{c:?}");
         }
@@ -427,7 +608,7 @@ mod tests {
 
     #[test]
     fn unbound_and_modified_keys_are_swallowed() {
-        assert_eq!(after_prefix('z', KeyModifiers::NONE), KeyAction::None);
+        assert_eq!(after_prefix('m', KeyModifiers::NONE), KeyAction::None);
         assert_eq!(after_prefix('0', KeyModifiers::NONE), KeyAction::None);
         assert_eq!(after_prefix('c', KeyModifiers::CONTROL), KeyAction::None);
     }

@@ -71,6 +71,7 @@ impl App {
             title: &float.command,
             accent: self.tab_colors.current,
             emulator: terminal.emulator(),
+            copy: self.copy_view(&window.active),
         })
     }
 

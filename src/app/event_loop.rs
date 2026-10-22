@@ -136,8 +136,11 @@ pub fn run(
 /// Keep up with an event just handled (see `effects`): turns seen, the tab bar
 /// scrolled to the current tab, the dashboard's selection and git's tasks.
 fn follow_up(app: &mut App, git: &mut GitFeed, effects: &EventEffects) {
+    // Copy mode ends with its terminal, or once that is off screen.
+    app.check_copy();
     // Any event may show a tab or bring the window back.
     app.see_current();
+    app.see_selected_external();
     // Pane output changes the space or tab shown only through a refresh,
     // which notes the page itself.
     if !effects.output {
@@ -177,6 +180,11 @@ fn handle(
                 .filter(|a| !a.pane.as_deref().is_some_and(|p| app.is_float_pane(p)))
                 .collect();
             app.sessions.reconcile(taken, &agents);
+            // External sessions gone quiet leave (their rows already did),
+            // with their saved dismissals.
+            if app.sessions.prune_externals(taken, app.external.timeout) {
+                app.report(App::save_dismissed);
+            }
             Ok((Flow::Continue, true))
         }
         Event::Git(read) => {
@@ -381,7 +389,10 @@ fn draw_panes(app: &App, area: Rect, buf: &mut Buffer) -> Option<Position> {
         let Some(t) = app.terminals.get(pane) else {
             continue;
         };
-        let at = session_view::render(t.emulator(), *rect, buf);
+        let at = match app.copy_view(pane) {
+            Some(copy) => copy.render(t.emulator(), *rect, buf),
+            None => session_view::render(t.emulator(), *rect, buf),
+        };
         if Some(pane) == focus.as_ref() {
             cursor = at;
         }

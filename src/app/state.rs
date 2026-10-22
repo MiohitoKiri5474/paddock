@@ -4,12 +4,16 @@
 //! doing (typing into the focused pane, naming, finding, reading help).
 
 use super::attention::Attention;
+use super::copy::CopyMode;
 use super::dashboard::Dashboard;
 use super::finder::Finder;
 use super::floats::Shown;
 use super::mouse::Press;
 use super::pages::Pages;
-use super::rows::{rows, Placed, Row, RowId, TaskDetails, TaskStatus};
+use super::rows::{
+    pane_only, rows, Externals, Placed, Row, RowId, TaskDetails, TaskStatus, EXTERNAL_DIR,
+    EXTERNAL_TYPE,
+};
 use super::saved;
 use super::sidebar::clamp_width;
 use super::sidebar::Selection;
@@ -17,7 +21,7 @@ use super::space::Space;
 use super::watch::Place;
 use super::worktrees::{DeleteQuestion, WorktreeList};
 use super::Event;
-use crate::config::{Config, Floats, Worktrees};
+use crate::config::{Config, External, Floats, NewTabDir, Worktrees};
 use crate::git::WorkingTree;
 use crate::hooks::now_ms;
 use crate::input::keymap::Keymap;
@@ -28,7 +32,7 @@ use crate::terminal::Terminal;
 use crate::tmux::structure::Window;
 use crate::tmux::Server;
 use crate::ui::tab_bar::TabColors;
-use crate::worktree::{Risks, WorktreeSpace};
+use crate::worktree::{space_root, Risks, WorktreeSpace};
 use anyhow::Result;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
@@ -72,6 +76,8 @@ pub enum Mode {
         finder: Finder,
         back: Option<Panel>,
     },
+    /// Copy mode in a terminal: its keys move, select, copy and search.
+    Copy(CopyMode),
 }
 
 /// A panel that had the keyboard when the prompt opened, and gets it back
@@ -115,7 +121,9 @@ impl Mode {
             | Mode::OpenWorktree(WorktreeList { back, .. })
             | Mode::ConfirmDelete(DeleteQuestion { back, .. })
             | Mode::Finder { back, .. } => Some(back),
-            Mode::Normal | Mode::Help | Mode::Sidebar(_) | Mode::Dashboard(_) => None,
+            Mode::Normal | Mode::Help | Mode::Sidebar(_) | Mode::Dashboard(_) | Mode::Copy(_) => {
+                None
+            }
         }
     }
 
@@ -127,7 +135,9 @@ impl Mode {
             | Mode::OpenWorktree(WorktreeList { back, .. })
             | Mode::ConfirmDelete(DeleteQuestion { back, .. })
             | Mode::Finder { back, .. } => Some(back),
-            Mode::Normal | Mode::Help | Mode::Sidebar(_) | Mode::Dashboard(_) => None,
+            Mode::Normal | Mode::Help | Mode::Sidebar(_) | Mode::Dashboard(_) | Mode::Copy(_) => {
+                None
+            }
         }
     }
 
@@ -261,6 +271,10 @@ pub struct App {
     pub(super) float_panes: HashSet<String>,
     /// Where new worktrees are checked out.
     pub(super) worktrees: Worktrees,
+    /// Whether and how long external sessions are listed (`[dashboard]`).
+    pub(super) external: External,
+    /// Where new tabs and splits start.
+    pub(super) new_tab_dir: NewTabDir,
 }
 
 /// The part of a screen of `(cols, rows)` that shows the current tab's
@@ -316,7 +330,8 @@ impl App {
                 config.keys.commands.clone(),
                 config.keys.direct.clone(),
                 config.floats.list.iter().map(|f| f.key).collect(),
-            ),
+            )
+            .with_repeat(config.repeat),
             prefix_name: config.prefix.name(),
             keymap: config.keys.clone(),
             mode: Mode::Normal,
@@ -343,6 +358,8 @@ impl App {
             float: None,
             float_panes: HashSet::new(),
             worktrees: config.worktrees.clone(),
+            external: config.external,
+            new_tab_dir: config.new_tab_dir,
         };
         app.load_dismissed();
         app.open_spaces()?;
@@ -418,9 +435,23 @@ impl App {
         })
     }
 
-    /// The Claude session rows, in display order.
+    /// The Claude session rows, in display order: the external group last,
+    /// unless `[dashboard] external` hides it.
     pub fn rows(&self) -> Vec<Row> {
-        rows(&self.sessions, &self.task_status, self.placed())
+        rows(
+            &self.sessions,
+            &self.task_status,
+            self.placed(),
+            self.external_rows(),
+        )
+    }
+
+    /// Which external sessions get rows now, if any.
+    pub(super) fn external_rows(&self) -> Option<Externals> {
+        self.external.shown.then(|| Externals {
+            now: now_ms(),
+            timeout: self.external.timeout,
+        })
     }
 
     /// Dismiss a session row: it leaves the rows, and stays gone after
@@ -437,6 +468,11 @@ impl App {
             .collect();
         self.task_status.retain(|task, _| shown.contains(task));
         self.task_details.retain(|task, _| shown.contains(task));
+        self.save_dismissed()
+    }
+
+    /// Write the dismissed rows to the state directory.
+    pub(super) fn save_dismissed(&mut self) -> Result<()> {
         dismissed::save(&self.state_dir, &self.sessions.dismissals())
     }
 
@@ -478,21 +514,40 @@ impl App {
         Ok(())
     }
 
-    /// Pane `pane`'s shell directory, if it still exists.
-    pub(super) fn dir_of(&self, pane: &str) -> Option<PathBuf> {
-        self.server
+    /// Pane `pane`'s shell directory, if it still exists. An external
+    /// session has none: refused.
+    pub(super) fn dir_of(&self, pane: &str) -> Result<Option<PathBuf>> {
+        pane_only(pane, EXTERNAL_DIR)?;
+        Ok(self
+            .server
             .display(pane, "#{pane_current_path}")
             .ok()
             .map(PathBuf::from)
-            .filter(|p| p.is_dir())
+            .filter(|p| p.is_dir()))
     }
 
     /// Where a new shell starts: the focused pane's directory, else the
     /// directory paddock started in.
     pub(super) fn new_dir(&self) -> PathBuf {
+        // The focused terminal is a pane, never an external session.
         self.current_pane()
-            .and_then(|p| self.dir_of(&p))
+            .and_then(|p| self.dir_of(&p).ok().flatten())
             .unwrap_or_else(|| self.start_dir.clone())
+    }
+
+    /// Where a new tab or split of the current space starts: with
+    /// `[spaces] new_tab_dir = "root"`, the space's root (else, if that is
+    /// gone, [`Self::new_dir`]); by default, [`Self::new_dir`].
+    pub(super) fn tab_dir(&self) -> PathBuf {
+        let root = match self.new_tab_dir {
+            NewTabDir::Current => None,
+            NewTabDir::Root => self
+                .current_space()
+                .and_then(|s| space_root(&self.server, &s.id))
+                .map(PathBuf::from)
+                .filter(|p| p.is_dir()),
+        };
+        root.unwrap_or_else(|| self.new_dir())
     }
 
     /// The Claude session in pane `pane`, if any.
@@ -532,6 +587,7 @@ impl App {
     /// Send bytes to pane `pane`'s program, returning its view to the live
     /// screen. Every key, paste and mouse report for a pane comes here.
     pub(super) fn input(&mut self, pane: &str, bytes: &[u8]) -> Result<()> {
+        pane_only(pane, EXTERNAL_TYPE)?;
         self.note_float_input(pane);
         if let Some(t) = self.terminals.get_mut(pane) {
             t.emulator_mut().scroll_to_bottom();
@@ -542,13 +598,13 @@ impl App {
         }
     }
 
-    /// Whether pane `pane` is on screen: in the current tab, or the
-    /// float shown.
+    /// Whether pane `pane` is on screen: in the current tab (and not
+    /// hidden by a zoom), or the float shown.
     pub fn shows(&self, pane: &str) -> bool {
         let in_tab = self
             .current_space()
             .and_then(Space::current_window)
-            .is_some_and(|w| w.contains(pane));
+            .is_some_and(|w| w.shows(pane));
         in_tab || self.float_pane().as_deref() == Some(pane)
     }
 
