@@ -4,7 +4,7 @@
 //! nothing was heard of them for a while (their agent may have been killed
 //! without a `SessionEnd`).
 
-use super::{Agent, HookRecord, Session, Sessions};
+use super::{Agent, HookRecord, Session, Sessions, State};
 use std::collections::HashSet;
 
 /// What an external session's key starts with: never a tmux pane id (`%N`).
@@ -27,6 +27,19 @@ pub fn is_external(key: &str) -> bool {
 /// this one ends.
 pub(super) fn ends(r: &HookRecord) -> bool {
     is_external(&r.pane) && super::ends_conversation(r) && r.agent_id.is_none()
+}
+
+/// Whether external session `s` counts as gone at `now`: nothing heard of
+/// it for longer than `timeout` ms, unless [`kept_waiting`].
+fn quiet(s: &Session, now: u64, timeout: u64) -> bool {
+    now > s.alive.saturating_add(timeout) && !kept_waiting(s)
+}
+
+/// Whether `s` waits on you with no snapshot of its kind to tell whether it
+/// still runs (Gemini): a wait sends no hooks, so it would look quiet. It
+/// stays until it ends, goes on, or is dismissed.
+fn kept_waiting(s: &Session) -> bool {
+    !s.kind.has_snapshot() && !s.ended() && s.state == State::Waiting
 }
 
 impl Sessions {
@@ -68,12 +81,13 @@ impl Sessions {
 
     /// The keys of the external sessions to show at `now`: those
     /// [`Sessions::shown`] shows, heard of (see [`Session::alive`]) at most
-    /// `timeout` ms ago. A session killed without a `SessionEnd` leaves
+    /// `timeout` ms ago, or waiting with no snapshot to say otherwise (see
+    /// [`kept_waiting`]). A session killed without a `SessionEnd` leaves
     /// this way.
     pub fn externals(&self, now: u64, timeout: u64) -> Vec<&str> {
         self.by_pane
             .iter()
-            .filter(|(k, s)| is_external(k) && now <= s.alive.saturating_add(timeout))
+            .filter(|(k, s)| is_external(k) && !quiet(s, now, timeout))
             .filter(|(k, _)| self.shown(k).is_some())
             .map(|(k, _)| k.as_str())
             .collect()
@@ -85,11 +99,10 @@ impl Sessions {
     /// Their dismissals go with them. Returns whether any dismissal went, so
     /// the saved ones can be written again.
     pub fn prune_externals(&mut self, now: u64, timeout: u64) -> bool {
-        let quiet = |s: &Session| now > s.alive.saturating_add(timeout);
         let pruned: HashSet<String> = self
             .by_pane
             .iter()
-            .filter(|(k, s)| is_external(k) && quiet(s))
+            .filter(|(k, s)| is_external(k) && quiet(s, now, timeout))
             .map(|(k, _)| k.clone())
             .collect();
         if pruned.is_empty() {
@@ -187,21 +200,53 @@ mod tests {
     }
 
     /// Gemini has no snapshot: only its hooks keep an external session
-    /// alive, so one quiet (waiting, or idle at its prompt) for longer than
-    /// the timeout leaves, and its next hook brings it back.
+    /// alive. Waiting on you, it stays however long it waits; quiet in any
+    /// other state for longer than the timeout, it leaves until its next
+    /// hook.
     #[test]
-    fn a_quiet_external_gemini_session_leaves_after_the_timeout_until_its_next_hook() {
+    fn an_external_gemini_session_waiting_never_times_out() {
         let gemini = |event: &str, ts| HookRecord {
             kind: AgentKind::Gemini,
             notification_type: Some("ToolPermission".into()),
             ..ext(event, "g1", ts)
         };
+        let late = 100 * MIN;
         let mut s = Sessions::default();
         s.apply(&gemini("Notification", 1));
-        assert_eq!(s.externals(1 + 10 * MIN, 10 * MIN), [external_key("g1")]);
+        assert_eq!(s.externals(late, 10 * MIN), [external_key("g1")]);
+        assert!(!s.prune_externals(late, 10 * MIN));
+        assert!(s.get(&external_key("g1")).is_some(), "not pruned");
+
+        // Going on, then idle and quiet: the timeout applies again.
+        s.apply(&gemini("AfterAgent", late));
+        assert_eq!(s.externals(late + 10 * MIN, 10 * MIN), [external_key("g1")]);
+        assert!(s.externals(late + 10 * MIN + 1, 10 * MIN).is_empty());
+        s.apply(&gemini("BeforeAgent", late + 20 * MIN));
+        assert_eq!(s.externals(late + 20 * MIN, 10 * MIN), [external_key("g1")]);
+
+        // Waiting, it still leaves on dismiss and on SessionEnd.
+        s.apply(&gemini("Notification", late + 21 * MIN));
+        s.dismiss(&external_key("g1"), None, late + 21 * MIN);
+        assert!(
+            s.externals(late + 99 * MIN, 10 * MIN).is_empty(),
+            "dismissed"
+        );
+        s.apply(&gemini("Notification", late + 22 * MIN));
+        assert_eq!(s.externals(late + 99 * MIN, 10 * MIN), [external_key("g1")]);
+        s.apply(&gemini("SessionEnd", late + 23 * MIN));
+        assert!(s.externals(late + 99 * MIN, 10 * MIN).is_empty(), "ended");
+        s.prune_externals(late + 99 * MIN, 10 * MIN);
+        assert!(
+            s.get(&external_key("g1")).is_none(),
+            "an ended one is pruned"
+        );
+    }
+
+    #[test]
+    fn a_waiting_external_claude_session_still_times_out() {
+        let mut s = Sessions::default();
+        s.apply(&ext("PermissionRequest", "e1", 1));
         assert!(s.externals(2 + 10 * MIN, 10 * MIN).is_empty());
-        s.apply(&gemini("AfterTool", 3 + 10 * MIN));
-        assert_eq!(s.externals(3 + 10 * MIN, 10 * MIN), [external_key("g1")]);
     }
 
     #[test]
