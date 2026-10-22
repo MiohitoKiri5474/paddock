@@ -264,37 +264,55 @@ fn repo_state(paddock: &Paddock) -> Option<&'static str> {
         .find(|s| row.contains(s))
 }
 
-#[test]
-fn a_report_just_before_its_session_starts_folds_the_same_live_and_on_replay() {
-    let sandbox = Sandbox::new();
-    stub_agy(&sandbox);
-    let mut paddock = ready(&sandbox);
-    start_agy(&sandbox, &paddock, "space-1:0");
-    // The report comes before agy's first hooks, within the 1 s it may.
-    write_to(&sandbox, "space-1:0", &status("blocked", Some("auth")));
-    agy(&sandbox, "space-1:0", &["SessionStart", "PreInvocation"]);
-    paddock.wait_for("the report and both hooks", |_| {
-        server_log(&sandbox).contains("OSC7501")
-            && matches!(repo_state(&paddock), Some("waiting" | "running"))
-    });
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    let live = repo_state(&paddock);
-    // Written no earlier than any hook folded before it.
-    let log = server_log(&sandbox);
-    let ts = |event: &str| -> u64 {
-        log.lines()
-            .map(|l| serde_json::from_str::<Value>(l).unwrap())
-            .find(|v| v["event"] == event)
-            .and_then(|v| v["ts"].as_u64())
-            .unwrap()
-    };
-    assert!(ts("OSC7501") >= ts("SessionStart"), "{log}");
+/// The `ts` of the first record of `event` in the server log.
+fn logged_ts(sandbox: &Sandbox, event: &str) -> u64 {
+    server_log(sandbox)
+        .lines()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap())
+        .find(|v| v["event"] == event)
+        .and_then(|v| v["ts"].as_u64())
+        .unwrap_or_else(|| panic!("no {event} in {}", server_log(sandbox)))
+}
 
+/// Detach, open paddock again on the same log, and wait until the
+/// replayed row of `repo` is `state`.
+fn reopen_and_wait(sandbox: &Sandbox, mut paddock: Paddock, state: &str) {
     paddock.detach_keys();
     assert!(paddock.wait_exit());
-    let again = ready(&sandbox);
-    again.wait_for("the replayed row", |_| repo_state(&again).is_some());
-    assert_eq!(repo_state(&again), live, "{log}");
+    let again = ready(sandbox);
+    again.wait_for(&format!("the replayed row {state}"), |_| {
+        repo_state(&again) == Some(state)
+    });
+}
+
+#[test]
+fn a_report_just_before_its_session_starts_belongs_to_it_live_and_on_replay() {
+    let sandbox = Sandbox::new();
+    stub_agy(&sandbox);
+    let paddock = ready(&sandbox);
+    start_agy(&sandbox, &paddock, "space-1:0");
+    // The report comes before agy's first hook, within the 1 s it may.
+    write_to(&sandbox, "space-1:0", &status("blocked", Some("auth")));
+    agy(&sandbox, "space-1:0", &["SessionStart"]);
+    paddock.wait_for("waiting", |_| repo_state(&paddock) == Some("waiting"));
+    // Written no earlier than the hook folded before it, so a replay
+    // folds it after the session started too.
+    assert!(logged_ts(&sandbox, "OSC7501") >= logged_ts(&sandbox, "SessionStart"));
+    reopen_and_wait(&sandbox, paddock, "waiting");
+}
+
+#[test]
+fn a_report_older_than_a_later_hook_is_dropped() {
+    let sandbox = Sandbox::new();
+    stub_agy(&sandbox);
+    let paddock = ready(&sandbox);
+    start_agy(&sandbox, &paddock, "space-1:0");
+    // agy reported idle, then started and ran a prompt before paddock read
+    // the hooks: the prompt is the news, live and on replay.
+    write_to(&sandbox, "space-1:0", &status("idle", None));
+    agy(&sandbox, "space-1:0", &["SessionStart", "PreInvocation"]);
+    paddock.wait_for("running", |_| repo_state(&paddock) == Some("running"));
+    reopen_and_wait(&sandbox, paddock, "running");
 }
 
 #[test]

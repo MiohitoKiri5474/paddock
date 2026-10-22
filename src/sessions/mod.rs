@@ -421,6 +421,9 @@ pub struct Session {
     status: Option<ProgramState>,
     /// When its agent last started a conversation (ms since the epoch).
     started: u64,
+    /// When a hook other than such a start last set its state (ms since
+    /// the epoch; 0 if none has).
+    changed: u64,
 }
 
 impl Session {
@@ -443,6 +446,7 @@ impl Session {
             subagents: Vec::new(),
             status: None,
             started: 0,
+            changed: 0,
         }
     }
 
@@ -746,6 +750,9 @@ impl Sessions {
             // The state is now the report's, or a hook's: the next report
             // of any state is news.
             s.status = r.status;
+            if r.event != STATUS && !restarts(r) {
+                s.changed = r.ts;
+            }
         }
         if let Some(id) = &r.agent_id {
             s.apply_subagent(id, r);
@@ -785,6 +792,12 @@ impl Sessions {
     /// started by `ts` (ms).
     pub fn agy_live_by(&self, pane: &str, ts: u64) -> bool {
         self.agy_live_in(pane) && self.by_pane[pane].started <= ts
+    }
+
+    /// Whether a hook other than a start set the state of pane `pane`'s
+    /// session after `ts` (ms): a report made at `ts` is older news.
+    pub fn hook_changed_after(&self, pane: &str, ts: u64) -> bool {
+        self.by_pane.get(pane).is_some_and(|s| s.changed > ts)
     }
 
     /// Whether a status report `state` from pane `pane` says something
@@ -1297,6 +1310,32 @@ mod tests {
         assert!(s.agy_live_by("%1", 11));
         assert!(!s.agy_live_by("%1", 9), "made before it started");
         assert!(!s.agy_live_by("%2", 11), "another terminal");
+    }
+
+    #[test]
+    fn a_hook_after_a_report_makes_it_older_news() {
+        let mut s = Sessions::default();
+        s.apply(&agy("SessionStart", 10));
+        assert!(!s.hook_changed_after("%1", 5), "the start does not count");
+        s.apply(&agy("PreInvocation", 20));
+        assert!(s.hook_changed_after("%1", 15));
+        assert!(!s.hook_changed_after("%1", 20));
+        s.apply(&agy_status("blocked", 30));
+        assert!(!s.hook_changed_after("%1", 25), "a report does not count");
+        s.apply(&agy("Stop-busy", 40));
+        assert!(
+            !s.hook_changed_after("%1", 25),
+            "nor a hook that set no state"
+        );
+        assert!(!s.hook_changed_after("%2", 0), "no session");
+        s.apply(&HookRecord {
+            session_id: Some("next".into()),
+            ..agy("SessionStart", 50)
+        });
+        assert!(
+            !s.hook_changed_after("%1", 45),
+            "a new conversation starts over"
+        );
     }
 
     #[test]

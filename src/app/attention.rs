@@ -269,24 +269,28 @@ impl App {
     }
 
     /// Go over the reports waiting for their pane's agy session (see
-    /// [`App::record_status`]), in this order:
+    /// [`App::record_status`]), after each batch of hooks, in this order:
     /// - the pane runs a live agy session that started at most
-    ///   [`STATUS_WAIT_MS`] after the report came: it is recorded, after
-    ///   the session's latest record;
+    ///   [`STATUS_WAIT_MS`] after the report came:
+    ///   - a hook other than that start set its state after the report
+    ///     came: the report is older news, and is dropped;
+    ///   - else it is recorded, after the session's latest record;
     /// - the pane runs a live agy session that started later than that:
     ///   the report is about an earlier one, and is dropped;
-    /// - no live agy session there yet: it waits on until it is
-    ///   [`STATUS_WAIT_MS`] old, then is dropped.
+    /// - no live agy session there yet: it waits on, and once it is more
+    ///   than [`STATUS_WAIT_MS`] old, the next batch drops it.
     pub(super) fn retry_status(&mut self) {
         let now = now_ms();
         let pending = std::mem::take(&mut self.pending_status);
         for (pane, p) in pending {
-            let ours = p.ts.saturating_add(STATUS_WAIT_MS);
-            if self.sessions.agy_live_by(&pane, ours) {
-                // Never before a record already folded, so a replay of the
-                // log folds it where it was folded now.
-                let after = self.sessions.last_heard(&pane).unwrap_or(0);
-                self.write_status(&pane, p.state, p.ts.max(after));
+            let latest_start = p.ts.saturating_add(STATUS_WAIT_MS);
+            if self.sessions.agy_live_by(&pane, latest_start) {
+                if !self.sessions.hook_changed_after(&pane, p.ts) {
+                    // Never before a record already folded, so a replay of
+                    // the log folds it where it was folded now.
+                    let after = self.sessions.last_heard(&pane).unwrap_or(0);
+                    self.write_status(&pane, p.state, p.ts.max(after));
+                }
             } else if !self.sessions.agy_live_in(&pane)
                 && now.saturating_sub(p.ts) <= STATUS_WAIT_MS
             {
