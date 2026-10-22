@@ -67,7 +67,7 @@ paddock hooks install               # adds paddock's hooks to ~/.claude/settings
 
 `hooks install` keeps other hooks (for example Supacode's), removes the old tmux-claude-session-manager hooks, and records the binary's full path, so install from a stable location. Re-run it after upgrading paddock or moving its binary. It says so when the plugin is enabled in that file.
 
-`hooks install` and `hooks uninstall` take `--agent <kind>`, repeatable, to act only on that agent's hooks: `claude` or `gemini`. Without it they act on Claude Code, as before, and on Gemini CLI when `gemini` is on your `PATH` (see [Connect Gemini CLI](#connect-gemini-cli)).
+`hooks install` and `hooks uninstall` take `--agent <kind>`, repeatable, to act only on that agent's hooks: `claude` or `gemini`. Without it they act on Claude Code, as before, and on Gemini CLI only when `gemini` is on your `PATH` (see [Connect Gemini CLI](#connect-gemini-cli)). Each run reads every settings file it acts on before writing any: if one can't be read, it names that file, exits 1 and changes none. `hooks uninstall` never creates a settings file that does not exist, and keeps lists you left empty in it.
 
 Both at once records each event once, as long as the `paddock` on your `PATH` is the release that added the plugin's hooks or newer: the plugin's hook steps aside when `settings.json` holds paddock's hook for that event. An older `paddock` records each event twice.
 
@@ -96,14 +96,14 @@ With the plugin, nothing else changes: the new `paddock` only has to be on `PATH
 
 ```sh
 # Detach paddock first (C-a d); your terminals keep running in tmux.
-~/.cargo/bin/paddock hooks uninstall
+~/.cargo/bin/paddock hooks uninstall --agent claude --agent gemini
 cargo uninstall paddock
 brew install MiohitoKiri5474/paddock/paddock
 hash -r && which paddock            # /opt/homebrew/bin/paddock
-paddock hooks install
+paddock hooks install --agent claude --agent gemini
 ```
 
-Restart running Claude sessions so they use the new hooks. Config and state are kept.
+Name each agent whose hooks you installed (drop `--agent gemini` if you never connected Gemini CLI): a plain `hooks uninstall` or `hooks install` covers Gemini only while `gemini` is on your `PATH`. Restart running Claude and Gemini sessions so they use the new hooks. Config and state are kept.
 
 ### Connect Gemini CLI
 
@@ -115,9 +115,9 @@ paddock hooks install --agent gemini   # adds paddock's hooks to ~/.gemini/setti
 paddock hooks uninstall --agent gemini # removes only paddock's hooks
 ```
 
-A plain `paddock hooks install` includes Gemini when `gemini` is on your `PATH`. The hooks (`SessionStart`, `BeforeAgent`, `AfterTool`, `Notification`, `AfterAgent`, `SessionEnd`) call `paddock hook --agent gemini <event>` by paddock's full path, with a 10 s timeout, so re-run the install after moving paddock's binary; your other hooks and settings stay. paddock cannot edit a `settings.json` with comments (Gemini allows them): it says `invalid JSON` and leaves the file as it was, so remove the comments or add the hooks by hand. A plain `paddock hooks install` then still writes Claude's hooks first and fails only on Gemini's file: use `--agent claude` to skip it. Restart running Gemini sessions afterwards.
+A plain `paddock hooks install` includes Gemini when `gemini` is on your `PATH`. The hooks (`SessionStart`, `BeforeAgent`, `AfterTool`, `Notification`, `AfterAgent`, `SessionEnd`) call `paddock hook --agent gemini <event>` by paddock's full path, with a 10 s timeout, so re-run the install after moving paddock's binary; your other hooks and settings stay. paddock cannot edit a `settings.json` with comments (Gemini allows them): it says `invalid JSON` and leaves the file as it was, so remove the comments or add the hooks by hand. A plain `paddock hooks install` with `gemini` on your `PATH` then changes no file at all, Claude's included: use `--agent claude` to skip Gemini's. Restart running Gemini sessions afterwards.
 
-What Gemini sessions get: their row, dot, tab marker, state (running after a prompt, waiting on a tool permission, done or idle when a turn ends, gone when Gemini quits; `/clear` keeps the terminal's session), branch and task rows, `C-a a`, notifications, the EXTERNAL group and the AGENT tag `gemini`. What stays Claude Code's alone: fork, subagent rows (Gemini's subagents are not shown) and the `claude agents --json` snapshot. Without a snapshot, nothing catches what Gemini's hooks miss: after you press Esc or deny a permission, the row stays running or waiting until the next prompt. Gemini runs no hooks in a folder it does not trust (folder trust is on by default), so such a session does not show. An external Gemini session is kept alive by its hooks alone, so one quiet for `[dashboard] external_timeout` minutes (waiting on you, or idle at its prompt) leaves the EXTERNAL group until its next hook.
+What Gemini sessions get: their row, dot, tab marker, state (running after a prompt, waiting on a tool permission, done or idle when a turn ends, gone when Gemini quits; `/clear` keeps the terminal's session), branch and task rows, `C-a a`, notifications, the EXTERNAL group and the AGENT tag `gemini`. What stays Claude Code's alone: fork, subagent rows (Gemini's subagents are not shown) and the `claude agents --json` snapshot. Without a snapshot, nothing catches what Gemini's hooks miss: after you press Esc or deny a permission, the row stays running or waiting until the next prompt. Gemini runs no hooks in a folder it does not trust (folder trust is on by default), so such a session does not show. An external Gemini session is kept alive by its hooks alone: waiting on you, it stays in the EXTERNAL group however long you take (until it ends or you dismiss it); in any other state, quiet for `[dashboard] external_timeout` minutes (idle at its prompt, say), it leaves until its next hook.
 
 ## Use
 
@@ -129,7 +129,7 @@ paddock help       # or -h, --help: list the commands
 
 The sidebar has two sections. SPACES lists your spaces, each with its directory and git branch on a dim second line: each space is a tmux session on paddock's hidden server, its tabs are the session's windows and its splits their panes, so `tmux -L paddock attach` shows the same thing. AGENTS lists every main agent session in any space, with its state (waiting, done, idle, running), the space and tab it runs in, and, at the end of that second line when it fits after the space and tab, its agent's kind (`claude` or `gemini`). The space you are in and the agent in the focused terminal have a darker background (`[colors] current_space`), and `C-a s` puts the sidebar's selection on that agent (else on that space). Open a tab with `C-a c` and run `claude` (or `gemini`) in it; the dashboard (`C-a o`) shows the branches it and its subagents work on. The dashboard lists the sessions on top as an aligned table (NAME, STATE, ↑↓, CHANGES, BASE, FILES, AGE, MERGED, AGENT; AGENT is the session's agent kind, `claude` or `gemini`; on a narrow screen whole columns drop, AGENT first, NAME and STATE stay). Fork, subagent rows and `claude agents --json` are Claude Code's alone. A session and its branch and subagent rows form one block: only sessions are selected, the whole selected block is highlighted, and `D` dismisses the block. A session leaves the sidebar and the dashboard by itself once it ends: when its terminal (pane, tab or space) is closed, or when its agent quits in it (`/exit`, Ctrl-D); the selection moves to the session that takes its place. A new agent in that terminal is a new session and shows up as usual. Below the list, a live preview of the selected session sits in a rounded border (`I` types into it), and the keys are on the last line. A turn that ends while you look elsewhere is `done` until you look at its tab, then `idle`. You get a macOS notification when a session or one of its subagents starts waiting, or when a main agent finishes a turn (a subagent finishing never notifies).
 
-External sessions: an agent running outside paddock's terminals (another terminal app, an IDE) shows too, dim, in an EXTERNAL group at the bottom of AGENTS and of the dashboard, with its state, its branch and task rows, but no screen: the preview says `external session: no screen`. paddock learns of it from the same hooks (the plugin's, or `hooks install`, both global to their agent) and, for Claude, from `claude agents --json`; its label is the session's name, else its directory's. It can't be jumped to, closed, forked or typed into: `Enter`, `x`, `f` and `I` on it only show a notice, `C-a a` skips it, and the finder leaves it out; `D` dismisses it. Waiting or done, it notifies and its dot shows like any other; with no tab to look at, a finished turn stays `done` until its row is selected in the dashboard, or in AGENTS while the sidebar has the keyboard. It leaves when it ends (`SessionEnd`, `/clear` included), or once nothing has been heard of it for `[dashboard] external_timeout` minutes (no hook event, not in `claude agents --json`), as when its agent was killed. `[dashboard] external = false` hides the group and its notifications. Its hook events go to `~/.local/state/paddock/events/external.jsonl`; once it passes 4 MiB, paddock trims it (when it opens, and every few seconds while it runs) to the last day's records, at most the newest 2 MiB of them.
+External sessions: an agent running outside paddock's terminals (another terminal app, an IDE) shows too, dim, in an EXTERNAL group at the bottom of AGENTS and of the dashboard, with its state, its branch and task rows, but no screen: the preview says `external session: no screen`. paddock learns of it from the same hooks (the plugin's, or `hooks install`, both global to their agent) and, for Claude, from `claude agents --json`; its label is the session's name, else its directory's. It can't be jumped to, closed, forked or typed into: `Enter`, `x`, `f` and `I` on it only show a notice, `C-a a` skips it, and the finder leaves it out; `D` dismisses it. Waiting or done, it notifies and its dot shows like any other; with no tab to look at, a finished turn stays `done` until its row is selected in the dashboard, or in AGENTS while the sidebar has the keyboard. It leaves when it ends (`SessionEnd`, `/clear` included), or once nothing has been heard of it for `[dashboard] external_timeout` minutes (no hook event, not in `claude agents --json`), as when its agent was killed; a Gemini session waiting on you never times out, since it has no snapshot and a wait sends no hooks. `[dashboard] external = false` hides the group and its notifications. Its hook events go to `~/.local/state/paddock/events/external.jsonl`; once it passes 4 MiB, paddock trims it (when it opens, and every few seconds while it runs) to the last day's records, at most the newest 2 MiB of them.
 
 ### Keys
 
@@ -391,7 +391,7 @@ The plugin needs `paddock` on your `PATH`.
 ## Uninstall
 
 ```sh
-paddock hooks uninstall
+paddock hooks uninstall --agent claude --agent gemini   # each agent you connected
 tmux -L paddock kill-server         # ends every paddock terminal
 rm -rf ~/.local/state/paddock ~/.config/paddock
 cargo uninstall paddock             # or brew uninstall paddock, or delete the binary you moved

@@ -792,14 +792,19 @@ mod tests {
         }
     }
 
-    /// The record of the Gemini payload in
-    /// `tests/fixtures/hooks/gemini/<name>.json`, for its `hook_event_name`.
-    pub(super) fn gemini(name: &str, ts: u64) -> HookRecord {
+    /// The Gemini payload in `tests/fixtures/hooks/gemini/<name>.json`,
+    /// shaped as Gemini CLI 0.64 builds it.
+    pub(super) fn gemini_payload(name: &str) -> String {
         let path = format!(
             "{}/tests/fixtures/hooks/gemini/{name}.json",
             env!("CARGO_MANIFEST_DIR")
         );
-        let payload = std::fs::read_to_string(&path).unwrap();
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"))
+    }
+
+    /// The record of [`gemini_payload`] `name`, for its `hook_event_name`.
+    pub(super) fn gemini(name: &str, ts: u64) -> HookRecord {
+        let payload = gemini_payload(name);
         let v: serde_json::Value = serde_json::from_str(&payload).unwrap();
         let event = v["hook_event_name"].as_str().unwrap();
         log::record(AgentKind::Gemini, event, "%1", &payload, ts)

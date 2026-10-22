@@ -476,13 +476,7 @@ mod tests {
 
     #[test]
     fn geminis_records_keep_only_what_paddock_uses_and_name_their_kind() {
-        let fixture = |name: &str| {
-            std::fs::read_to_string(format!(
-                "{}/tests/fixtures/hooks/gemini/{name}.json",
-                env!("CARGO_MANIFEST_DIR")
-            ))
-            .unwrap()
-        };
+        let fixture = super::super::tests::gemini_payload;
         let gemini = AgentKind::Gemini;
         let n = record(
             gemini,

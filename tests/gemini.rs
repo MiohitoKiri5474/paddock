@@ -344,3 +344,43 @@ fn a_gemini_settings_file_paddock_cannot_read_is_left_untouched() {
     );
     assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
 }
+
+#[test]
+fn hooks_change_no_file_when_one_cannot_be_read() {
+    let sandbox = Sandbox::new();
+    let gemini = gemini_settings(&sandbox);
+    std::fs::create_dir_all(gemini.parent().unwrap()).unwrap();
+    let commented = "{\n  // mine\n  \"general\": {}\n}\n";
+    std::fs::write(&gemini, commented).unwrap();
+    // Claude's file comes first, and is fine: neither run touches it.
+    let claude = claude_settings(&sandbox);
+    std::fs::create_dir_all(claude.parent().unwrap()).unwrap();
+    std::fs::write(&claude, "{\"model\": \"opus\"}").unwrap();
+    for action in ["install", "uninstall"] {
+        let path = self::path(&sandbox, true);
+        let out = sandbox.run(&["hooks", action], &[("PATH", &path)], "");
+        assert_eq!(out.status.code(), Some(1), "{action}: {out:?}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains("invalid JSON"), "{stderr}");
+        assert!(
+            stderr.contains(&gemini.display().to_string()),
+            "names the file: {stderr}"
+        );
+        assert!(out.stdout.is_empty(), "nothing done: {out:?}");
+        assert_eq!(
+            std::fs::read_to_string(&claude).unwrap(),
+            "{\"model\": \"opus\"}"
+        );
+        assert_eq!(std::fs::read_to_string(&gemini).unwrap(), commented);
+    }
+}
+
+#[test]
+fn uninstall_never_creates_a_settings_file() {
+    let sandbox = Sandbox::new();
+    let out = hooks(&sandbox, true, &["uninstall"]);
+    assert!(!claude_settings(&sandbox).exists(), "{out}");
+    assert!(!gemini_settings(&sandbox).exists(), "{out}");
+    assert!(!sandbox.path("home/.gemini").exists(), "nor its directory");
+    assert!(out.contains("does not exist"), "{out}");
+}
