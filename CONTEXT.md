@@ -70,6 +70,10 @@ _Avoid_: agent (too broad), terminal, tmux session
 Which coding agent a session belongs to: `claude` (Claude Code), `gemini` (Gemini CLI) or `agy` (Antigravity CLI). Its rows show it as a short tag, and a tab named after its session takes it. Fork, subagents and the `claude agents --json` snapshot are Claude's alone.
 _Avoid_: agent type, provider, model
 
+**Status report**:
+An agent's report of its state (working, waiting on you, done, failed, idle) that it writes to its terminal's output (OSC 7501), read by paddock from that output. Only Antigravity CLI's count, and only in paddock's terminals; they are how its waits show.
+_Avoid_: status line, notification (that is macOS's)
+
 **Ended**:
 A session whose terminal was closed or whose agent quit (agy: its terminal is back at the shell). It leaves the dashboard and the sidebar; a new agent in the same terminal is a new session. `/clear` (Claude's or Gemini's) does not end it.
 _Avoid_: stopped (a subagent task's state)
