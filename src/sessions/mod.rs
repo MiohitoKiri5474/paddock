@@ -1333,7 +1333,7 @@ mod tests {
             ..agy("SessionStart", 50)
         });
         assert!(
-            !s.hook_changed_after("%1", 45),
+            !s.hook_changed_after("%1", 15),
             "a new conversation starts over"
         );
     }
