@@ -37,8 +37,8 @@ fn split(sandbox: &Sandbox) -> Paddock {
     p
 }
 
-/// Whether the pane sizes stay `expected` for a while.
-fn sizes_stay(sandbox: &Sandbox, expected: &[&str]) {
+/// Assert that the pane sizes stay `expected` for a while.
+fn assert_sizes_stay(sandbox: &Sandbox, expected: &[&str]) {
     let start = Instant::now();
     while start.elapsed() < Duration::from_millis(300) {
         assert_eq!(pane_sizes(sandbox), expected, "pane sizes in tmux");
@@ -62,7 +62,7 @@ fn shift_h_and_l_move_the_border_and_repeat_without_the_prefix() {
     std::thread::sleep(Duration::from_millis(700));
     p.send(b"H");
     wait_in_region(&p, &format!("{PROMPT} H"), ALL_ROWS, RIGHT);
-    sizes_stay(&sandbox, &SPLIT);
+    assert_sizes_stay(&sandbox, &SPLIT);
 }
 
 #[test]
@@ -89,7 +89,7 @@ fn a_zero_repeat_window_types_the_second_key() {
     wait_for_pane_sizes(&sandbox, &["0.0 32x29", "0.1 35x29"]);
     // The right pane now starts at column 33.
     wait_in_region(&p, &format!("{PROMPT} H"), ALL_ROWS, (33, 68));
-    sizes_stay(&sandbox, &["0.0 32x29", "0.1 35x29"]);
+    assert_sizes_stay(&sandbox, &["0.0 32x29", "0.1 35x29"]);
 }
 
 #[test]
@@ -102,9 +102,16 @@ fn a_split_stops_at_one_column_without_a_notice() {
     }
 
     wait_for_pane_sizes(&sandbox, &["0.0 1x29", "0.1 66x29"]);
+    // A notice shows at the right of the tab bar until the next key:
+    // nothing may follow the `+` after the tabs.
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_millis(300) {
+        let bar = p.tab_bar();
+        assert!(bar.trim_end().ends_with('+'), "a notice: {bar:?}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
     p.type_line("echo still-$((1+1))");
     wait_in_region(&p, "still-2", ALL_ROWS, (2, 68));
-    assert!(!p.tab_bar().contains("resize"), "{}", p.tab_bar());
 }
 
 #[test]
@@ -171,20 +178,11 @@ fn dragging_a_border_beside_a_nested_row_moves_that_border() {
     p.mouse(DRAG, 40, 5, false);
     p.mouse(PRESS, 40, 5, true);
 
-    let start = Instant::now();
-    loop {
-        let sizes = pane_sizes(&sandbox);
-        let moved =
-            sizes.iter().any(|s| s == "0.2 40x14") && sizes.iter().any(|s| s == "0.3 27x29");
-        if moved {
-            break;
-        }
-        assert!(
-            start.elapsed() < harness::TIMEOUT,
-            "the outer border did not move: {sizes:?}"
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    // The outer border moved: C and the row above it are 40 wide, D 27.
+    wait_for_pane_sizes(
+        &sandbox,
+        &["0.0 20x14", "0.1 19x14", "0.2 40x14", "0.3 27x29"],
+    );
 }
 
 #[test]
@@ -195,13 +193,60 @@ fn the_sidebar_border_still_resizes_the_sidebar_beside_splits() {
     // Screen column 31 is the sidebar's border.
     p.drag_screen(10, 31, 39);
 
-    let start = Instant::now();
-    while sandbox.display("space-1:0", "#{window_width}") != "60" {
-        assert!(
-            start.elapsed() < harness::TIMEOUT,
-            "the sidebar did not widen"
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    p.wait_for("the sidebar 8 columns wider", |_| {
+        sandbox.display("space-1:0", "#{window_width}") == "60"
+    });
     assert_eq!(sandbox.clipboard(), None);
+}
+
+/// Whether the first tab is zoomed, as tmux has it.
+fn zoomed(sandbox: &Sandbox) -> bool {
+    sandbox.display("space-1:0", "#{window_zoomed_flag}") == "1"
+}
+
+/// `C-a z` on the right pane of a split, and wait until it fills the tab.
+fn zoom(sandbox: &Sandbox, p: &mut Paddock) {
+    p.command(b"z");
+    wait_for_pane_sizes(sandbox, &["0.0 34x29", "0.1 68x29"]);
+    p.wait_for_tabs(&["1:home Z"]);
+}
+
+#[test]
+fn a_resize_key_in_a_zoomed_tab_unzooms_it_first() {
+    let sandbox = Sandbox::new();
+    let mut p = split(&sandbox);
+    zoom(&sandbox, &mut p);
+
+    p.send(b"\x01H");
+
+    wait_for_pane_sizes(&sandbox, &["0.0 32x29", "0.1 35x29"]);
+    assert!(!zoomed(&sandbox));
+    p.wait_for_tabs(&["1:home"]);
+}
+
+#[test]
+fn a_zoomed_tab_has_no_border_to_drag() {
+    let sandbox = Sandbox::new();
+    let mut p = split(&sandbox);
+    zoom(&sandbox, &mut p);
+
+    // Where the border was, the zoomed pane is drawn.
+    p.mouse(PRESS, V_BORDER, 10, false);
+    p.mouse(DRAG, 44, 10, false);
+    p.mouse(PRESS, 44, 10, true);
+
+    assert_sizes_stay(&sandbox, &["0.0 34x29", "0.1 68x29"]);
+    assert!(zoomed(&sandbox));
+}
+
+#[test]
+fn equalize_evens_out_splits_after_a_resize() {
+    let sandbox = Sandbox::new();
+    let mut p = split(&sandbox);
+    p.send(b"\x01HHH");
+    wait_for_pane_sizes(&sandbox, &["0.0 28x29", "0.1 39x29"]);
+
+    p.command(b"=");
+
+    wait_for_pane_sizes(&sandbox, &SPLIT);
 }
