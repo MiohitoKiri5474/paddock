@@ -36,7 +36,7 @@ use crossterm::event as ct;
 use signal_hook::consts::SIGTERM;
 use signal_hook::iterator::Signals;
 use std::collections::HashMap;
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc};
 
 /// Everything the event loop waits on, from tmux and from the outer terminal.
 pub enum Event {
@@ -99,7 +99,13 @@ pub fn run() -> Result<()> {
     )?;
     let events_log = watch::server_log(&app.server, &state_dir)?;
     app.events_log = Some(events_log.clone());
-    let git = watch::start(&app.server, events_log, &state_dir, &tx)?;
+    let git = watch::start(
+        &app.server,
+        events_log,
+        Arc::clone(&app.agy_running),
+        &state_dir,
+        &tx,
+    )?;
 
     // Only now may another thread read stdin (ratatui has finished its queries).
     std::thread::spawn(move || {

@@ -38,7 +38,9 @@ use ratatui::layout::Rect;
 use ratatui::style::Color;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::Sender;
+use std::sync::Arc;
 
 /// Rows above the terminals taken by the tab bar.
 pub const TAB_BAR_ROWS: u16 = 1;
@@ -239,6 +241,10 @@ pub struct App {
     /// The server's hook event log, where status reports go too (see
     /// [`App::record_status`]); `None` until known.
     pub(super) events_log: Option<PathBuf>,
+    /// Whether an Antigravity session runs in one of paddock's terminals:
+    /// only then does the watcher read each terminal's command (see
+    /// [`Sessions::end_exited`]).
+    pub(super) agy_running: Arc<AtomicBool>,
     pub(super) sessions: Sessions,
     pub(super) task_status: TaskStatus,
     pub(super) task_details: TaskDetails,
@@ -344,6 +350,7 @@ impl App {
             start_dir,
             state_dir,
             events_log: None,
+            agy_running: Arc::new(AtomicBool::new(false)),
             sessions: Sessions::default(),
             task_status: TaskStatus::new(),
             task_details: TaskDetails::new(),

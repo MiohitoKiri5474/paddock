@@ -20,6 +20,8 @@ pub use dismissed::Dismissal;
 pub use external::{external_key, is_external};
 pub use kind::AgentKind;
 
+use crate::terminal::program_status::ProgramState;
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
@@ -115,6 +117,10 @@ pub struct HookRecord {
     /// `fullyIdle`: the turn is over and its background work done).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fully_idle: Option<bool>,
+    /// The state of a program status report (see [`STATUS`]); only
+    /// Antigravity's records have one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<ProgramState>,
     /// Milliseconds since the Unix epoch.
     pub ts: u64,
     /// The agent the hook ran for. Left out of the log for Claude, so old
@@ -152,7 +158,7 @@ pub fn finishes_turn(r: &HookRecord) -> bool {
         AgentKind::Gemini => r.event == "AfterAgent",
         AgentKind::Agy => match r.event.as_str() {
             "Stop" => r.fully_idle == Some(true),
-            STATUS => matches!(status(r), Some("done" | "error")),
+            STATUS => matches!(r.status, Some(ProgramState::Done | ProgramState::Error)),
             _ => false,
         },
     }
@@ -170,6 +176,16 @@ pub fn alerts_each_turn(r: &HookRecord) -> bool {
     }
 }
 
+/// Whether an idle `r` alerts: for Claude and Gemini, unless it starts a
+/// conversation; for Antigravity, only when it finishes a turn (agy
+/// reports `idle` at start and as it quits, with nothing done).
+pub fn alerts_idle(r: &HookRecord) -> bool {
+    match r.kind {
+        AgentKind::Claude | AgentKind::Gemini => !restarts(r),
+        AgentKind::Agy => finishes_turn(r),
+    }
+}
+
 /// Whether `r` ends the conversation (any `SessionEnd`, `/clear` included,
 /// for Claude and Gemini alike), whether or not the session goes on.
 /// Antigravity sends no such event: its session ends when its terminal
@@ -183,8 +199,8 @@ fn ends_conversation(r: &HookRecord) -> bool {
 
 /// The event of a program status report (OSC 7501) Antigravity wrote in a
 /// terminal of paddock's: paddock records it in the server's log as if a
-/// hook had, its state (`working`, `blocked`, `done`, ...) in
-/// `notification_type`. Never a hook's event name.
+/// hook had, its state in [`HookRecord::status`]. Never a hook's event
+/// name.
 pub const STATUS: &str = "OSC7501";
 
 /// The `app` Antigravity names itself in its status reports.
@@ -193,20 +209,20 @@ pub const AGY_APP: &str = "antigravity";
 /// The record of a status report with `state` from program `app`, written
 /// in pane `pane` at `ts` (ms): `None` unless Antigravity wrote it (other
 /// programs report too, and say nothing of a session).
-pub fn status_record(pane: &str, app: Option<&str>, state: &str, ts: u64) -> Option<HookRecord> {
+pub fn status_record(
+    pane: &str,
+    app: Option<&str>,
+    state: ProgramState,
+    ts: u64,
+) -> Option<HookRecord> {
     (app == Some(AGY_APP)).then(|| HookRecord {
         event: STATUS.to_string(),
         pane: pane.to_string(),
-        notification_type: Some(state.to_string()),
+        status: Some(state),
         kind: AgentKind::Agy,
         ts,
         ..HookRecord::default()
     })
-}
-
-/// The state of a [`STATUS`] record.
-fn status(r: &HookRecord) -> Option<&str> {
-    r.notification_type.as_deref()
 }
 
 /// The session state an event leads to, if it changes it.
@@ -265,11 +281,11 @@ fn agy_state(r: &HookRecord) -> Option<State> {
         "SessionStart" => State::Idle,
         "PreInvocation" => State::Running,
         "Stop" if r.fully_idle == Some(true) => State::Idle,
-        STATUS => match status(r)? {
-            "working" => State::Running,
-            "blocked" => State::Waiting,
-            "done" | "error" | "idle" => State::Idle,
-            _ => return None,
+        STATUS => match r.status? {
+            ProgramState::Working => State::Running,
+            ProgramState::Blocked => State::Waiting,
+            ProgramState::Done | ProgramState::Error | ProgramState::Idle => State::Idle,
+            ProgramState::Clear => return None,
         },
         _ => return None,
     })
@@ -394,6 +410,9 @@ pub struct Session {
     pub alive: u64,
     /// Subagents seen, in the order they reached their current branch.
     subagents: Vec<Subagent>,
+    /// The state of the last status report recorded for it (see
+    /// [`Sessions::record_status`]).
+    status: Option<ProgramState>,
 }
 
 impl Session {
@@ -414,6 +433,7 @@ impl Session {
             hooked: None,
             alive: 0,
             subagents: Vec::new(),
+            status: None,
         }
     }
 
@@ -692,6 +712,9 @@ impl Sessions {
         }
         s.kind = r.kind;
         s.alive = s.alive.max(r.ts);
+        if r.status.is_some() {
+            s.status = r.status;
+        }
         // A subagent's directory is its worktree, not the session's.
         if r.cwd.is_some() && r.agent_id.is_none() {
             s.cwd.clone_from(&r.cwd);
@@ -730,6 +753,28 @@ impl Sessions {
             }
         }
         true
+    }
+
+    /// Whether a status report `state` from pane `pane` is worth recording:
+    /// the pane runs a live Antigravity session, and its last report
+    /// recorded said something else. Notes it as recorded if so.
+    pub fn record_status(&mut self, pane: &str, state: ProgramState) -> bool {
+        let Some(s) = self.by_pane.get_mut(pane) else {
+            return false;
+        };
+        let new = s.kind == AgentKind::Agy && !s.ended() && s.status != Some(state);
+        if new {
+            s.status = Some(state);
+        }
+        new
+    }
+
+    /// Whether an Antigravity session runs in one of paddock's terminals,
+    /// so it may quit back to the shell (see [`Sessions::end_exited`]).
+    pub fn agy_in_terminals(&self) -> bool {
+        self.by_pane
+            .iter()
+            .any(|(k, s)| !is_external(k) && s.kind == AgentKind::Agy && !s.ended())
     }
 
     /// End each Antigravity session whose terminal's command was a shell
@@ -806,15 +851,18 @@ impl Sessions {
     }
 }
 
-/// Whether `command` (a pane's `pane_current_command`) is a shell, as
-/// tmux's tab names tell them apart (`-zsh`, `bash`, `fish`, `sh`, ...).
+/// Whether `command` (a pane's `pane_current_command`) is a shell: a
+/// login shell's name starts with `-`.
 pub fn is_shell(command: &str) -> bool {
     let name = command.strip_prefix('-').unwrap_or(command);
-    matches!(
-        name,
-        "sh" | "bash" | "zsh" | "fish" | "dash" | "ksh" | "tcsh" | "csh"
-    )
+    SHELLS.contains(&name)
 }
+
+/// The shells [`is_shell`] knows.
+const SHELLS: &[&str] = &[
+    "sh", "bash", "zsh", "fish", "dash", "ksh", "mksh", "oksh", "yash", "tcsh", "csh", "nu",
+    "xonsh", "elvish", "pwsh", "ion", "osh", "ysh",
+];
 
 /// A session row's label: the session name if set, else the tab name
 /// (`None` while it still has its default name), else the directory name,
@@ -1059,6 +1107,7 @@ mod tests {
 
     /// Antigravity's status report `state` in pane `%1` at `ts`.
     pub(super) fn agy_status(state: &str, ts: u64) -> HookRecord {
+        let state = ProgramState::parse(state).unwrap();
         status_record("%1", Some(AGY_APP), state, ts).unwrap()
     }
 
@@ -1119,14 +1168,19 @@ mod tests {
 
     #[test]
     fn only_antigravitys_status_reports_are_recorded() {
-        let r = status_record("%3", Some("antigravity"), "blocked", 7).unwrap();
+        let blocked = ProgramState::Blocked;
+        let r = status_record("%3", Some("antigravity"), blocked, 7).unwrap();
         assert_eq!(r.event, STATUS);
         assert_eq!(r.pane, "%3");
         assert_eq!(r.kind, AgentKind::Agy);
-        assert_eq!(r.notification_type.as_deref(), Some("blocked"));
+        assert_eq!(r.status, Some(blocked));
+        assert_eq!(r.notification_type, None);
         assert_eq!(r.ts, 7);
-        assert_eq!(status_record("%3", Some("brew"), "blocked", 7), None);
-        assert_eq!(status_record("%3", None, "blocked", 7), None);
+        let line = serde_json::to_string(&r).unwrap();
+        assert!(line.contains(r#""status":"blocked""#), "{line}");
+        assert_eq!(serde_json::from_str::<HookRecord>(&line).unwrap(), r);
+        assert_eq!(status_record("%3", Some("brew"), blocked, 7), None);
+        assert_eq!(status_record("%3", None, blocked, 7), None);
     }
 
     #[test]
@@ -1175,6 +1229,65 @@ mod tests {
         assert_eq!(label(session, None), "repo");
         s.see("%1");
         assert_eq!(state(&s), State::Idle);
+    }
+
+    #[test]
+    fn only_a_new_report_for_a_live_agy_session_is_recorded() {
+        let (blocked, working) = (ProgramState::Blocked, ProgramState::Working);
+        let mut s = Sessions::default();
+        assert!(!s.record_status("%1", blocked), "no session");
+        s.apply(&rec("SessionStart", 1));
+        assert!(!s.record_status("%1", blocked), "Claude's");
+        s.apply(&agy("SessionStart", 2));
+        assert!(s.record_status("%1", blocked));
+        assert!(!s.record_status("%1", blocked), "said already");
+        assert!(s.record_status("%1", working));
+        // Folding a recorded report notes it too, as on a replay.
+        s.apply(&agy_status("blocked", 3));
+        assert!(!s.record_status("%1", blocked));
+        // A new conversation starts over.
+        s.apply(&HookRecord {
+            session_id: Some("next".into()),
+            ..agy("SessionStart", 4)
+        });
+        assert!(s.record_status("%1", blocked));
+        let shells = HashMap::from([("%1".to_string(), "zsh".to_string())]);
+        s.end_exited(10, &shells);
+        assert!(!s.record_status("%1", working), "ended");
+    }
+
+    #[test]
+    fn agy_in_terminals_counts_only_live_agy_sessions_in_panes() {
+        let mut s = Sessions::default();
+        s.apply(&rec("SessionStart", 1));
+        assert!(!s.agy_in_terminals());
+        s.apply(&HookRecord {
+            pane: "%2".into(),
+            ..agy("SessionStart", 2)
+        });
+        assert!(s.agy_in_terminals());
+        let shells = HashMap::from([("%2".to_string(), "zsh".to_string())]);
+        s.end_exited(10, &shells);
+        assert!(!s.agy_in_terminals(), "ended");
+        let external = log::keyed_external(HookRecord {
+            pane: String::new(),
+            ..agy("SessionStart", 20)
+        })
+        .unwrap();
+        s.apply(&external);
+        assert!(!s.agy_in_terminals(), "external");
+    }
+
+    #[test]
+    fn shells_are_known_by_name() {
+        for shell in [
+            "zsh", "-zsh", "bash", "fish", "sh", "nu", "xonsh", "elvish", "pwsh",
+        ] {
+            assert!(is_shell(shell), "{shell}");
+        }
+        for other in ["agy", "node", "vim", "zshx", "", "-"] {
+            assert!(!is_shell(other), "{other}");
+        }
     }
 
     #[test]

@@ -11,11 +11,12 @@ use super::state::{App, Mode};
 use super::Event;
 use crate::config::Notify;
 use crate::hooks::now_ms;
-use crate::sessions::{self, is_external, log, state_after, HookRecord, State};
+use crate::sessions::{self, is_external, log, state_after, AgentKind, HookRecord, State};
 use crate::terminal::program_status::Report;
 use std::collections::HashMap;
 use std::io::Read;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 /// The AppleScript that shows a notification; its message is the script's
@@ -99,7 +100,7 @@ impl Alerts {
         let alert = match state_after(r) {
             Some(State::Waiting) => Alert::Waiting,
             // A new session starting idle has not finished anything.
-            Some(State::Idle) if !sessions::restarts(r) => Alert::Idle,
+            Some(State::Idle) if sessions::alerts_idle(r) => Alert::Idle,
             _ => {
                 // Work went on: the next alert is new. A subagent working on
                 // ends its wait, but not the main agent's finished turn.
@@ -125,9 +126,14 @@ impl Alerts {
             .clone()
             .or_else(|| last.and_then(|(s, _)| s.clone()));
         // Stop ends one turn each time; other idle events only remind of it.
-        // An event naming no conversation (Antigravity's status reports)
-        // is about the pane's, whichever it is.
-        let same = |s: &Option<String>| s.is_none() || session.is_none() || *s == session;
+        // Antigravity's status reports name no conversation: for agy, one
+        // side naming none is the pane's, whichever it is.
+        let loose = match r.kind {
+            AgentKind::Claude | AgentKind::Gemini => false,
+            AgentKind::Agy => true,
+        };
+        let same =
+            |s: &Option<String>| *s == session || (loose && (s.is_none() || session.is_none()));
         let repeat =
             !sessions::alerts_each_turn(r) && last.is_some_and(|(s, a)| same(s) && *a == alert);
         self.last.insert(r.pane.clone(), (session, alert));
@@ -229,17 +235,27 @@ impl App {
     /// (whose records reach the log first when they happened first), and
     /// replay with them when paddock opens again. They name no
     /// conversation (agy's reports do not say), so they belong to whichever
-    /// the pane runs when folded.
+    /// the pane runs when folded. Only a report for a live agy session in
+    /// the pane, saying something new, is recorded.
     pub(super) fn record_status(&mut self, pane: &str, reports: &[Report]) {
         let Some(path) = self.events_log.clone() else {
             return;
         };
         let ts = now_ms();
         for r in reports {
-            if let Some(record) = sessions::status_record(pane, r.app.as_deref(), &r.state, ts) {
+            let Some(record) = sessions::status_record(pane, r.app.as_deref(), r.state, ts) else {
+                continue;
+            };
+            if self.sessions.record_status(pane, r.state) {
                 self.report(|_| log::append(&path, &record));
             }
         }
+    }
+
+    /// Tell the watcher whether an Antigravity session runs in a terminal.
+    pub(super) fn note_agy_running(&self) {
+        let running = self.sessions.agy_in_terminals();
+        self.agy_running.store(running, Ordering::Relaxed);
     }
 
     /// `C-a a`: jump to the next session that needs you.
@@ -352,6 +368,56 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::terminal::program_status::ProgramState;
+
+    fn agy_rec(event: &str) -> HookRecord {
+        HookRecord {
+            kind: AgentKind::Agy,
+            ..rec(event, "s")
+        }
+    }
+
+    fn agy_status(state: &str) -> HookRecord {
+        let state = ProgramState::parse(state).unwrap();
+        sessions::status_record("%1", Some("antigravity"), state, 0).unwrap()
+    }
+
+    #[test]
+    fn agys_idle_reports_never_alert_without_a_finished_turn() {
+        // Started, then quit without a prompt: agy reports idle both times.
+        let got = alerts(&[
+            agy_rec("SessionStart"),
+            agy_status("idle"),
+            agy_status("idle"),
+        ]);
+        assert_eq!(got, [None, None, None]);
+        let busy = HookRecord {
+            fully_idle: Some(false),
+            ..agy_rec("Stop")
+        };
+        assert_eq!(alerts(&[agy_rec("PreInvocation"), busy]), [None, None]);
+    }
+
+    #[test]
+    fn claude_after_agy_in_a_pane_alerts_as_ever() {
+        // agy's turn ends (a report naming no conversation), then Claude
+        // runs in the same terminal: its first idle reminder is new.
+        let idle_prompt = HookRecord {
+            notification_type: Some("idle_prompt".into()),
+            ..rec("Notification", "c")
+        };
+        let got = alerts(&[
+            agy_rec("PreInvocation"),
+            agy_status("done"),
+            rec("SessionStart", "c"),
+            idle_prompt.clone(),
+            idle_prompt,
+        ]);
+        assert_eq!(
+            got,
+            [None, Some(Alert::Idle), None, Some(Alert::Idle), None]
+        );
+    }
 
     fn rec(event: &str, session: &str) -> HookRecord {
         HookRecord {
@@ -496,8 +562,10 @@ mod tests {
             ..agy("Stop")
         };
         // A status report names no conversation: it is the pane's.
-        let status =
-            |state: &str| sessions::status_record("%1", Some("antigravity"), state, 0).unwrap();
+        let status = |state: &str| {
+            let state = ProgramState::parse(state).unwrap();
+            sessions::status_record("%1", Some("antigravity"), state, 0).unwrap()
+        };
         let got = alerts(&[
             agy("SessionStart"),
             agy("PreInvocation"),

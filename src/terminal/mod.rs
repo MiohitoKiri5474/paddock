@@ -156,7 +156,7 @@ mod tests {
         t.output(b"\x1b]7501;state=working:app=antigravity\x07");
         let got = t.take_reports();
         assert_eq!(got.len(), 1);
-        assert_eq!(got[0].state, "working");
+        assert_eq!(got[0].state, program_status::ProgramState::Working);
         assert!(t.take_reports().is_empty(), "taken once");
         t.go_on();
         assert!(t.take_reports().is_empty(), "not again when it goes on");

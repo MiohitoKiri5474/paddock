@@ -14,7 +14,9 @@ use crate::worktree::space_dir;
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// How often to look for new hook events.
@@ -159,12 +161,14 @@ fn parse_commands(out: &str) -> HashMap<String, String> {
 }
 
 /// Start the threads, reading the server's hook events from `server_log`
-/// (see [`server_log`]). They end when the event loop goes away. Returns
-/// where to send the tasks on screen: each list is read at once, then
-/// every [`GIT_POLL`] until the next one.
+/// (see [`server_log`]), and each terminal's command while `agy_running`
+/// says an Antigravity session runs in one. They end when the event loop
+/// goes away. Returns where to send the tasks on screen: each list is read
+/// at once, then every [`GIT_POLL`] until the next one.
 pub fn start(
     server: &Server,
     server_log: PathBuf,
+    agy_running: Arc<AtomicBool>,
     state_dir: &Path,
     tx: &Sender<Event>,
 ) -> Result<Sender<Watched>> {
@@ -200,7 +204,11 @@ pub fn start(
         // Whether Antigravity quit back to the shell (see
         // `Sessions::end_exited`).
         let taken = now_ms();
-        if let Some(commands) = pane_commands(&agents_server) {
+        let commands = agy_running
+            .load(Ordering::Relaxed)
+            .then(|| pane_commands(&agents_server))
+            .flatten();
+        if let Some(commands) = commands {
             if events.send(Event::Commands(taken, commands)).is_err() {
                 break;
             }

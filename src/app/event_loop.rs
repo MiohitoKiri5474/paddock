@@ -171,6 +171,7 @@ fn handle(
         Event::Detach => Ok((Flow::Quit, true)),
         Event::Hooks(records) => {
             app.hooks(&records);
+            app.note_agy_running();
             Ok((Flow::Continue, true))
         }
         Event::Agents(taken, agents) => {
@@ -189,6 +190,7 @@ fn handle(
         }
         Event::Commands(taken, commands) => {
             let ended = app.sessions.end_exited(taken, &commands);
+            app.note_agy_running();
             Ok((Flow::Continue, ended))
         }
         Event::Git(read) => {

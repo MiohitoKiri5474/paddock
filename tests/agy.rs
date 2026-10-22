@@ -204,6 +204,58 @@ fn reports_from_other_programs_or_without_a_session_change_nothing() {
     assert!(sandbox.notifications().is_empty());
 }
 
+/// Every line of the sandbox's server hook logs (not the external one).
+fn server_log(sandbox: &Sandbox) -> String {
+    std::fs::read_dir(sandbox.path("state/paddock/events"))
+        .map(|dir| {
+            dir.map(|e| e.unwrap().path())
+                .filter(|p| p.file_name().is_some_and(|n| n != "external.jsonl"))
+                .map(|p| std::fs::read_to_string(p).unwrap())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[test]
+fn reports_from_a_terminal_without_an_agy_session_are_not_recorded() {
+    let sandbox = Sandbox::new();
+    let paddock = ready(&sandbox);
+    write_to(&sandbox, "space-1:0", &status("blocked", Some("auth")));
+    // A Claude session in the terminal: agy's report is still not its.
+    let start = r#"{"session_id":"c1","cwd":"/tmp/repo","source":"startup"}"#;
+    sandbox.hook("space-1:0", "SessionStart", start);
+    wait_row(&paddock, "Claude's row", &["● repo", "idle"]);
+    write_to(&sandbox, "space-1:0", &status("working", None));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let log = server_log(&sandbox);
+    assert!(log.contains("SessionStart"), "{log}");
+    assert!(!log.contains("OSC7501"), "{log}");
+    assert!(row_with(&paddock, &["● repo", "idle"]));
+}
+
+#[test]
+fn agy_quitting_without_a_prompt_does_not_notify() {
+    let sandbox = Sandbox::new();
+    stub_agy(&sandbox);
+    let mut paddock = ready(&sandbox);
+    paddock.command(b"c");
+    paddock.wait_for_current_tab("2:home");
+    paddock.wait_for_text(PROMPT);
+    start_agy(&sandbox, &paddock, "space-1:0");
+    agy(&sandbox, "space-1:0", &["SessionStart"]);
+    wait_row(&paddock, "idle", &["● repo", "idle"]);
+    // What agy writes as it quits, twice over: the second is not recorded.
+    write_to(&sandbox, "space-1:0", &status("idle", None));
+    write_to(&sandbox, "space-1:0", &status("idle", None));
+    sandbox.tmux(&["send-keys", "-t", "space-1:0", "C-c"]);
+    paddock.wait_for("the session left", |_| {
+        !paddock.full_screen().contains("● repo")
+    });
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    assert!(sandbox.notifications().is_empty());
+    assert_eq!(server_log(&sandbox).matches("OSC7501").count(), 1);
+}
+
 #[test]
 fn paddocks_terminals_ask_agy_for_its_status_reports() {
     let sandbox = Sandbox::new();
