@@ -212,11 +212,11 @@ mod tests {
     }
 
     /// Gemini has no snapshot: only its hooks keep an external session
-    /// alive. Waiting on you, it stays however long it waits; quiet in any
-    /// other state for longer than the timeout, it leaves until its next
-    /// hook.
+    /// alive. Waiting on you, it outlasts the timeout (up to a day, see the
+    /// next test); quiet in any other state for longer than the timeout, it
+    /// leaves until its next hook.
     #[test]
-    fn an_external_gemini_session_waiting_never_times_out() {
+    fn an_external_gemini_session_waiting_outlasts_the_timeout() {
         let gemini = |event: &str, ts| HookRecord {
             kind: AgentKind::Gemini,
             notification_type: Some("ToolPermission".into()),
