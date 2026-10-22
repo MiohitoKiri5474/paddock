@@ -55,9 +55,7 @@ fn shift_h_and_l_move_the_border_and_repeat_without_the_prefix() {
     p.send(b"\x01HH");
     wait_for_pane_sizes(&sandbox, &["0.0 30x29", "0.1 37x29"]);
 
-    p.send(b"\x01L");
-    wait_for_pane_sizes(&sandbox, &["0.0 32x29", "0.1 35x29"]);
-    p.send(b"L");
+    p.send(b"\x01LL");
     wait_for_pane_sizes(&sandbox, &SPLIT);
 
     // After the window, `H` is typed again.

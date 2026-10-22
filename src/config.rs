@@ -631,6 +631,8 @@ mod tests {
     fn the_printed_default_keys_read_back_as_the_defaults() {
         let text = default_keys_toml();
         assert!(text.contains("[keys.commands]\nnew_tab = \"c\""), "{text}");
+        assert!(text.contains("resize_left = \"H\""), "{text}");
+        assert!(text.contains("repeat_ms = 500"), "{text}");
         assert!(
             text.contains("[keys.direct]\nnew_tab = \"C-M-c\""),
             "{text}"
