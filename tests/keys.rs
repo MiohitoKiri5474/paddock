@@ -97,7 +97,7 @@ fn the_help_shows_remapped_keys_and_not_unbound_ones() {
     paddock.command(b"?");
     paddock.wait_for("help", |_| paddock.full_screen().contains("paddock keys"));
     let help = paddock.full_screen();
-    assert!(help.contains("t      new tab in this space"), "{help}");
+    assert!(help.contains("t       new tab in this space"), "{help}");
     assert!(!help.contains("detach"), "{help}");
 }
 
