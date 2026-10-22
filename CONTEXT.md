@@ -21,7 +21,7 @@ The space whose tabs the tab bar shows. It has its own background in the sidebar
 One page of a space, holding one or more terminals arranged as splits. It is a tmux window of the space's session.
 
 **Split**:
-One of a tab's terminals, beside or above another. It is a tmux pane; tmux keeps the layout.
+A terminal sharing its tab with others, beside or above them. It is a tmux pane; tmux keeps the layout.
 _Avoid_: window (that is a tab)
 
 **Zoom**:
@@ -29,7 +29,7 @@ A split filling its tab for a while (`C-a z`), the others hidden but running; th
 _Avoid_: maximise, fullscreen
 
 **Terminal**:
-One shell inside paddock, shown in a tab or a split. It is a tmux pane and keeps running when paddock is closed.
+One shell inside paddock, shown in a tab, alone or with others. It is a tmux pane and keeps running when paddock is closed.
 _Avoid_: tmux session
 
 **Sidebar**:
