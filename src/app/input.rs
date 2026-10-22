@@ -139,6 +139,7 @@ impl App {
             Command::GoToTab(i) => self.report(|app| app.select_tab(i)),
             Command::RenameTab => self.start_naming(NameTarget::Rename(Renamed::Tab)),
             Command::RenameSpace => self.start_naming(NameTarget::Rename(Renamed::Space)),
+            Command::SetRoot => self.report(|app| app.set_root()),
             Command::Close => {
                 if let Some(pane) = self.current_pane() {
                     self.report(|app| app.close(&pane));

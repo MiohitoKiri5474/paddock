@@ -61,7 +61,8 @@ pub fn lines(keys: &Keymap, floats: &Floats) -> Vec<String> {
         format!("{:<LABEL$} float: {command}{cut}", f.key.name())
     }));
     out.extend(two_columns(&cells));
-    out.push(String::new());
+    // No blank line before the panels' keys: their titles set them apart,
+    // and the help must fit 80x24.
     out.extend(wrapped("Sidebar:   ", &keys.sidebar.hints()));
     out.extend(wrapped("Dashboard: ", &keys.dashboard.hints()));
     let prompt: Vec<String> = PROMPT_KEYS.iter().map(|k| k.to_string()).collect();
@@ -179,6 +180,7 @@ mod tests {
             .iter()
             .any(|x| x.contains("x      close pane (asks if busy)")));
         assert!(l.iter().any(|x| x.contains("1...9  go to tab")));
+        assert!(l.iter().any(|x| x.contains("R      set space root here")));
         assert!(l
             .iter()
             .any(|x| x.contains("g      find a space, tab or agent")));

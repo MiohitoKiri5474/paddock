@@ -17,7 +17,7 @@ use super::space::Space;
 use super::watch::Place;
 use super::worktrees::{DeleteQuestion, WorktreeList};
 use super::Event;
-use crate::config::{Config, Floats, Worktrees};
+use crate::config::{Config, Floats, NewTabDir, Worktrees};
 use crate::git::WorkingTree;
 use crate::hooks::now_ms;
 use crate::input::keymap::Keymap;
@@ -28,7 +28,7 @@ use crate::terminal::Terminal;
 use crate::tmux::structure::Window;
 use crate::tmux::Server;
 use crate::ui::tab_bar::TabColors;
-use crate::worktree::{Risks, WorktreeSpace};
+use crate::worktree::{space_root, Risks, WorktreeSpace};
 use anyhow::Result;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
@@ -261,6 +261,8 @@ pub struct App {
     pub(super) float_panes: HashSet<String>,
     /// Where new worktrees are checked out.
     pub(super) worktrees: Worktrees,
+    /// Where new tabs and splits start.
+    pub(super) new_tab_dir: NewTabDir,
 }
 
 /// The part of a screen of `(cols, rows)` that shows the current tab's
@@ -343,6 +345,7 @@ impl App {
             float: None,
             float_panes: HashSet::new(),
             worktrees: config.worktrees.clone(),
+            new_tab_dir: config.new_tab_dir,
         };
         app.load_dismissed();
         app.open_spaces()?;
@@ -493,6 +496,21 @@ impl App {
         self.current_pane()
             .and_then(|p| self.dir_of(&p))
             .unwrap_or_else(|| self.start_dir.clone())
+    }
+
+    /// Where a new tab or split of the current space starts: with
+    /// `[spaces] new_tab_dir = "root"`, the space's root (else, if that is
+    /// gone, [`Self::new_dir`]); by default, [`Self::new_dir`].
+    pub(super) fn tab_dir(&self) -> PathBuf {
+        let root = match self.new_tab_dir {
+            NewTabDir::Current => None,
+            NewTabDir::Root => self
+                .current_space()
+                .and_then(|s| space_root(&self.server, &s.id))
+                .map(PathBuf::from)
+                .filter(|p| p.is_dir()),
+        };
+        root.unwrap_or_else(|| self.new_dir())
     }
 
     /// The Claude session in pane `pane`, if any.

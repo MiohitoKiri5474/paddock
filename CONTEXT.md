@@ -10,6 +10,10 @@ paddock is a terminal workspace for running Claude Code. It keeps your terminals
 A named group of tabs you create to organise work, listed in the sidebar's SPACES section. It is a tmux session on the hidden server.
 _Avoid_: workspace, project, group, category
 
+**Space root**:
+A space's own directory: the one it was made in (a worktree space's worktree), until `C-a R` makes it the focused terminal's. New tabs and splits can start there (`[spaces] new_tab_dir = "root"`). A space made before roots uses its first tab's directory. Not the **Main checkout**, which belongs to a repository, not a space.
+_Avoid_: root (alone), home, base (that is a branch), project directory
+
 **Current space**:
 The space whose tabs the tab bar shows. It has its own background in the sidebar.
 
