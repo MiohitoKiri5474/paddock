@@ -42,12 +42,18 @@ impl App {
             .enumerate()
             .map(|(i, space)| {
                 let place = self.places.get(&space.id);
+                // Read for it by the same pair (see `App::prs_wanted`).
+                let pr = place.and_then(|p| {
+                    let key = (p.path.clone(), p.branch.clone()?);
+                    self.task_prs.get(&key).cloned()
+                });
                 SpaceLine {
                     name: space.name().to_string(),
                     state: most_urgent(rows, |r| r.space == space.id),
                     current: i == self.current,
                     path: place.map(|p| home.show(&p.path)),
                     branch: place.and_then(|p| p.branch.clone()),
+                    pr,
                     linked: false,
                 }
             })

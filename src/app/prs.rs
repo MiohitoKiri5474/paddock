@@ -1,17 +1,19 @@
-//! The pull requests of the dashboard's task rows (ticket 36), read with
-//! `gh` on a thread of their own, so a slow `gh` never holds up the
-//! screen nor git's reads. One `gh pr list` per repository (its main
-//! checkout: worktrees of one repository share it), cached for
-//! `[github] refresh_secs`, and asked again when the dashboard opens if
-//! what was read is older than [`REOPEN_FLOOR`]. Repositories are asked
-//! one after another (each up to gh's 5 s limit); a pass stops early once
-//! the dashboard closes. While it is closed, nothing is asked. A
+//! The pull requests of the dashboard's task rows (ticket 36) and of the
+//! sidebar's spaces (ticket 37), read with `gh` on a thread of their own,
+//! so a slow `gh` never holds up the screen nor git's reads. One `gh pr
+//! list` per repository (its main checkout: worktrees of one repository
+//! share it), cached for `[github] refresh_secs`, and asked again when
+//! the dashboard opens if what was read is older than [`REOPEN_FLOOR`].
+//! Repositories are asked one after another (each up to gh's 5 s limit);
+//! a pass stops early once the dashboard closes or nothing shows PRs.
+//! While the sidebar is hidden and the dashboard closed, nothing is
+//! asked. A
 //! repository `gh` cannot answer for (no `gh`, logged out, no GitHub
 //! remote, failed, too slow) has no PR status until it can, and logs one
 //! line to `gh.log` in the state directory, not again until it has
 //! answered.
 
-use super::watch::Watched;
+use super::watch::Tasks;
 use super::Event;
 use crate::git;
 use crate::github::{self, Pr, Prs};
@@ -175,42 +177,60 @@ fn log(path: &Path, lines: &[String]) {
         .and_then(|mut f| std::io::Write::write_all(&mut f, text.as_bytes()));
 }
 
-/// Take `inbox` (what came, oldest first) into `watched`: the latest list
+/// What shows PRs now: the open dashboard's tasks and, while the sidebar
+/// shows, each space's directory and branch; empty while neither shows.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Wanted {
+    /// `(directory, branch)` pairs, each once.
+    pub tasks: Tasks,
+    /// The dashboard is open (opening it asks again past the floor).
+    pub dashboard: bool,
+}
+
+/// Take `inbox` (what came, oldest first) into `wanted`: the latest list
 /// wins, and the dashboard opened if it is open now and was closed before
 /// or anywhere in between (a close and a reopen queued behind a slow gh
 /// still count).
-fn take(watched: &mut Watched, inbox: Vec<Watched>, cache: &mut Cache) {
-    let mut closed = !watched.details;
+fn take(wanted: &mut Wanted, inbox: Vec<Wanted>, cache: &mut Cache) {
+    let mut closed = !wanted.dashboard;
     for w in inbox {
-        if w.details && closed {
+        if w.dashboard && closed {
             cache.opened(Instant::now());
         }
-        closed = !w.details;
-        *watched = w;
+        closed = !w.dashboard;
+        *wanted = w;
     }
+}
+
+/// Whether a pass reading for `now` should stop before its next repository,
+/// told `latest`: nothing shows PRs any more, or the dashboard closed
+/// (what is left to read may be its tasks only; the next pass reads what
+/// still shows).
+fn stops(now: &Wanted, latest: Option<&Wanted>) -> bool {
+    latest.is_some_and(|w| w.tasks.is_empty() || (now.dashboard && !w.dashboard))
 }
 
 /// Start the thread, reading every `refresh` (none if zero: PR status is
 /// off and `gh` never runs) and logging to `log_path`. It reads only while
-/// the dashboard is open (`Watched::details`), and sends what it read as
-/// [`Event::Prs`]. Returns where to send what is watched.
-pub fn start(refresh: Duration, log_path: PathBuf, tx: &Sender<Event>) -> Option<Sender<Watched>> {
+/// something shows PRs (see [`Wanted`]), and sends what it read as
+/// [`Event::Prs`]. Returns where to send what is wanted.
+pub fn start(refresh: Duration, log_path: PathBuf, tx: &Sender<Event>) -> Option<Sender<Wanted>> {
     if refresh.is_zero() {
         return None;
     }
-    let (watch_tx, watch_rx) = mpsc::channel::<Watched>();
+    let (watch_tx, watch_rx) = mpsc::channel::<Wanted>();
     let events = tx.clone();
     std::thread::spawn(move || run(&watch_rx, &events, refresh, &log_path));
     Some(watch_tx)
 }
 
 /// The thread's loop, until the app goes away.
-fn run(watch_rx: &Receiver<Watched>, events: &Sender<Event>, refresh: Duration, log_path: &Path) {
+fn run(watch_rx: &Receiver<Wanted>, events: &Sender<Event>, refresh: Duration, log_path: &Path) {
     let mut cache = Cache::new(refresh);
-    let mut watched = Watched::default();
-    let mut sent: Option<Vec<(String, String)>> = None;
+    let mut wanted = Wanted::default();
+    let mut sent: Option<Tasks> = None;
     // What came during the last pass, not taken yet.
-    let mut inbox: Vec<Watched> = Vec::new();
+    let mut inbox: Vec<Wanted> = Vec::new();
     loop {
         if inbox.is_empty() {
             match watch_rx.recv_timeout(TICK) {
@@ -220,18 +240,17 @@ fn run(watch_rx: &Receiver<Watched>, events: &Sender<Event>, refresh: Duration, 
             }
         }
         inbox.extend(watch_rx.try_iter());
-        take(&mut watched, std::mem::take(&mut inbox), &mut cache);
-        // The gate: only the open dashboard's tasks are read. Ticket 37
-        // (the sidebar) widens it here: read while closed too, for the
-        // spaces' (root, branch) as well.
-        if !watched.details || watched.tasks.is_empty() {
+        take(&mut wanted, std::mem::take(&mut inbox), &mut cache);
+        // The gate: nothing is read while nothing shows PRs (the sidebar
+        // hidden and the dashboard closed).
+        if wanted.tasks.is_empty() {
             continue;
         }
-        let tasks = &watched.tasks;
-        // Before each repository, look whether the dashboard closed.
+        let tasks = &wanted.tasks;
+        // Before each repository, look whether what shows changed so.
         let stop = || {
             inbox.extend(watch_rx.try_iter());
-            inbox.last().is_some_and(|w| !w.details)
+            stops(&wanted, inbox.last())
         };
         let (read, failures) = cache.refresh(tasks, Instant::now, repo_of, github::pr_list, stop);
         log(log_path, &failures);
@@ -391,10 +410,28 @@ mod tests {
     }
 
     #[test]
+    fn a_pass_stops_when_nothing_shows_or_the_dashboard_closes() {
+        let shows = |dashboard, tasks: &[(String, String)]| Wanted {
+            tasks: tasks.to_vec(),
+            dashboard,
+        };
+        let some = [task("/r", "feat/a")];
+        let open = shows(true, &some);
+        let sidebar = shows(false, &some);
+        assert!(!stops(&open, None), "nothing new");
+        assert!(!stops(&open, Some(&open)));
+        assert!(stops(&open, Some(&sidebar)), "the dashboard closed");
+        assert!(stops(&open, Some(&shows(false, &[]))), "nothing shows");
+        assert!(stops(&sidebar, Some(&shows(false, &[]))), "sidebar hidden");
+        assert!(!stops(&sidebar, Some(&sidebar)), "the sidebar still shows");
+        assert!(!stops(&sidebar, Some(&open)), "opening adds, not stops");
+    }
+
+    #[test]
     fn a_close_and_reopen_queued_together_count_as_opening() {
-        let open = |details| Watched {
-            details,
-            ..Watched::default()
+        let open = |dashboard| Wanted {
+            dashboard,
+            ..Wanted::default()
         };
         let mut cache = Cache::new(Duration::from_secs(60));
         let tasks = [task("/r", "feat/a")];
@@ -402,7 +439,7 @@ mod tests {
         cache.refresh(&tasks, at(t0), resolve, |_| Ok(Prs::new()), go);
         let mut watched = open(true);
         take(&mut watched, vec![open(false), open(true)], &mut cache);
-        assert!(watched.details);
+        assert!(watched.dashboard);
         assert!(cache.repos["/r"].due, "opened again");
         let mut cache = Cache::new(Duration::from_secs(60));
         cache.refresh(&tasks, at(t0), resolve, |_| Ok(Prs::new()), go);

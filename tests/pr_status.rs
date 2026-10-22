@@ -361,3 +361,112 @@ fn a_slow_gh_never_stalls_the_screen_and_is_given_up_after_5_s() {
     }
     assert!(gh_log(&sandbox)[0].contains("gh did not finish in 5s"));
 }
+
+// Ticket 37: the sidebar marks each space's branch's PR, read while the
+// dashboard is closed too, as long as the sidebar shows.
+
+/// A repository at `~/r` (short enough for the mark beside `feat/x` in
+/// the sidebar), on `feat/x`.
+fn home_repo(sandbox: &Sandbox) -> PathBuf {
+    let dir = sandbox.path("home/r");
+    std::fs::create_dir_all(&dir).unwrap();
+    git(&dir, &["init", "-q", "-b", "main"]);
+    commit(&dir, "one");
+    git(&dir, &["switch", "-q", "-c", "feat/x"]);
+    dir
+}
+
+/// The sidebar line naming `~/r`, spaces collapsed; empty if none.
+fn space_place(paddock: &Paddock) -> String {
+    paddock
+        .sidebar()
+        .iter()
+        .map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "))
+        .find(|l| l.starts_with("~/r"))
+        .unwrap_or_default()
+}
+
+/// Wait until the sidebar line naming `~/r` passes `pred`.
+fn wait_for_place(paddock: &Paddock, what: &str, pred: impl Fn(&str) -> bool) {
+    let start = Instant::now();
+    while !pred(&space_place(paddock)) {
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "{what}: {:?}",
+            paddock.sidebar()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// paddock with its first space's shell in `~/r`.
+fn in_home_repo(sandbox: &Sandbox) -> Paddock {
+    let mut paddock = sandbox.launch();
+    paddock.wait_for_text(PROMPT);
+    paddock.type_line("cd ~/r");
+    paddock
+}
+
+#[test]
+fn the_sidebar_marks_a_spaces_pr_with_the_dashboard_closed() {
+    let sandbox = Sandbox::new();
+    sandbox.set_gh(PRS);
+    let dir = home_repo(&sandbox);
+    let paddock = in_home_repo(&sandbox);
+    wait_for_place(&paddock, "feat/x's PR", |l| l == "~/r feat/x #123 ✓");
+    assert_eq!(sandbox.gh_calls(), [pr_list_in(&dir)], "one call");
+    assert!(!paddock.full_screen().contains(OPEN), "never opened");
+    let rows = paddock.sidebar();
+    let (y, line) = rows
+        .iter()
+        .enumerate()
+        .find(|(_, l)| l.contains("#123"))
+        .expect("drawn");
+    let x = line.chars().position(|c| c == '#').unwrap();
+    let (fg, _) = paddock.colors(y as u16, x as u16);
+    assert_eq!(fg, vt100::Color::Idx(2), "open is green");
+    // A branch without a PR: nothing extra.
+    sandbox.set_gh("[]");
+    git(&dir, &["switch", "-q", "-c", "feat/none"]);
+    wait_for_place(&paddock, "no mark", |l| l == "~/r feat/none");
+}
+
+#[test]
+fn with_the_sidebar_hidden_and_the_dashboard_closed_gh_is_never_asked() {
+    let sandbox = Sandbox::new();
+    sandbox.write_config("[github]\nrefresh_secs = 1\n");
+    sandbox.set_gh(PRS);
+    let dir = home_repo(&sandbox);
+    let mut paddock = sandbox.launch();
+    paddock.wait_for_text(PROMPT);
+    paddock.command(b"b");
+    paddock.wait_for("sidebar hidden", |_| paddock.left() == 0);
+    paddock.type_line("cd ~/r");
+    hold(Duration::from_secs(3));
+    assert!(sandbox.gh_calls().is_empty(), "{:?}", sandbox.gh_calls());
+    // Shown again: asked at once, then every second.
+    paddock.command(b"b");
+    wait_for_place(&paddock, "feat/x's PR", |l| l == "~/r feat/x #123 ✓");
+    let calls = sandbox.wait_for_gh_calls(2);
+    assert!(calls.iter().all(|c| *c == pr_list_in(&dir)), "{calls:?}");
+    // Hidden again: no more.
+    paddock.command(b"b");
+    paddock.wait_for("sidebar hidden", |_| paddock.left() == 0);
+    hold(Duration::from_millis(1500));
+    let before = sandbox.gh_calls().len();
+    hold(Duration::from_secs(3));
+    assert_eq!(sandbox.gh_calls().len(), before, "none while nothing shows");
+}
+
+#[test]
+fn refresh_secs_zero_marks_no_space_and_never_runs_gh() {
+    let sandbox = Sandbox::new();
+    sandbox.write_config("[github]\nrefresh_secs = 0\n");
+    sandbox.set_gh(PRS);
+    home_repo(&sandbox);
+    let paddock = in_home_repo(&sandbox);
+    wait_for_place(&paddock, "feat/x", |l| l == "~/r feat/x");
+    hold(Duration::from_secs(2));
+    assert_eq!(space_place(&paddock), "~/r feat/x");
+    assert!(sandbox.gh_calls().is_empty(), "{:?}", sandbox.gh_calls());
+}

@@ -7,7 +7,7 @@
 //!  ● api-server
 //!    ~/project/api  main
 //!    paddock
-//!    ~/project/paddock  feat/x
+//!    ~/p/paddock  feat/x  #42 ✓
 //!
 //!  AGENTS
 //!  ● api-server  waiting
@@ -20,7 +20,9 @@
 //!
 //! A space's dot shows the most urgent state of the agents in it (none
 //! without agents); its second line, dim, shows its directory and the git
-//! branch checked out there. A space in a linked worktree is listed one
+//! branch checked out there, then, at the end and only where it fits after
+//! both uncut, the branch's pull request: its number in its state's colour
+//! and its checks mark (`✓`, `✗`, `•`). A space in a linked worktree is listed one
 //! cell further in, under its repository's main-checkout space, or under
 //! a dim header with the repository's name when no space is in the main
 //! checkout:
@@ -43,7 +45,8 @@
 //! AGENTS under their own header, dim, their second line naming their branch
 //! (else their directory).
 
-use super::STATE_DOT;
+use super::{pr_style, STATE_DOT};
+use crate::github::Pr;
 use crate::sessions::{AgentKind, State};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -69,6 +72,9 @@ pub struct SpaceLine {
     pub path: Option<String>,
     /// The branch (or detached commit) checked out there, if a repository.
     pub branch: Option<String>,
+    /// That branch's pull request, if `gh` gave one: marked after the
+    /// branch where it fits.
+    pub pr: Option<Pr>,
     /// Its directory is a linked worktree: drawn one cell further in,
     /// under its repository.
     pub linked: bool,
@@ -301,8 +307,27 @@ impl Sidebar<'_> {
                 let s = &self.spaces[i];
                 let x = indent(name_x, s.linked);
                 let room = usize::from(end.saturating_sub(x));
-                if let Some(path) = &s.path {
-                    put(x, &place(path, s.branch.as_deref(), room), dim);
+                let Some(path) = &s.path else {
+                    return;
+                };
+                put(x, &place(path, s.branch.as_deref(), room), dim);
+                // The PR's mark at the end, only where it fits after the
+                // whole place: the directory and branch are never cut
+                // for it.
+                let Some(pr) = &s.pr else {
+                    return;
+                };
+                let number = format!("#{}", pr.number);
+                let checks = pr.checks.map(|c| format!(" {}", c.mark()));
+                let mark_width = number.width() + checks.as_deref().map_or(0, str::width);
+                let whole = path.width() + s.branch.as_deref().map_or(0, |b| b.width() + 2);
+                let width = |w: usize| u16::try_from(w).unwrap_or(u16::MAX);
+                let mark_x = end.saturating_sub(width(mark_width));
+                if mark_x > x.saturating_add(width(whole)) {
+                    let at = put(mark_x, &number, pr_style(pr.state));
+                    if let Some(checks) = &checks {
+                        put(at, checks, dim);
+                    }
                 }
             }
             Line::AgentPlace(i) => {
@@ -386,6 +411,7 @@ pub fn pick_at(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::github::{Checks, PrState};
 
     fn space(name: &str, state: Option<State>, current: bool) -> SpaceLine {
         SpaceLine {
@@ -394,6 +420,7 @@ mod tests {
             current,
             path: Some(format!("~/p/{name}")),
             branch: None,
+            pr: None,
             linked: false,
         }
     }
@@ -715,6 +742,79 @@ mod tests {
             buf[(17, top + 2)].modifier.contains(Modifier::DIM),
             "dim tag"
         );
+    }
+
+    fn pr(number: u64, state: PrState, checks: Option<Checks>) -> Pr {
+        Pr {
+            number,
+            state,
+            checks,
+            review: None,
+            url: String::new(),
+        }
+    }
+
+    /// A space in `path` on `branch`, with `pr`.
+    fn on(path: &str, branch: &str, pr: Option<Pr>) -> SpaceLine {
+        SpaceLine {
+            path: Some(path.into()),
+            branch: Some(branch.into()),
+            pr,
+            ..space("s", None, false)
+        }
+    }
+
+    #[test]
+    fn a_spaces_pr_is_marked_after_its_branch_only_where_it_fits() {
+        let open = Some(pr(123, PrState::Open, Some(Checks::Passing)));
+        let spaces = [
+            on("~/r", "feat/x", open.clone()),
+            // The whole place fills the line: no mark, nothing cut.
+            on("~/project/api", "main", open.clone()),
+            // Too long already: cut as before, never for the mark.
+            on("~/a/very/long/path", "feat/y", open),
+            on("~/r", "main", None),
+        ];
+        let buf = draw(&spaces, &[], None);
+        assert_eq!(text(&buf, 2), "   ~/r  feat/x  #123 ✓ │");
+        assert_eq!(text(&buf, 4), "   ~/project/api  main │");
+        assert_eq!(text(&buf, 6), "   …/long/path  feat/y │");
+        assert_eq!(text(&buf, 8), "   ~/r  main           │", "no PR: nothing");
+        // The number in its state's colour, the checks mark dim.
+        assert_eq!(buf[(16, 2)].fg, Color::Green);
+        assert!(!buf[(16, 2)].modifier.contains(Modifier::DIM));
+        assert!(buf[(21, 2)].modifier.contains(Modifier::DIM));
+    }
+
+    #[test]
+    fn a_prs_number_is_coloured_by_its_state() {
+        let mark = |state, checks| {
+            let buf = draw(&[on("~/r", "x", Some(pr(7, state, checks)))], &[], None);
+            let at = (0..23)
+                .find(|&x| buf[(x, 2)].symbol() == "#")
+                .expect("a mark");
+            let line = text(&buf, 2);
+            (
+                line.trim_end_matches([' ', '│']).to_string(),
+                buf[(at, 2)].clone(),
+            )
+        };
+        let (line, cell) = mark(PrState::Open, Some(Checks::Failing));
+        assert_eq!(line, format!("   ~/r  x{}#7 ✗", " ".repeat(9)));
+        assert_eq!(cell.fg, Color::Green);
+        let (line, cell) = mark(PrState::Merged, Some(Checks::Pending));
+        assert_eq!(line, format!("   ~/r  x{}#7 •", " ".repeat(9)));
+        assert_eq!(cell.fg, Color::Magenta);
+        let (line, cell) = mark(PrState::Closed, None);
+        assert_eq!(
+            line,
+            format!("   ~/r  x{}#7", " ".repeat(11)),
+            "no checks: alone"
+        );
+        assert_eq!(cell.fg, Color::Red);
+        let (_, cell) = mark(PrState::Draft, None);
+        assert_eq!(cell.fg, Color::Reset);
+        assert!(cell.modifier.contains(Modifier::DIM), "draft is dim");
     }
 
     #[test]

@@ -4,7 +4,7 @@ use super::input::Flow;
 use super::screen::Screen;
 use super::space::changes_structure;
 use super::state::{App, Mode, TAB_BAR_ROWS};
-use super::{watch, Event};
+use super::{prs, watch, Event};
 use crate::hooks::now_ms;
 use crate::tmux::Message;
 use crate::ui::{dashboard, help, session_view, sidebar};
@@ -23,24 +23,37 @@ const MS_PER_SEC: u64 = 1000;
 const SESSIONS_CHANGED: &str = "%sessions-changed";
 
 /// Tells the git thread which task rows are on screen, and the pull
-/// requests' thread too while PR status is on.
+/// requests' thread (while PR status is on) what shows PRs.
 struct TaskFeed {
     tx: Sender<watch::Watched>,
-    prs: Option<Sender<watch::Watched>>,
     sent: watch::Watched,
+    prs: Option<Sender<prs::Wanted>>,
+    prs_sent: prs::Wanted,
 }
 
 impl TaskFeed {
-    /// Send the tasks on screen if they changed, or always if `now`.
+    /// Send the tasks on screen if they changed, or always if `now`; and
+    /// what shows PRs if it changed.
     fn update(&mut self, app: &App, now: bool) {
         let tasks = app.watched_tasks();
         if now || tasks != self.sent {
             // The thread only ends with the app.
             let _ = self.tx.send(tasks.clone());
-            if let Some(prs) = &self.prs {
-                let _ = prs.send(tasks.clone());
-            }
             self.sent = tasks;
+        }
+        self.update_prs(app);
+    }
+
+    /// Send what shows PRs if it changed: the spaces' branches come with
+    /// their places, which move no row.
+    fn update_prs(&mut self, app: &App) {
+        let Some(tx) = &self.prs else {
+            return;
+        };
+        let wanted = app.prs_wanted();
+        if wanted != self.prs_sent {
+            let _ = tx.send(wanted.clone());
+            self.prs_sent = wanted;
         }
     }
 }
@@ -76,12 +89,16 @@ struct EventEffects {
     /// rows are on screen. A tmux message does once `handle_tmux` changed the
     /// panes: a pane that closes takes its session's row with it.
     rows_may_move: bool,
+    /// The spaces' directories and branches were read: the sidebar's PRs
+    /// may be others now.
+    places: bool,
 }
 
 impl EventEffects {
     fn of(event: &Event) -> Self {
         Self {
             hooks: matches!(event, Event::Hooks(_)),
+            places: matches!(event, Event::Spaces(_)),
             output: matches!(
                 event,
                 Event::Tmux {
@@ -102,12 +119,13 @@ pub fn run(
     mut app: App,
     rx: &Receiver<Event>,
     git: Sender<watch::Watched>,
-    prs: Option<Sender<watch::Watched>>,
+    prs: Option<Sender<prs::Wanted>>,
 ) -> Result<()> {
     let mut feed = TaskFeed {
         tx: git,
-        prs,
         sent: watch::Watched::default(),
+        prs,
+        prs_sent: prs::Wanted::default(),
     };
     // The spaces' directories and branches are read at once.
     feed.update(&app, true);
@@ -160,6 +178,8 @@ fn follow_up(app: &mut App, feed: &mut TaskFeed, effects: &EventEffects) {
     if effects.rows_may_move {
         app.anchor_dashboard();
         feed.update(app, effects.hooks);
+    } else if effects.places {
+        feed.update_prs(app);
     }
 }
 
