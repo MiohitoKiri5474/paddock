@@ -116,7 +116,24 @@ impl Sandbox {
             // Never the real gh: the stub answers from the sandbox (see
             // `set_gh`); without `bin/gh`, as if gh were not installed.
             ("PADDOCK_GH".into(), p("bin/gh")),
+            // Set in the user's shell, it must not reach gh (see
+            // `gh_repo_seen`).
+            ("GH_REPO".into(), "someone/else".into()),
         ]
+    }
+
+    /// The `GH_REPO` each call of the stub `gh` saw, `<unset>` for none.
+    pub fn gh_repo_seen(&self) -> Vec<String> {
+        std::fs::read_to_string(self.path("gh-env.log"))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// Make the stub's `gh pr view` take 3 s from now on.
+    pub fn slow_gh_view(&self) {
+        std::fs::write(self.path("gh.view-slow"), "").expect("slow gh view");
     }
 
     /// What the stub `gh pr list` prints from now on; until set, it fails
@@ -424,7 +441,9 @@ fn write_gh_stub(root: &std::path::Path) {
     let script = format!(
         "#!/bin/sh\n\
          printf '%s %s\\n' \"$(pwd -P)\" \"$*\" >> '{dir}/gh-calls.log'\n\
+         printf '%s\\n' \"${{GH_REPO-<unset>}}\" >> '{dir}/gh-env.log'\n\
          [ -f '{dir}/gh.slow' ] && exec sleep 30\n\
+         [ \"$1 $2\" = 'pr view' ] && [ -f '{dir}/gh.view-slow' ] && exec sleep 3\n\
          [ \"$1 $2\" = 'pr view' ] && exit 0\n\
          [ -f '{dir}/gh.json' ] && exec cat '{dir}/gh.json'\n\
          echo 'To get started with GitHub CLI, please run:  gh auth login' >&2\n\

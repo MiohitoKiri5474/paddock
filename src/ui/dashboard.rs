@@ -234,9 +234,9 @@ fn pr_style(state: PrState) -> Style {
     }
 }
 
-/// A list line: its cells, its style, and its PR's state (its number is
-/// coloured by it).
-type Cells = (table::Cells, Style, Option<PrState>);
+/// A list line: its cells, its style, and its PR's number and state (the
+/// number is coloured by it).
+type Cells = (table::Cells, Style, Option<(u64, PrState)>);
 
 /// A list line's cells, style and PR state: a session row's, or a task
 /// row's; none for a blank line.
@@ -259,7 +259,7 @@ fn cells(view: &View, line: ListLine) -> Option<Cells> {
     Some((
         table::task(t, details, pr, view.now),
         dim_if(row.external, style),
-        pr.map(|p| p.state),
+        pr.map(|p| (p.number, p.state)),
     ))
 }
 
@@ -355,7 +355,7 @@ fn render_list(view: &View, area: Rect, buf: &mut Buffer) -> Option<Position> {
         };
         // `line` is exactly `width` cells: its padding carries the style.
         buf.set_string(area.x, y, table::line(cells, &widths, width), style);
-        let number = pr.zip(table::pr_number_at(cells, &widths));
+        let number = pr.and_then(|(n, state)| Some((state, table::pr_number_at(n, &widths)?)));
         if let Some((state, (x, w))) = number {
             let x = area.x.saturating_add(u16::try_from(x).unwrap_or(u16::MAX));
             let w = u16::try_from(w)

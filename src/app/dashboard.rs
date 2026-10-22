@@ -8,7 +8,7 @@
 //! session through the same dismiss, close, fork and jump as the rest of
 //! the app.
 
-use super::prs::Read;
+use super::prs::PrUpdate;
 use super::rows::{pane_only, row_ids, Row, RowId, EXTERNAL_TYPE};
 use super::state::{App, Mode, Panel};
 use super::watch::Watched;
@@ -20,6 +20,8 @@ use crate::input::line::LineEdit;
 use crate::input::{encode_key, encode_paste};
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
 /// The dashboard's key line while its filter is typed: its keys are
 /// fixed, so they are not read from the keymap.
@@ -290,7 +292,7 @@ impl App {
 
     /// Keep the pull requests just read (see [`super::prs`]); a task
     /// without one loses the one it had.
-    pub(super) fn store_prs(&mut self, read: Read) {
+    pub(super) fn store_prs(&mut self, read: PrUpdate) {
         for (task, pr) in read {
             match pr {
                 Some(pr) => self.task_prs.insert(task, pr),
@@ -303,7 +305,7 @@ impl App {
     /// (`gh pr view --web` in its directory): its main agent's branch's,
     /// else the first subagent branch's with one. Without one, a notice.
     /// An external session's too: it only opens a page. `gh` failing comes
-    /// back as a notice.
+    /// back as a notice. While one open runs, another `p` does nothing.
     fn open_pr(&mut self, d: &Dashboard) {
         let Some(row) = self.dashboard_row(d) else {
             return;
@@ -323,9 +325,15 @@ impl App {
             });
             return;
         };
+        // One open at a time: a press while one runs is ignored.
+        if self.pr_opening.swap(true, Ordering::SeqCst) {
+            return;
+        }
         let number = pr.number;
         let events = self.events.clone();
+        let opening = Arc::clone(&self.pr_opening);
         github::open_web(&task.cwd, number, move |done| {
+            opening.store(false, Ordering::SeqCst);
             if let Err(e) = done {
                 let _ = events.send(Event::Notice(format!("cannot open PR #{number}: {e}")));
             }

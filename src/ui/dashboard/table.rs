@@ -156,8 +156,13 @@ impl Column {
     }
 }
 
-/// One line's cells, a column each; empty when unknown.
-pub type Cells = [String; COUNT];
+/// Where a line's cells keep the PR column's short form (`#123 ✓`), after
+/// the columns' own.
+const SHORT_PR: usize = COUNT;
+
+/// One line's cells, a column each (empty when unknown), then the PR
+/// column's short form at [`SHORT_PR`].
+pub type Cells = [String; COUNT + 1];
 
 /// Each column's width (`None` once dropped), and whether the PR column
 /// shows its short form.
@@ -167,11 +172,16 @@ pub struct Widths {
     short_pr: bool,
 }
 
+/// A PR's number as shown: `#123`.
+fn pr_number(number: u64) -> String {
+    format!("#{number}")
+}
+
 /// A PR cell's text: `#123 open ✓ approved`, a check mark and review only
 /// when there are some.
 fn pr_text(pr: &Pr) -> String {
     let words = [
-        Some(format!("#{}", pr.number)),
+        Some(pr_number(pr.number)),
         Some(pr.state.label().to_string()),
         pr.checks.map(|c| c.mark().to_string()),
         pr.review.map(|r| r.label().to_string()),
@@ -179,25 +189,18 @@ fn pr_text(pr: &Pr) -> String {
     words.into_iter().flatten().collect::<Vec<_>>().join(" ")
 }
 
-/// A PR cell's short form: its number and check mark (`#123 ✓`); `merged`
-/// (no PR) as it is.
-fn shortened(cell: &str) -> String {
-    if !cell.starts_with('#') {
-        return cell.to_string();
+/// A PR cell's short form: its number and check mark (`#123 ✓`).
+fn pr_short(pr: &Pr) -> String {
+    match pr.checks {
+        Some(c) => format!("{} {}", pr_number(pr.number), c.mark()),
+        None => pr_number(pr.number),
     }
-    cell.split(' ')
-        .enumerate()
-        .filter(|&(i, w)| i == 0 || ["✓", "✗", "•"].contains(&w))
-        .map(|(_, w)| w)
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
-/// Where the PR number of a line laid out in `widths` is: its first cell
-/// and its width (`#123`), if the column shows and `cells` has a PR.
-pub fn pr_number_at(cells: &Cells, widths: &Widths) -> Option<(usize, usize)> {
-    let cell = &cells[Column::Pr.index()];
-    let number = cell.split(' ').next().filter(|w| w.starts_with('#'))?;
+/// Where PR `number` is on a line laid out in `widths` (a PR cell starts
+/// with it): its first cell and its width, if the column shows.
+pub fn pr_number_at(number: u64, widths: &Widths) -> Option<(usize, usize)> {
+    let number = pr_number(number);
     let width = widths.columns[Column::Pr.index()]?;
     let x = MARGIN
         + COLUMNS
@@ -211,7 +214,12 @@ pub fn pr_number_at(cells: &Cells, widths: &Widths) -> Option<(usize, usize)> {
 
 /// The header line's cells.
 pub fn header() -> Cells {
-    COLUMNS.map(|c| c.spec().header.to_string())
+    let mut cells = Cells::default();
+    for c in COLUMNS {
+        cells[c.index()] = c.spec().header.to_string();
+    }
+    cells[SHORT_PR] = Column::Pr.spec().header.to_string();
+    cells
 }
 
 /// A session row's cells: its label, state and agent.
@@ -263,21 +271,22 @@ pub fn task(task: &TaskRow, details: Option<&Details>, pr: Option<&Pr>, now: u64
         cells[Column::Files.index()] = b.files.to_string();
     }
     cells[Column::Age.index()] = commit.unwrap_or_default();
-    cells[Column::Pr.index()] = match pr {
-        Some(pr) => pr_text(pr),
-        None if details.is_some_and(|d| d.merged) => MERGED.to_string(),
-        None => String::new(),
+    let (full, short) = match pr {
+        Some(pr) => (pr_text(pr), pr_short(pr)),
+        None if details.is_some_and(|d| d.merged) => (MERGED.to_string(), MERGED.to_string()),
+        None => Default::default(),
     };
+    cells[Column::Pr.index()] = full;
+    cells[SHORT_PR] = short;
     cells
 }
 
 /// `cells`' text in column `c`, in its short form if `short_pr`.
 fn text_of(cells: &Cells, c: Column, short_pr: bool) -> String {
-    let text = &cells[c.index()];
     if c == Column::Pr && short_pr {
-        shortened(text)
+        cells[SHORT_PR].clone()
     } else {
-        text.clone()
+        cells[c.index()].clone()
     }
 }
 
@@ -408,7 +417,7 @@ mod tests {
         };
         let t = task_row("feat/a", Some(status));
         assert_eq!(
-            task(&t, Some(&details), None, 1_000 + 7_200),
+            task(&t, Some(&details), None, 1_000 + 7_200)[..COUNT],
             [
                 "  feat/a",
                 "",
@@ -431,7 +440,7 @@ mod tests {
             ..Details::default()
         };
         assert_eq!(
-            task(&task_row("b", None), Some(&none), None, 0),
+            task(&task_row("b", None), Some(&none), None, 0)[..COUNT],
             ["  b", "", "", "", "", "", "", "", ""].map(String::from),
             "zero and unknown stay empty"
         );
@@ -444,7 +453,7 @@ mod tests {
             ..task_row("c", Some(Status::default()))
         };
         assert_eq!(
-            task(&sub, None, None, 0),
+            task(&sub, None, None, 0)[..COUNT],
             ["  Fix c · c", "done", "", "", "", "", "", "", ""].map(String::from)
         );
     }
@@ -496,11 +505,21 @@ mod tests {
         for (p, want) in cases {
             assert_eq!(cell(None, Some(&p)), want);
         }
-        assert_eq!(shortened("#123 open ✓ approved"), "#123 ✓");
-        assert_eq!(shortened("#8 closed ✗ changes requested"), "#8 ✗");
-        assert_eq!(shortened("#9 merged review required"), "#9");
-        assert_eq!(shortened("merged"), "merged");
-        assert_eq!(shortened(""), "");
+        // The short form, from the same PR.
+        let short =
+            |details: Option<&Details>, p: Option<&Pr>| task(&t, details, p, 0)[SHORT_PR].clone();
+        assert_eq!(short(Some(&merged), Some(&open)), "#123 ✓");
+        let failing = pr(
+            8,
+            PrState::Closed,
+            Some(Checks::Failing),
+            Some(Review::ChangesRequested),
+        );
+        assert_eq!(short(None, Some(&failing)), "#8 ✗");
+        assert_eq!(short(None, Some(&pr(9, PrState::Merged, None, None))), "#9");
+        assert_eq!(short(Some(&merged), None), "merged");
+        assert_eq!(short(None, None), "");
+        assert_eq!(header()[SHORT_PR], "PR");
     }
 
     #[test]
@@ -511,13 +530,14 @@ mod tests {
             name,
             &[(Column::State, "waiting"), (Column::Agent, "claude")],
         );
-        let t = cells(
+        let mut t = cells(
             "  feat/a",
             &[
                 (Column::Changes, "+3 −1"),
                 (Column::Pr, "#123 open ✓ changes requested"),
             ],
         );
+        t[SHORT_PR] = "#123 ✓".into();
         let lines = [&head, &session, &t];
         let laid = |width| {
             let w = widths(&lines, width);
@@ -550,11 +570,10 @@ mod tests {
         assert!(!shown.contains(&"PR"), "then it goes");
         assert!(shown.contains(&"FILES"));
         let w = widths(&lines, 90);
-        let at = pr_number_at(&t, &w).expect("the number shows");
+        let at = pr_number_at(123, &w).expect("the number shows");
         let number: String = line(&t, &w, 90).chars().skip(at.0).take(at.1).collect();
         assert_eq!(number, "#123", "one cell a character here");
-        assert_eq!(pr_number_at(&session, &w), None, "no PR on a session line");
-        assert_eq!(pr_number_at(&t, &widths(&lines, 76)), None, "dropped");
+        assert_eq!(pr_number_at(123, &widths(&lines, 76)), None, "dropped");
     }
 
     /// Cells with `name` and the rest empty but for `values`.

@@ -253,6 +253,9 @@ pub struct App {
     pub(super) task_details: TaskDetails,
     /// Each task's pull request, while `gh` knows one.
     pub(super) task_prs: TaskPrs,
+    /// A `p` is opening a pull request (its `gh` still runs): another
+    /// press is ignored meanwhile, so they never stack.
+    pub(super) pr_opening: Arc<AtomicBool>,
     /// Each space's directory and branch, by tmux session id, once read.
     pub(super) places: HashMap<String, Place>,
     /// The user hid the sidebar (`C-a b`).
@@ -361,6 +364,7 @@ impl App {
             task_status: TaskStatus::new(),
             task_details: TaskDetails::new(),
             task_prs: TaskPrs::new(),
+            pr_opening: Arc::new(AtomicBool::new(false)),
             places: HashMap::new(),
             sidebar_hidden: false,
             sidebar_default: config.sidebar_width,

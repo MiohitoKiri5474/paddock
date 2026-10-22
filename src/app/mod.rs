@@ -64,7 +64,7 @@ pub enum Event {
     Spaces(Vec<(String, watch::Place)>),
     /// Pull requests just read for the dashboard's tasks, by
     /// `(directory, branch)`; `None` for none.
-    Prs(prs::Read),
+    Prs(prs::PrUpdate),
     /// Something to say in the tab bar, from a thread (`p` failed to open
     /// a pull request).
     Notice(String),

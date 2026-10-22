@@ -111,8 +111,8 @@ fn git_command(dir: &str, args: &[&str], env: &[(&str, &str)]) -> Command {
 /// or why it failed (see [`reason`]). Never prints: hooks must stay
 /// silent.
 pub fn wait(mut command: Command, timeout: Duration) -> Result<String, String> {
-    let late = || late_reason(timeout);
     let program = command.get_program().to_string_lossy().into_owned();
+    let late = || late_reason(dir_name(&program), timeout);
     let mut child = command
         .spawn()
         .map_err(|e| format!("cannot run {program}: {e}"))?;
@@ -149,9 +149,10 @@ pub fn wait(mut command: Command, timeout: Duration) -> Result<String, String> {
     Err(reason(&said).unwrap_or_else(|| status.to_string()))
 }
 
-/// Why git failed when it did not finish within `timeout`.
-pub fn late_reason(timeout: Duration) -> String {
-    format!("{LATE} in {timeout:?}")
+/// Why `program` (its name: `git`, `gh`) failed when it did not finish
+/// within `timeout`; git's starts with [`LATE`].
+pub fn late_reason(program: &str, timeout: Duration) -> String {
+    format!("{program} did not finish in {timeout:?}")
 }
 
 /// Whether `reason`, a failure from git, is git missing its deadline (see

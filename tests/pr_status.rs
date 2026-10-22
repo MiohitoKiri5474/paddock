@@ -191,7 +191,7 @@ fn a_narrow_dashboard_shortens_the_pr_then_drops_it() {
 }
 
 #[test]
-fn gh_is_asked_once_a_minute_by_default_and_again_when_the_dashboard_opens() {
+fn gh_is_asked_once_a_minute_by_default_and_toggling_the_dashboard_adds_no_call() {
     let sandbox = Sandbox::new();
     sandbox.set_gh(PRS);
     let dir = repo(&sandbox);
@@ -199,13 +199,23 @@ fn gh_is_asked_once_a_minute_by_default_and_again_when_the_dashboard_opens() {
     paddock.wait_for("feat/x's PR", |s| task_line(s, "feat/x").contains("#123"));
     hold(Duration::from_secs(3));
     assert_eq!(sandbox.gh_calls().len(), 1, "cached for 60 s");
-    // Closed, nothing is asked; opened again, at once.
+    // Closed, nothing is asked; opened again within the 10 s floor, nor
+    // then (past it, at once: see `app::prs`'s unit tests).
     paddock.send(b"\x1b");
     paddock.wait_for("closed", |s| !s.contains(OPEN));
     hold(Duration::from_secs(2));
     assert_eq!(sandbox.gh_calls().len(), 1, "nothing while closed");
+    for _ in 0..3 {
+        open(&mut paddock);
+        paddock.send(b"\x1b");
+        paddock.wait_for("closed", |s| !s.contains(OPEN));
+    }
     open(&mut paddock);
-    sandbox.wait_for_gh_calls(2);
+    hold(Duration::from_secs(2));
+    assert_eq!(sandbox.gh_calls().len(), 1, "toggling within the floor");
+    paddock.wait_for("feat/x's PR still", |s| {
+        task_line(s, "feat/x").contains("#123")
+    });
 }
 
 #[test]
@@ -246,11 +256,35 @@ fn p_opens_the_sessions_pr_with_gh_in_its_repository() {
     let calls = sandbox.wait_for_gh_calls(2);
     let dir = dir.canonicalize().unwrap();
     assert_eq!(calls[1], format!("{} pr view --web 123", dir.display()));
+    // paddock runs with GH_REPO set; gh never sees it, else every
+    // repository would be asked about that one.
+    assert_eq!(sandbox.gh_repo_seen(), ["<unset>", "<unset>"]);
     // The dashboard stays, with no notice.
     hold(Duration::from_millis(500));
     let screen = paddock.full_screen();
     assert!(screen.contains(OPEN));
     assert!(!screen.contains("cannot open"), "{screen}");
+}
+
+#[test]
+fn p_while_an_open_runs_is_ignored() {
+    let sandbox = Sandbox::new();
+    sandbox.set_gh(PRS);
+    sandbox.slow_gh_view();
+    let dir = repo(&sandbox);
+    let mut paddock = dashboard(&sandbox, &dir);
+    paddock.wait_for("feat/x's PR", |s| task_line(s, "feat/x").contains("#123"));
+    paddock.send(b"p");
+    sandbox.wait_for_gh_calls(2);
+    paddock.send(b"p");
+    paddock.send(b"p");
+    hold(Duration::from_secs(1));
+    let views = |calls: Vec<String>| calls.iter().filter(|c| c.contains("pr view")).count();
+    assert_eq!(views(sandbox.gh_calls()), 1, "no stacking");
+    // Once it is done (3 s), `p` opens again.
+    hold(Duration::from_secs(3));
+    paddock.send(b"p");
+    assert_eq!(views(sandbox.wait_for_gh_calls(3)), 2);
 }
 
 #[test]

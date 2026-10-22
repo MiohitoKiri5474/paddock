@@ -21,11 +21,11 @@ const GH_VAR: &str = "PADDOCK_GH";
 // ponytail: a branch whose PR is older than the newest 20 of the
 // repository shows git's `merged` only. The upgrade is a second call by
 // `--head` for the branches not found.
-pub const LIMIT: u32 = 20;
+const LIMIT: u32 = 20;
 /// The fields read from each pull request.
 const FIELDS: &str = "number,state,isDraft,headRefName,statusCheckRollup,reviewDecision,url";
 /// How long `gh` may take, as a git read.
-pub const TIMEOUT: Duration = git::READ_TIMEOUT;
+const TIMEOUT: Duration = git::READ_TIMEOUT;
 /// How long opening a PR in the browser may take before `gh` is let go.
 const OPEN_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -99,6 +99,8 @@ pub struct Pr {
     pub checks: Option<Checks>,
     /// `None` without a review decision.
     pub review: Option<Review>,
+    /// Its page. Not shown on the dashboard (`p` asks gh by number, as
+    /// ticket 36 says); `paddock worktree list --json` gives it (ticket 37).
     pub url: String,
 }
 
@@ -256,26 +258,19 @@ fn gh() -> String {
 }
 
 /// `gh args…` in `dir`, never asking anything: no stdin, no prompts, no
-/// update notice.
+/// update notice. `GH_REPO` is removed: set, gh would ask that one
+/// repository whatever `dir` is (`GH_HOST` stays, for GitHub Enterprise).
 fn command(dir: &str, args: &[&str]) -> Command {
     let mut command = Command::new(gh());
     command
         .args(args)
         .current_dir(dir)
+        .env_remove("GH_REPO")
         .env("GH_PROMPT_DISABLED", "1")
         .env("GH_NO_UPDATE_NOTIFIER", "1")
         .stdin(Stdio::null())
         .stderr(Stdio::piped());
     command
-}
-
-/// `gh`'s failure `e`, the deadline named as gh's.
-fn failure(e: String, timeout: Duration) -> String {
-    if git::is_late(&e) {
-        format!("gh did not finish in {timeout:?}")
-    } else {
-        e
-    }
 }
 
 /// The pull requests of the repository `dir` is in, by branch: one
@@ -288,7 +283,7 @@ pub fn pr_list(dir: &str) -> Result<Prs, String> {
     ];
     let mut command = command(dir, &args);
     command.stdout(Stdio::piped());
-    let out = git::wait(command, TIMEOUT).map_err(|e| failure(e, TIMEOUT))?;
+    let out = git::wait(command, TIMEOUT)?;
     parse(&out)
 }
 
@@ -300,9 +295,7 @@ pub fn open_web(dir: &str, number: u64, done: impl FnOnce(Result<(), String>) + 
     let mut command = command(dir, &["pr", "view", "--web", &n]);
     command.stdout(Stdio::null());
     std::thread::spawn(move || {
-        let result = git::wait(command, OPEN_TIMEOUT)
-            .map(drop)
-            .map_err(|e| failure(e, OPEN_TIMEOUT));
+        let result = git::wait(command, OPEN_TIMEOUT).map(drop);
         done(result);
     });
 }
@@ -406,6 +399,16 @@ mod tests {
         let timed_out =
             r#"{"__typename":"CheckRun","name":"a","status":"COMPLETED","conclusion":"TIMED_OUT"}"#;
         assert_eq!(with_checks(timed_out).checks, Some(Checks::Failing));
+    }
+
+    #[test]
+    fn gh_never_inherits_gh_repo() {
+        // Set or not here, the command removes it.
+        let c = command("/tmp", &["pr", "list"]);
+        let gh_repo = c.get_envs().find(|(k, _)| *k == "GH_REPO");
+        assert_eq!(gh_repo, Some((std::ffi::OsStr::new("GH_REPO"), None)));
+        assert!(c.get_envs().all(|(k, _)| k != "GH_HOST"), "GH_HOST is kept");
+        assert_eq!(c.get_current_dir(), Some(std::path::Path::new("/tmp")));
     }
 
     #[test]
