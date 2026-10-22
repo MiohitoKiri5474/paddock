@@ -1,6 +1,6 @@
 //! What the running app holds: the spaces (tmux sessions, ADR 0006),
 //! each with its tabs (windows) and splits (panes) as tmux has them, a
-//! terminal per pane, the Claude sessions in them, and what the keyboard is
+//! terminal per pane, the agent sessions in them, and what the keyboard is
 //! doing (typing into the focused pane, naming, finding, reading help).
 
 use super::attention::Attention;
@@ -55,7 +55,7 @@ pub enum Mode {
     Help,
     /// The sidebar has the keyboard; holds its selection.
     Sidebar(Selection),
-    /// Asking before closing `target`, where Claude is `state`; `back` is
+    /// Asking before closing `target`, where an agent is `state`; `back` is
     /// the panel asked from, to return to.
     ConfirmClose {
         target: CloseTarget,
@@ -435,7 +435,7 @@ impl App {
         })
     }
 
-    /// The Claude session rows, in display order: the external group last,
+    /// The agent session rows, in display order: the external group last,
     /// unless `[dashboard] external` hides it.
     pub fn rows(&self) -> Vec<Row> {
         rows(
@@ -550,7 +550,7 @@ impl App {
         root.unwrap_or_else(|| self.new_dir())
     }
 
-    /// The Claude session in pane `pane`, if any.
+    /// The agent session in pane `pane`, if any.
     pub(super) fn session_in(&self, pane: &str) -> Option<&Session> {
         self.sessions.get(pane)
     }

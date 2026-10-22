@@ -1,6 +1,6 @@
 //! The sidebar, with a border on its right edge: a SPACES section with one
 //! line per space (tmux session, ADR 0006), then an AGENTS section with two
-//! lines per main Claude session, across every space:
+//! lines per main agent session, across every space:
 //!
 //! ```text
 //!  SPACES
@@ -39,15 +39,16 @@
 //! second line is dim and names its space and tab; the current agent (the
 //! one in the focused terminal) has the current space's background too.
 //! While the sidebar has the keyboard, the selected space or agent is drawn
-//! reversed. External sessions (Claude outside paddock's terminals) close
+//! reversed. External sessions (agents outside paddock's terminals) close
 //! AGENTS under their own header, dim, their second line naming their branch
 //! (else their directory).
 
 use super::STATE_DOT;
-use crate::sessions::State;
+use crate::sessions::{AgentKind, State};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
+use unicode_width::UnicodeWidthStr;
 
 const SPACES: &str = "SPACES";
 const AGENTS: &str = "AGENTS";
@@ -82,11 +83,13 @@ pub enum Entry {
     RepoHeader(String),
 }
 
-/// One agent (main Claude session) as the sidebar draws it.
+/// One agent (main agent of a session) as the sidebar draws it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentLine {
     pub label: String,
     pub state: State,
+    /// Its kind, tagged at the end of its second line.
+    pub kind: AgentKind,
     /// Where it runs: `space · tab`; an external session's branch, else
     /// its directory.
     pub place: String,
@@ -109,7 +112,7 @@ pub enum Line {
     RepoHeader(usize),
     /// An agent's first line: dot, label and state.
     Agent(usize),
-    /// An agent's second line: its space and tab.
+    /// An agent's second line: its space and tab, and its kind.
     AgentPlace(usize),
     Blank,
 }
@@ -303,7 +306,18 @@ impl Sidebar<'_> {
                 }
             }
             Line::AgentPlace(i) => {
-                put(name_x, &self.agents[i].place, dim);
+                // The kind's tag under the state, only where it fits after
+                // the whole place: the place is never cut for it.
+                let a = &self.agents[i];
+                put(name_x, &a.place, dim);
+                let tag = a.kind.tag();
+                let width = u16::try_from(tag.width()).unwrap_or(u16::MAX);
+                let tag_x = end.saturating_sub(width);
+                let place_end =
+                    name_x.saturating_add(u16::try_from(a.place.width()).unwrap_or(u16::MAX));
+                if tag_x > place_end {
+                    put(tag_x, tag, dim);
+                }
             }
             Line::Blank => {}
         }
@@ -393,6 +407,7 @@ mod tests {
             external: false,
             label: label.into(),
             state,
+            kind: AgentKind::Claude,
             place: place.into(),
             current: false,
         }
@@ -428,7 +443,7 @@ mod tests {
             space("paddock", None, false),
         ];
         let agents = [
-            agent("api", State::Waiting, "api-server · claude"),
+            agent("api", State::Waiting, "api-server · server"),
             agent("a-very-long-label", State::Running, "api-server · x"),
         ];
         let buf = draw(&spaces, &agents, None);
@@ -441,7 +456,7 @@ mod tests {
             "                       │",
             " AGENTS                │",
             " ● api         waiting │",
-            "   api-server · claude │",
+            "   api-server · server │",
             "                       │",
             " ● a-very-long running │",
             "   api-server · x      │",
@@ -668,8 +683,38 @@ mod tests {
             assert!(buf[(x, 9)].modifier.contains(Modifier::DIM), "dim at {x}");
             assert!(!buf[(x, 5)].modifier.contains(Modifier::DIM), "{x}");
         }
-        assert_eq!(text(&buf, 10).trim_end_matches([' ', '│']), "   feat/x");
+        assert_eq!(
+            text(&buf, 10).trim_end_matches([' ', '│']),
+            "   feat/x       claude"
+        );
         assert!(buf[(3, 10)].modifier.contains(Modifier::DIM));
+    }
+
+    #[test]
+    fn an_agents_kind_is_tagged_under_its_state_only_where_its_place_fits() {
+        let agents = [
+            agent("api", State::Waiting, "api · x"),
+            agent("web", State::Idle, "a-long-space-name · tab"),
+        ];
+        let buf = draw(&[], &agents, None);
+        let top = (0..buf.area.height)
+            .find(|&y| text(&buf, y).starts_with(" AGENTS"))
+            .expect("an AGENTS header");
+        let want = [
+            " AGENTS                │",
+            " ● api         waiting │",
+            "   api · x      claude │",
+            "                       │",
+            " ● web            idle │",
+            "   a-long-space-name · │",
+        ];
+        for (y, line) in want.iter().enumerate() {
+            assert_eq!(text(&buf, top + y as u16), *line, "row {y}");
+        }
+        assert!(
+            buf[(17, top + 2)].modifier.contains(Modifier::DIM),
+            "dim tag"
+        );
     }
 
     #[test]

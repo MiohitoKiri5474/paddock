@@ -363,3 +363,74 @@ fn hooks_install_notes_an_enabled_plugin() {
         "{stdout}"
     );
 }
+
+// Ticket 33: agent kinds. Claude is the only kind; `--agent claude` names
+// it, and without the flag `hooks install|uninstall` act on it as before.
+
+#[test]
+fn hooks_install_for_claude_by_name_writes_what_the_default_writes() {
+    let named = Sandbox::new();
+    let out = named.run(PADDOCK, &["hooks", "install", "--agent", "claude"], "");
+    assert!(out.status.success(), "{out:?}");
+    let default = Sandbox::new();
+    let out = default.run(PADDOCK, &["hooks", "install"], "");
+    assert!(out.status.success(), "{out:?}");
+    let read = |s: &Sandbox| std::fs::read_to_string(s.settings()).unwrap();
+    assert_eq!(read(&named), read(&default), "byte for byte");
+    let commands = hook_commands(&read_json(&named.settings()));
+    assert_eq!(commands.len(), 10, "every event");
+    for (event, command) in &commands {
+        assert_eq!(
+            command,
+            &format!("{PADDOCK} hook {event}"),
+            "as before kinds"
+        );
+    }
+
+    let out = named.run(PADDOCK, &["hooks", "uninstall", "--agent", "claude"], "");
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(read(&named), "{}\n");
+}
+
+#[test]
+fn hooks_install_refuses_an_unknown_agent_and_touches_nothing() {
+    let sandbox = Sandbox::new();
+    std::fs::create_dir_all(sandbox.settings().parent().unwrap()).unwrap();
+    std::fs::write(sandbox.settings(), r#"{"model": "opus"}"#).unwrap();
+    for args in [
+        &["hooks", "install", "--agent", "nope"][..],
+        &["hooks", "install", "--agent", "claude", "--agent", "nope"],
+        &["hooks", "uninstall", "--agent"],
+        &["hooks", "install", "claude"],
+    ] {
+        let out = sandbox.run(PADDOCK, args, "");
+        assert_eq!(out.status.code(), Some(1), "{args:?}: {out:?}");
+        assert_eq!(
+            std::fs::read_to_string(sandbox.settings()).unwrap(),
+            r#"{"model": "opus"}"#,
+            "{args:?}"
+        );
+    }
+}
+
+#[test]
+fn a_hook_naming_claude_records_as_claudes_and_an_unknown_one_stays_silent() {
+    let sandbox = Sandbox::new();
+    let run = |args: &[&str]| {
+        let out = sandbox.run(PADDOCK, args, PAYLOAD);
+        assert!(out.status.success(), "{args:?}: {out:?}");
+        assert!(out.stdout.is_empty() && out.stderr.is_empty(), "{out:?}");
+    };
+    run(&["hook", "--agent", "claude", "Stop"]);
+    run(&["hook", "SessionEnd"]);
+    assert_eq!(sandbox.events(), ["Stop", "SessionEnd"]);
+    let log = sandbox.path(&format!("state/paddock/events/{SERVER_PID}.jsonl"));
+    let log = std::fs::read_to_string(log).unwrap();
+    assert!(!log.contains("kind"), "Claude's lines as before: {log}");
+
+    run(&["hook", "--agent", "nope", "Stop"]);
+    run(&["hook"]);
+    assert_eq!(sandbox.events(), ["Stop", "SessionEnd"], "nothing recorded");
+    let errors = std::fs::read_to_string(sandbox.path("state/paddock/hook-errors.log"));
+    assert!(errors.unwrap().contains("unknown agent"), "reported");
+}

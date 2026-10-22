@@ -1,21 +1,24 @@
-//! Claude sessions in paddock's terminals: what hooks recorded and what
-//! `claude agents --json` reports, folded into one state per terminal.
+//! Agent sessions in paddock's terminals: what hooks recorded and what
+//! `claude agents --json` reports, folded into one state per terminal. Each
+//! session has an [`AgentKind`]; what an event means depends on it.
 //!
 //! Terminals are keyed by tmux pane id (`%N`). Each terminal shows its latest
 //! conversation only: an event from a new session id replaces the old one,
 //! keeping only the terminal's task rows.
 //!
-//! An external session (Claude running outside paddock's terminals) has no
+//! An external session (an agent running outside paddock's terminals) has no
 //! pane: it is keyed by [`external_key`] of its session id instead, so the
 //! same folding, dismissing and alerting apply to it.
 
 pub mod agents;
 pub mod dismissed;
 mod external;
+mod kind;
 pub mod log;
 
 pub use dismissed::Dismissal;
 pub use external::{external_key, is_external};
+pub use kind::AgentKind;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -28,7 +31,7 @@ pub enum State {
     /// The main agent finished a turn you have not looked at yet.
     Done,
     Idle,
-    /// Claude quit: the session ended, so it has no row.
+    /// The agent quit: the session ended, so it has no row.
     Stopped,
     Unknown,
 }
@@ -110,6 +113,11 @@ pub struct HookRecord {
     pub description: Option<String>,
     /// Milliseconds since the Unix epoch.
     pub ts: u64,
+    /// The agent the hook ran for. Left out of the log for Claude, so old
+    /// lines (written before kinds existed) read as Claude's, and Claude's
+    /// lines are written as they were.
+    #[serde(default, skip_serializing_if = "AgentKind::is_claude")]
+    pub kind: AgentKind,
 }
 
 /// The `SessionEnd` reason `/clear` gives: a new conversation starts in
@@ -119,15 +127,43 @@ pub const CLEAR: &str = "clear";
 /// The `SessionStart` source of a compaction: the conversation goes on.
 const COMPACT: &str = "compact";
 
-/// Whether `r` is Claude starting a conversation (startup, resume,
-/// `/clear`), not going on with one (compaction).
-fn restarts(r: &HookRecord) -> bool {
-    r.event == "SessionStart" && r.source.as_deref() != Some(COMPACT)
+/// Whether `r` is the agent starting a conversation (Claude: startup,
+/// resume, `/clear`), not going on with one (compaction).
+pub fn restarts(r: &HookRecord) -> bool {
+    match r.kind {
+        AgentKind::Claude => r.event == "SessionStart" && r.source.as_deref() != Some(COMPACT),
+    }
+}
+
+/// Whether `r` is the main agent finishing a turn (Claude: `Stop`). Each
+/// one is a new turn done; other idle events only remind of it.
+pub fn finishes_turn(r: &HookRecord) -> bool {
+    match r.kind {
+        AgentKind::Claude => r.event == "Stop",
+    }
+}
+
+/// Whether `r` ends the conversation (Claude: any `SessionEnd`, `/clear`
+/// included), whether or not the session goes on.
+fn ends_conversation(r: &HookRecord) -> bool {
+    match r.kind {
+        AgentKind::Claude => r.event == "SessionEnd",
+    }
 }
 
 /// The session state an event leads to, if it changes it.
 pub fn state_after(r: &HookRecord) -> Option<State> {
-    let state = match r.event.as_str() {
+    let state = match r.kind {
+        AgentKind::Claude => claude_state(r)?,
+    };
+    // A subagent blocked on you blocks its session; its other events say
+    // nothing about the main agent.
+    (r.agent_id.is_none() || state == State::Waiting).then_some(state)
+}
+
+/// [`state_after`] a Claude Code hook event, subagent or not.
+fn claude_state(r: &HookRecord) -> Option<State> {
+    Some(match r.event.as_str() {
         "SessionStart" if r.source.as_deref() == Some(COMPACT) => State::Running,
         "SessionStart" | "Stop" => State::Idle,
         "UserPromptSubmit" | "PreCompact" | "PostToolUse" => State::Running,
@@ -140,10 +176,7 @@ pub fn state_after(r: &HookRecord) -> Option<State> {
         "SessionEnd" if r.reason.as_deref() == Some(CLEAR) => return None,
         "SessionEnd" => State::Stopped,
         _ => return None,
-    };
-    // A subagent blocked on you blocks its session; its other events say
-    // nothing about the main agent.
-    (r.agent_id.is_none() || state == State::Waiting).then_some(state)
+    })
 }
 
 /// Whether the agent may have switched branch before this event (it started,
@@ -152,10 +185,12 @@ pub fn state_after(r: &HookRecord) -> Option<State> {
 /// main agent, the worktree's for a subagent. Claude's transcripts carry a
 /// stale branch, so git is the only source.
 pub fn needs_branch(r: &HookRecord) -> bool {
-    let switched = match r.event.as_str() {
-        "SessionStart" | "UserPromptSubmit" | "SubagentStart" | "SubagentStop" => true,
-        "PostToolUse" => r.tool_name.as_deref() == Some("Bash"),
-        _ => false,
+    let switched = match r.kind {
+        AgentKind::Claude => match r.event.as_str() {
+            "SessionStart" | "UserPromptSubmit" | "SubagentStart" | "SubagentStop" => true,
+            "PostToolUse" => r.tool_name.as_deref() == Some("Bash"),
+            _ => false,
+        },
     };
     switched && r.cwd.is_some()
 }
@@ -180,7 +215,8 @@ impl TaskState {
     }
 }
 
-/// The state a subagent's own event leads to, if it changes it.
+/// The state a subagent's own event leads to, if it changes it. Only
+/// Claude's records carry a subagent (`agent_id`).
 fn subagent_state(r: &HookRecord) -> Option<TaskState> {
     match (r.event.as_str(), state_after(r)) {
         ("SubagentStop", _) => Some(TaskState::Done),
@@ -232,6 +268,8 @@ pub struct Agent {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Session {
+    /// The agent of its latest event; Claude until one says otherwise.
+    pub kind: AgentKind,
     pub session_id: Option<String>,
     pub cwd: Option<String>,
     pub name: Option<String>,
@@ -251,13 +289,14 @@ pub struct Session {
 }
 
 impl Session {
-    /// Whether Claude quit: the session ended, so it has no row.
+    /// Whether the agent quit: the session ended, so it has no row.
     pub fn ended(&self) -> bool {
         self.state == State::Stopped
     }
 
     fn new(session_id: Option<String>) -> Self {
         Self {
+            kind: AgentKind::default(),
             session_id,
             cwd: None,
             name: None,
@@ -432,7 +471,7 @@ impl Sessions {
     }
 
     /// Pane `pane`'s session and task rows, leaving out dismissed ones; `None`
-    /// if its session ended (Claude quit: it is stopped) or its session row
+    /// if its session ended (its agent quit: it is stopped) or its session row
     /// is dismissed. A dismissed row stays hidden until an event about it
     /// newer than the dismissal (a dismissed session row hides its task rows
     /// too), so replaying the event log keeps it hidden. An ended session
@@ -530,11 +569,12 @@ impl Sessions {
             s.next(r.session_id.clone());
         }
         // Hooks landing after `SessionEnd` (a subagent's, a tool's, a late
-        // compaction's) lag behind and are ignored. Only Claude starting
+        // compaction's) lag behind and are ignored. Only the agent starting
         // the same conversation again (a resume) brings it back.
         if s.ended() && !restarts(r) {
             return false;
         }
+        s.kind = r.kind;
         s.alive = s.alive.max(r.ts);
         // A subagent's directory is its worktree, not the session's.
         if r.cwd.is_some() && r.agent_id.is_none() {
@@ -549,8 +589,8 @@ impl Sessions {
             s.state = match state {
                 // A finished turn is done until you look at it (see
                 // `Sessions::see`); later idle reminders keep it done.
-                State::Idle if r.event == "Stop" => State::Done,
-                State::Idle if s.state == State::Done && r.event != "SessionStart" => State::Done,
+                State::Idle if finishes_turn(r) => State::Done,
+                State::Idle if s.state == State::Done && !restarts(r) => State::Done,
                 state => state,
             };
             s.updated = r.ts;
@@ -560,7 +600,7 @@ impl Sessions {
             s.apply_subagent(id, r);
             return true;
         }
-        if r.event == "SessionEnd" {
+        if ends_conversation(r) {
             s.stop_subagents();
         }
         if let (Some(branch), Some(cwd)) = (&r.branch, &r.cwd) {
@@ -588,6 +628,11 @@ impl Sessions {
                 .by_pane
                 .entry(pane.clone())
                 .or_insert_with(|| Session::new(Some(a.session_id.clone())));
+            // A live session of a kind without a snapshot is not in this
+            // one: it is left to its hooks.
+            if !s.ended() && !s.kind.has_snapshot() {
+                continue;
+            }
             let same = s.session_id.as_deref() == Some(a.session_id.as_str());
             // A session that ended never runs again: a snapshot still
             // listing it lags behind.
@@ -626,8 +671,9 @@ impl Sessions {
     }
 }
 
-/// A session row's label: the Claude session name if set, else the tab name
-/// (`None` while it still has its default name), else the directory name.
+/// A session row's label: the session name if set, else the tab name
+/// (`None` while it still has its default name), else the directory name,
+/// else the agent's tag (`claude`).
 pub fn label(session: &Session, tab: Option<&str>) -> String {
     let dir = || {
         session
@@ -642,7 +688,7 @@ pub fn label(session: &Session, tab: Option<&str>) -> String {
         .filter(|n| !n.is_empty())
         .or_else(|| tab.map(str::to_string))
         .or_else(dir)
-        .unwrap_or_else(|| "claude".to_string())
+        .unwrap_or_else(|| session.kind.tag().to_string())
 }
 
 #[cfg(test)]
@@ -711,6 +757,24 @@ mod tests {
             };
             assert_eq!(state_after(&r), want, "{event} {source:?} {kind:?}");
         }
+    }
+
+    #[test]
+    fn an_old_log_without_kinds_replays_as_claude_sessions() {
+        let lines = [
+            r#"{"event":"SessionStart","pane":"%1","session_id":"s","cwd":"/w/api","ts":1}"#,
+            r#"{"event":"UserPromptSubmit","pane":"%1","session_id":"s","ts":2}"#,
+            r#"{"event":"Stop","pane":"%1","session_id":"s","ts":3}"#,
+        ];
+        let mut s = Sessions::default();
+        for line in lines {
+            s.apply(&serde_json::from_str(line).unwrap());
+        }
+        let session = s.get("%1").unwrap();
+        assert_eq!(session.kind, AgentKind::Claude);
+        assert_eq!(session.state, State::Done, "Claude's Stop ends a turn");
+        let nameless = Session::new(None);
+        assert_eq!(label(&nameless, None), "claude", "named after its kind");
     }
 
     #[test]

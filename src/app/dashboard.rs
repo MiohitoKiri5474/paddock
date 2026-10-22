@@ -378,6 +378,7 @@ mod tests {
             space: "$1".into(),
             window: "@1".into(),
             label: label.into(),
+            kind: crate::sessions::AgentKind::Claude,
             state,
             tasks: vec![TaskRow {
                 branch: branch.into(),

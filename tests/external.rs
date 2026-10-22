@@ -130,10 +130,10 @@ fn an_external_session_shows_dim_and_last_with_its_state_and_branch() {
     // it comes after the running agent in paddock.
     let want = [
         agent("mine", "running"),
-        "   space-1 · claude".to_string(),
+        "   space-1 · claude     claude".to_string(),
         " EXTERNAL".to_string(),
         agent("web", "waiting"),
-        "   feat/login".to_string(),
+        "   feat/login           claude".to_string(),
     ];
     wait_for_sidebar(&paddock, "the external agent", |lines| {
         lines.ends_with(&want)
@@ -191,7 +191,7 @@ fn keys_on_an_external_row_are_refused_and_d_dismisses_it() {
     );
 
     paddock.send(b"D");
-    paddock.wait_for_text("no Claude sessions yet");
+    paddock.wait_for_text("no agent sessions yet");
     paddock.send(b"\x1b");
     paddock.wait_for("the external group gone", |_| {
         !paddock.full_screen().contains("EXTERNAL")

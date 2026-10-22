@@ -26,10 +26,12 @@ enum Column {
     Age,
     /// Merged into the base branch.
     Merged,
+    /// A session's agent kind, as a tag (`claude`).
+    Agent,
 }
 
 /// How many columns there are.
-const COUNT: usize = 8;
+const COUNT: usize = 9;
 /// Every column, left to right.
 const COLUMNS: [Column; COUNT] = [
     Column::Name,
@@ -40,6 +42,7 @@ const COLUMNS: [Column; COUNT] = [
     Column::Files,
     Column::Age,
     Column::Merged,
+    Column::Agent,
 ];
 /// What a column shows and how.
 struct Spec {
@@ -82,10 +85,15 @@ const SPECS: [Spec; COUNT] = [
         header: "MERGED",
         right_aligned: false,
     },
+    Spec {
+        header: "AGENT",
+        right_aligned: false,
+    },
 ];
 /// The columns dropped, in this order, while the name does not fit. Name
-/// and state always stay.
-const DROP_ORDER: [Column; 6] = [
+/// and state always stay; the agent, last on the line, goes first.
+const DROP_ORDER: [Column; 7] = [
+    Column::Agent,
     Column::Merged,
     Column::Files,
     Column::Base,
@@ -131,11 +139,12 @@ pub fn header() -> Cells {
     COLUMNS.map(|c| c.spec().header.to_string())
 }
 
-/// A session row's cells: its label and state.
+/// A session row's cells: its label, state and agent.
 pub fn session(row: &Row) -> Cells {
     let mut cells = Cells::default();
     cells[Column::Name.index()] = row.label.clone();
     cells[Column::State.index()] = row.state.label().to_string();
+    cells[Column::Agent.index()] = row.kind.tag().to_string();
     cells
 }
 
@@ -302,7 +311,8 @@ mod tests {
                 "+12 −3",
                 "4",
                 "2h",
-                MERGED
+                MERGED,
+                ""
             ]
             .map(String::from)
         );
@@ -316,7 +326,7 @@ mod tests {
         };
         assert_eq!(
             task(&task_row("b", None), Some(&none), 0),
-            ["  b", "", "", "", "", "", "", ""].map(String::from),
+            ["  b", "", "", "", "", "", "", "", ""].map(String::from),
             "zero and unknown stay empty"
         );
         let sub = TaskRow {
@@ -329,7 +339,7 @@ mod tests {
         };
         assert_eq!(
             task(&sub, None, 0),
-            ["  Fix c · c", "done", "", "", "", "", "", ""].map(String::from)
+            ["  Fix c · c", "done", "", "", "", "", "", "", ""].map(String::from)
         );
     }
 
@@ -361,7 +371,7 @@ mod tests {
         assert_eq!(
             got,
             [
-                " NAME      STATE  ↑↓   CHANGES  BASE  FILES  AGE  MERGED",
+                " NAME      STATE  ↑↓   CHANGES  BASE  FILES  AGE  MERGED  AGENT",
                 " api       idle",
                 "   feat/a                +3 −1            2",
                 "   feat/b             +30 −144",
@@ -434,7 +444,7 @@ mod tests {
         assert_eq!(
             shown(70),
             ["NAME", "STATE", "↑↓", "CHANGES", "BASE", "FILES", "AGE"],
-            "merged goes first"
+            "the agent, then merged, go first"
         );
         assert_eq!(
             shown(60),

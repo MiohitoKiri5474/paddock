@@ -42,7 +42,7 @@ const ZOOM_MARK: &str = "Z";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tab {
     pub name: String,
-    /// The most urgent Claude state in the tab.
+    /// The most urgent agent state in the tab.
     pub state: State,
     /// The user named it (drawn bold).
     pub custom: bool,

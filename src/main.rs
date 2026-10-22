@@ -1,4 +1,4 @@
-//! paddock: a terminal workspace for running Claude Code.
+//! paddock: a terminal workspace for running coding agents (Claude Code).
 
 mod app;
 mod cli;
@@ -23,7 +23,8 @@ commands:
   help, -h, --help            print this help
   version, -V, --version      print paddock's version
   keys                        print the default keys as TOML
-  hooks install|uninstall     add or remove paddock's Claude Code hooks
+  hooks install|uninstall     add or remove paddock's agent hooks
+    [--agent <kind>]...       only for these agents (claude)
   worktree new|open|list|rm   manage worktrees as spaces, without the UI
                               (paddock worktree --help)
 ";
@@ -52,8 +53,8 @@ fn main() -> anyhow::Result<()> {
             print!("{}", config::default_keys_toml());
             Ok(())
         }
-        ["hook", event] => hooks::hook(event),
-        ["hooks", action] => hooks::command(action),
+        ["hook", ..] => hooks::hook(&argv[1..]),
+        ["hooks", ..] => hooks::command(&argv[1..]),
         ["worktree", ..] => std::process::exit(cli::run(&args[1..])),
         _ => anyhow::bail!("{}", USAGE.trim_end()),
     }
