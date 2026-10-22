@@ -120,34 +120,39 @@ pub struct HookRecord {
     pub kind: AgentKind,
 }
 
-/// The `SessionEnd` reason `/clear` gives: a new conversation starts in
-/// the same Claude at once, so the terminal's session goes on.
+/// The `SessionEnd` reason `/clear` gives (Claude and Gemini): a new
+/// conversation starts in the same agent at once, so the terminal's
+/// session goes on.
 pub const CLEAR: &str = "clear";
 
 /// The `SessionStart` source of a compaction: the conversation goes on.
 const COMPACT: &str = "compact";
 
 /// Whether `r` is the agent starting a conversation (Claude: startup,
-/// resume, `/clear`), not going on with one (compaction).
+/// resume, `/clear`), not going on with one (compaction). Gemini: any
+/// `SessionStart` (startup, resume, `/clear`).
 pub fn restarts(r: &HookRecord) -> bool {
     match r.kind {
         AgentKind::Claude => r.event == "SessionStart" && r.source.as_deref() != Some(COMPACT),
+        AgentKind::Gemini => r.event == "SessionStart",
     }
 }
 
-/// Whether `r` is the main agent finishing a turn (Claude: `Stop`). Each
-/// one is a new turn done; other idle events only remind of it.
+/// Whether `r` is the main agent finishing a turn (Claude: `Stop`; Gemini:
+/// `AfterAgent`). Each one is a new turn done; other idle events only
+/// remind of it.
 pub fn finishes_turn(r: &HookRecord) -> bool {
     match r.kind {
         AgentKind::Claude => r.event == "Stop",
+        AgentKind::Gemini => r.event == "AfterAgent",
     }
 }
 
-/// Whether `r` ends the conversation (Claude: any `SessionEnd`, `/clear`
-/// included), whether or not the session goes on.
+/// Whether `r` ends the conversation (any `SessionEnd`, `/clear` included,
+/// for Claude and Gemini alike), whether or not the session goes on.
 fn ends_conversation(r: &HookRecord) -> bool {
     match r.kind {
-        AgentKind::Claude => r.event == "SessionEnd",
+        AgentKind::Claude | AgentKind::Gemini => r.event == "SessionEnd",
     }
 }
 
@@ -155,6 +160,7 @@ fn ends_conversation(r: &HookRecord) -> bool {
 pub fn state_after(r: &HookRecord) -> Option<State> {
     let state = match r.kind {
         AgentKind::Claude => claude_state(r)?,
+        AgentKind::Gemini => gemini_state(r)?,
     };
     // A subagent blocked on you blocks its session; its other events say
     // nothing about the main agent.
@@ -179,6 +185,28 @@ fn claude_state(r: &HookRecord) -> Option<State> {
     })
 }
 
+/// [`state_after`] a Gemini CLI hook event. Gemini asks for a tool's
+/// permission after its `BeforeTool` and sends nothing once you grant it
+/// until the tool's `AfterTool`, which ends the wait. `/clear` sends a
+/// `SessionEnd` (reason `clear`) and starts a new conversation at once, as
+/// Claude's does.
+fn gemini_state(r: &HookRecord) -> Option<State> {
+    Some(match r.event.as_str() {
+        "SessionStart" | "AfterAgent" => State::Idle,
+        "BeforeAgent" | "AfterTool" => State::Running,
+        "Notification" if r.notification_type.as_deref() == Some(TOOL_PERMISSION) => State::Waiting,
+        "SessionEnd" if r.reason.as_deref() == Some(CLEAR) => return None,
+        "SessionEnd" => State::Stopped,
+        _ => return None,
+    })
+}
+
+/// The `notification_type` of Gemini's permission prompt.
+const TOOL_PERMISSION: &str = "ToolPermission";
+
+/// Gemini's shell tool.
+const GEMINI_SHELL: &str = "run_shell_command";
+
 /// Whether the agent may have switched branch before this event (it started,
 /// was prompted, ran a shell command, or a subagent finished), so the hook
 /// records the branch checked out in its directory: the session's for the
@@ -189,6 +217,11 @@ pub fn needs_branch(r: &HookRecord) -> bool {
         AgentKind::Claude => match r.event.as_str() {
             "SessionStart" | "UserPromptSubmit" | "SubagentStart" | "SubagentStop" => true,
             "PostToolUse" => r.tool_name.as_deref() == Some("Bash"),
+            _ => false,
+        },
+        AgentKind::Gemini => match r.event.as_str() {
+            "SessionStart" | "BeforeAgent" => true,
+            "AfterTool" => r.tool_name.as_deref() == Some(GEMINI_SHELL),
             _ => false,
         },
     };
@@ -378,8 +411,8 @@ impl Session {
     }
 
     /// The same terminal's next conversation: only the task rows carry
-    /// over, and only if Claude goes on (`/clear`). After Claude quit, a new
-    /// Claude starts with none.
+    /// over, and only if the agent goes on (`/clear`). After it quit, a new
+    /// agent starts with none.
     fn next(&mut self, session_id: Option<String>) {
         self.stop_subagents();
         let tasks = if self.ended() {
@@ -475,8 +508,8 @@ impl Sessions {
     /// is dismissed. A dismissed row stays hidden until an event about it
     /// newer than the dismissal (a dismissed session row hides its task rows
     /// too), so replaying the event log keeps it hidden. An ended session
-    /// stays hidden until a new one starts in the same terminal, or Claude
-    /// resumes it (see [`Sessions::fold`]).
+    /// stays hidden until a new one starts in the same terminal, or the
+    /// agent resumes it (see [`Sessions::fold`]).
     pub fn shown(&self, pane: &str) -> Option<(&Session, Vec<&Task>)> {
         let s = self.by_pane.get(pane)?;
         if s.ended() {
@@ -757,6 +790,141 @@ mod tests {
             };
             assert_eq!(state_after(&r), want, "{event} {source:?} {kind:?}");
         }
+    }
+
+    /// The record of the Gemini payload in
+    /// `tests/fixtures/hooks/gemini/<name>.json`, for its `hook_event_name`.
+    pub(super) fn gemini(name: &str, ts: u64) -> HookRecord {
+        let path = format!(
+            "{}/tests/fixtures/hooks/gemini/{name}.json",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let payload = std::fs::read_to_string(&path).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        let event = v["hook_event_name"].as_str().unwrap();
+        log::record(AgentKind::Gemini, event, "%1", &payload, ts)
+    }
+
+    /// The session id in the Gemini fixtures.
+    pub(super) const GEMINI_S: &str = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+
+    #[test]
+    fn gemini_events_reach_their_states() {
+        let cases = [
+            ("SessionStart", Some(State::Idle)),
+            ("SessionStart-clear", Some(State::Idle)),
+            ("BeforeAgent", Some(State::Running)),
+            ("Notification-ToolPermission", Some(State::Waiting)),
+            ("AfterTool", Some(State::Running)),
+            ("AfterAgent", Some(State::Idle)),
+            ("SessionEnd-clear", None),
+            ("SessionEnd", Some(State::Stopped)),
+        ];
+        for (name, want) in cases {
+            let r = gemini(name, 1);
+            assert_eq!(r.kind, AgentKind::Gemini);
+            assert_eq!(r.session_id.as_deref(), Some(GEMINI_S));
+            assert_eq!(r.cwd.as_deref(), Some("/tmp/repo"));
+            assert_eq!(state_after(&r), want, "{name}");
+        }
+        let other = HookRecord {
+            notification_type: Some("Other".into()),
+            ..gemini("Notification-ToolPermission", 1)
+        };
+        assert_eq!(state_after(&other), None, "only a permission waits");
+        // Events paddock does not install change nothing, nor do Claude's
+        // names under Gemini.
+        for event in [
+            "BeforeTool",
+            "BeforeModel",
+            "PreCompress",
+            "Stop",
+            "UserPromptSubmit",
+        ] {
+            let r = HookRecord {
+                kind: AgentKind::Gemini,
+                ..rec(event, 1)
+            };
+            assert_eq!(state_after(&r), None, "{event}");
+        }
+    }
+
+    #[test]
+    fn a_gemini_turn_goes_working_waiting_working_done_then_ends() {
+        let mut s = Sessions::default();
+        let mut seen = Vec::new();
+        for (ts, name) in [
+            "SessionStart",
+            "BeforeAgent",
+            "Notification-ToolPermission",
+            "AfterTool",
+            "AfterAgent",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            s.apply(&gemini(name, ts as u64 + 1));
+            seen.push(state(&s));
+        }
+        assert_eq!(
+            seen,
+            [
+                State::Idle,
+                State::Running,
+                State::Waiting,
+                State::Running,
+                State::Done
+            ]
+        );
+        assert_eq!(s.get("%1").unwrap().kind, AgentKind::Gemini);
+        s.see("%1");
+        assert_eq!(state(&s), State::Idle);
+        s.apply(&gemini("SessionEnd", 9));
+        assert_eq!(state(&s), State::Stopped);
+        assert!(s.shown("%1").is_none());
+    }
+
+    #[test]
+    fn gemini_clear_keeps_the_terminals_session() {
+        let mut s = Sessions::default();
+        s.apply(&gemini("SessionStart", 1));
+        s.apply(&gemini("SessionEnd-clear", 2));
+        // `/clear` gives the new conversation a new id.
+        s.apply(&HookRecord {
+            session_id: Some("new-id".into()),
+            ..gemini("SessionStart-clear", 3)
+        });
+        assert_eq!(state(&s), State::Idle);
+        assert!(s.shown("%1").is_some());
+        assert_eq!(s.get("%1").unwrap().session_id.as_deref(), Some("new-id"));
+    }
+
+    #[test]
+    fn gemini_reads_the_branch_when_it_may_have_switched() {
+        for (name, want) in [
+            ("SessionStart", true),
+            ("BeforeAgent", true),
+            ("AfterTool", true),
+            ("Notification-ToolPermission", false),
+            ("AfterAgent", false),
+            ("SessionEnd", false),
+        ] {
+            assert_eq!(needs_branch(&gemini(name, 1)), want, "{name}");
+        }
+        let read = HookRecord {
+            tool_name: Some("read_file".into()),
+            ..gemini("AfterTool", 1)
+        };
+        assert!(!needs_branch(&read), "only after a shell command");
+    }
+
+    #[test]
+    fn a_gemini_session_is_left_to_its_hooks_by_snapshots() {
+        let mut s = Sessions::default();
+        s.apply(&gemini("BeforeAgent", 1));
+        s.reconcile(100_000, &[agent(S1, "idle", Some("%1"))]);
+        assert_eq!(state(&s), State::Running);
+        assert_eq!(s.get("%1").unwrap().session_id.as_deref(), Some(GEMINI_S));
     }
 
     #[test]

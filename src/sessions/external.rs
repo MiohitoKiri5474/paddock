@@ -22,8 +22,9 @@ pub fn is_external(key: &str) -> bool {
 }
 
 /// Whether `r` ends an external session: its main agent ending any
-/// conversation (Claude: any `SessionEnd`). It is keyed by its id, and
-/// after `/clear` the new conversation is another session, so this one ends.
+/// conversation (any `SessionEnd`, Claude's or Gemini's). It is keyed by
+/// its id, and after `/clear` the new conversation is another session, so
+/// this one ends.
 pub(super) fn ends(r: &HookRecord) -> bool {
     is_external(&r.pane) && super::ends_conversation(r) && r.agent_id.is_none()
 }
@@ -107,7 +108,7 @@ impl Sessions {
 #[cfg(test)]
 mod tests {
     use super::super::tests::{agent, rec, state, S1};
-    use super::super::{label, State, CLEAR};
+    use super::super::{label, AgentKind, State, CLEAR};
     use super::*;
 
     /// An external session's event, keyed as the app reads it.
@@ -157,6 +158,32 @@ mod tests {
             .iter()
             .map(|t| (t.branch.as_str(), t.cwd.as_str()))
             .collect()
+    }
+
+    #[test]
+    fn an_external_gemini_session_ends_on_clear_and_the_next_one_shows() {
+        let gemini = |event: &str, session: &str, ts| HookRecord {
+            kind: AgentKind::Gemini,
+            ..ext(event, session, ts)
+        };
+        let mut s = Sessions::default();
+        s.apply(&gemini("BeforeAgent", "g1", 1));
+        s.apply(&HookRecord {
+            notification_type: Some("ToolPermission".into()),
+            ..gemini("Notification", "g1", 2)
+        });
+        assert_eq!(s.get(&external_key("g1")).unwrap().state, State::Waiting);
+        assert_eq!(s.externals(2, 10 * MIN), [external_key("g1")]);
+        s.apply(&HookRecord {
+            reason: Some(CLEAR.into()),
+            ..gemini("SessionEnd", "g1", 3)
+        });
+        s.apply(&HookRecord {
+            source: Some(CLEAR.into()),
+            ..gemini("SessionStart", "g2", 3)
+        });
+        assert_eq!(s.externals(3, 10 * MIN), [external_key("g2")]);
+        assert_eq!(s.get(&external_key("g2")).unwrap().kind, AgentKind::Gemini);
     }
 
     #[test]

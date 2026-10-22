@@ -1,0 +1,15 @@
+{
+  "session_id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+  "transcript_path": "/home/user/.gemini/tmp/repo/chats/session-2026-10-22T10-00-aaaaaaaa.json",
+  "cwd": "/tmp/repo",
+  "hook_event_name": "Notification",
+  "timestamp": "2026-10-22T10:00:03.000Z",
+  "notification_type": "ToolPermission",
+  "message": "Tool Shell requires execution",
+  "details": {
+    "type": "exec",
+    "title": "Shell",
+    "command": "rm -rf build",
+    "rootCommand": "rm"
+  }
+}

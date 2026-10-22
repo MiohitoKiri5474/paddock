@@ -289,14 +289,32 @@ impl Sandbox {
     /// `paddock hook <event>` with `payload` on stdin, as Claude Code would
     /// run it inside the terminal of tmux session `terminal`.
     pub fn hook(&self, terminal: &str, event: &str, payload: &str) -> std::process::Output {
+        self.hook_args(terminal, &[event], payload)
+    }
+
+    /// `paddock hook --agent <agent> <event>` with `payload` on stdin, as
+    /// that agent's hooks run it inside the terminal of tmux session
+    /// `terminal`.
+    pub fn agent_hook(
+        &self,
+        terminal: &str,
+        agent: &str,
+        event: &str,
+        payload: &str,
+    ) -> std::process::Output {
+        self.hook_args(terminal, &["--agent", agent, event], payload)
+    }
+
+    /// `paddock hook <args>` inside the terminal of tmux session `terminal`.
+    fn hook_args(&self, terminal: &str, args: &[&str], payload: &str) -> std::process::Output {
         let tmux = self.display(terminal, "#{socket_path},#{pid},0");
         let pane = self.display(terminal, "#{pane_id}");
-        let out = self.run(
-            &["hook", event],
-            &[("TMUX", &tmux), ("TMUX_PANE", &pane)],
-            payload,
-        );
+        let args: Vec<&str> = std::iter::once("hook")
+            .chain(args.iter().copied())
+            .collect();
+        let out = self.run(&args, &[("TMUX", &tmux), ("TMUX_PANE", &pane)], payload);
         assert!(out.status.success(), "hook failed: {out:?}");
+        assert!(out.stdout.is_empty(), "a hook prints nothing: {out:?}");
         out
     }
 }
