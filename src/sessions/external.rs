@@ -4,7 +4,7 @@
 //! nothing was heard of them for a while (their agent may have been killed
 //! without a `SessionEnd`).
 
-use super::{Agent, HookRecord, Session, Sessions, State};
+use super::{log, Agent, HookRecord, Session, Sessions, State};
 use std::collections::HashSet;
 
 /// What an external session's key starts with: never a tmux pane id (`%N`).
@@ -29,15 +29,27 @@ pub(super) fn ends(r: &HookRecord) -> bool {
     is_external(&r.pane) && super::ends_conversation(r) && r.agent_id.is_none()
 }
 
+/// How long (ms) a [`kept_waiting`] session stays with nothing heard of
+/// it: the external log's retention ([`log::EXTERNAL_KEEP_MS`]), so one
+/// killed while waiting (no `SessionEnd`) neither stays forever nor comes
+/// back on a replay once that window has passed.
+const WAITING_KEEP_MS: u64 = log::EXTERNAL_KEEP_MS;
+
 /// Whether external session `s` counts as gone at `now`: nothing heard of
-/// it for longer than `timeout` ms, unless [`kept_waiting`].
+/// it for longer than `timeout` ms, or [`WAITING_KEEP_MS`] if
+/// [`kept_waiting`].
 fn quiet(s: &Session, now: u64, timeout: u64) -> bool {
-    now > s.alive.saturating_add(timeout) && !kept_waiting(s)
+    let keep = if kept_waiting(s) {
+        timeout.max(WAITING_KEEP_MS)
+    } else {
+        timeout
+    };
+    now > s.alive.saturating_add(keep)
 }
 
 /// Whether `s` waits on you with no snapshot of its kind to tell whether it
 /// still runs (Gemini): a wait sends no hooks, so it would look quiet. It
-/// stays until it ends, goes on, or is dismissed.
+/// stays until it ends, goes on, is dismissed, or [`WAITING_KEEP_MS`] pass.
 fn kept_waiting(s: &Session) -> bool {
     !s.kind.has_snapshot() && !s.ended() && s.state == State::Waiting
 }
@@ -240,6 +252,30 @@ mod tests {
             s.get(&external_key("g1")).is_none(),
             "an ended one is pruned"
         );
+    }
+
+    #[test]
+    fn a_waiting_external_gemini_session_leaves_after_a_day_even_on_replay() {
+        let waiting = HookRecord {
+            kind: AgentKind::Gemini,
+            notification_type: Some("ToolPermission".into()),
+            ..ext("Notification", "g1", 1)
+        };
+        assert_eq!(WAITING_KEEP_MS, 24 * 60 * MIN);
+        let mut s = Sessions::default();
+        s.apply(&waiting);
+        assert_eq!(s.externals(100 * MIN, 10 * MIN), [external_key("g1")]);
+        assert_eq!(
+            s.externals(1 + WAITING_KEEP_MS, 10 * MIN),
+            [external_key("g1")]
+        );
+        assert!(s.externals(2 + WAITING_KEEP_MS, 10 * MIN).is_empty());
+        s.prune_externals(2 + WAITING_KEEP_MS, 10 * MIN);
+        assert!(s.get(&external_key("g1")).is_none(), "pruned");
+        // Reopening replays the log: the same record, a day on, stays out.
+        let mut replayed = Sessions::default();
+        replayed.apply(&waiting);
+        assert!(replayed.externals(2 + WAITING_KEEP_MS, 10 * MIN).is_empty());
     }
 
     #[test]
