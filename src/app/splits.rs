@@ -18,7 +18,7 @@ impl App {
         ) else {
             return Ok(());
         };
-        let dir = self.new_dir();
+        let dir = self.tab_dir();
         self.server.split(&pane, columns, &dir)?;
         self.refresh(&id)
     }
