@@ -13,9 +13,6 @@ use crate::ui::tab_bar::{self, Tab, TabBar};
 use ratatui::layout::Rect;
 use std::borrow::Cow;
 
-/// What a tab running Claude is called while the user has not named it.
-const CLAUDE: &str = "claude";
-
 impl App {
     /// SPACES as drawn: each space (its name, the most urgent state of its
     /// agents, whether it is current, and its directory and branch once
@@ -67,6 +64,7 @@ impl App {
             .map(|r| AgentLine {
                 label: r.label.clone(),
                 state: r.state,
+                kind: r.kind,
                 place: if r.external {
                     self.external_place(r, &home)
                 } else {
@@ -99,23 +97,22 @@ impl App {
     }
 
     /// A tab's name as shown: tmux's, except that a tab tmux names (not
-    /// renamed by the user) whose focused pane runs Claude is called
-    /// `claude`, whatever process name tmux sees.
+    /// renamed by the user) whose focused pane runs an agent is called after
+    /// the agent's kind (`claude`), whatever process name tmux sees.
     pub(super) fn tab_name(&self, w: &Window) -> String {
-        let claude = self.session_in(&w.active).is_some_and(|s| {
+        let agent = self.session_in(&w.active).filter(|s| {
             matches!(
                 s.state,
                 State::Running | State::Waiting | State::Done | State::Idle
             )
         });
-        if w.auto_name && claude {
-            CLAUDE.to_string()
-        } else {
-            w.name.clone()
+        match agent {
+            Some(s) if w.auto_name => s.kind.tag().to_string(),
+            _ => w.name.clone(),
         }
     }
 
-    /// The current space's tabs: their names and most urgent Claude state.
+    /// The current space's tabs: their names and most urgent agent state.
     pub(super) fn tabs(&self, rows: &[Row]) -> Vec<Tab> {
         let Some(space) = self.current_space() else {
             return Vec::new();
@@ -152,7 +149,7 @@ impl App {
             Mode::Naming { target, line, .. } => (target.title(), Body::Input(line)),
             Mode::ConfirmClose { target, state, .. } => (
                 self.close_title(target),
-                Body::Message(format!("Claude is {}: close? y/n", state.label())),
+                Body::Message(format!("an agent is {}: close? y/n", state.label())),
             ),
             Mode::OpenWorktree(list) => (
                 " Open worktree ",

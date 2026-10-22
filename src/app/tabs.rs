@@ -7,7 +7,7 @@ use super::space::clamp;
 use super::state::{is_session_id, next_name, App, CloseTarget, Mode, NameTarget, Renamed};
 use super::watch;
 use crate::paths::HomePaths;
-use crate::sessions::State;
+use crate::sessions::{AgentKind, State};
 use crate::terminal::Terminal;
 use crate::tmux::server::quote;
 use anyhow::{bail, Result};
@@ -354,9 +354,13 @@ impl App {
     /// Claude exits.
     pub fn fork(&mut self, pane: &str) -> Result<()> {
         pane_only(pane, EXTERNAL_FORK)?;
-        let Some((session_id, cwd)) = self
-            .session_in(pane)
-            .and_then(|s| Some((s.session_id.clone()?, s.cwd.clone())))
+        let session = self.session_in(pane);
+        // Only Claude continues a copy of a conversation.
+        if session.is_some_and(|s| s.kind != AgentKind::Claude) {
+            bail!("fork needs a Claude session");
+        }
+        let Some((session_id, cwd)) =
+            session.and_then(|s| Some((s.session_id.clone()?, s.cwd.clone())))
         else {
             bail!("no Claude session here");
         };

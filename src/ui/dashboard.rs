@@ -20,7 +20,7 @@ use ratatui::widgets::{Block, BorderType, Clear, Widget};
 /// The dashboard's name, bold on the list's first line.
 pub const TITLE: &str = "dashboard";
 /// The list's only line without rows.
-const EMPTY: &str = " no Claude sessions yet";
+const EMPTY: &str = " no agent sessions yet";
 /// The line over the external sessions.
 const EXTERNAL_GROUP: &str = " external";
 /// What an external session's preview says: paddock has no terminal of it.

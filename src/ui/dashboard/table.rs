@@ -14,6 +14,8 @@ enum Column {
     Name,
     /// A session's or a subagent's state.
     State,
+    /// A session's agent kind, as a tag (`claude`).
+    Agent,
     /// Commits ahead of and behind upstream.
     AheadBehind,
     /// Uncommitted lines added and removed.
@@ -29,11 +31,12 @@ enum Column {
 }
 
 /// How many columns there are.
-const COUNT: usize = 8;
+const COUNT: usize = 9;
 /// Every column, left to right.
 const COLUMNS: [Column; COUNT] = [
     Column::Name,
     Column::State,
+    Column::Agent,
     Column::AheadBehind,
     Column::Changes,
     Column::Base,
@@ -56,6 +59,10 @@ const SPECS: [Spec; COUNT] = [
     },
     Spec {
         header: "STATE",
+        right_aligned: false,
+    },
+    Spec {
+        header: "AGENT",
         right_aligned: false,
     },
     Spec {
@@ -84,14 +91,15 @@ const SPECS: [Spec; COUNT] = [
     },
 ];
 /// The columns dropped, in this order, while the name does not fit. Name
-/// and state always stay.
-const DROP_ORDER: [Column; 6] = [
+/// and state always stay; the agent goes last.
+const DROP_ORDER: [Column; 7] = [
     Column::Merged,
     Column::Files,
     Column::Base,
     Column::AheadBehind,
     Column::Age,
     Column::Changes,
+    Column::Agent,
 ];
 /// Spaces between two columns.
 const GAP: usize = 2;
@@ -131,11 +139,12 @@ pub fn header() -> Cells {
     COLUMNS.map(|c| c.spec().header.to_string())
 }
 
-/// A session row's cells: its label and state.
+/// A session row's cells: its label, state and agent.
 pub fn session(row: &Row) -> Cells {
     let mut cells = Cells::default();
     cells[Column::Name.index()] = row.label.clone();
     cells[Column::State.index()] = row.state.label().to_string();
+    cells[Column::Agent.index()] = row.kind.tag().to_string();
     cells
 }
 
@@ -297,6 +306,7 @@ mod tests {
             [
                 "  feat/a",
                 "",
+                "",
                 "↑2",
                 "+30 −144",
                 "+12 −3",
@@ -316,7 +326,7 @@ mod tests {
         };
         assert_eq!(
             task(&task_row("b", None), Some(&none), 0),
-            ["  b", "", "", "", "", "", "", ""].map(String::from),
+            ["  b", "", "", "", "", "", "", "", ""].map(String::from),
             "zero and unknown stay empty"
         );
         let sub = TaskRow {
@@ -329,7 +339,7 @@ mod tests {
         };
         assert_eq!(
             task(&sub, None, 0),
-            ["  Fix c · c", "done", "", "", "", "", "", ""].map(String::from)
+            ["  Fix c · c", "done", "", "", "", "", "", "", ""].map(String::from)
         );
     }
 
@@ -361,10 +371,10 @@ mod tests {
         assert_eq!(
             got,
             [
-                " NAME      STATE  ↑↓   CHANGES  BASE  FILES  AGE  MERGED",
+                " NAME      STATE  AGENT  ↑↓   CHANGES  BASE  FILES  AGE  MERGED",
                 " api       idle",
-                "   feat/a                +3 −1            2",
-                "   feat/b             +30 −144",
+                "   feat/a                       +3 −1            2",
+                "   feat/b                    +30 −144",
             ]
         );
     }
@@ -432,16 +442,17 @@ mod tests {
         };
         assert_eq!(shown(100).len(), COUNT, "all fit");
         assert_eq!(
-            shown(70),
-            ["NAME", "STATE", "↑↓", "CHANGES", "BASE", "FILES", "AGE"],
+            shown(77),
+            ["NAME", "STATE", "AGENT", "↑↓", "CHANGES", "BASE", "FILES", "AGE"],
             "merged goes first"
         );
         assert_eq!(
-            shown(60),
-            ["NAME", "STATE", "↑↓", "CHANGES", "BASE", "AGE"],
+            shown(67),
+            ["NAME", "STATE", "AGENT", "↑↓", "CHANGES", "BASE", "AGE"],
             "then files"
         );
-        assert_eq!(shown(50), ["NAME", "STATE", "CHANGES", "AGE"]);
+        assert_eq!(shown(57), ["NAME", "STATE", "AGENT", "CHANGES", "AGE"]);
+        assert_eq!(shown(48), ["NAME", "STATE", "AGENT"], "the agent goes last");
         assert_eq!(shown(20), ["NAME", "STATE"]);
         let w = widths(&lines, 20);
         assert_eq!(line(&long, &w, 20), " a-very-l…  waiting ");

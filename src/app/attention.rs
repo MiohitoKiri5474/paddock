@@ -98,7 +98,7 @@ impl Alerts {
         let alert = match state_after(r) {
             Some(State::Waiting) => Alert::Waiting,
             // A new session starting idle has not finished anything.
-            Some(State::Idle) if r.event != "SessionStart" => Alert::Idle,
+            Some(State::Idle) if !sessions::restarts(r) => Alert::Idle,
             _ => {
                 // Work went on: the next alert is new. A subagent working on
                 // ends its wait, but not the main agent's finished turn.
@@ -124,7 +124,8 @@ impl Alerts {
             .clone()
             .or_else(|| last.and_then(|(s, _)| s.clone()));
         // Stop ends one turn each time; other idle events only remind of it.
-        let repeat = r.event != "Stop" && last.is_some_and(|(s, a)| *s == session && *a == alert);
+        let repeat =
+            !sessions::finishes_turn(r) && last.is_some_and(|(s, a)| *s == session && *a == alert);
         self.last.insert(r.pane.clone(), (session, alert));
         (!repeat).then_some(alert)
     }
@@ -518,6 +519,7 @@ mod tests {
             space: "$1".into(),
             window: "@1".into(),
             label: pane.into(),
+            kind: crate::sessions::AgentKind::Claude,
             state,
             tasks: Vec::new(),
             external: false,

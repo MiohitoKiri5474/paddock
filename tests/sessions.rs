@@ -82,9 +82,10 @@ fn agent(label: &str, state: &str) -> String {
     format!(" ● {label:<width$}{state}")
 }
 
-/// An agent's second line: its space and tab.
+/// An agent's second line: its space and tab, and its kind at the right.
 fn place(space: &str, tab: &str) -> String {
-    format!("   {space} · {tab}")
+    let place = format!("{space} · {tab}");
+    format!("   {place:<21}claude")
 }
 
 /// The sidebar with space-1 and one agent in its first tab.

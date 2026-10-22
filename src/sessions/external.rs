@@ -1,7 +1,7 @@
-//! External sessions: Claude running outside paddock's terminals. They
+//! External sessions: agents running outside paddock's terminals. They
 //! have no pane, so they are keyed by [`external_key`] of their session id
 //! and fold like any terminal's session. They leave when they end, or once
-//! nothing was heard of them for a while (their Claude may have been killed
+//! nothing was heard of them for a while (their agent may have been killed
 //! without a `SessionEnd`).
 
 use super::{Agent, HookRecord, Session, Sessions};
@@ -21,11 +21,11 @@ pub fn is_external(key: &str) -> bool {
     key.starts_with(EXTERNAL)
 }
 
-/// Whether `r` ends an external session: any `SessionEnd` of its main
-/// agent. It is keyed by its id, and after `/clear` the new conversation is
-/// another session, so this one ends.
+/// Whether `r` ends an external session: its main agent ending any
+/// conversation (Claude: any `SessionEnd`). It is keyed by its id, and
+/// after `/clear` the new conversation is another session, so this one ends.
 pub(super) fn ends(r: &HookRecord) -> bool {
-    is_external(&r.pane) && r.event == "SessionEnd" && r.agent_id.is_none()
+    is_external(&r.pane) && super::ends_conversation(r) && r.agent_id.is_none()
 }
 
 impl Sessions {
@@ -250,6 +250,7 @@ mod tests {
         // (ts 10); the server's log is read first.
         let server = vec![rec("SessionStart", 10)];
         let external = vec![record(
+            super::super::AgentKind::Claude,
             "Stop",
             "",
             &format!(r#"{{"session_id":"{S1}","cwd":"/w/api"}}"#),

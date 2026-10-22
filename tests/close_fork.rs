@@ -88,7 +88,7 @@ fn x_asks_while_claude_is_running() {
     paddock.wait_for_tabs(&["1:home", "2:claude"]);
 
     paddock.command(b"x");
-    paddock.wait_for_popup("Close tab", "Claude is running: close? y/n");
+    paddock.wait_for_popup("Close tab", "an agent is running: close? y/n");
     paddock.send(b"n");
     paddock.wait_for("the question gone", |s| !s.contains(ASK));
     std::thread::sleep(Duration::from_millis(200));
@@ -132,7 +132,7 @@ fn x_on_a_space_with_a_waiting_claude_asks_then_closes_the_space() {
     paddock.command(b"w");
     paddock.send(b"k");
     paddock.send(b"x");
-    paddock.wait_for_popup("Close space", "Claude is waiting: close? y/n");
+    paddock.wait_for_popup("Close space", "an agent is waiting: close? y/n");
     paddock.send(b"y");
 
     wait_for_items(&paddock, &sandbox, &["space-2"]);
@@ -245,7 +245,7 @@ fn closing_the_only_pane_of_a_spaces_only_tab_asks_to_close_the_space() {
     paddock.wait_for_tabs(&["1:claude"]);
 
     paddock.command(b"x");
-    paddock.wait_for_popup("Close space", "Claude is running: close? y/n");
+    paddock.wait_for_popup("Close space", "an agent is running: close? y/n");
     paddock.send(b"n");
     paddock.wait_for_no_popup();
     assert_eq!(sandbox.session_names(), ["space-1"]);
@@ -261,11 +261,11 @@ fn a_busy_close_asked_from_the_sidebar_gives_the_sidebar_back() {
     // The agent is selected; `n` keeps it, and the sidebar keeps the keys.
     paddock.command(b"s");
     paddock.send(b"x");
-    paddock.wait_for_popup("Close tab", "Claude is running: close? y/n");
+    paddock.wait_for_popup("Close tab", "an agent is running: close? y/n");
     paddock.send(b"n");
     paddock.wait_for_no_popup();
     paddock.send(b"x");
-    paddock.wait_for_popup("Close tab", "Claude is running: close? y/n");
+    paddock.wait_for_popup("Close tab", "an agent is running: close? y/n");
 
     // Esc, then a click outside, give it back too.
     paddock.send(b"\x1b");
@@ -273,26 +273,26 @@ fn a_busy_close_asked_from_the_sidebar_gives_the_sidebar_back() {
     // Esc right before a key would read as Alt with that key.
     std::thread::sleep(Duration::from_millis(200));
     paddock.send(b"x");
-    paddock.wait_for_popup("Close tab", "Claude is running: close? y/n");
+    paddock.wait_for_popup("Close tab", "an agent is running: close? y/n");
     paddock.click_screen(80, 25);
     paddock.wait_for_no_popup();
 
     // `C-a x` from the sidebar asks about the focused pane, then gives the
     // sidebar back, its selection still on the agent.
     paddock.command(b"x");
-    paddock.wait_for_popup("Close tab", "Claude is running: close? y/n");
+    paddock.wait_for_popup("Close tab", "an agent is running: close? y/n");
     paddock.send(b"n");
     paddock.wait_for_no_popup();
 
     // The space: `n` keeps the selection on it.
     paddock.send(b"k");
     paddock.send(b"x");
-    paddock.wait_for_popup("Close space", "Claude is running: close? y/n");
+    paddock.wait_for_popup("Close space", "an agent is running: close? y/n");
     paddock.send(b"n");
     paddock.wait_for_no_popup();
     paddock.send(b"j");
     paddock.send(b"x");
-    paddock.wait_for_popup("Close tab", "Claude is running: close? y/n");
+    paddock.wait_for_popup("Close tab", "an agent is running: close? y/n");
     paddock.send(b"y");
     wait_for_tab_count(&paddock, &sandbox, 1);
     assert_eq!(sandbox.session_names(), ["space-1"]);

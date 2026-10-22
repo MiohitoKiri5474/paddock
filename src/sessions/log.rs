@@ -8,7 +8,7 @@
 //! app compacts that file when it opens and while it runs, since every
 //! Claude on the machine appends to it.
 
-use super::{external_key, HookRecord};
+use super::{external_key, AgentKind, HookRecord};
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -136,24 +136,30 @@ pub fn terminal(tmux: &str, pane: &str, socket: &str) -> Option<(u32, String)> {
     (ours && pane_ok).then(|| (pid, pane.to_string()))
 }
 
-/// The record for a hook payload (JSON on stdin). An unreadable payload still
-/// records the event, without its details.
-pub fn record(event: &str, pane: &str, payload: &str, ts: u64) -> HookRecord {
+/// The record for agent `kind`'s hook payload (JSON on stdin). An
+/// unreadable payload still records the event, without its details.
+pub fn record(kind: AgentKind, event: &str, pane: &str, payload: &str, ts: u64) -> HookRecord {
     let v: Value = serde_json::from_str(payload).unwrap_or(Value::Null);
     let field = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_string);
-    HookRecord {
+    let common = HookRecord {
         event: event.to_string(),
         pane: pane.to_string(),
-        session_id: field("session_id"),
-        cwd: field("cwd"),
-        source: field("source"),
-        notification_type: field("notification_type"),
-        reason: field("reason"),
-        agent_id: field("agent_id"),
-        tool_name: field("tool_name"),
-        branch: None,
-        description: description(&v),
+        kind,
         ts,
+        ..HookRecord::default()
+    };
+    match kind {
+        AgentKind::Claude => HookRecord {
+            session_id: field("session_id"),
+            cwd: field("cwd"),
+            source: field("source"),
+            notification_type: field("notification_type"),
+            reason: field("reason"),
+            agent_id: field("agent_id"),
+            tool_name: field("tool_name"),
+            description: description(&v),
+            ..common
+        },
     }
 }
 
@@ -258,6 +264,8 @@ impl Reader {
 mod tests {
     use super::*;
 
+    const CLAUDE: AgentKind = AgentKind::Claude;
+
     #[test]
     fn only_paddocks_socket_counts() {
         let t = "/private/tmp/tmux-501/paddock,4242,0";
@@ -270,7 +278,7 @@ mod tests {
 
     #[test]
     fn an_external_record_has_no_pane_and_is_keyed_by_its_session_once_read() {
-        let r = record("Stop", "", r#"{"session_id":"e1","cwd":"/w"}"#, 5);
+        let r = record(CLAUDE, "Stop", "", r#"{"session_id":"e1","cwd":"/w"}"#, 5);
         let line = serde_json::to_string(&r).unwrap();
         assert!(!line.contains("pane"), "{line}");
         let back: HookRecord = serde_json::from_str(&line).unwrap();
@@ -278,9 +286,13 @@ mod tests {
         let keyed = keyed_external(back).unwrap();
         assert_eq!(keyed.pane, external_key("e1"));
         assert_eq!(keyed.cwd.as_deref(), Some("/w"));
-        assert_eq!(keyed_external(record("Stop", "", "{}", 5)), None, "no id");
         assert_eq!(
-            keyed_external(record("Stop", "%1", r#"{"session_id":"e1"}"#, 5)),
+            keyed_external(record(CLAUDE, "Stop", "", "{}", 5)),
+            None,
+            "no id"
+        );
+        assert_eq!(
+            keyed_external(record(CLAUDE, "Stop", "%1", r#"{"session_id":"e1"}"#, 5)),
             None,
             "a terminal's"
         );
@@ -291,7 +303,19 @@ mod tests {
         let line = r#"{"event":"Stop","pane":"%3","session_id":"s","cwd":"/r","ts":9}"#;
         let r: HookRecord = serde_json::from_str(line).unwrap();
         assert_eq!(r.pane, "%3");
+        assert_eq!(r.kind, AgentKind::Claude, "no kind: Claude's");
         assert_eq!(serde_json::to_string(&r).unwrap(), line, "written the same");
+    }
+
+    #[test]
+    fn claudes_records_leave_the_kind_out() {
+        let r = record(CLAUDE, "Stop", "%1", r#"{"session_id":"s"}"#, 1);
+        assert_eq!(r.kind, CLAUDE);
+        let line = serde_json::to_string(&r).unwrap();
+        assert!(!line.contains("kind"), "{line}");
+        let tagged = line.replace(r#""ts""#, r#""kind":"claude","ts""#);
+        let back: HookRecord = serde_json::from_str(&tagged).unwrap();
+        assert_eq!(back, r, "a written kind reads back");
     }
 
     #[test]
@@ -299,8 +323,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = external_path(dir.path());
         assert_eq!(p, dir.path().join("events/external.jsonl"));
-        append(&p, &record("SessionStart", "", r#"{"session_id":"e1"}"#, 1)).unwrap();
-        append(&p, &record("Stop", "", r#"{"session_id":"e1"}"#, 2)).unwrap();
+        append(
+            &p,
+            &record(CLAUDE, "SessionStart", "", r#"{"session_id":"e1"}"#, 1),
+        )
+        .unwrap();
+        append(&p, &record(CLAUDE, "Stop", "", r#"{"session_id":"e1"}"#, 2)).unwrap();
         let got: Vec<(String, String)> = Reader::new(p)
             .read_new()
             .into_iter()
@@ -317,9 +345,9 @@ mod tests {
     /// A log of Stop records at `stamps`, and the length of one 3-digit line.
     fn stops(p: &Path, stamps: impl IntoIterator<Item = u64>) -> u64 {
         for ts in stamps {
-            append(p, &record("Stop", "", r#"{"session_id":"e1"}"#, ts)).unwrap();
+            append(p, &record(CLAUDE, "Stop", "", r#"{"session_id":"e1"}"#, ts)).unwrap();
         }
-        let line = serde_json::to_vec(&record("Stop", "", r#"{"session_id":"e1"}"#, 100));
+        let line = serde_json::to_vec(&record(CLAUDE, "Stop", "", r#"{"session_id":"e1"}"#, 100));
         line.unwrap().len() as u64 + 1
     }
 
@@ -424,14 +452,14 @@ mod tests {
         let payload = r#"{"session_id":"s","cwd":"/r","hook_event_name":"Notification",
             "notification_type":"permission_prompt","message":"big","agent_id":"a",
             "tool_name":"Bash"}"#;
-        let r = record("Notification", "%1", payload, 7);
+        let r = record(CLAUDE, "Notification", "%1", payload, 7);
         assert_eq!(r.tool_name.as_deref(), Some("Bash"));
         assert_eq!(r.branch, None, "the hook reads git, not the payload");
         assert_eq!(r.session_id.as_deref(), Some("s"));
         assert_eq!(r.notification_type.as_deref(), Some("permission_prompt"));
         assert_eq!(r.agent_id.as_deref(), Some("a"));
         assert!(!serde_json::to_string(&r).unwrap().contains("big"));
-        let bad = record("Stop", "%1", "not json", 8);
+        let bad = record(CLAUDE, "Stop", "%1", "not json", 8);
         assert_eq!(bad.event, "Stop");
         assert_eq!(bad.session_id, None);
     }
@@ -444,17 +472,20 @@ mod tests {
     #[test]
     fn a_subagents_description_comes_from_its_stop_payload() {
         let stop = std::fs::read_to_string(format!("{SPIKE}/SubagentStop-subagent.json")).unwrap();
-        let r = record("SubagentStop", "%1", &stop, 1);
+        let r = record(CLAUDE, "SubagentStop", "%1", &stop, 1);
         assert_eq!(
             r.description.as_deref(),
             Some("Create fix/a branch and a.txt")
         );
         let start =
             std::fs::read_to_string(format!("{SPIKE}/SubagentStart-subagent.json")).unwrap();
-        assert_eq!(record("SubagentStart", "%1", &start, 1).description, None);
+        assert_eq!(
+            record(CLAUDE, "SubagentStart", "%1", &start, 1).description,
+            None
+        );
         // The main agent's Stop lists subagents too, but describes none itself.
         let main = std::fs::read_to_string(format!("{SPIKE}/Stop.json")).unwrap();
-        assert_eq!(record("Stop", "%1", &main, 1).description, None);
+        assert_eq!(record(CLAUDE, "Stop", "%1", &main, 1).description, None);
     }
 
     #[test]
@@ -480,8 +511,8 @@ mod tests {
         let p = path(dir.path(), 9);
         let mut reader = Reader::new(p.clone());
         assert!(reader.read_new().is_empty(), "no file yet");
-        append(&p, &record("Stop", "%1", "{}", 1)).unwrap();
-        append(&p, &record("SessionEnd", "%1", "{}", 2)).unwrap();
+        append(&p, &record(CLAUDE, "Stop", "%1", "{}", 1)).unwrap();
+        append(&p, &record(CLAUDE, "SessionEnd", "%1", "{}", 2)).unwrap();
         let mut f = std::fs::OpenOptions::new().append(true).open(&p).unwrap();
         f.write_all(br#"{"event":"Stop","pane":"%2","#).unwrap();
         let got: Vec<String> = reader.read_new().into_iter().map(|r| r.event).collect();

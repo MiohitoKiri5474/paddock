@@ -166,7 +166,7 @@ fn check(
         });
     if let Some((space, state)) = busy {
         let why = format!(
-            "has Claude {} in space {}: nothing deleted",
+            "has an agent {} in space {}: nothing deleted",
             state.label(),
             space.name
         );

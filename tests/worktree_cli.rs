@@ -548,7 +548,7 @@ fn rm_never_deletes_the_tree_its_caller_or_a_busy_claude_is_in() {
             &["rm", "feat/c", "--discard-changes", "--discard-commits"],
         ),
         3,
-        "Claude running in space repo/feat/c",
+        "agent running in space repo/feat/c",
     );
     assert!(path.is_dir());
     assert_eq!(sandbox.session_names(), ["repo/feat/c"]);
@@ -645,7 +645,7 @@ fn rm_counts_a_busy_claude_in_a_float_and_list_leaves_floats_out() {
     exits(
         &cli(&sandbox, &dir, &["rm", "feat/f"]),
         3,
-        "Claude running in space repo/feat/f",
+        "agent running in space repo/feat/f",
     );
     assert!(path.is_dir());
     assert_eq!(sandbox.session_names(), ["repo/feat/f"]);

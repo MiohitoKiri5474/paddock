@@ -106,13 +106,36 @@ fn repo(sandbox: &Sandbox) -> PathBuf {
     dir
 }
 
+/// Ticket 33: every row shows its agent's kind, `claude` for now.
+#[test]
+fn rows_are_tagged_with_their_agents_kind() {
+    let sandbox = Sandbox::new();
+    let mut paddock = ready(&sandbox);
+    claude(&sandbox, "space-1:0", "Stop", "s1", "/w/repo");
+    wait_anywhere(&paddock, "idle");
+    // The sidebar tags the agent at the end of its second line, under its
+    // state: `space-1 · claude` is its place (the tab named after it).
+    paddock.wait_for("the sidebar's tag", |_| {
+        paddock
+            .full_rows()
+            .iter()
+            .any(|l| l.contains("space-1 · claude") && l.contains("claude │"))
+    });
+    open(&mut paddock);
+    paddock.wait_for_text("AGENT");
+    paddock.wait_for("the dashboard's tag", |s| {
+        s.lines()
+            .any(|l| l.contains(" repo ") && l.contains("idle   claude"))
+    });
+}
+
 #[test]
 fn o_opens_the_dashboard_and_esc_closes_it() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     // Empty, it still opens, and says so.
     open(&mut paddock);
-    paddock.wait_for_text("no Claude sessions yet");
+    paddock.wait_for_text("no agent sessions yet");
     paddock.send(b"\x1b");
     paddock.wait_for("the empty dashboard closed", |s| !s.contains(OPEN));
 
@@ -422,7 +445,7 @@ fn x_asks_while_claude_runs_then_returns_to_the_dashboard() {
     paddock.send(b"y");
     paddock.wait_for("its pane closed", |_| tabs(&sandbox) == 1);
     // Its session ended with its terminal: it left the list.
-    paddock.wait_for_text("no Claude sessions yet");
+    paddock.wait_for_text("no agent sessions yet");
     paddock.wait_for_text(OPEN);
 }
 
@@ -435,7 +458,7 @@ fn a_click_outside_the_close_question_cancels_it_back_to_the_dashboard() {
 
     open(&mut paddock);
     paddock.send(b"x");
-    paddock.wait_for_popup("Close tab", "Claude is running: close? y/n");
+    paddock.wait_for_popup("Close tab", "an agent is running: close? y/n");
     // Outside the 40x3 box centred on the 100x30 screen.
     paddock.click_screen(80, 25);
 

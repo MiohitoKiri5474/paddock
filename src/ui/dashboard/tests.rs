@@ -12,6 +12,7 @@ fn row(label: &str, state: State, tasks: Vec<TaskRow>) -> Row {
         space: "$1".into(),
         window: "@1".into(),
         label: label.into(),
+        kind: crate::sessions::AgentKind::Claude,
         state,
         tasks,
         external: false,
@@ -263,10 +264,10 @@ fn renders_rows_tasks_and_a_live_preview() {
     assert_eq!(
         [1, 2, 3, 4, 5, 6].map(|y| text(&buf, y)),
         [
-            " NAME             STATE    ↑↓  CHANGES   BASE  FILES  AGE  MERGED",
+            " NAME             STATE    AGENT   ↑↓  CHANGES   BASE  FILES  AGE  MERGED",
             "",
-            " api              idle",
-            "   feat/a                        +3 −1  +5 −0      2       ✓",
+            " api              idle     claude",
+            "   feat/a                                +3 −1  +5 −0      2       ✓",
             "   Fix b · fix/b  waiting",
             "",
         ]
@@ -364,7 +365,7 @@ fn without_rows_it_says_there_are_no_sessions() {
     };
     render(&view, area, &mut buf);
     assert_eq!(text(&buf, 2), "");
-    assert_eq!(text(&buf, 3), " no Claude sessions yet");
+    assert_eq!(text(&buf, 3), " no agent sessions yet");
     assert_eq!(text(&buf, 6), format!("╭{}╮", "─".repeat(38)));
     assert_eq!(text(&buf, 11), " j down  k up");
 }

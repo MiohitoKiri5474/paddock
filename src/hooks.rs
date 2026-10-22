@@ -1,18 +1,19 @@
-//! Claude Code hooks: the paddock plugin carries them
+//! Agent hooks. For Claude Code, the paddock plugin carries them
 //! (`plugins/paddock/hooks/hooks.json`); `paddock hooks install|uninstall`
-//! edits Claude's `settings.json` for users without it; `paddock hook <event>`
-//! records one event.
+//! edits each agent's settings file for users without it; `paddock hook
+//! [--agent <kind>] <event>` records one event (no `--agent`: Claude's, as
+//! the hooks installed before kinds existed call it).
 
 use crate::git;
 use crate::paths::Paths;
-use crate::sessions::{self, log};
+use crate::sessions::{self, log, AgentKind};
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Map, Value};
 use std::io::{Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
-/// The events paddock listens to.
+/// The Claude Code events paddock listens to.
 pub const EVENTS: &[&str] = &[
     "SessionStart",
     "UserPromptSubmit",
@@ -38,19 +39,46 @@ const PLUGIN_KEY: &str = "paddock@paddock";
 const SOURCE_VAR: &str = "PADDOCK_HOOK_SOURCE";
 const PLUGIN_SOURCE: &str = "plugin";
 
-/// Restarting running Claude sessions makes them run the hooks as they are
-/// now: a session may not reload `settings.json` hooks at once.
-const RESTART: &str = "Restart running Claude sessions so they use the hooks as they are now.";
+/// Restarting running sessions makes them run the hooks as they are now: a
+/// session may not reload its settings' hooks at once.
+fn restart(kind: AgentKind) -> String {
+    format!(
+        "Restart running {} sessions so they use the hooks as they are now.",
+        kind.name()
+    )
+}
 
-/// Claude's user settings: `$CLAUDE_CONFIG_DIR/settings.json`, else
-/// `~/.claude/settings.json`.
-pub fn settings_path(var: impl Fn(&str) -> Option<String>) -> Result<PathBuf> {
+/// The events of `kind` paddock listens to.
+fn events(kind: AgentKind) -> &'static [&'static str] {
+    match kind {
+        AgentKind::Claude => EVENTS,
+    }
+}
+
+/// Where `kind` reads its user hooks. Claude:
+/// `$CLAUDE_CONFIG_DIR/settings.json`, else `~/.claude/settings.json`.
+pub fn settings_path(kind: AgentKind, var: impl Fn(&str) -> Option<String>) -> Result<PathBuf> {
     let non_empty = |k: &str| var(k).filter(|v| !v.is_empty());
-    let dir = match non_empty("CLAUDE_CONFIG_DIR") {
-        Some(d) => PathBuf::from(d),
-        None => PathBuf::from(non_empty("HOME").context("HOME is not set")?).join(".claude"),
-    };
-    Ok(dir.join("settings.json"))
+    match kind {
+        AgentKind::Claude => {
+            let dir = match non_empty("CLAUDE_CONFIG_DIR") {
+                Some(d) => PathBuf::from(d),
+                None => {
+                    PathBuf::from(non_empty("HOME").context("HOME is not set")?).join(".claude")
+                }
+            };
+            Ok(dir.join("settings.json"))
+        }
+    }
+}
+
+/// The command a hook of `kind` runs for `event`: `<exe> hook <event>` for
+/// Claude (as before kinds existed, and as the plugin calls it), else
+/// `<exe> hook --agent <kind> <event>`.
+fn hook_command(exe: &str, kind: AgentKind, event: &str) -> String {
+    match kind {
+        AgentKind::Claude => format!("{} hook {event}", quote(exe)),
+    }
 }
 
 fn quote(s: &str) -> String {
@@ -64,7 +92,8 @@ fn quote(s: &str) -> String {
     }
 }
 
-/// Whether a hook command runs `paddock hook`, whatever paddock's path.
+/// Whether a hook command runs `paddock hook`, whatever paddock's path and
+/// whatever agent it names.
 fn is_ours(command: &str) -> bool {
     let (program, rest) = match command.strip_prefix('\'') {
         Some(q) => match q.split_once('\'') {
@@ -109,8 +138,9 @@ fn remove_hooks(settings: &mut Value, matches: impl Fn(&str) -> bool) {
     }
 }
 
-/// Settings with paddock's hooks (calling `exe`) and without old ones.
-pub fn install(mut settings: Value, exe: &str) -> Result<Value> {
+/// `kind`'s settings with paddock's hooks (calling `exe`) and without old
+/// ones.
+pub fn install(mut settings: Value, exe: &str, kind: AgentKind) -> Result<Value> {
     remove_hooks(&mut settings, |c| is_ours(c) || c.contains(LEGACY));
     let Some(obj) = settings.as_object_mut() else {
         bail!("settings are not a JSON object");
@@ -121,8 +151,9 @@ pub fn install(mut settings: Value, exe: &str) -> Result<Value> {
     let Some(hooks) = hooks.as_object_mut() else {
         bail!("\"hooks\" in settings is not an object");
     };
-    for event in EVENTS {
-        let group = json!({"hooks": [{"type": "command", "command": format!("{} hook {event}", quote(exe))}]});
+    for event in events(kind) {
+        let group =
+            json!({"hooks": [{"type": "command", "command": hook_command(exe, kind, event)}]});
         match hooks.entry(*event).or_insert_with(|| json!([])) {
             Value::Array(groups) => groups.push(group),
             _ => bail!("hooks for {event} in settings are not a list"),
@@ -202,33 +233,104 @@ pub fn edit_file(path: &Path, f: impl FnOnce(Value) -> Result<Value>) -> Result<
     std::fs::rename(&tmp, path).with_context(|| format!("cannot replace {}", path.display()))
 }
 
-/// `paddock hooks install|uninstall`.
-pub fn command(action: &str) -> Result<()> {
-    let path = settings_path(|k| std::env::var(k).ok())?;
-    match action {
-        "install" => {
-            let exe = std::env::current_exe().context("cannot find paddock's own path")?;
-            let exe = exe.to_string_lossy().into_owned();
-            let plugin = read_settings(&path).is_some_and(|s| plugin_enabled(&s));
-            edit_file(&path, |s| install(s, &exe))?;
-            println!("paddock hooks installed in {}", path.display());
-            if plugin {
-                println!(
-                    "note: the paddock plugin is enabled and carries these hooks too; \
-                     paddock records each event once, from these. To keep only the \
-                     plugin's, run `paddock hooks uninstall`."
-                );
-            }
-            println!("{RESTART}");
+/// Whether `paddock hooks install|uninstall` without `--agent` acts on
+/// `kind`. Claude always, as before kinds existed (the plugin is its other
+/// way in); other kinds only when their CLI is on `PATH`.
+fn by_default(kind: AgentKind) -> bool {
+    match kind {
+        AgentKind::Claude => true,
+    }
+}
+
+/// The kinds `paddock hooks` acts on, from its arguments after the action:
+/// each `--agent <kind>` once (repeatable), else every kind [`by_default`].
+fn kinds(args: &[&str]) -> Result<Vec<AgentKind>> {
+    let mut kinds = Vec::new();
+    let mut rest = args.iter();
+    while let Some(&arg) = rest.next() {
+        if arg != "--agent" {
+            bail!("unexpected argument {arg:?}: use --agent <kind>");
         }
-        "uninstall" => {
+        let Some(&tag) = rest.next() else {
+            bail!("--agent needs a kind: {}", tags());
+        };
+        let kind = AgentKind::parse(tag)
+            .with_context(|| format!("unknown agent {tag:?}: use {}", tags()))?;
+        if !kinds.contains(&kind) {
+            kinds.push(kind);
+        }
+    }
+    if kinds.is_empty() {
+        kinds = AgentKind::ALL
+            .into_iter()
+            .filter(|&k| by_default(k))
+            .collect();
+    }
+    Ok(kinds)
+}
+
+/// Every kind's tag, for messages.
+fn tags() -> String {
+    let all: Vec<&str> = AgentKind::ALL.iter().map(|k| k.tag()).collect();
+    all.join(", ")
+}
+
+/// `paddock hooks install|uninstall [--agent <kind>]...`.
+pub fn command(args: &[&str]) -> Result<()> {
+    let Some((&action, rest)) = args.split_first() else {
+        bail!("hooks needs an action: use install or uninstall");
+    };
+    if !matches!(action, "install" | "uninstall") {
+        bail!("unknown hooks action {action:?}: use install or uninstall");
+    }
+    // Every argument is checked before any file is touched.
+    let kinds = kinds(rest)?;
+    let var = |k: &str| std::env::var(k).ok();
+    let paths: Vec<(AgentKind, PathBuf)> = kinds
+        .into_iter()
+        .map(|k| Ok((k, settings_path(k, var)?)))
+        .collect::<Result<_>>()?;
+    for (kind, path) in paths {
+        if action == "install" {
+            install_in(kind, &path)?;
+        } else {
             edit_file(&path, |s| Ok(uninstall(s)))?;
             println!("paddock hooks removed from {}", path.display());
-            println!("{RESTART}");
         }
-        other => bail!("unknown hooks action {other:?}: use install or uninstall"),
+        println!("{}", restart(kind));
     }
     Ok(())
+}
+
+/// `paddock hooks install` for `kind`, whose settings are at `path`.
+fn install_in(kind: AgentKind, path: &Path) -> Result<()> {
+    let exe = std::env::current_exe().context("cannot find paddock's own path")?;
+    let exe = exe.to_string_lossy().into_owned();
+    let plugin =
+        kind == AgentKind::Claude && read_settings(path).is_some_and(|s| plugin_enabled(&s));
+    edit_file(path, |s| install(s, &exe, kind))?;
+    println!("paddock hooks installed in {}", path.display());
+    if plugin {
+        println!(
+            "note: the paddock plugin is enabled and carries these hooks too; \
+             paddock records each event once, from these. To keep only the \
+             plugin's, run `paddock hooks uninstall`."
+        );
+    }
+    Ok(())
+}
+
+/// The agent and event of `paddock hook`'s arguments: `<event>` is
+/// Claude's, `--agent <kind> <event>` names the kind.
+pub fn hook_args<'a>(args: &[&'a str]) -> Result<(AgentKind, &'a str)> {
+    match args {
+        [event] => Ok((AgentKind::Claude, event)),
+        ["--agent", tag, event] => {
+            let kind = AgentKind::parse(tag).with_context(|| format!("unknown agent {tag:?}"))?;
+            Ok((kind, event))
+        }
+        _ => bail!("usage: paddock hook [--agent <kind>] <event>"),
+    }
 }
 
 pub fn now_ms() -> u64 {
@@ -238,30 +340,36 @@ pub fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// `paddock hook <event>`: record the event, in its server's log if it
-/// comes from one of paddock's terminals, else in the external log (it runs
-/// for every Claude on the machine, so that stays one append). Never
-/// prints, never fails: Claude would show the output to the model, or block
-/// on a failing hook.
-pub fn hook(event: &str) -> ! {
+/// `paddock hook [--agent <kind>] <event>` (`args` after `hook`): record
+/// the event, in its server's log if it comes from one of paddock's
+/// terminals, else in the external log (it runs for every agent on the
+/// machine, so that stays one append). Never prints, never fails, even on
+/// arguments it does not understand: the agent would show the output to the
+/// model, or block on a failing hook.
+pub fn hook(args: &[&str]) -> ! {
     std::panic::set_hook(Box::new(|_| {}));
     let _ = std::panic::catch_unwind(|| {
-        if let Err(e) = record(event) {
+        if let Err(e) = record(args) {
             log_error(&e);
         }
     });
     std::process::exit(0)
 }
 
-fn record(event: &str) -> Result<()> {
-    // Always drain stdin, so Claude never writes into a closed pipe.
+fn record(args: &[&str]) -> Result<()> {
+    // Always drain stdin, so the agent never writes into a closed pipe.
     let mut payload = String::new();
     std::io::stdin().read_to_string(&mut payload)?;
+    let (kind, event) = hook_args(args)?;
     let var = |k: &str| std::env::var(k).ok();
     let text = |k: &str| var(k).unwrap_or_default();
     // Before anything else, for paddock's terminals and external sessions
     // alike. Only the plugin's hook reads the settings, to defer to them.
-    let settings = || settings_path(var).ok().and_then(|p| read_settings(&p));
+    let settings = || {
+        settings_path(kind, var)
+            .ok()
+            .and_then(|p| read_settings(&p))
+    };
     if !should_record(&text(SOURCE_VAR), settings, event) {
         return Ok(()); // settings.json's paddock hook records this one
     }
@@ -272,7 +380,7 @@ fn record(event: &str) -> Result<()> {
         Some((pid, pane)) => (log::path(&paths.state_dir, pid), pane),
         None => (log::external_path(&paths.state_dir), String::new()),
     };
-    let mut r = log::record(event, &pane, &payload, now_ms());
+    let mut r = log::record(kind, event, &pane, &payload, now_ms());
     if pane.is_empty() && r.session_id.is_none() {
         return Ok(()); // an external event that cannot be kept apart
     }
@@ -308,6 +416,7 @@ mod tests {
     use super::*;
 
     const EXE: &str = "/opt/bin/paddock";
+    const CLAUDE: AgentKind = AgentKind::Claude;
 
     fn supacode() -> Value {
         json!({
@@ -332,7 +441,7 @@ mod tests {
 
     #[test]
     fn install_adds_every_event_and_keeps_other_hooks() {
-        let s = install(supacode(), EXE).unwrap();
+        let s = install(supacode(), EXE, CLAUDE).unwrap();
         for event in EVENTS {
             assert!(
                 commands(&s, event).contains(&format!("{EXE} hook {event}")),
@@ -348,7 +457,7 @@ mod tests {
 
     #[test]
     fn install_removes_the_old_tmux_plugin_hooks() {
-        let s = install(supacode(), EXE).unwrap();
+        let s = install(supacode(), EXE, CLAUDE).unwrap();
         assert_eq!(
             commands(&s, "Notification"),
             [format!("{EXE} hook Notification")]
@@ -357,31 +466,73 @@ mod tests {
 
     #[test]
     fn install_is_idempotent_even_after_paddock_moved() {
-        let once = install(supacode(), "/old/paddock").unwrap();
-        let twice = install(install(once, EXE).unwrap(), EXE).unwrap();
-        assert_eq!(twice, install(supacode(), EXE).unwrap());
+        let once = install(supacode(), "/old/paddock", CLAUDE).unwrap();
+        let twice = install(install(once, EXE, CLAUDE).unwrap(), EXE, CLAUDE).unwrap();
+        assert_eq!(twice, install(supacode(), EXE, CLAUDE).unwrap());
         assert_eq!(commands(&twice, "Stop").len(), 2);
     }
 
     #[test]
     fn uninstall_removes_only_paddocks_hooks() {
-        let s = uninstall(install(json!({"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "keep-me"}]}]}}), EXE).unwrap());
+        let s = uninstall(install(json!({"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "keep-me"}]}]}}), EXE, CLAUDE).unwrap());
         assert_eq!(
             s,
             json!({"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "keep-me"}]}]}})
         );
-        assert_eq!(uninstall(install(json!({}), EXE).unwrap()), json!({}));
+        assert_eq!(
+            uninstall(install(json!({}), EXE, CLAUDE).unwrap()),
+            json!({})
+        );
     }
 
     #[test]
     fn odd_paths_are_quoted_and_still_recognised() {
-        let s = install(json!({}), "/Users/me/my apps/paddock").unwrap();
+        let s = install(json!({}), "/Users/me/my apps/paddock", CLAUDE).unwrap();
         let c = &commands(&s, "Stop")[0];
         assert_eq!(c, "'/Users/me/my apps/paddock' hook Stop");
         assert!(is_ours(c));
         assert!(!is_ours("paddock-other hook Stop"));
         assert!(!is_ours("echo paddock hook Stop"));
         assert!(is_ours("paddock hook Stop"));
+        assert!(is_ours("/opt/bin/paddock hook --agent claude Stop"));
+        assert!(is_ours("'/my apps/paddock' hook --agent claude Stop"));
+    }
+
+    #[test]
+    fn a_hook_names_its_agent_or_is_claudes() {
+        assert_eq!(hook_args(&["Stop"]).unwrap(), (CLAUDE, "Stop"));
+        assert_eq!(
+            hook_args(&["--agent", "claude", "Stop"]).unwrap(),
+            (CLAUDE, "Stop")
+        );
+        assert!(hook_args(&["--agent", "nope", "Stop"]).is_err());
+        assert!(hook_args(&[]).is_err());
+        assert!(hook_args(&["--agent", "claude"]).is_err());
+        assert!(hook_args(&["Stop", "extra"]).is_err());
+    }
+
+    #[test]
+    fn claudes_hooks_are_written_as_before_kinds() {
+        assert_eq!(
+            hook_command(EXE, CLAUDE, "Stop"),
+            format!("{EXE} hook Stop")
+        );
+        let (kind, event) = hook_args(&["Stop"]).unwrap();
+        assert_eq!(hook_command("paddock", kind, event), "paddock hook Stop");
+    }
+
+    #[test]
+    fn hooks_act_on_the_agents_named_or_by_default_on_claude() {
+        assert_eq!(kinds(&[]).unwrap(), [CLAUDE]);
+        assert_eq!(kinds(&["--agent", "claude"]).unwrap(), [CLAUDE]);
+        assert_eq!(
+            kinds(&["--agent", "claude", "--agent", "claude"]).unwrap(),
+            [CLAUDE],
+            "named twice, acted on once"
+        );
+        assert!(kinds(&["--agent", "nope"]).is_err());
+        assert!(kinds(&["--agent"]).is_err());
+        assert!(kinds(&["claude"]).is_err());
     }
 
     /// The plugin hooks' `timeout`, in seconds.
@@ -403,7 +554,7 @@ mod tests {
     fn the_plugin_hooks_file_matches_events_and_install() {
         let file: Value =
             serde_json::from_str(include_str!("../plugins/paddock/hooks/hooks.json")).unwrap();
-        let settings = install(json!({}), "paddock").unwrap();
+        let settings = install(json!({}), "paddock", CLAUDE).unwrap();
         let mut expected = Map::new();
         for event in EVENTS {
             let mut groups = settings["hooks"][event].clone();
@@ -438,7 +589,7 @@ mod tests {
 
     #[test]
     fn a_plugin_hook_defers_to_paddocks_hook_in_settings() {
-        let both = install(json!({}), EXE).unwrap();
+        let both = install(json!({}), EXE, CLAUDE).unwrap();
         for event in EVENTS {
             assert!(records("", Some(&both), event), "settings' own hook");
             assert!(!records(PLUGIN_SOURCE, Some(&both), event), "{event}");
@@ -474,15 +625,18 @@ mod tests {
 
     #[test]
     fn install_refuses_settings_it_does_not_understand() {
-        assert!(install(json!([]), EXE).is_err());
-        assert!(install(json!({"hooks": {"Stop": 1}}), EXE).is_err());
+        assert!(install(json!([]), EXE, CLAUDE).is_err());
+        assert!(install(json!({"hooks": {"Stop": 1}}), EXE, CLAUDE).is_err());
     }
 
     #[test]
     fn settings_follow_claude_config_dir_or_home() {
-        let p = settings_path(|k| (k == "HOME").then(|| "/h".to_string())).unwrap();
+        let p = settings_path(CLAUDE, |k| (k == "HOME").then(|| "/h".to_string())).unwrap();
         assert_eq!(p, PathBuf::from("/h/.claude/settings.json"));
-        let p = settings_path(|k| (k == "CLAUDE_CONFIG_DIR").then(|| "/c".to_string())).unwrap();
+        let p = settings_path(CLAUDE, |k| {
+            (k == "CLAUDE_CONFIG_DIR").then(|| "/c".to_string())
+        })
+        .unwrap();
         assert_eq!(p, PathBuf::from("/c/settings.json"));
     }
 
@@ -490,9 +644,9 @@ mod tests {
     fn edit_file_creates_and_rewrites_atomically() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("claude/settings.json");
-        edit_file(&path, |s| install(s, EXE)).unwrap();
+        edit_file(&path, |s| install(s, EXE, CLAUDE)).unwrap();
         let first = std::fs::read_to_string(&path).unwrap();
-        edit_file(&path, |s| install(s, EXE)).unwrap();
+        edit_file(&path, |s| install(s, EXE, CLAUDE)).unwrap();
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             first,
@@ -504,7 +658,7 @@ mod tests {
         assert!(link.is_symlink(), "the link stays a link");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "{}\n");
         std::fs::write(&path, "{oops").unwrap();
-        assert!(edit_file(&path, |s| install(s, EXE)).is_err());
+        assert!(edit_file(&path, |s| install(s, EXE, CLAUDE)).is_err());
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             "{oops",
@@ -519,7 +673,7 @@ mod tests {
         let path = dir.path().join("settings.json");
         std::fs::write(&path, "{}").unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-        edit_file(&path, |s| install(s, EXE)).unwrap();
+        edit_file(&path, |s| install(s, EXE, CLAUDE)).unwrap();
         let mode = std::fs::metadata(&path).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600, "settings may hold tokens");
     }
