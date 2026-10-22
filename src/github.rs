@@ -39,7 +39,8 @@ pub enum PrState {
 }
 
 impl PrState {
-    /// How the dashboard writes it.
+    /// How the dashboard and `paddock worktree list` (text and JSON) write
+    /// it.
     pub fn label(self) -> &'static str {
         match self {
             Self::Open => "open",
@@ -68,6 +69,15 @@ impl Checks {
             Self::Pending => "•",
         }
     }
+
+    /// How `paddock worktree list --json` writes it.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Passing => "passing",
+            Self::Failing => "failing",
+            Self::Pending => "pending",
+        }
+    }
 }
 
 /// Its review decision (`reviewDecision`), when the repository asks for
@@ -80,7 +90,7 @@ pub enum Review {
 }
 
 impl Review {
-    /// How the dashboard writes it.
+    /// How the dashboard and `paddock worktree list --json` write it.
     pub fn label(self) -> &'static str {
         match self {
             Self::Approved => "approved",
@@ -100,7 +110,7 @@ pub struct Pr {
     /// `None` without a review decision.
     pub review: Option<Review>,
     /// Its page. Not shown on the dashboard (`p` asks gh by number, as
-    /// ticket 36 says); `paddock worktree list --json` gives it (ticket 37).
+    /// ticket 36 says); `paddock worktree list --json` gives it.
     pub url: String,
 }
 
