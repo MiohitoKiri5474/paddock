@@ -1,6 +1,7 @@
 //! Agent hooks. For Claude Code, the paddock plugin carries them
 //! (`plugins/paddock/hooks/hooks.json`); `paddock hooks install|uninstall`
-//! edits each agent's settings file for users without it; `paddock hook
+//! edits each agent's settings file (Claude's for users without the plugin,
+//! Gemini CLI's always); `paddock hook
 //! [--agent <kind>] <event>` records one event (no `--agent`: Claude's, as
 //! the hooks installed before kinds existed call it).
 
@@ -27,6 +28,25 @@ pub const EVENTS: &[&str] = &[
     "SubagentStop",
 ];
 
+/// The Gemini CLI events paddock listens to. Not `BeforeTool`: it runs
+/// before the permission prompt, so it says nothing `AfterTool` does not,
+/// and every hook delays the tool. Not `BeforeModel`, `AfterModel` (every
+/// streamed chunk), `BeforeToolSelection` or `PreCompress`: they change no
+/// state.
+pub const GEMINI_EVENTS: &[&str] = &[
+    "SessionStart",
+    "BeforeAgent",
+    "AfterTool",
+    "Notification",
+    "AfterAgent",
+    "SessionEnd",
+];
+
+/// The `timeout` of paddock's Gemini hooks, in milliseconds: a hung
+/// `paddock` stalls Gemini 10 s at most (Gemini's default is 60 s), as the
+/// plugin's hooks bound Claude.
+const GEMINI_TIMEOUT_MS: u64 = 10_000;
+
 /// Hooks of the tmux plugin paddock replaces; install removes them.
 const LEGACY: &str = "tmux-claude-session-manager";
 
@@ -46,6 +66,7 @@ fn restart(kind: AgentKind) -> String {
         "Restart running {} sessions so they use the hooks as they are now.",
         match kind {
             AgentKind::Claude => "Claude",
+            AgentKind::Gemini => "Gemini",
         }
     )
 }
@@ -54,11 +75,14 @@ fn restart(kind: AgentKind) -> String {
 fn events(kind: AgentKind) -> &'static [&'static str] {
     match kind {
         AgentKind::Claude => EVENTS,
+        AgentKind::Gemini => GEMINI_EVENTS,
     }
 }
 
 /// Where `kind` reads its user hooks. Claude:
 /// `$CLAUDE_CONFIG_DIR/settings.json`, else `~/.claude/settings.json`.
+/// Gemini: `$GEMINI_CLI_HOME/.gemini/settings.json`, else
+/// `~/.gemini/settings.json`.
 pub fn settings_path(kind: AgentKind, var: impl Fn(&str) -> Option<String>) -> Result<PathBuf> {
     let non_empty = |k: &str| var(k).filter(|v| !v.is_empty());
     match kind {
@@ -71,6 +95,12 @@ pub fn settings_path(kind: AgentKind, var: impl Fn(&str) -> Option<String>) -> R
             };
             Ok(dir.join("settings.json"))
         }
+        AgentKind::Gemini => {
+            let home = non_empty("GEMINI_CLI_HOME")
+                .or_else(|| non_empty("HOME"))
+                .context("HOME is not set")?;
+            Ok(PathBuf::from(home).join(".gemini").join("settings.json"))
+        }
     }
 }
 
@@ -80,6 +110,20 @@ pub fn settings_path(kind: AgentKind, var: impl Fn(&str) -> Option<String>) -> R
 fn hook_command(exe: &str, kind: AgentKind, event: &str) -> String {
     match kind {
         AgentKind::Claude => format!("{} hook {event}", quote(exe)),
+        AgentKind::Gemini => format!("{} hook --agent {} {event}", quote(exe), kind.tag()),
+    }
+}
+
+/// The group `install` writes for `event` of `kind`: one command hook.
+/// Claude's has no timeout (as before kinds existed); Gemini's has
+/// [`GEMINI_TIMEOUT_MS`].
+fn hook_group(exe: &str, kind: AgentKind, event: &str) -> Value {
+    let command = hook_command(exe, kind, event);
+    match kind {
+        AgentKind::Claude => json!({"hooks": [{"type": "command", "command": command}]}),
+        AgentKind::Gemini => json!({"hooks": [
+            {"type": "command", "command": command, "timeout": GEMINI_TIMEOUT_MS}
+        ]}),
     }
 }
 
@@ -110,29 +154,36 @@ fn is_ours(command: &str) -> bool {
         && rest.trim_start().starts_with("hook ")
 }
 
-/// Drop every hook whose command matches, and any group or event left empty.
+/// Drop every hook whose command matches, and any group or event this left
+/// empty. Other entries stay, even empty lists (Gemini keeps `disabled`, a
+/// list of hook names, next to its events).
 fn remove_hooks(settings: &mut Value, matches: impl Fn(&str) -> bool) {
     let Some(hooks) = settings.get_mut("hooks").and_then(Value::as_object_mut) else {
         return;
     };
-    for groups in hooks.values_mut() {
+    let mut emptied = Vec::new();
+    for (event, groups) in hooks.iter_mut() {
         let Some(groups) = groups.as_array_mut() else {
             continue;
         };
+        let groups_before = groups.len();
         groups.retain_mut(|g| {
             let Some(list) = g.get_mut("hooks").and_then(Value::as_array_mut) else {
                 return true;
             };
-            let before = list.len();
+            let hooks_before = list.len();
             list.retain(|h| {
                 !h.get("command")
                     .and_then(Value::as_str)
                     .is_some_and(&matches)
             });
-            !(list.is_empty() && before > 0)
+            !(list.is_empty() && hooks_before > 0)
         });
+        if groups.is_empty() && groups_before > 0 {
+            emptied.push(event.clone());
+        }
     }
-    hooks.retain(|_, g| g.as_array().is_none_or(|a| !a.is_empty()));
+    hooks.retain(|event, _| !emptied.contains(event));
     if hooks.is_empty() {
         if let Some(obj) = settings.as_object_mut() {
             obj.remove("hooks");
@@ -154,8 +205,7 @@ pub fn install(mut settings: Value, exe: &str, kind: AgentKind) -> Result<Value>
         bail!("\"hooks\" in settings is not an object");
     };
     for event in events(kind) {
-        let group =
-            json!({"hooks": [{"type": "command", "command": hook_command(exe, kind, event)}]});
+        let group = hook_group(exe, kind, event);
         match hooks.entry(*event).or_insert_with(|| json!([])) {
             Value::Array(groups) => groups.push(group),
             _ => bail!("hooks for {event} in settings are not a list"),
@@ -196,21 +246,30 @@ fn should_record(source: &str, settings: impl FnOnce() -> Option<Value>, event: 
     source != PLUGIN_SOURCE || !settings().is_some_and(|s| has_hook(&s, event))
 }
 
-fn read_settings(path: &Path) -> Option<Value> {
-    serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
-}
-
 /// Edit a settings file in place; a missing file counts as `{}`. The file is
 /// replaced atomically.
-pub fn edit_file(path: &Path, f: impl FnOnce(Value) -> Result<Value>) -> Result<()> {
+#[cfg(test)]
+fn edit_file(path: &Path, f: impl FnOnce(Value) -> Result<Value>) -> Result<()> {
+    let settings = read_file(path)?.unwrap_or_else(|| json!({}));
+    write_file(path, &f(settings)?)
+}
+
+/// The settings in the file at `path`, `None` if there is none.
+fn read_file(path: &Path) -> Result<Option<Value>> {
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => "{}".into(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e).with_context(|| format!("cannot read {}", path.display())),
     };
-    let settings: Value = serde_json::from_str(&text)
-        .with_context(|| format!("invalid JSON in {}", path.display()))?;
-    let mut out = serde_json::to_string_pretty(&f(settings)?)?;
+    serde_json::from_str(&text)
+        .map(Some)
+        .with_context(|| format!("invalid JSON in {}", path.display()))
+}
+
+/// Replace the settings file at `path` with `settings`, atomically,
+/// creating it and its directory if needed.
+fn write_file(path: &Path, settings: &Value) -> Result<()> {
+    let mut out = serde_json::to_string_pretty(settings)?;
     out.push('\n');
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
@@ -236,17 +295,29 @@ pub fn edit_file(path: &Path, f: impl FnOnce(Value) -> Result<Value>) -> Result<
 }
 
 /// Whether `paddock hooks install|uninstall` without `--agent` acts on
-/// `kind`. Claude always, as before kinds existed, whether or not `claude`
-/// is on `PATH`.
-fn by_default(kind: AgentKind) -> bool {
+/// `kind`, with environment `var`. Claude always, as before kinds existed,
+/// whether or not `claude` is on `PATH`; Gemini when `gemini` is on `PATH`.
+fn by_default(kind: AgentKind, var: impl Fn(&str) -> Option<String>) -> bool {
     match kind {
         AgentKind::Claude => true,
+        AgentKind::Gemini => on_path("gemini", var("PATH").as_deref().unwrap_or_default()),
     }
 }
 
+/// Whether an executable file named `program` is in a directory of `path`
+/// (a `PATH` value).
+fn on_path(program: &str, path: &str) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::env::split_paths(path)
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .filter_map(|dir| std::fs::metadata(dir.join(program)).ok())
+        .any(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+}
+
 /// The kinds `paddock hooks` acts on, from its arguments after the action:
-/// each `--agent <kind>` once (repeatable), else every kind [`by_default`].
-fn kinds(args: &[&str]) -> Result<Vec<AgentKind>> {
+/// each `--agent <kind>` once (repeatable), else every kind [`by_default`]
+/// with environment `var`.
+fn kinds(args: &[&str], var: impl Fn(&str) -> Option<String>) -> Result<Vec<AgentKind>> {
     let mut kinds = Vec::new();
     let mut rest = args.iter();
     while let Some(&arg) = rest.next() {
@@ -265,7 +336,7 @@ fn kinds(args: &[&str]) -> Result<Vec<AgentKind>> {
     if kinds.is_empty() {
         kinds = AgentKind::ALL
             .into_iter()
-            .filter(|&k| by_default(k))
+            .filter(|&k| by_default(k, &var))
             .collect();
     }
     Ok(kinds)
@@ -286,40 +357,99 @@ pub fn command(args: &[&str]) -> Result<()> {
         bail!("unknown hooks action {action:?}: use install or uninstall");
     }
     // Every argument is checked before any file is touched.
-    let kinds = kinds(rest)?;
     let var = |k: &str| std::env::var(k).ok();
-    let paths: Vec<(AgentKind, PathBuf)> = kinds
-        .into_iter()
-        .map(|k| Ok((k, settings_path(k, var)?)))
-        .collect::<Result<_>>()?;
-    for (kind, path) in paths {
-        if action == "install" {
-            install_in(kind, &path)?;
-        } else {
-            edit_file(&path, |s| Ok(uninstall(s)))?;
-            println!("paddock hooks removed from {}", path.display());
+    let kinds = kinds(rest, var)?;
+    let action = if action == "install" {
+        let exe = std::env::current_exe().context("cannot find paddock's own path")?;
+        Action::Install {
+            exe: exe.to_string_lossy().into_owned(),
         }
-        println!("{}", restart(kind));
+    } else {
+        Action::Uninstall
+    };
+    // Every file is read and edited before any is written: one paddock
+    // cannot read (Gemini's with comments, say) leaves them all as they
+    // were. Each write is atomic, but a write failing partway leaves the
+    // files written before it.
+    let mut edits = Vec::new();
+    for kind in kinds {
+        let path = settings_path(kind, var)?;
+        edits.push(plan(&action, kind, path)?);
+    }
+    for edit in edits {
+        edit.apply()?;
     }
     Ok(())
 }
 
-/// `paddock hooks install` for `kind`, whose settings are at `path`.
-fn install_in(kind: AgentKind, path: &Path) -> Result<()> {
-    let exe = std::env::current_exe().context("cannot find paddock's own path")?;
-    let exe = exe.to_string_lossy().into_owned();
-    let plugin =
-        kind == AgentKind::Claude && read_settings(path).is_some_and(|s| plugin_enabled(&s));
-    edit_file(path, |s| install(s, &exe, kind))?;
-    println!("paddock hooks installed in {}", path.display());
-    if plugin {
-        println!(
-            "note: the paddock plugin is enabled and carries these hooks too; \
-             paddock records each event once, from these. To keep only the \
-             plugin's, run `paddock hooks uninstall`."
-        );
+/// What `paddock hooks` does to each agent's settings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Action {
+    /// Put paddock's hooks in, calling paddock at `exe`.
+    Install { exe: String },
+    /// Take paddock's hooks out.
+    Uninstall,
+}
+
+/// What `paddock hooks install|uninstall` does to one agent's settings.
+struct Edit {
+    kind: AgentKind,
+    action: Action,
+    path: PathBuf,
+    /// The new settings; `None` leaves the file alone: there is nothing to
+    /// remove from a file that does not exist, and uninstall never makes one.
+    settings: Option<Value>,
+    /// Claude's settings enable the paddock plugin.
+    plugin: bool,
+}
+
+/// The [`Edit`] `action` makes to `kind`'s settings at `path`. The file is
+/// read and checked here, never written.
+fn plan(action: &Action, kind: AgentKind, path: PathBuf) -> Result<Edit> {
+    let read = read_file(&path)?;
+    let plugin = kind == AgentKind::Claude && read.as_ref().is_some_and(plugin_enabled);
+    let settings = match action {
+        Action::Install { exe } => Some(
+            install(read.unwrap_or_else(|| json!({})), exe, kind)
+                .with_context(|| format!("cannot edit {}", path.display()))?,
+        ),
+        Action::Uninstall => read.map(uninstall),
+    };
+    Ok(Edit {
+        kind,
+        action: action.clone(),
+        path,
+        settings,
+        plugin,
+    })
+}
+
+impl Edit {
+    /// Write the file and say what was done.
+    fn apply(self) -> Result<()> {
+        let path = self.path.display();
+        match &self.settings {
+            Some(s) => {
+                write_file(&self.path, s)?;
+                let done = if matches!(self.action, Action::Install { .. }) {
+                    "installed in"
+                } else {
+                    "removed from"
+                };
+                println!("paddock hooks {done} {path}");
+            }
+            None => println!("no paddock hooks to remove: {path} does not exist"),
+        }
+        if self.plugin && matches!(self.action, Action::Install { .. }) {
+            println!(
+                "note: the paddock plugin is enabled and carries these hooks too; \
+                 paddock records each event once, from these. To keep only the \
+                 plugin's, run `paddock hooks uninstall --agent claude`."
+            );
+        }
+        println!("{}", restart(self.kind));
+        Ok(())
     }
-    Ok(())
 }
 
 /// The agent and event of `paddock hook`'s arguments: `<event>` is
@@ -370,7 +500,7 @@ fn record(args: &[&str]) -> Result<()> {
     let settings = || {
         settings_path(kind, var)
             .ok()
-            .and_then(|p| read_settings(&p))
+            .and_then(|p| read_file(&p).ok().flatten()) // unreadable: none
     };
     if !should_record(&text(SOURCE_VAR), settings, event) {
         return Ok(()); // settings.json's paddock hook records this one
@@ -419,6 +549,7 @@ mod tests {
 
     const EXE: &str = "/opt/bin/paddock";
     const CLAUDE: AgentKind = AgentKind::Claude;
+    const GEMINI: AgentKind = AgentKind::Gemini;
 
     fn supacode() -> Value {
         json!({
@@ -523,18 +654,146 @@ mod tests {
         assert_eq!(hook_command("paddock", kind, event), "paddock hook Stop");
     }
 
+    /// An environment with only `PATH` set to `path`.
+    fn path_env(path: &str) -> impl Fn(&str) -> Option<String> + '_ {
+        move |k| (k == "PATH").then(|| path.to_string())
+    }
+
     #[test]
     fn hooks_act_on_the_agents_named_or_by_default_on_claude() {
-        assert_eq!(kinds(&[]).unwrap(), [CLAUDE]);
-        assert_eq!(kinds(&["--agent", "claude"]).unwrap(), [CLAUDE]);
+        let none = path_env("");
+        assert_eq!(kinds(&[], &none).unwrap(), [CLAUDE]);
+        assert_eq!(kinds(&["--agent", "claude"], &none).unwrap(), [CLAUDE]);
         assert_eq!(
-            kinds(&["--agent", "claude", "--agent", "claude"]).unwrap(),
+            kinds(&["--agent", "claude", "--agent", "claude"], &none).unwrap(),
             [CLAUDE],
             "named twice, acted on once"
         );
-        assert!(kinds(&["--agent", "nope"]).is_err());
-        assert!(kinds(&["--agent"]).is_err());
-        assert!(kinds(&["claude"]).is_err());
+        assert_eq!(kinds(&["--agent", "gemini"], &none).unwrap(), [GEMINI]);
+        assert_eq!(
+            kinds(&["--agent", "gemini", "--agent", "claude"], &none).unwrap(),
+            [GEMINI, CLAUDE]
+        );
+        assert!(kinds(&["--agent", "nope"], &none).is_err());
+        assert!(kinds(&["--agent"], &none).is_err());
+        assert!(kinds(&["claude"], &none).is_err());
+    }
+
+    /// A directory holding a file `name` with mode `mode`.
+    fn bin_with(name: &str, mode: u32) -> tempfile::TempDir {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join(name);
+        std::fs::write(&file, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(mode)).unwrap();
+        dir
+    }
+
+    #[test]
+    fn hooks_act_on_gemini_by_default_only_when_it_is_on_path() {
+        let bin = bin_with("gemini", 0o755);
+        let dir = bin.path().to_str().unwrap();
+        let path = format!("/nowhere:{dir}");
+        assert_eq!(kinds(&[], path_env(&path)).unwrap(), [CLAUDE, GEMINI]);
+        assert_eq!(
+            kinds(&["--agent", "claude"], path_env(&path)).unwrap(),
+            [CLAUDE],
+            "named: only those"
+        );
+        assert_eq!(kinds(&[], path_env("/nowhere")).unwrap(), [CLAUDE]);
+        assert_eq!(kinds(&[], |_| None).unwrap(), [CLAUDE], "no PATH");
+        let plain = bin_with("gemini", 0o644);
+        let plain = plain.path().to_str().unwrap();
+        assert_eq!(
+            kinds(&[], path_env(plain)).unwrap(),
+            [CLAUDE],
+            "not executable"
+        );
+        let other = bin_with("gemini-other", 0o755);
+        let other = other.path().to_str().unwrap();
+        assert_eq!(kinds(&[], path_env(other)).unwrap(), [CLAUDE]);
+        std::fs::create_dir(bin.path().join("sub")).unwrap();
+        let dir_only = format!("{dir}/sub");
+        std::fs::create_dir(bin.path().join("sub/gemini")).unwrap();
+        assert_eq!(
+            kinds(&[], path_env(&dir_only)).unwrap(),
+            [CLAUDE],
+            "a directory named gemini"
+        );
+    }
+
+    fn gemini_settings() -> Value {
+        json!({
+            "general": {"vimMode": true},
+            "hooksConfig": {"enabled": true, "notifications": false},
+            "hooks": {
+                "disabled": [],
+                "BeforeTool": [{"matcher": "write_file|replace", "hooks": [
+                    {"name": "security-check", "type": "command", "command": "$GEMINI_PROJECT_DIR/.gemini/hooks/security.sh", "timeout": 5000}
+                ]}],
+                "AfterAgent": [{"hooks": [{"type": "command", "command": "notify-done"}]}]
+            }
+        })
+    }
+
+    #[test]
+    fn gemini_hooks_name_their_agent_and_have_a_timeout() {
+        let s = install(json!({}), EXE, GEMINI).unwrap();
+        let mut events: Vec<&String> = s["hooks"].as_object().unwrap().keys().collect();
+        events.sort();
+        let mut expected = GEMINI_EVENTS.to_vec();
+        expected.sort();
+        assert_eq!(events, expected);
+        for event in GEMINI_EVENTS {
+            assert_eq!(
+                s["hooks"][event],
+                json!([{"hooks": [{
+                    "type": "command",
+                    "command": format!("{EXE} hook --agent gemini {event}"),
+                    "timeout": 10_000
+                }]}]),
+                "{event}"
+            );
+            assert!(is_ours(&hook_command(EXE, GEMINI, event)));
+            let (kind, e) = hook_args(&["--agent", "gemini", event]).unwrap();
+            assert_eq!((kind, e), (GEMINI, *event));
+        }
+    }
+
+    #[test]
+    fn gemini_install_and_uninstall_keep_the_users_hooks_and_settings() {
+        let s = install(gemini_settings(), EXE, GEMINI).unwrap();
+        assert_eq!(s["general"], json!({"vimMode": true}));
+        assert_eq!(
+            s["hooksConfig"],
+            json!({"enabled": true, "notifications": false})
+        );
+        assert_eq!(s["hooks"]["disabled"], json!([]));
+        assert_eq!(
+            s["hooks"]["BeforeTool"],
+            gemini_settings()["hooks"]["BeforeTool"]
+        );
+        assert_eq!(
+            commands(&s, "AfterAgent"),
+            [
+                "notify-done".to_string(),
+                format!("{EXE} hook --agent gemini AfterAgent")
+            ]
+        );
+        assert_eq!(
+            install(s.clone(), "/moved/paddock", GEMINI).unwrap(),
+            install(gemini_settings(), "/moved/paddock", GEMINI).unwrap(),
+            "idempotent, even after paddock moved"
+        );
+        assert_eq!(uninstall(s), gemini_settings(), "exactly as before");
+    }
+
+    #[test]
+    fn uninstall_keeps_entries_it_did_not_empty() {
+        let s = json!({"hooks": {"disabled": [], "Stop": []}});
+        assert_eq!(uninstall(s.clone()), s);
+        let theirs = json!({"hooks": {"Stop": [{"hooks": []}]}});
+        assert_eq!(uninstall(theirs.clone()), theirs);
     }
 
     /// The plugin hooks' `timeout`, in seconds.
@@ -640,6 +899,27 @@ mod tests {
         })
         .unwrap();
         assert_eq!(p, PathBuf::from("/c/settings.json"));
+    }
+
+    #[test]
+    fn geminis_settings_follow_gemini_cli_home_or_home() {
+        let env = |pairs: &'static [(&'static str, &'static str)]| {
+            move |k: &str| {
+                pairs
+                    .iter()
+                    .find(|(n, _)| *n == k)
+                    .map(|(_, v)| v.to_string())
+            }
+        };
+        let p = settings_path(GEMINI, env(&[("HOME", "/h")])).unwrap();
+        assert_eq!(p, PathBuf::from("/h/.gemini/settings.json"));
+        let p = settings_path(GEMINI, env(&[("HOME", "/h"), ("GEMINI_CLI_HOME", "/g")])).unwrap();
+        assert_eq!(p, PathBuf::from("/g/.gemini/settings.json"));
+        let p = settings_path(GEMINI, env(&[("HOME", "/h"), ("GEMINI_CLI_HOME", "")])).unwrap();
+        assert_eq!(p, PathBuf::from("/h/.gemini/settings.json"), "empty: unset");
+        let p = settings_path(GEMINI, env(&[("HOME", "/h"), ("CLAUDE_CONFIG_DIR", "/c")]));
+        assert_eq!(p.unwrap(), PathBuf::from("/h/.gemini/settings.json"));
+        assert!(settings_path(GEMINI, env(&[])).is_err());
     }
 
     #[test]

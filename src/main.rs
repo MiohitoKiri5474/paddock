@@ -1,4 +1,5 @@
-//! paddock: a terminal workspace for running coding agents (Claude Code).
+//! paddock: a terminal workspace for running coding agents (Claude Code,
+//! Gemini CLI).
 
 mod app;
 mod cli;
@@ -24,7 +25,7 @@ commands:
   version, -V, --version      print paddock's version
   keys                        print the default keys as TOML
   hooks install|uninstall     add or remove paddock's agent hooks
-    [--agent <kind>]...       only for these agents (claude)
+    [--agent <kind>]...       only for these agents (claude, gemini)
   worktree new|open|list|rm   manage worktrees as spaces, without the UI
                               (paddock worktree --help)
 ";

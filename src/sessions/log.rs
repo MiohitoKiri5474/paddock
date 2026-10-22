@@ -3,10 +3,10 @@
 //! hooks never interleave. One file per server, because tmux reuses pane ids
 //! after the server restarts.
 //!
-//! Events of external sessions (Claude outside paddock's terminals) have no
+//! Events of external sessions (agents outside paddock's terminals) have no
 //! server: they go to `<state>/events/external.jsonl`, without a pane. The
 //! app compacts that file when it opens and while it runs, since every
-//! Claude on the machine appends to it.
+//! agent on the machine appends to it.
 
 use super::{external_key, AgentKind, HookRecord};
 use anyhow::{bail, Context, Result};
@@ -158,6 +158,16 @@ pub fn record(kind: AgentKind, event: &str, pane: &str, payload: &str, ts: u64) 
             agent_id: field("agent_id"),
             tool_name: field("tool_name"),
             description: description(&v),
+            ..common
+        },
+        // Gemini's payloads carry no subagent: its subagents are not shown.
+        AgentKind::Gemini => HookRecord {
+            session_id: field("session_id"),
+            cwd: field("cwd"),
+            source: field("source"),
+            notification_type: field("notification_type"),
+            reason: field("reason"),
+            tool_name: field("tool_name"),
             ..common
         },
     }
@@ -462,6 +472,35 @@ mod tests {
         let bad = record(CLAUDE, "Stop", "%1", "not json", 8);
         assert_eq!(bad.event, "Stop");
         assert_eq!(bad.session_id, None);
+    }
+
+    #[test]
+    fn geminis_records_keep_only_what_paddock_uses_and_name_their_kind() {
+        use crate::sessions::tests::gemini_payload as fixture;
+        let gemini = AgentKind::Gemini;
+        let n = record(
+            gemini,
+            "Notification",
+            "%1",
+            &fixture("Notification-ToolPermission"),
+            7,
+        );
+        assert_eq!(n.notification_type.as_deref(), Some("ToolPermission"));
+        assert_eq!(n.cwd.as_deref(), Some("/tmp/repo"));
+        let line = serde_json::to_string(&n).unwrap();
+        assert!(line.contains(r#""kind":"gemini""#), "{line}");
+        assert!(!line.contains("rm -rf"), "no details: {line}");
+        assert_eq!(serde_json::from_str::<HookRecord>(&line).unwrap(), n);
+        let t = record(gemini, "AfterTool", "%1", &fixture("AfterTool"), 8);
+        assert_eq!(t.tool_name.as_deref(), Some("run_shell_command"));
+        assert!(!serde_json::to_string(&t).unwrap().contains("llmContent"));
+        let s = record(gemini, "SessionStart", "%1", &fixture("SessionStart"), 9);
+        assert_eq!(s.source.as_deref(), Some("startup"));
+        let e = record(gemini, "SessionEnd", "%1", &fixture("SessionEnd-clear"), 9);
+        assert_eq!(e.reason.as_deref(), Some("clear"));
+        // A Gemini payload never names a subagent, even if a field says so.
+        let sub = record(gemini, "AfterTool", "%1", r#"{"agent_id":"a1"}"#, 9);
+        assert_eq!(sub.agent_id, None);
     }
 
     const SPIKE: &str = concat!(

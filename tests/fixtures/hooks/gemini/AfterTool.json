@@ -1,0 +1,16 @@
+{
+  "session_id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+  "transcript_path": "/home/user/.gemini/tmp/repo/chats/session-2026-10-22T10-00-aaaaaaaa.json",
+  "cwd": "/tmp/repo",
+  "hook_event_name": "AfterTool",
+  "timestamp": "2026-10-22T10:00:04.000Z",
+  "tool_name": "run_shell_command",
+  "tool_input": {
+    "command": "rm -rf build",
+    "description": "Remove the build directory"
+  },
+  "tool_response": {
+    "llmContent": "Command: rm -rf build\nOutput: (empty)",
+    "returnDisplay": ""
+  }
+}
