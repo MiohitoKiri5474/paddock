@@ -2,7 +2,7 @@
 //! session row with its task rows and their git details as a table on top,
 //! a live preview of the selected row's terminal below, and the keys at the
 //! bottom. While a filter is typed or holds text, it shows on a line under
-//! the title. External sessions (Claude outside paddock's terminals) come
+//! the title. External sessions (agents outside paddock's terminals) come
 //! last, dim, under an `external` line; their preview has no screen.
 
 mod table;

@@ -143,10 +143,10 @@ impl Context {
         (Some(theirs) == pid).then_some(pane)
     }
 
-    /// The Claude sessions in paddock's terminals, as the app knows them:
+    /// The agent sessions in paddock's terminals, as the app knows them:
     /// the hook event log of the running server replayed, then what
-    /// `claude agents --json` says, and why Claude's word is missing if it
-    /// did not answer in time.
+    /// `claude agents --json` says of Claude's, and why Claude's word is
+    /// missing if it did not answer in time.
     pub fn sessions(&self, pid: Option<u32>) -> (Sessions, Option<Fail>) {
         let mut sessions = Sessions::default();
         let Some(pid) = pid else {
@@ -189,7 +189,7 @@ pub(super) fn inside(dir: &str, top: &str) -> bool {
     Path::new(&git::resolved(dir)).starts_with(git::resolved(top))
 }
 
-/// The state of the Claude in pane `pane`, unless it ended or none ran.
+/// The state of the agent in pane `pane`, unless it ended or none ran.
 pub(super) fn state_in(sessions: &Sessions, pane: &str) -> Option<State> {
     sessions.get(pane).filter(|s| !s.ended()).map(|s| s.state)
 }
@@ -336,7 +336,7 @@ struct Row {
     dirty: bool,
     /// Every commit checked out there is in the base.
     merged: bool,
-    /// The states of the Claude sessions in its spaces' tabs.
+    /// The states of the agent sessions in its spaces' tabs.
     agents: Vec<&'static str>,
 }
 
@@ -361,7 +361,7 @@ fn list(cx: &Context, from: Option<&Path>, json: bool) -> Result<(), Fail> {
                 .filter(|(_, top)| top.as_deref() == Some(w.path.as_str()))
                 .map(|(s, _)| s)
                 .collect();
-            // As the sidebar: paddock does not follow Claude in a float.
+            // As the sidebar: paddock does not follow an agent in a float.
             let agents = mine
                 .iter()
                 .flat_map(|s| shared::panes(&cx.server, &s.id))

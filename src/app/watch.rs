@@ -135,7 +135,7 @@ pub fn start(server: &Server, state_dir: &Path, tx: &Sender<Event>) -> Result<Se
         .parse()
         .context("cannot read the tmux server's pid")?;
     let mut reader = log::Reader::new(log::path(state_dir, pid));
-    // Every Claude on the machine appends to the external log: trim it
+    // Every agent on the machine appends to the external log: trim it
     // before replaying it, and while paddock runs. Failing that, it is read
     // whole.
     let external_path = log::external_path(state_dir);

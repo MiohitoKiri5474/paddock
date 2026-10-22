@@ -455,7 +455,7 @@ impl App {
     }
 
     /// Dismiss a session row: it leaves the rows, and stays gone after
-    /// reopening, until Claude reports on it again. Git and terminals are
+    /// reopening, until its agent reports on it again. Git and terminals are
     /// untouched. Task rows are no longer dismissed alone, but task
     /// dismissals saved before still load and apply.
     pub fn dismiss(&mut self, id: &RowId) -> Result<()> {

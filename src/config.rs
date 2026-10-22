@@ -41,7 +41,7 @@
 //! new_tab_dir = "current"    # or "root": where new tabs and splits start
 //!
 //! [dashboard]
-//! external = true            # list Claude sessions outside paddock (the External group)
+//! external = true            # list agent sessions outside paddock (the External group)
 //! external_timeout = 10      # minutes an external session stays without news
 //! ```
 //!
@@ -113,7 +113,7 @@ pub enum NewTabDir {
     Root,
 }
 
-/// `[dashboard]`: the External group of Claude sessions running outside
+/// `[dashboard]`: the External group of agent sessions running outside
 /// paddock's terminals, in the dashboard and the sidebar's AGENTS.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct External {

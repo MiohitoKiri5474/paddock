@@ -189,7 +189,7 @@ pub fn next_needing<'a>(rows: &'a [Row], focused: Option<&str>) -> Option<&'a Ro
 
 impl App {
     /// Apply recorded hook events and notify about the ones that need you.
-    /// Events from floats are left out: paddock does not follow Claude there.
+    /// Events from floats are left out: paddock does not follow agents there.
     pub(super) fn hooks(&mut self, records: &[HookRecord]) {
         let followed: Vec<&HookRecord> = records
             .iter()
