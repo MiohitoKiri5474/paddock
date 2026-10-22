@@ -156,13 +156,13 @@ impl Column {
     }
 }
 
-/// Where a line's cells keep the PR column's short form (`#123 ✓`), after
-/// the columns' own.
-const SHORT_PR: usize = COUNT;
-
-/// One line's cells, a column each (empty when unknown), then the PR
-/// column's short form at [`SHORT_PR`].
-pub type Cells = [String; COUNT + 1];
+/// One line's cells: a column each (empty when unknown), and the PR
+/// column's short form (`#123 ✓`), shown when the list is narrow.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Cells {
+    text: [String; COUNT],
+    short_pr: String,
+}
 
 /// Each column's width (`None` once dropped), and whether the PR column
 /// shows its short form.
@@ -216,18 +216,18 @@ pub fn pr_number_at(number: u64, widths: &Widths) -> Option<(usize, usize)> {
 pub fn header() -> Cells {
     let mut cells = Cells::default();
     for c in COLUMNS {
-        cells[c.index()] = c.spec().header.to_string();
+        cells.text[c.index()] = c.spec().header.to_string();
     }
-    cells[SHORT_PR] = Column::Pr.spec().header.to_string();
+    cells.short_pr = Column::Pr.spec().header.to_string();
     cells
 }
 
 /// A session row's cells: its label, state and agent.
 pub fn session(row: &Row) -> Cells {
     let mut cells = Cells::default();
-    cells[Column::Name.index()] = row.label.clone();
-    cells[Column::State.index()] = row.state.label().to_string();
-    cells[Column::Agent.index()] = row.kind.tag().to_string();
+    cells.text[Column::Name.index()] = row.label.clone();
+    cells.text[Column::State.index()] = row.state.label().to_string();
+    cells.text[Column::Agent.index()] = row.kind.tag().to_string();
     cells
 }
 
@@ -258,35 +258,35 @@ pub fn task(task: &TaskRow, details: Option<&Details>, pr: Option<&Pr>, now: u64
         .and_then(|d| d.last_commit)
         .map(|t| age(now.saturating_sub(t)));
     let mut cells = Cells::default();
-    cells[Column::Name.index()] = format!("{TASK_INDENT}{name}");
-    cells[Column::State.index()] = task
+    cells.text[Column::Name.index()] = format!("{TASK_INDENT}{name}");
+    cells.text[Column::State.index()] = task
         .subagent
         .as_ref()
         .map(|s| s.state.label().to_string())
         .unwrap_or_default();
-    cells[Column::AheadBehind.index()] = arrows;
-    cells[Column::Changes.index()] = changes.unwrap_or_default();
+    cells.text[Column::AheadBehind.index()] = arrows;
+    cells.text[Column::Changes.index()] = changes.unwrap_or_default();
     if let Some(b) = base {
-        cells[Column::Base.index()] = format!("+{} −{}", b.added, b.removed);
-        cells[Column::Files.index()] = b.files.to_string();
+        cells.text[Column::Base.index()] = format!("+{} −{}", b.added, b.removed);
+        cells.text[Column::Files.index()] = b.files.to_string();
     }
-    cells[Column::Age.index()] = commit.unwrap_or_default();
+    cells.text[Column::Age.index()] = commit.unwrap_or_default();
     let (full, short) = match pr {
         Some(pr) => (pr_text(pr), pr_short(pr)),
         None if details.is_some_and(|d| d.merged) => (MERGED.to_string(), MERGED.to_string()),
         None => Default::default(),
     };
-    cells[Column::Pr.index()] = full;
-    cells[SHORT_PR] = short;
+    cells.text[Column::Pr.index()] = full;
+    cells.short_pr = short;
     cells
 }
 
 /// `cells`' text in column `c`, in its short form if `short_pr`.
 fn text_of(cells: &Cells, c: Column, short_pr: bool) -> String {
     if c == Column::Pr && short_pr {
-        cells[SHORT_PR].clone()
+        cells.short_pr.clone()
     } else {
-        cells[c.index()].clone()
+        cells.text[c.index()].clone()
     }
 }
 
@@ -417,7 +417,7 @@ mod tests {
         };
         let t = task_row("feat/a", Some(status));
         assert_eq!(
-            task(&t, Some(&details), None, 1_000 + 7_200)[..COUNT],
+            task(&t, Some(&details), None, 1_000 + 7_200).text,
             [
                 "  feat/a",
                 "",
@@ -440,7 +440,7 @@ mod tests {
             ..Details::default()
         };
         assert_eq!(
-            task(&task_row("b", None), Some(&none), None, 0)[..COUNT],
+            task(&task_row("b", None), Some(&none), None, 0).text,
             ["  b", "", "", "", "", "", "", "", ""].map(String::from),
             "zero and unknown stay empty"
         );
@@ -453,7 +453,7 @@ mod tests {
             ..task_row("c", Some(Status::default()))
         };
         assert_eq!(
-            task(&sub, None, None, 0)[..COUNT],
+            task(&sub, None, None, 0).text,
             ["  Fix c · c", "done", "", "", "", "", "", "", ""].map(String::from)
         );
     }
@@ -466,7 +466,7 @@ mod tests {
         };
         let t = task_row("feat/a", None);
         let cell = |details: Option<&Details>, p: Option<&Pr>| {
-            task(&t, details, p, 0)[Column::Pr.index()].clone()
+            task(&t, details, p, 0).text[Column::Pr.index()].clone()
         };
         let open = pr(
             123,
@@ -506,8 +506,7 @@ mod tests {
             assert_eq!(cell(None, Some(&p)), want);
         }
         // The short form, from the same PR.
-        let short =
-            |details: Option<&Details>, p: Option<&Pr>| task(&t, details, p, 0)[SHORT_PR].clone();
+        let short = |details: Option<&Details>, p: Option<&Pr>| task(&t, details, p, 0).short_pr;
         assert_eq!(short(Some(&merged), Some(&open)), "#123 ✓");
         let failing = pr(
             8,
@@ -519,7 +518,7 @@ mod tests {
         assert_eq!(short(None, Some(&pr(9, PrState::Merged, None, None))), "#9");
         assert_eq!(short(Some(&merged), None), "merged");
         assert_eq!(short(None, None), "");
-        assert_eq!(header()[SHORT_PR], "PR");
+        assert_eq!(header().short_pr, "PR");
     }
 
     #[test]
@@ -537,7 +536,7 @@ mod tests {
                 (Column::Pr, "#123 open ✓ changes requested"),
             ],
         );
-        t[SHORT_PR] = "#123 ✓".into();
+        t.short_pr = "#123 ✓".into();
         let lines = [&head, &session, &t];
         let laid = |width| {
             let w = widths(&lines, width);
@@ -579,9 +578,9 @@ mod tests {
     /// Cells with `name` and the rest empty but for `values`.
     fn cells(name: &str, values: &[(Column, &str)]) -> Cells {
         let mut c = Cells::default();
-        c[Column::Name.index()] = name.into();
+        c.text[Column::Name.index()] = name.into();
         for (column, v) in values {
-            c[column.index()] = (*v).into();
+            c.text[column.index()] = (*v).into();
         }
         c
     }

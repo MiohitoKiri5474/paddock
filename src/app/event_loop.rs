@@ -220,8 +220,8 @@ fn handle(
             app.store_prs(read);
             Ok((Flow::Continue, true))
         }
-        Event::Notice(text) => {
-            app.notice = Some(text);
+        Event::PrOpened(number, result) => {
+            app.pr_opened(number, result);
             Ok((Flow::Continue, true))
         }
         Event::NotifyFailed(error) => {

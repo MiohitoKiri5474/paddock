@@ -20,8 +20,33 @@ use crate::input::line::LineEdit;
 use crate::input::{encode_key, encode_paste};
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use std::sync::atomic::Ordering;
-use std::sync::Arc;
+use std::sync::mpsc::Sender;
+
+/// Tells the event loop that `p`'s gh is done ([`Event::PrOpened`]) when
+/// dropped: after the outcome is set, or while unwinding from a panic on
+/// the open's thread, so `p` never stays blocked.
+struct Opened {
+    events: Sender<Event>,
+    number: u64,
+    result: Option<Result<(), String>>,
+}
+
+impl Opened {
+    /// Done, with how it went: sent as it drops.
+    fn finish(mut self, result: Result<(), String>) {
+        self.result = Some(result);
+    }
+}
+
+impl Drop for Opened {
+    fn drop(&mut self) {
+        let result = self
+            .result
+            .take()
+            .unwrap_or_else(|| Err("gh's thread failed".to_string()));
+        let _ = self.events.send(Event::PrOpened(self.number, result));
+    }
+}
 
 /// The dashboard's key line while its filter is typed: its keys are
 /// fixed, so they are not read from the keymap.
@@ -326,18 +351,25 @@ impl App {
             return;
         };
         // One open at a time: a press while one runs is ignored.
-        if self.pr_opening.swap(true, Ordering::SeqCst) {
+        if self.pr_opening {
             return;
         }
-        let number = pr.number;
-        let events = self.events.clone();
-        let opening = Arc::clone(&self.pr_opening);
-        github::open_web(&task.cwd, number, move |done| {
-            opening.store(false, Ordering::SeqCst);
-            if let Err(e) = done {
-                let _ = events.send(Event::Notice(format!("cannot open PR #{number}: {e}")));
-            }
-        });
+        self.pr_opening = true;
+        let opened = Opened {
+            events: self.events.clone(),
+            number: pr.number,
+            result: None,
+        };
+        github::open_web(&task.cwd, pr.number, move |done| opened.finish(done));
+    }
+
+    /// `p`'s gh is done (see [`Opened`]): another `p` may open; a failure
+    /// is a notice.
+    pub(super) fn pr_opened(&mut self, number: u64, result: Result<(), String>) {
+        self.pr_opening = false;
+        if let Err(e) = result {
+            self.notice = Some(format!("cannot open PR #{number}: {e}"));
+        }
     }
 
     /// Open, close, fork and interact on the selected session's terminal.
@@ -480,6 +512,26 @@ mod tests {
             typing: false,
         };
         assert!(kept.shown());
+    }
+
+    #[test]
+    fn an_open_says_it_is_done_even_when_its_thread_panics() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let opened = |number| Opened {
+            events: tx.clone(),
+            number,
+            result: None,
+        };
+        opened(1).finish(Ok(()));
+        assert!(matches!(rx.try_recv(), Ok(Event::PrOpened(1, Ok(())))));
+        let guard = opened(2);
+        let panicked = std::thread::spawn(move || {
+            let _guard = guard;
+            panic!("gh's thread");
+        })
+        .join();
+        assert!(panicked.is_err());
+        assert!(matches!(rx.try_recv(), Ok(Event::PrOpened(2, Err(_)))));
     }
 
     #[test]

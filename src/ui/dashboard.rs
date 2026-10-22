@@ -238,8 +238,9 @@ fn pr_style(state: PrState) -> Style {
 /// number is coloured by it).
 type Cells = (table::Cells, Style, Option<(u64, PrState)>);
 
-/// A list line's cells, style and PR state: a session row's, or a task
-/// row's; none for a blank line.
+/// A list line's cells, style, and PR number and state (a task row's
+/// with a PR): a session row's, or a task row's; none for a blank line or
+/// the `external` line.
 fn cells(view: &View, line: ListLine) -> Option<Cells> {
     let (row, t) = match line {
         ListLine::Blank | ListLine::External => return None,

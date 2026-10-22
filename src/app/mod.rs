@@ -65,9 +65,8 @@ pub enum Event {
     /// Pull requests just read for the dashboard's tasks, by
     /// `(directory, branch)`; `None` for none.
     Prs(prs::PrUpdate),
-    /// Something to say in the tab bar, from a thread (`p` failed to open
-    /// a pull request).
-    Notice(String),
+    /// `p`'s `gh pr view --web` for PR number .0 is done, with how it went.
+    PrOpened(u64, Result<(), String>),
     /// Showing a notification failed, with what the notifier said.
     NotifyFailed(String),
 }

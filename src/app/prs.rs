@@ -73,7 +73,8 @@ impl Cache {
         }
     }
 
-    /// Ask `fetch` for each repository of `tasks` that is due (never read,
+    /// Ask `fetch` for each repository of `tasks` that is due by `clock`
+    /// (never read,
     /// read `refresh` ago, or marked by [`Self::opened`]), one after
     /// another, placing directories with `resolve`; before each, stop if
     /// `stop` says so. Returns whether anything was read, and the failures
@@ -81,7 +82,7 @@ impl Cache {
     pub fn refresh(
         &mut self,
         tasks: &[(String, String)],
-        now: Instant,
+        clock: impl Fn() -> Instant,
         resolve: impl Fn(&str) -> Option<String>,
         fetch: impl Fn(&str) -> Result<Prs, String>,
         mut stop: impl FnMut() -> bool,
@@ -103,7 +104,7 @@ impl Cache {
             let due = self
                 .repos
                 .get(&repo)
-                .is_none_or(|f| f.due || now.saturating_duration_since(f.at) >= self.refresh);
+                .is_none_or(|f| f.due || clock().saturating_duration_since(f.at) >= self.refresh);
             if !due {
                 continue;
             }
@@ -123,7 +124,9 @@ impl Cache {
                 }
             };
             let fetched = Fetched {
-                at: now,
+                // When this one's read finished: a slow one before it
+                // does not make it due early.
+                at: clock(),
                 due: false,
                 prs,
             };
@@ -230,7 +233,7 @@ fn run(watch_rx: &Receiver<Watched>, events: &Sender<Event>, refresh: Duration, 
             inbox.extend(watch_rx.try_iter());
             inbox.last().is_some_and(|w| !w.details)
         };
-        let (read, failures) = cache.refresh(tasks, Instant::now(), repo_of, github::pr_list, stop);
+        let (read, failures) = cache.refresh(tasks, Instant::now, repo_of, github::pr_list, stop);
         log(log_path, &failures);
         if read || sent.as_ref() != Some(tasks) {
             if events.send(Event::Prs(cache.lookup(tasks))).is_err() {
@@ -261,6 +264,11 @@ mod tests {
         (dir.into(), branch.into())
     }
 
+    /// A clock stopped at `t`.
+    fn at(t: Instant) -> impl Fn() -> Instant {
+        move || t
+    }
+
     /// Never stop a pass.
     fn go() -> bool {
         false
@@ -285,7 +293,7 @@ mod tests {
             task("/tmp", "x"),
         ];
         let t0 = Instant::now();
-        let (read, failures) = cache.refresh(&tasks, t0, resolve, fetch, go);
+        let (read, failures) = cache.refresh(&tasks, at(t0), resolve, fetch, go);
         assert!(read);
         assert!(failures.is_empty());
         assert_eq!(
@@ -298,12 +306,34 @@ mod tests {
         assert_eq!(got[1].1, None, "no PR for feat/b");
         assert_eq!(got[2].1, None, "not a repository");
 
-        let (read, _) = cache.refresh(&tasks, t0 + Duration::from_secs(59), resolve, fetch, go);
+        let (read, _) = cache.refresh(&tasks, at(t0 + Duration::from_secs(59)), resolve, fetch, go);
         assert!(!read);
         assert_eq!(calls.borrow().len(), 1, "cached");
-        let (read, _) = cache.refresh(&tasks, t0 + Duration::from_secs(60), resolve, fetch, go);
+        let (read, _) = cache.refresh(&tasks, at(t0 + Duration::from_secs(60)), resolve, fetch, go);
         assert!(read);
         assert_eq!(calls.borrow().len(), 2, "due again");
+    }
+
+    #[test]
+    fn each_repository_is_stamped_when_its_own_read_ends() {
+        let mut cache = Cache::new(Duration::from_secs(10));
+        let t0 = Instant::now();
+        // Each read takes 5 s: /a ends at t0 + 5, /b at t0 + 10.
+        let now = RefCell::new(t0);
+        let clock = || *now.borrow();
+        let fetch = |_: &str| {
+            *now.borrow_mut() += Duration::from_secs(5);
+            Ok(Prs::new())
+        };
+        let resolve = |dir: &str| Some(dir.to_string());
+        let tasks = [task("/a", "x"), task("/b", "y")];
+        cache.refresh(&tasks, clock, resolve, fetch, go);
+        assert_eq!(cache.repos["/a"].at, t0 + Duration::from_secs(5));
+        assert_eq!(cache.repos["/b"].at, t0 + Duration::from_secs(10));
+        // At t0 + 12 neither is due (stamped at the pass's start, both
+        // would be).
+        let (read, _) = cache.refresh(&tasks, at(t0 + Duration::from_secs(12)), resolve, fetch, go);
+        assert!(!read);
     }
 
     #[test]
@@ -316,18 +346,24 @@ mod tests {
         };
         let tasks = [task("/r", "feat/a")];
         let t0 = Instant::now();
-        cache.refresh(&tasks, t0, resolve, fetch, go);
+        cache.refresh(&tasks, at(t0), resolve, fetch, go);
         // Closed and opened again within the floor: nothing new.
         let soon = t0 + REOPEN_FLOOR - Duration::from_secs(1);
         cache.opened(soon);
-        cache.refresh(&tasks, soon, resolve, fetch, go);
+        cache.refresh(&tasks, at(soon), resolve, fetch, go);
         assert_eq!(*calls.borrow(), 1, "toggling does not run gh");
         // Past it: at once, well before `refresh`.
         let later = t0 + REOPEN_FLOOR;
         cache.opened(later);
-        cache.refresh(&tasks, later, resolve, fetch, go);
+        cache.refresh(&tasks, at(later), resolve, fetch, go);
         assert_eq!(*calls.borrow(), 2);
-        cache.refresh(&tasks, later + Duration::from_secs(1), resolve, fetch, go);
+        cache.refresh(
+            &tasks,
+            at(later + Duration::from_secs(1)),
+            resolve,
+            fetch,
+            go,
+        );
         assert_eq!(*calls.borrow(), 2, "due once, not again");
     }
 
@@ -347,10 +383,10 @@ mod tests {
             asked > 1
         };
         let t0 = Instant::now();
-        let (read, _) = cache.refresh(&tasks, t0, resolve, fetch, stop_after_one);
+        let (read, _) = cache.refresh(&tasks, at(t0), resolve, fetch, stop_after_one);
         assert!(read);
         assert_eq!(*calls.borrow(), ["/a"], "one after another, then stopped");
-        cache.refresh(&tasks, t0, resolve, fetch, go);
+        cache.refresh(&tasks, at(t0), resolve, fetch, go);
         assert_eq!(*calls.borrow(), ["/a", "/b", "/c"], "the rest next pass");
     }
 
@@ -363,13 +399,13 @@ mod tests {
         let mut cache = Cache::new(Duration::from_secs(60));
         let tasks = [task("/r", "feat/a")];
         let t0 = Instant::now() - REOPEN_FLOOR;
-        cache.refresh(&tasks, t0, resolve, |_| Ok(Prs::new()), go);
+        cache.refresh(&tasks, at(t0), resolve, |_| Ok(Prs::new()), go);
         let mut watched = open(true);
         take(&mut watched, vec![open(false), open(true)], &mut cache);
         assert!(watched.details);
         assert!(cache.repos["/r"].due, "opened again");
         let mut cache = Cache::new(Duration::from_secs(60));
-        cache.refresh(&tasks, t0, resolve, |_| Ok(Prs::new()), go);
+        cache.refresh(&tasks, at(t0), resolve, |_| Ok(Prs::new()), go);
         take(&mut watched, vec![open(true)], &mut cache);
         assert!(!cache.repos["/r"].due, "still open: not opened");
     }
@@ -381,15 +417,18 @@ mod tests {
         let t0 = Instant::now();
         let ok = |_: &str| Ok(Prs::from([("feat/a".to_string(), pr(1))]));
         let bad = |_: &str| Err("gh: not logged in".to_string());
-        cache.refresh(&tasks, t0, resolve, ok, go);
+        cache.refresh(&tasks, at(t0), resolve, ok, go);
         assert_eq!(cache.lookup(&tasks)[0].1, Some(pr(1)));
-        let (_, failures) = cache.refresh(&tasks, t0 + Duration::from_secs(1), resolve, bad, go);
+        let (_, failures) =
+            cache.refresh(&tasks, at(t0 + Duration::from_secs(1)), resolve, bad, go);
         assert_eq!(failures, ["/r: gh: not logged in"]);
         assert_eq!(cache.lookup(&tasks)[0].1, None, "git only");
-        let (_, failures) = cache.refresh(&tasks, t0 + Duration::from_secs(2), resolve, bad, go);
+        let (_, failures) =
+            cache.refresh(&tasks, at(t0 + Duration::from_secs(2)), resolve, bad, go);
         assert!(failures.is_empty(), "logged once");
-        cache.refresh(&tasks, t0 + Duration::from_secs(3), resolve, ok, go);
-        let (_, failures) = cache.refresh(&tasks, t0 + Duration::from_secs(4), resolve, bad, go);
+        cache.refresh(&tasks, at(t0 + Duration::from_secs(3)), resolve, ok, go);
+        let (_, failures) =
+            cache.refresh(&tasks, at(t0 + Duration::from_secs(4)), resolve, bad, go);
         assert_eq!(failures.len(), 1, "again after it answered");
     }
 }
