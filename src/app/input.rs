@@ -162,6 +162,7 @@ impl App {
             Command::SplitRows => self.report(|app| app.split(false)),
             Command::Focus(dir) => self.report(|app| app.move_focus(dir)),
             Command::Equalise => self.report(|app| app.equalise()),
+            Command::Zoom => self.report(|app| app.zoom()),
             Command::Help => self.mode = Mode::Help,
             Command::Detach => return Ok(Flow::Quit),
             Command::FocusSidebar => self.focus_sidebar(SidebarTarget::Here),

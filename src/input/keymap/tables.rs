@@ -177,6 +177,7 @@ pub const COMMANDS: &[Binding<Command>] = &[
         &["="],
         "even out the focused split",
     ),
+    bind("zoom", Command::Zoom, &["z"], "zoom the focused split"),
     bind("close", Command::Close, &["x"], "close pane (asks if busy)"),
     bind("fork", Command::Fork, &["f"], "fork Claude into a new tab"),
     bind(

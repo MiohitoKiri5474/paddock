@@ -230,7 +230,8 @@ impl App {
 
     /// Turns done in the tab you are looking at (the current space's
     /// current tab, with the outer window focused and no float over it)
-    /// become idle.
+    /// become idle; while the tab is zoomed, only the zoomed split's, as
+    /// the others are hidden.
     pub(super) fn see_current(&mut self) {
         if !self.looking_at_tab() {
             return;
@@ -238,7 +239,12 @@ impl App {
         let Some(window) = self.current_space().and_then(|i| i.current_window()) else {
             return;
         };
-        let panes: Vec<String> = window.panes.iter().map(|p| p.id.clone()).collect();
+        let panes: Vec<String> = window
+            .panes
+            .iter()
+            .filter(|p| window.shows(&p.id))
+            .map(|p| p.id.clone())
+            .collect();
         for pane in panes {
             self.sessions.see(&pane);
         }

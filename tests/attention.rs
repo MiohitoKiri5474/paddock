@@ -250,6 +250,27 @@ fn a_turn_finished_out_of_sight_is_done_until_you_look_at_it() {
 }
 
 #[test]
+fn a_turn_finished_in_a_split_hidden_by_a_zoom_is_done_until_unzoomed() {
+    let sandbox = Sandbox::new();
+    let mut paddock = ready(&sandbox);
+    paddock.command(b"|");
+    paddock.wait_for("two prompts", |s| s.matches(PROMPT).count() == 2);
+    paddock.command(b"z"); // the right split fills the tab
+    paddock.wait_for_tabs(&["1:home Z"]);
+
+    hooks(&sandbox, "space-1:0.0", &["UserPromptSubmit", "Stop"]);
+    paddock.wait_for("done", |_| paddock.full_screen().contains("done"));
+    settle(&mut paddock);
+    assert!(paddock.full_screen().contains("done"), "still out of sight");
+
+    paddock.command(b"z");
+    paddock.wait_for("idle", |_| {
+        let s = paddock.full_screen();
+        s.contains("idle") && !s.contains("done")
+    });
+}
+
+#[test]
 fn a_turn_finished_in_view_is_idle_at_once() {
     let sandbox = Sandbox::new();
     let paddock = ready(&sandbox);

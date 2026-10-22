@@ -1,6 +1,6 @@
-//! Splitting a tab into several panes and moving focus between them, through
-//! tmux, which keeps the layout (ADR 0006); and keeping each space's size and
-//! the saved state in step.
+//! Splitting a tab into several panes, moving focus between them and
+//! zooming one, through tmux, which keeps the layout and the zoom (ADR 0006);
+//! and keeping each space's size and the saved state in step.
 
 use super::saved::{self, Saved};
 use super::space::clamp;
@@ -45,6 +45,16 @@ impl App {
     pub fn equalise(&mut self) -> Result<()> {
         match self.current_pane() {
             Some(pane) => self.server.spread(&pane),
+            None => Ok(()),
+        }
+    }
+
+    /// Make the focused pane fill its tab, or, if it does, give the
+    /// others their places back. tmux keeps the zoom; moving focus,
+    /// splitting and closing a pane undo it there.
+    pub fn zoom(&mut self) -> Result<()> {
+        match self.current_pane() {
+            Some(pane) => self.server.zoom(&pane),
             None => Ok(()),
         }
     }

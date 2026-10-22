@@ -37,6 +37,9 @@ pub enum Command {
     SplitRows,
     Focus(Direction),
     Equalise,
+    /// Make the focused split fill its tab, or give the others their
+    /// places back.
+    Zoom,
     Help,
     Detach,
     /// Focus the sidebar on the agent in the focused terminal, if it is
@@ -286,6 +289,7 @@ mod tests {
             after_prefix('=', none),
             KeyAction::Command(Command::Equalise)
         );
+        assert_eq!(after_prefix('z', none), KeyAction::Command(Command::Zoom));
         for (c, d) in [
             ('h', Direction::Left),
             ('j', Direction::Down),
@@ -439,7 +443,7 @@ mod tests {
 
     #[test]
     fn unbound_and_modified_keys_are_swallowed() {
-        assert_eq!(after_prefix('z', KeyModifiers::NONE), KeyAction::None);
+        assert_eq!(after_prefix('m', KeyModifiers::NONE), KeyAction::None);
         assert_eq!(after_prefix('0', KeyModifiers::NONE), KeyAction::None);
         assert_eq!(after_prefix('c', KeyModifiers::CONTROL), KeyAction::None);
     }

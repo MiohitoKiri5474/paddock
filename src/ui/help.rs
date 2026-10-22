@@ -21,8 +21,14 @@ const HINT_WIDTH: usize = 69;
 const FRAME: usize = 4;
 /// Commands the help shows in one cell, by name, with the description
 /// they share there: a row saved keeps the help within 80x24.
-const PAIRED: &[(&str, &str, &str)] =
-    &[("move_tab_left", "move_tab_right", "move tab left / right")];
+const PAIRED: &[(&str, &str, &str)] = &[
+    ("move_tab_left", "move_tab_right", "move tab left / right"),
+    (
+        "sidebar_narrower",
+        "sidebar_wider",
+        "sidebar narrower / wider",
+    ),
+];
 /// The prompt popup's keys, which are fixed (`Backspace` and `Delete`
 /// too, left out to fit one line).
 const PROMPT_KEYS: [&str; 5] = [
@@ -214,8 +220,14 @@ mod tests {
             .iter()
             .any(|x| x.contains("g      find a space, tab or agent")));
         assert!(l.iter().any(|x| x.contains("G      float: lazygit")));
-        // Moving a tab left and right share a cell.
+        // Moving a tab left and right share a cell, as do sidebar widths.
         assert!(l.iter().any(|x| x.contains("< >    move tab left / right")));
+        assert!(l
+            .iter()
+            .any(|x| x.contains("{ }    sidebar narrower / wider")));
+        assert!(l
+            .iter()
+            .any(|x| x.contains("z      zoom the focused split")));
         assert!(l
             .iter()
             .any(|x| x.contains("[      copy mode: move, select, copy")));
