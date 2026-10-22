@@ -13,6 +13,7 @@
 //!
 //! [keys.sidebar]             # while the sidebar has the keyboard
 //! [keys.dashboard]           # while the dashboard is open
+//! [keys.copy]                # in copy mode (`C-a [`)
 //!
 //! [colors]
 //! current_space = 236        # or "#303030": the current space's, agent's and dashboard selection's background
@@ -250,6 +251,8 @@ struct RawKeys {
     sidebar: RawSection,
     #[serde(default)]
     dashboard: RawSection,
+    #[serde(default)]
+    copy: RawSection,
 }
 
 /// An action's keys as written: one key, or a list of them.
@@ -294,6 +297,7 @@ impl Config {
             direct: raw.keys.direct.map(given),
             sidebar: given(raw.keys.sidebar),
             dashboard: given(raw.keys.dashboard),
+            copy: given(raw.keys.copy),
         };
         let (keys, warnings) = Keymap::configured(prefix, &written)?;
         let floats = Floats::configured(&raw.floats, prefix, &keys.commands)?;

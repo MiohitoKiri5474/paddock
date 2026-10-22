@@ -4,6 +4,7 @@
 //! doing (typing into the focused pane, naming, finding, reading help).
 
 use super::attention::Attention;
+use super::copy::CopyMode;
 use super::dashboard::Dashboard;
 use super::finder::Finder;
 use super::floats::Shown;
@@ -72,6 +73,8 @@ pub enum Mode {
         finder: Finder,
         back: Option<Panel>,
     },
+    /// Copy mode in a terminal: its keys move, select, copy and search.
+    Copy(CopyMode),
 }
 
 /// A panel that had the keyboard when the prompt opened, and gets it back
@@ -115,7 +118,9 @@ impl Mode {
             | Mode::OpenWorktree(WorktreeList { back, .. })
             | Mode::ConfirmDelete(DeleteQuestion { back, .. })
             | Mode::Finder { back, .. } => Some(back),
-            Mode::Normal | Mode::Help | Mode::Sidebar(_) | Mode::Dashboard(_) => None,
+            Mode::Normal | Mode::Help | Mode::Sidebar(_) | Mode::Dashboard(_) | Mode::Copy(_) => {
+                None
+            }
         }
     }
 
@@ -127,7 +132,9 @@ impl Mode {
             | Mode::OpenWorktree(WorktreeList { back, .. })
             | Mode::ConfirmDelete(DeleteQuestion { back, .. })
             | Mode::Finder { back, .. } => Some(back),
-            Mode::Normal | Mode::Help | Mode::Sidebar(_) | Mode::Dashboard(_) => None,
+            Mode::Normal | Mode::Help | Mode::Sidebar(_) | Mode::Dashboard(_) | Mode::Copy(_) => {
+                None
+            }
         }
     }
 

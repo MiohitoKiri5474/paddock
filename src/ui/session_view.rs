@@ -5,6 +5,10 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 
+/// A search match's text and background: black on the terminal's yellow.
+pub const MATCH_FG: Color = Color::Indexed(0);
+pub const MATCH_BG: Color = Color::Indexed(3);
+
 fn colour(c: Colour) -> Color {
     match c {
         Colour::Default => Color::Reset,
@@ -38,6 +42,18 @@ pub fn render(emu: &Emulator, area: Rect, buf: &mut Buffer) -> Option<Position> 
 
 /// Draw the terminal's rows from `first` on into `area`, cut to fit.
 pub fn cells(emu: &Emulator, first: u16, area: Rect, buf: &mut Buffer) {
+    cells_marked(emu, first, area, buf, |_, _| false);
+}
+
+/// [`cells`], with the cells at the viewport positions `marked` picks in
+/// the search matches' colours.
+pub fn cells_marked(
+    emu: &Emulator,
+    first: u16,
+    area: Rect,
+    buf: &mut Buffer,
+    marked: impl Fn(u16, u16) -> bool,
+) {
     let (cols, rows) = emu.size();
     let selected = emu.selection();
     for (y, row) in (first..rows).take(usize::from(area.height)).enumerate() {
@@ -46,6 +62,11 @@ pub fn cells(emu: &Emulator, first: u16, area: Rect, buf: &mut Buffer) {
             let c = emu.cell(row, x);
             if c.spacer {
                 // Covered by the wide character to its left; ratatui skips it.
+                // A match's colours still cover both its halves.
+                if marked(row, x) {
+                    let cell = &mut buf[(area.x + x, area.y + y)];
+                    cell.set_style(Style::default().fg(MATCH_FG).bg(MATCH_BG));
+                }
                 continue;
             }
             let mut m = Modifier::empty();
@@ -55,10 +76,12 @@ pub fn cells(emu: &Emulator, first: u16, area: Rect, buf: &mut Buffer) {
             m.set(Modifier::UNDERLINED, c.underline);
             let highlight = selected.as_ref().is_some_and(|s| s.contains(row, x));
             m.set(Modifier::REVERSED, c.inverse != highlight);
-            let style = Style::default()
-                .fg(colour(c.fg))
-                .bg(colour(c.bg))
-                .add_modifier(m);
+            let style = if marked(row, x) {
+                Style::default().fg(MATCH_FG).bg(MATCH_BG)
+            } else {
+                Style::default().fg(colour(c.fg)).bg(colour(c.bg))
+            }
+            .add_modifier(m);
             let cell = &mut buf[(area.x + x, area.y + y)];
             cell.set_symbol(if c.text.is_empty() { " " } else { &c.text });
             cell.set_style(style);

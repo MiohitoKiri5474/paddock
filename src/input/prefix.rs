@@ -59,12 +59,18 @@ pub enum Command {
     Finder,
     /// Show or hide float N (0-based, in `[floats]` order).
     ToggleFloat(usize),
+    /// Copy mode in the terminal typing goes to (the float shown, else the
+    /// focused pane): move, select and copy over its history by keyboard.
+    CopyMode,
+    /// Copy mode with the search prompt open.
+    Search,
 }
 
 impl Command {
     /// Whether a float shown stays shown through this command: those that
     /// change neither the page under it nor who has the keyboard, and the
-    /// finder, which draws over it and hides it only when a row is picked.
+    /// finder, which draws over it and hides it only when a row is picked,
+    /// and copy mode, which works in the float's pane.
     pub fn keeps_float(self) -> bool {
         matches!(
             self,
@@ -74,6 +80,8 @@ impl Command {
                 | Command::ResizeSidebar(_)
                 | Command::ToggleFloat(_)
                 | Command::Finder
+                | Command::CopyMode
+                | Command::Search
         )
     }
 }
@@ -365,6 +373,8 @@ mod tests {
             Command::ToggleSidebar,
             Command::ToggleFloat(1),
             Command::Finder,
+            Command::CopyMode,
+            Command::Search,
         ] {
             assert!(c.keeps_float(), "{c:?}");
         }
