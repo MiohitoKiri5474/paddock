@@ -42,7 +42,7 @@ Otherwise, work where you are.
 
 3. Work in the returned `path`. A `cd` alone may not last to the next command: start each shell command with `cd <path> &&`, and give file tools absolute paths under `path`. Do not edit the original tree for this task.
 
-4. Delete it only when the user asks, or when its row in `paddock worktree list --json` has `"merged": true`. A `pr` whose `state` is `merged` while `merged` is `false` (a squash or rebase merge) is not enough: `rm` refuses its commits, so ask the user. Run `rm` from the main checkout (the row with `"main": true`), never from inside the worktree:
+4. Delete it only when the user asks, or when its row in `paddock worktree list --json` has `"merged": true` (git's check; `pr` only reports what GitHub says of its pull request). Run `rm` from the main checkout (the row with `"main": true`), never from inside the worktree:
 
    ```sh
    cd <main checkout path> && paddock worktree rm <row's path> --json
