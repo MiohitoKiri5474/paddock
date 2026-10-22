@@ -12,7 +12,7 @@ use crate::input::Direction;
 use crate::tmux::layout::{self, Border};
 use anyhow::Result;
 use crossterm::event::{MouseEvent, MouseEventKind};
-use ratatui::layout::Position;
+use ratatui::layout::{Position, Rect};
 use std::time::{Duration, Instant};
 
 /// tmux's flag for `dir` (`select-pane`, `resize-pane`).
@@ -127,20 +127,33 @@ pub struct SplitDrag {
 }
 
 impl SplitDrag {
-    /// `border`, pressed at `at` on its axis (window coordinates).
-    fn new(border: Border, at: u16) -> Self {
-        Self {
-            size: border.size(at),
+    /// `border`, pressed at screen position `pos` over the session
+    /// area `area`.
+    fn new(border: Border, area: Rect, pos: (u16, u16)) -> Self {
+        let mut drag = Self {
             border,
+            size: 0,
             sent: None,
+        };
+        drag.size = drag.border.size(drag.along(area, pos));
+        drag
+    }
+
+    /// Where screen position `(col, row)` is on the border's axis, in
+    /// the coordinates of the window drawn in `area`.
+    fn along(&self, area: Rect, (col, row): (u16, u16)) -> u16 {
+        if self.border.columns {
+            col.saturating_sub(area.x)
+        } else {
+            row.saturating_sub(area.y)
         }
     }
 
-    /// The size to send for the border dragged to `at` at `now`: none if
-    /// it is the size last sent or, while the button is held, if one went
-    /// less than [`DRAG_INTERVAL`] ago.
-    fn due(&mut self, at: u16, now: Instant, released: bool) -> Option<u16> {
-        let size = self.border.size(at);
+    /// The size to send for the border dragged to screen position `pos`
+    /// at `now`: none if it is the size last sent or, while the button is
+    /// held, if one went less than [`DRAG_INTERVAL`] ago.
+    fn due(&mut self, area: Rect, pos: (u16, u16), now: Instant, released: bool) -> Option<u16> {
+        let size = self.border.size(self.along(area, pos));
         let soon = self
             .sent
             .is_some_and(|sent| now.duration_since(sent) < DRAG_INTERVAL);
@@ -177,8 +190,7 @@ impl App {
         let Some(border) = layout::parse(&text).and_then(|l| l.border_at(x, y)) else {
             return false;
         };
-        let at = if border.columns { x } else { y };
-        self.press = Some(Press::Split(SplitDrag::new(border, at)));
+        self.press = Some(Press::Split(SplitDrag::new(border, area, (col, row))));
         true
     }
 
@@ -193,12 +205,7 @@ impl App {
             return false;
         };
         let columns = drag.border.columns;
-        let at = if columns {
-            m.column.saturating_sub(area.x)
-        } else {
-            m.row.saturating_sub(area.y)
-        };
-        let due = drag.due(at, Instant::now(), released);
+        let due = drag.due(area, (m.column, m.row), Instant::now(), released);
         let pane = drag.border.pane.clone();
         if released {
             self.press = None;
@@ -220,7 +227,15 @@ mod tests {
             {"t":"p","w":34,"h":29,"x":0,"y":0,"I":"%1"},
             {"t":"p","w":33,"h":29,"x":35,"y":0,"I":"%2"}]}}"#;
         let border = layout::parse(text).unwrap().border_at(34, 3).unwrap();
-        SplitDrag::new(border, 34)
+        SplitDrag::new(border, AREA, (AREA.x + 34, 5))
+    }
+
+    /// The session area: right of a 32-column sidebar, under the tab bar.
+    const AREA: Rect = Rect::new(32, 1, 68, 29);
+
+    /// What `drag` sends for the border dragged to window column `x`.
+    fn due(drag: &mut SplitDrag, x: u16, now: Instant, released: bool) -> Option<u16> {
+        drag.due(AREA, (AREA.x + x, 7), now, released)
     }
 
     #[test]
@@ -228,24 +243,24 @@ mod tests {
         let t0 = Instant::now();
         let ms = Duration::from_millis;
         let mut drag = pressed();
-        assert_eq!(drag.due(36, t0, false), Some(36));
-        assert_eq!(drag.due(37, t0 + ms(10), false), None, "too soon");
-        assert_eq!(drag.due(38, t0 + ms(39), false), None, "too soon");
-        assert_eq!(drag.due(39, t0 + ms(40), false), Some(39));
-        assert_eq!(drag.due(39, t0 + ms(200), false), None, "no change");
-        assert_eq!(drag.due(41, t0 + ms(210), true), Some(41), "release");
+        assert_eq!(due(&mut drag, 36, t0, false), Some(36));
+        assert_eq!(due(&mut drag, 37, t0 + ms(10), false), None, "too soon");
+        assert_eq!(due(&mut drag, 38, t0 + ms(39), false), None, "too soon");
+        assert_eq!(due(&mut drag, 39, t0 + ms(40), false), Some(39));
+        assert_eq!(due(&mut drag, 39, t0 + ms(200), false), None, "no change");
+        assert_eq!(due(&mut drag, 41, t0 + ms(210), true), Some(41), "release");
     }
 
     #[test]
     fn a_click_or_a_release_where_the_last_size_went_sends_nothing() {
         let t0 = Instant::now();
-        assert_eq!(pressed().due(34, t0, true), None, "a click");
+        assert_eq!(due(&mut pressed(), 34, t0, true), None, "a click");
         let mut drag = pressed();
-        assert_eq!(drag.due(30, t0, false), Some(30));
-        assert_eq!(drag.due(30, t0, true), None);
+        assert_eq!(due(&mut drag, 30, t0, false), Some(30));
+        assert_eq!(due(&mut drag, 30, t0, true), None);
         // Back where it was pressed: tmux has another size by now.
         let mut back = pressed();
-        assert_eq!(back.due(30, t0, false), Some(30));
-        assert_eq!(back.due(34, t0, true), Some(34));
+        assert_eq!(due(&mut back, 30, t0, false), Some(30));
+        assert_eq!(due(&mut back, 34, t0, true), Some(34));
     }
 }

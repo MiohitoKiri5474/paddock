@@ -9,11 +9,24 @@
 
 use serde::Deserialize;
 
-/// A cell of the layout: a pane, or a row (`h`) or column (`v`) of cells.
+/// What a cell of the layout is (`t`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+enum Kind {
+    #[serde(rename = "p")]
+    Pane,
+    /// Cells side by side (tmux's `LAYOUT_LEFTRIGHT`).
+    #[serde(rename = "h")]
+    Row,
+    /// Cells one above another (tmux's `LAYOUT_TOPBOTTOM`).
+    #[serde(rename = "v")]
+    Column,
+}
+
+/// A cell of the layout: a pane, or a row or column of cells.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Cell {
     #[serde(rename = "t")]
-    kind: String,
+    kind: Kind,
     x: u16,
     y: u16,
     #[serde(rename = "w")]
@@ -71,15 +84,6 @@ pub fn parse(text: &str) -> Option<Cell> {
 }
 
 impl Cell {
-    fn is_pane(&self) -> bool {
-        self.kind == "p"
-    }
-
-    /// A row of cells side by side (tmux's `LAYOUT_LEFTRIGHT`).
-    fn is_row(&self) -> bool {
-        self.kind == "h"
-    }
-
     fn contains(&self, x: u16, y: u16) -> bool {
         (self.x..self.x + self.width).contains(&x) && (self.y..self.y + self.height).contains(&y)
     }
@@ -87,13 +91,13 @@ impl Cell {
     /// The border at `(x, y)` in window coordinates, if that cell is one,
     /// and how to move it.
     pub fn border_at(&self, x: u16, y: u16) -> Option<Border> {
-        if self.is_pane() || !self.contains(x, y) {
+        if self.kind == Kind::Pane || !self.contains(x, y) {
             return None;
         }
         if let Some(child) = self.cells.iter().find(|c| c.contains(x, y)) {
             return child.border_at(x, y);
         }
-        let columns = self.is_row();
+        let columns = self.kind == Kind::Row;
         let i = self.cells.windows(2).position(|pair| {
             let before = &pair[0];
             if columns {
@@ -119,19 +123,19 @@ impl Cell {
             columns,
             anchor,
         };
-        if let Some(pane) = before.reached(&self.kind) {
+        if let Some(pane) = before.reached(self.kind) {
             return Some(border(pane, Anchor::Before(start(before))));
         }
         let last = i + 2 == self.cells.len();
-        let pane = after.reached(&self.kind).filter(|_| last)?;
+        let pane = after.reached(self.kind).filter(|_| last)?;
         Some(border(pane, Anchor::After(start(after) + len(after))))
     }
 
     /// A pane in this cell whose nearest ancestor of `kind` is this
     /// cell's parent: this pane, or one reached through cells of the
     /// other kind only.
-    fn reached(&self, kind: &str) -> Option<String> {
-        if self.is_pane() {
+    fn reached(&self, kind: Kind) -> Option<String> {
+        if self.kind == Kind::Pane {
             return self.pane.clone();
         }
         if self.kind == kind {
@@ -231,5 +235,7 @@ mod tests {
     fn other_formats_do_not_parse() {
         assert_eq!(parse("a87d,100x30,0,0,0"), None);
         assert_eq!(parse(""), None);
+        let unknown = r#"{"V":2,"L":{"t":"q","w":8,"h":2,"x":0,"y":0,"I":"%1"}}"#;
+        assert_eq!(parse(unknown), None);
     }
 }
