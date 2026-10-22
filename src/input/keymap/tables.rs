@@ -116,6 +116,7 @@ pub const COMMANDS: &[Binding<Command>] = &[
     ),
     bind("rename_tab", Command::RenameTab, &[","], "rename tab"),
     bind("rename_space", Command::RenameSpace, &["$"], "rename space"),
+    bind("set_root", Command::SetRoot, &["R"], "set space root here"),
     bind(
         "move_tab_left",
         Command::MoveTab(-1),

@@ -35,6 +35,9 @@
 //!
 //! [worktrees]
 //! directory = "~/.paddock/worktrees"   # new worktrees go to <directory>/<repo>/<branch>
+//!
+//! [spaces]
+//! new_tab_dir = "current"    # or "root": where new tabs and splits start
 //! ```
 //!
 //! `paddock keys` prints every action with its default keys.
@@ -77,6 +80,19 @@ pub struct Config {
     pub floats: Floats,
     /// Where new worktrees are checked out.
     pub worktrees: Worktrees,
+    /// Where new tabs and splits start.
+    pub new_tab_dir: NewTabDir,
+}
+
+/// `[spaces] new_tab_dir`: where a new tab or split starts.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NewTabDir {
+    /// In the focused terminal's directory.
+    #[default]
+    Current,
+    /// In the space's root.
+    Root,
 }
 
 /// `[worktrees]`: where `C-a W` checks a new branch out.
@@ -161,6 +177,15 @@ struct RawConfig {
     floats: toml::Table,
     #[serde(default)]
     worktrees: RawWorktrees,
+    #[serde(default)]
+    spaces: RawSpaces,
+}
+
+/// A `[spaces]` table as written.
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct RawSpaces {
+    new_tab_dir: Option<NewTabDir>,
 }
 
 /// A `[worktrees]` table as written.
@@ -304,6 +329,7 @@ impl Config {
             },
             floats,
             worktrees,
+            new_tab_dir: raw.spaces.new_tab_dir.unwrap_or_default(),
         })
     }
 }
@@ -326,6 +352,7 @@ impl Default for Config {
             notify: Notify::default(),
             floats: Floats::default(),
             worktrees: Worktrees::default(),
+            new_tab_dir: NewTabDir::default(),
         }
     }
 }
@@ -667,6 +694,23 @@ mod tests {
         }
         let no_home = Worktrees::configured(None, None).unwrap_err();
         assert!(format!("{no_home:#}").contains("HOME"), "{no_home:#}");
+    }
+
+    #[test]
+    fn new_tabs_start_in_the_current_directory_unless_set_to_the_root() {
+        assert_eq!(Config::default().new_tab_dir, NewTabDir::Current);
+        assert_eq!(Config::parse("").unwrap().new_tab_dir, NewTabDir::Current);
+        let parse = |t: &str| Config::parse(&format!("[spaces]\nnew_tab_dir = {t}\n"));
+        assert_eq!(parse("\"root\"").unwrap().new_tab_dir, NewTabDir::Root);
+        assert_eq!(
+            parse("\"current\"").unwrap().new_tab_dir,
+            NewTabDir::Current
+        );
+        for bad in ["\"home\"", "\"Root\"", "1"] {
+            let err = format!("{:#}", parse(bad).unwrap_err());
+            assert!(err.contains("new_tab_dir"), "{bad}: {err}");
+        }
+        assert!(Config::parse("[spaces]\nnew_split_dir = \"root\"\n").is_err());
     }
 
     #[test]

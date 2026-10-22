@@ -18,6 +18,8 @@ pub enum Command {
     GoToTab(usize),
     RenameTab,
     RenameSpace,
+    /// Make the focused terminal's directory the current space's root.
+    SetRoot,
     /// End the focused pane; its tab goes with its last pane, its space with
     /// its last tab.
     Close,

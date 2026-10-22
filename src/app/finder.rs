@@ -222,14 +222,24 @@ impl App {
         let mut out: Vec<FinderRow> = spaces
             .iter()
             .zip(&self.spaces)
-            .map(|(line, space)| FinderRow {
-                kind: Kind::Space,
-                name: line.name.clone(),
-                detail: place_detail(line.path.as_deref(), line.branch.as_deref()),
-                path: line.path.clone(),
-                branch: line.branch.clone(),
-                state: None,
-                target: Target::Space(space.id.clone()),
+            .map(|(line, space)| {
+                // Nothing until read.
+                let (path, branch) = match self.places.get(&space.id) {
+                    Some(place) => {
+                        let (root, branch) = place.root_shown(&home);
+                        (Some(root), branch)
+                    }
+                    None => (None, None),
+                };
+                FinderRow {
+                    kind: Kind::Space,
+                    name: line.name.clone(),
+                    detail: place_detail(path.as_deref(), branch.as_deref()),
+                    path,
+                    branch,
+                    state: None,
+                    target: Target::Space(space.id.clone()),
+                }
             })
             .collect();
         for (line, space) in spaces.iter().zip(&self.spaces) {
