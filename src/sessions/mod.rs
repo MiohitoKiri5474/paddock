@@ -15,12 +15,12 @@ pub mod dismissed;
 mod external;
 mod kind;
 pub mod log;
+mod program_state;
 
 pub use dismissed::Dismissal;
 pub use external::{external_key, is_external};
 pub use kind::AgentKind;
-
-use crate::terminal::program_status::ProgramState;
+pub use program_state::ProgramState;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -183,6 +183,17 @@ pub fn alerts_idle(r: &HookRecord) -> bool {
     match r.kind {
         AgentKind::Claude | AgentKind::Gemini => !restarts(r),
         AgentKind::Agy => finishes_turn(r),
+    }
+}
+
+/// Whether alerts take an `r` naming no conversation, or following an
+/// alert that named none, as about the pane's current one. Only for
+/// Antigravity, whose status reports name none; Claude's and Gemini's
+/// events are compared by their conversation exactly.
+pub fn matches_any_conversation(r: &HookRecord) -> bool {
+    match r.kind {
+        AgentKind::Claude | AgentKind::Gemini => false,
+        AgentKind::Agy => true,
     }
 }
 
@@ -411,8 +422,10 @@ pub struct Session {
     /// Subagents seen, in the order they reached their current branch.
     subagents: Vec<Subagent>,
     /// The state of the last status report recorded for it (see
-    /// [`Sessions::record_status`]).
+    /// [`Sessions::note_status`]), until a hook changes its state.
     status: Option<ProgramState>,
+    /// When its agent last started a conversation (ms since the epoch).
+    started: u64,
 }
 
 impl Session {
@@ -434,6 +447,7 @@ impl Session {
             alive: 0,
             subagents: Vec::new(),
             status: None,
+            started: 0,
         }
     }
 
@@ -712,8 +726,8 @@ impl Sessions {
         }
         s.kind = r.kind;
         s.alive = s.alive.max(r.ts);
-        if r.status.is_some() {
-            s.status = r.status;
+        if restarts(r) {
+            s.started = r.ts;
         }
         // A subagent's directory is its worktree, not the session's.
         if r.cwd.is_some() && r.agent_id.is_none() {
@@ -734,6 +748,9 @@ impl Sessions {
             };
             s.updated = r.ts;
             s.hooked = Some(r.ts);
+            // The state is now the report's, or a hook's: the next report
+            // of any state is news.
+            s.status = r.status;
         }
         if let Some(id) = &r.agent_id {
             s.apply_subagent(id, r);
@@ -755,18 +772,33 @@ impl Sessions {
         true
     }
 
-    /// Whether a status report `state` from pane `pane` is worth recording:
-    /// the pane runs a live Antigravity session, and its last report
-    /// recorded said something else. Notes it as recorded if so.
-    pub fn record_status(&mut self, pane: &str, state: ProgramState) -> bool {
-        let Some(s) = self.by_pane.get_mut(pane) else {
-            return false;
-        };
-        let new = s.kind == AgentKind::Agy && !s.ended() && s.status != Some(state);
-        if new {
+    /// Whether pane `pane` runs a live Antigravity session, which its
+    /// status reports are about.
+    pub fn agy_live_in(&self, pane: &str) -> bool {
+        self.by_pane
+            .get(pane)
+            .is_some_and(|s| s.kind == AgentKind::Agy && !s.ended())
+    }
+
+    /// Whether pane `pane` runs a live Antigravity session that had
+    /// started by `ts` (ms): a report made then is about it.
+    pub fn agy_live_by(&self, pane: &str, ts: u64) -> bool {
+        self.agy_live_in(pane) && self.by_pane[pane].started <= ts
+    }
+
+    /// Whether a status report `state` from pane `pane` says something
+    /// new: the pane runs a live Antigravity session, and no report
+    /// recorded since its state last changed otherwise said `state`.
+    pub fn is_new_status(&self, pane: &str, state: ProgramState) -> bool {
+        self.agy_live_in(pane) && self.by_pane[pane].status != Some(state)
+    }
+
+    /// Note that a status report `state` from pane `pane` was recorded
+    /// (see [`Sessions::is_new_status`]).
+    pub fn note_status(&mut self, pane: &str, state: ProgramState) {
+        if let Some(s) = self.by_pane.get_mut(pane) {
             s.status = Some(state);
         }
-        new
     }
 
     /// Whether an Antigravity session runs in one of paddock's terminals,
@@ -790,6 +822,7 @@ impl Sessions {
             if s.kind == AgentKind::Agy && !s.ended() && quit && s.alive < taken {
                 s.state = State::Stopped;
                 s.updated = taken;
+                s.status = None;
                 ended = true;
             }
         }
@@ -1235,25 +1268,74 @@ mod tests {
     fn only_a_new_report_for_a_live_agy_session_is_recorded() {
         let (blocked, working) = (ProgramState::Blocked, ProgramState::Working);
         let mut s = Sessions::default();
-        assert!(!s.record_status("%1", blocked), "no session");
+        assert!(!s.is_new_status("%1", blocked), "no session");
         s.apply(&rec("SessionStart", 1));
-        assert!(!s.record_status("%1", blocked), "Claude's");
+        assert!(!s.agy_live_in("%1"));
+        assert!(!s.is_new_status("%1", blocked), "Claude's");
         s.apply(&agy("SessionStart", 2));
-        assert!(s.record_status("%1", blocked));
-        assert!(!s.record_status("%1", blocked), "said already");
-        assert!(s.record_status("%1", working));
-        // Folding a recorded report notes it too, as on a replay.
-        s.apply(&agy_status("blocked", 3));
-        assert!(!s.record_status("%1", blocked));
+        assert!(s.agy_live_in("%1"));
+        assert!(s.is_new_status("%1", blocked));
+        assert!(s.is_new_status("%1", blocked), "until noted as written");
+        s.note_status("%1", blocked);
+        assert!(!s.is_new_status("%1", blocked), "said already");
+        assert!(s.is_new_status("%1", working));
         // A new conversation starts over.
         s.apply(&HookRecord {
             session_id: Some("next".into()),
             ..agy("SessionStart", 4)
         });
-        assert!(s.record_status("%1", blocked));
+        assert!(s.is_new_status("%1", blocked));
         let shells = HashMap::from([("%1".to_string(), "zsh".to_string())]);
         s.end_exited(10, &shells);
-        assert!(!s.record_status("%1", working), "ended");
+        assert!(!s.is_new_status("%1", working), "ended");
+    }
+
+    #[test]
+    fn a_report_is_about_an_agy_session_only_once_it_started() {
+        let mut s = Sessions::default();
+        s.apply(&agy("SessionStart", 10));
+        assert!(s.agy_live_by("%1", 10));
+        assert!(s.agy_live_by("%1", 11));
+        assert!(!s.agy_live_by("%1", 9), "made before it started");
+        assert!(!s.agy_live_by("%2", 11), "another terminal");
+    }
+
+    #[test]
+    fn only_agys_alerts_match_any_conversation() {
+        assert!(matches_any_conversation(&agy_status("done", 1)));
+        assert!(matches_any_conversation(&agy("Stop", 1)));
+        assert!(!matches_any_conversation(&rec("Stop", 1)));
+        assert!(!matches_any_conversation(&gemini("AfterAgent", 1)));
+    }
+
+    #[test]
+    fn a_hook_changing_the_state_makes_the_same_report_news_again() {
+        let blocked = ProgramState::Blocked;
+        let mut s = Sessions::default();
+        s.apply(&agy("SessionStart", 1));
+        // Live: blocked written, then the prompt runs on (a hook).
+        s.note_status("%1", blocked);
+        s.apply(&agy_status("blocked", 2));
+        assert_eq!(state(&s), State::Waiting);
+        assert!(!s.is_new_status("%1", blocked));
+        s.apply(&agy("PreInvocation", 3));
+        assert_eq!(state(&s), State::Running);
+        assert!(s.is_new_status("%1", blocked));
+        s.note_status("%1", blocked);
+        s.apply(&agy_status("blocked", 4));
+        assert_eq!(state(&s), State::Waiting, "waiting again");
+        // Replayed, the log agrees: a report noted, a hook clears it.
+        let mut replay = Sessions::default();
+        for r in [
+            agy("SessionStart", 1),
+            agy_status("blocked", 2),
+            agy("PreInvocation", 3),
+        ] {
+            replay.apply(&r);
+        }
+        assert!(replay.is_new_status("%1", blocked));
+        replay.apply(&agy_status("blocked", 4));
+        assert!(!replay.is_new_status("%1", blocked));
     }
 
     #[test]

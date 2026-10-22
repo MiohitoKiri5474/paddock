@@ -9,7 +9,7 @@
 //! The scanner only reads: the bytes still go to the emulator, which draws
 //! nothing for an OSC it does not know.
 
-use serde::{Deserialize, Serialize};
+use crate::sessions::ProgramState;
 
 /// The longest sequence the spec allows; a longer one is dropped whole.
 const MAX_LEN: usize = 4096;
@@ -19,36 +19,6 @@ const BEL: u8 = 0x07;
 
 /// What an OSC 7501 body starts with.
 const PREFIX: &[u8] = b"7501;";
-
-/// The state a report gives, as the spec names it (written so in the
-/// hook log too).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ProgramState {
-    Idle,
-    Working,
-    Done,
-    /// Waiting on the user (see [`Report::kind`]).
-    Blocked,
-    Error,
-    /// The program takes its reports back.
-    Clear,
-}
-
-impl ProgramState {
-    /// The state named `name`, if the spec has it.
-    pub fn parse(name: &str) -> Option<Self> {
-        Some(match name {
-            "idle" => Self::Idle,
-            "working" => Self::Working,
-            "done" => Self::Done,
-            "blocked" => Self::Blocked,
-            "error" => Self::Error,
-            "clear" => Self::Clear,
-            _ => return None,
-        })
-    }
-}
 
 /// One status report.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -219,19 +189,6 @@ mod tests {
                 "cut at {cut}"
             );
         }
-    }
-
-    #[test]
-    fn states_parse_from_and_are_written_as_their_names() {
-        for name in ["idle", "working", "done", "blocked", "error", "clear"] {
-            let state = ProgramState::parse(name).unwrap();
-            assert_eq!(
-                serde_json::to_string(&state).unwrap(),
-                format!("\"{name}\"")
-            );
-        }
-        assert_eq!(ProgramState::parse("Done"), None);
-        assert_eq!(ProgramState::parse("sleeping"), None);
     }
 
     #[test]

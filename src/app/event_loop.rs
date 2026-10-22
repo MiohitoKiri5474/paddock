@@ -171,6 +171,7 @@ fn handle(
         Event::Detach => Ok((Flow::Quit, true)),
         Event::Hooks(records) => {
             app.hooks(&records);
+            app.retry_status();
             app.note_agy_running();
             Ok((Flow::Continue, true))
         }

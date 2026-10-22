@@ -11,7 +11,7 @@ use super::state::{App, Mode};
 use super::Event;
 use crate::config::Notify;
 use crate::hooks::now_ms;
-use crate::sessions::{self, is_external, log, state_after, AgentKind, HookRecord, State};
+use crate::sessions::{self, is_external, log, state_after, HookRecord, ProgramState, State};
 use crate::terminal::program_status::Report;
 use std::collections::HashMap;
 use std::io::Read;
@@ -87,6 +87,11 @@ impl Notify {
     }
 }
 
+/// How long (ms) a status report from a terminal with no agy session yet
+/// waits for one: a few log polls, so the `SessionStart` agy ran before it
+/// is folded.
+const STATUS_WAIT_MS: u64 = 1_000;
+
 /// The last alert of each terminal's session, so that one wait or one
 /// finished turn notifies once however many hooks report it.
 #[derive(Debug, Default)]
@@ -126,12 +131,7 @@ impl Alerts {
             .clone()
             .or_else(|| last.and_then(|(s, _)| s.clone()));
         // Stop ends one turn each time; other idle events only remind of it.
-        // Antigravity's status reports name no conversation: for agy, one
-        // side naming none is the pane's, whichever it is.
-        let loose = match r.kind {
-            AgentKind::Claude | AgentKind::Gemini => false,
-            AgentKind::Agy => true,
-        };
+        let loose = sessions::matches_any_conversation(r);
         let same =
             |s: &Option<String>| *s == session || (loose && (s.is_none() || session.is_none()));
         let repeat =
@@ -237,18 +237,60 @@ impl App {
     /// conversation (agy's reports do not say), so they belong to whichever
     /// the pane runs when folded. Only a report for a live agy session in
     /// the pane, saying something new, is recorded.
+    ///
+    /// A hook reaches the app up to a log poll after it ran, so agy's
+    /// first report may come before its `SessionStart` is folded: the
+    /// latest report of a pane with no agy session yet waits (see
+    /// [`App::retry_status`]) up to [`STATUS_WAIT_MS`] for one.
     pub(super) fn record_status(&mut self, pane: &str, reports: &[Report]) {
+        let ts = now_ms();
+        for r in reports {
+            if r.app.as_deref() != Some(sessions::AGY_APP) {
+                continue;
+            }
+            if self.sessions.agy_live_in(pane) {
+                self.pending_status.remove(pane);
+                self.write_status(pane, r.state, ts);
+            } else {
+                self.pending_status.insert(pane.to_string(), (r.state, ts));
+            }
+        }
+    }
+
+    /// Record the reports that waited for their pane's agy session (see
+    /// [`App::record_status`]) once it is there, if it had started when
+    /// they were made; drop the others, and those that waited too long.
+    pub(super) fn retry_status(&mut self) {
+        let now = now_ms();
+        let pending = std::mem::take(&mut self.pending_status);
+        for (pane, (state, ts)) in pending {
+            if self.sessions.agy_live_by(&pane, ts) {
+                self.write_status(&pane, state, ts);
+            } else if !self.sessions.agy_live_in(&pane) && now.saturating_sub(ts) <= STATUS_WAIT_MS
+            {
+                self.pending_status.insert(pane, (state, ts));
+            }
+            // Otherwise it came before this session started, or too long
+            // ago: dropped.
+        }
+    }
+
+    /// Append agy's report `state` from `pane`, made at `ts`, to the
+    /// server's log if it says something new; it counts as said once
+    /// written.
+    fn write_status(&mut self, pane: &str, state: ProgramState, ts: u64) {
         let Some(path) = self.events_log.clone() else {
             return;
         };
-        let ts = now_ms();
-        for r in reports {
-            let Some(record) = sessions::status_record(pane, r.app.as_deref(), r.state, ts) else {
-                continue;
-            };
-            if self.sessions.record_status(pane, r.state) {
-                self.report(|_| log::append(&path, &record));
-            }
+        if !self.sessions.is_new_status(pane, state) {
+            return;
+        }
+        let Some(record) = sessions::status_record(pane, Some(sessions::AGY_APP), state, ts) else {
+            return;
+        };
+        match log::append(&path, &record) {
+            Ok(()) => self.sessions.note_status(pane, state),
+            Err(e) => self.notice = Some(format!("{e:#}")),
         }
     }
 
@@ -368,7 +410,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::terminal::program_status::ProgramState;
+    use crate::sessions::AgentKind;
 
     fn agy_rec(event: &str) -> HookRecord {
         HookRecord {

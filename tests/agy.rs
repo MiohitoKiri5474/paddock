@@ -217,6 +217,44 @@ fn server_log(sandbox: &Sandbox) -> String {
 }
 
 #[test]
+fn the_same_report_after_a_hook_shows_again() {
+    let sandbox = Sandbox::new();
+    stub_agy(&sandbox);
+    let paddock = ready(&sandbox);
+    start_agy(&sandbox, &paddock, "space-1:0");
+    agy(&sandbox, "space-1:0", &["SessionStart"]);
+    wait_row(&paddock, "idle", &["● repo", "idle"]);
+    write_to(
+        &sandbox,
+        "space-1:0",
+        &status("blocked", Some("permission")),
+    );
+    wait_row(&paddock, "waiting", &["● repo", "waiting"]);
+    agy(&sandbox, "space-1:0", &["PreInvocation"]);
+    wait_row(&paddock, "running", &["● repo", "running"]);
+    write_to(
+        &sandbox,
+        "space-1:0",
+        &status("blocked", Some("permission")),
+    );
+    wait_row(&paddock, "waiting again", &["● repo", "waiting"]);
+}
+
+#[test]
+fn a_report_right_after_the_start_hook_waits_for_its_session() {
+    let sandbox = Sandbox::new();
+    stub_agy(&sandbox);
+    let paddock = ready(&sandbox);
+    start_agy(&sandbox, &paddock, "space-1:0");
+    // The hook is in the log, but paddock has not read it yet when the
+    // report comes.
+    agy(&sandbox, "space-1:0", &["SessionStart"]);
+    write_to(&sandbox, "space-1:0", &status("blocked", Some("auth")));
+    wait_row(&paddock, "waiting", &["● repo", "waiting"]);
+    assert_eq!(server_log(&sandbox).matches("OSC7501").count(), 1);
+}
+
+#[test]
 fn reports_from_a_terminal_without_an_agy_session_are_not_recorded() {
     let sandbox = Sandbox::new();
     let paddock = ready(&sandbox);

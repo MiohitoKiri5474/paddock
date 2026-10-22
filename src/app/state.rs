@@ -27,7 +27,7 @@ use crate::hooks::now_ms;
 use crate::input::keymap::Keymap;
 use crate::input::line::LineEdit;
 use crate::input::PrefixKeys;
-use crate::sessions::{dismissed, Session, Sessions, State};
+use crate::sessions::{dismissed, ProgramState, Session, Sessions, State};
 use crate::terminal::Terminal;
 use crate::tmux::structure::Window;
 use crate::tmux::Server;
@@ -245,6 +245,9 @@ pub struct App {
     /// only then does the watcher read each terminal's command (see
     /// [`Sessions::end_exited`]).
     pub(super) agy_running: Arc<AtomicBool>,
+    /// Per pane, agy's latest status report (its state and when it came)
+    /// waiting for the pane's agy session (see [`App::record_status`]).
+    pub(super) pending_status: HashMap<String, (ProgramState, u64)>,
     pub(super) sessions: Sessions,
     pub(super) task_status: TaskStatus,
     pub(super) task_details: TaskDetails,
@@ -351,6 +354,7 @@ impl App {
             state_dir,
             events_log: None,
             agy_running: Arc::new(AtomicBool::new(false)),
+            pending_status: HashMap::new(),
             sessions: Sessions::default(),
             task_status: TaskStatus::new(),
             task_details: TaskDetails::new(),
