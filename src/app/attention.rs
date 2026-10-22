@@ -239,12 +239,7 @@ impl App {
         let Some(window) = self.current_space().and_then(|i| i.current_window()) else {
             return;
         };
-        let panes: Vec<String> = window
-            .panes
-            .iter()
-            .filter(|p| window.shows(&p.id))
-            .map(|p| p.id.clone())
-            .collect();
+        let panes: Vec<String> = window.shown_panes().map(|p| p.id.clone()).collect();
         for pane in panes {
             self.sessions.see(&pane);
         }

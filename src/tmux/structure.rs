@@ -51,6 +51,21 @@ impl Window {
     pub fn shows(&self, pane: &str) -> bool {
         self.contains(pane) && (!self.zoomed || self.active == pane)
     }
+
+    /// Focus `pane` ahead of tmux's own report, as tmux's `select-pane`
+    /// does: focusing another pane than the zoomed one unzooms.
+    pub fn focus(&mut self, pane: &str) {
+        if self.active != pane {
+            self.zoomed = false;
+        }
+        self.active = pane.to_string();
+    }
+
+    /// The panes drawn when the window is: all of them, or only the
+    /// focused one while it is zoomed.
+    pub fn shown_panes(&self) -> impl Iterator<Item = &Pane> {
+        self.panes.iter().filter(|p| self.shows(&p.id))
+    }
 }
 
 /// A window marked as a float: its key and the window itself.
@@ -147,26 +162,95 @@ pub fn parse(out: &str) -> Structure {
 mod tests {
     use super::*;
 
-    fn line(fields: &[&str]) -> String {
-        fields.join("\x1f") + "\n"
+    /// One line of `list-panes -F FORMAT` output, by field: a test names
+    /// only the fields it cares about, so a new field changes [`Line::text`]
+    /// alone.
+    #[derive(Debug, Clone, Copy)]
+    struct Line {
+        window: &'static str,
+        window_active: bool,
+        auto_name: bool,
+        zoomed: bool,
+        pane: &'static str,
+        pane_active: bool,
+        /// `(left, top, width, height)`.
+        place: (u16, u16, u16, u16),
+        float: &'static str,
+        session: &'static str,
+        name: &'static str,
+    }
+
+    impl Default for Line {
+        fn default() -> Self {
+            Self {
+                window: "@1",
+                window_active: false,
+                auto_name: true,
+                zoomed: false,
+                pane: "%1",
+                pane_active: true,
+                place: (0, 0, 100, 30),
+                float: "",
+                session: "api",
+                name: "zsh",
+            }
+        }
+    }
+
+    impl Line {
+        /// The line as tmux writes it, in [`FORMAT`]'s order.
+        fn text(&self) -> String {
+            let flag = |b: bool| if b { "1" } else { "0" }.to_string();
+            let (x, y, w, h) = self.place;
+            let fields = [
+                self.window.to_string(),
+                flag(self.window_active),
+                flag(self.auto_name),
+                flag(self.zoomed),
+                self.pane.to_string(),
+                flag(self.pane_active),
+                x.to_string(),
+                y.to_string(),
+                w.to_string(),
+                h.to_string(),
+                self.float.to_string(),
+                self.session.to_string(),
+                self.name.to_string(),
+            ];
+            assert_eq!(fields.len(), FIELDS);
+            fields.join("\x1f") + "\n"
+        }
+    }
+
+    /// `lines` as one `list-panes` output.
+    fn out(lines: &[Line]) -> String {
+        lines.iter().map(Line::text).collect()
     }
 
     #[test]
     fn panes_group_into_windows_with_names_focus_and_places() {
-        let out = [
-            line(&[
-                "@1", "0", "1", "0", "%1", "1", "0", "0", "100", "30", "", "api", "zsh",
-            ]),
-            line(&[
-                "@4", "1", "0", "0", "%2", "0", "0", "0", "50", "30", "", "api", "my logs",
-            ]),
-            line(&[
-                "@4", "1", "0", "0", "%5", "1", "51", "0", "49", "30", "", "api", "my logs",
-            ]),
-            "garbage\n".to_string(),
-        ]
-        .concat();
-        let s = parse(&out);
+        let logs = Line {
+            window: "@4",
+            window_active: true,
+            auto_name: false,
+            name: "my logs",
+            ..Line::default()
+        };
+        let text = out(&[
+            Line::default(),
+            Line {
+                pane: "%2",
+                pane_active: false,
+                place: (0, 0, 50, 30),
+                ..logs
+            },
+            Line {
+                pane: "%5",
+                place: (51, 0, 49, 30),
+                ..logs
+            },
+        ]) + "garbage\n";
+        let s = parse(&text);
         assert_eq!(s.name, "api");
         assert_eq!(s.current, 1);
         let ids: Vec<&str> = s.windows.iter().map(|w| w.id.as_str()).collect();
@@ -181,32 +265,70 @@ mod tests {
     }
 
     #[test]
-    fn a_zoomed_window_is_marked() {
-        let out = [
-            line(&[
-                "@1", "1", "1", "1", "%1", "0", "0", "0", "50", "30", "", "api", "zsh",
-            ]),
-            line(&[
-                "@1", "1", "1", "1", "%2", "1", "0", "0", "100", "30", "", "api", "zsh",
-            ]),
-            line(&[
-                "@2", "0", "1", "0", "%3", "1", "0", "0", "100", "30", "", "api", "zsh",
-            ]),
-        ]
-        .concat();
-        let s = parse(&out);
+    fn a_zoomed_window_is_marked_and_shows_only_its_focused_pane() {
+        let zoomed = Line {
+            window_active: true,
+            zoomed: true,
+            ..Line::default()
+        };
+        let s = parse(&out(&[
+            Line {
+                pane_active: false,
+                place: (0, 0, 50, 30),
+                ..zoomed
+            },
+            Line {
+                pane: "%2",
+                ..zoomed
+            },
+            Line {
+                window: "@2",
+                pane: "%3",
+                ..Line::default()
+            },
+        ]));
         assert!(s.windows[0].zoomed && !s.windows[1].zoomed);
         assert_eq!(s.windows[0].active, "%2");
         assert!(s.windows[0].shows("%2") && !s.windows[0].shows("%1"));
         assert!(s.windows[1].shows("%3") && !s.windows[1].shows("%2"));
+        let shown: Vec<&str> = s.windows[0].shown_panes().map(|p| p.id.as_str()).collect();
+        assert_eq!(shown, ["%2"]);
+        assert_eq!(s.windows[1].shown_panes().count(), 1);
+    }
+
+    #[test]
+    fn focusing_another_pane_unzooms_as_tmux_does() {
+        let zoomed = Line {
+            zoomed: true,
+            ..Line::default()
+        };
+        let text = out(&[
+            Line {
+                pane_active: false,
+                ..zoomed
+            },
+            Line {
+                pane: "%2",
+                ..zoomed
+            },
+        ]);
+        let mut window = parse(&text).windows.remove(0);
+        window.focus("%2");
+        assert!(window.zoomed, "the zoomed pane itself");
+        window.focus("%1");
+        assert!(!window.zoomed);
+        assert_eq!(window.active, "%1");
+        let shown: Vec<&str> = window.shown_panes().map(|p| p.id.as_str()).collect();
+        assert_eq!(shown, ["%1", "%2"]);
     }
 
     #[test]
     fn names_may_hold_the_separator_of_nothing_else() {
-        let out = line(&[
-            "@1", "1", "1", "0", "%1", "1", "0", "0", "8", "2", "", "a b", "x:y",
-        ]);
-        let s = parse(&out);
+        let s = parse(&out(&[Line {
+            session: "a b",
+            name: "x:y",
+            ..Line::default()
+        }]));
         assert_eq!(
             (s.name.as_str(), s.windows[0].name.as_str()),
             ("a b", "x:y")
@@ -215,19 +337,23 @@ mod tests {
 
     #[test]
     fn floats_are_kept_apart_from_the_tabs() {
-        let out = [
-            line(&[
-                "@1", "0", "1", "0", "%1", "1", "0", "0", "100", "30", "", "api", "zsh",
-            ]),
-            line(&[
-                "@7", "0", "1", "0", "%9", "1", "0", "0", "80", "24", "g", "api", "lazygit",
-            ]),
-            line(&[
-                "@2", "1", "1", "0", "%3", "1", "0", "0", "100", "30", "", "api", "zsh",
-            ]),
-        ]
-        .concat();
-        let s = parse(&out);
+        let s = parse(&out(&[
+            Line::default(),
+            Line {
+                window: "@7",
+                pane: "%9",
+                place: (0, 0, 80, 24),
+                float: "g",
+                name: "lazygit",
+                ..Line::default()
+            },
+            Line {
+                window: "@2",
+                window_active: true,
+                pane: "%3",
+                ..Line::default()
+            },
+        ]));
         let tabs: Vec<&str> = s.windows.iter().map(|w| w.id.as_str()).collect();
         assert_eq!(tabs, ["@1", "@2"]);
         assert_eq!(s.current, 1);
@@ -242,19 +368,23 @@ mod tests {
 
     #[test]
     fn a_float_tmux_made_current_leaves_the_tab_before_it_current() {
-        let out = [
-            line(&[
-                "@1", "0", "1", "0", "%1", "1", "0", "0", "100", "30", "", "api", "zsh",
-            ]),
-            line(&[
-                "@2", "0", "1", "0", "%2", "1", "0", "0", "100", "30", "", "api", "zsh",
-            ]),
-            line(&[
-                "@7", "1", "1", "0", "%9", "1", "0", "0", "80", "24", "C-g", "api", "x",
-            ]),
-        ]
-        .concat();
-        let s = parse(&out);
+        let s = parse(&out(&[
+            Line::default(),
+            Line {
+                window: "@2",
+                pane: "%2",
+                ..Line::default()
+            },
+            Line {
+                window: "@7",
+                window_active: true,
+                pane: "%9",
+                place: (0, 0, 80, 24),
+                float: "C-g",
+                name: "x",
+                ..Line::default()
+            },
+        ]));
         assert!(s.float_active);
         assert_eq!(s.current, 1);
         assert_eq!(s.floats[0].key, "C-g");

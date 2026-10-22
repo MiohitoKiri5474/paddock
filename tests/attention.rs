@@ -271,6 +271,28 @@ fn a_turn_finished_in_a_split_hidden_by_a_zoom_is_done_until_unzoomed() {
 }
 
 #[test]
+fn c_a_a_to_a_split_hidden_by_a_zoom_gives_the_layout_back_focused_there() {
+    let sandbox = Sandbox::new();
+    let mut paddock = ready(&sandbox);
+    paddock.command(b"|");
+    paddock.wait_for("two prompts", |s| s.matches(PROMPT).count() == 2);
+    paddock.command(b"z"); // the right split fills the tab
+    paddock.wait_for_tabs(&["1:home Z"]);
+    hooks(&sandbox, "space-1:0.0", &["UserPromptSubmit", "Stop"]);
+    paddock.wait_for("done", |_| paddock.full_screen().contains("done"));
+
+    paddock.command(b"a");
+
+    harness::wait_for_pane_sizes(&sandbox, &["0.0 34x29", "0.1 33x29"]);
+    assert_eq!(sandbox.display("space-1:0", "#{window_zoomed_flag}"), "0");
+    paddock.wait_for("the border back", |_| {
+        harness::cols(&paddock.rows()[1], 34, 35) == "│"
+    });
+    paddock.type_line("echo typed-into-the-hidden-split");
+    harness::wait_in_region(&paddock, "typed-into-the-hidden-split", (1, 30), (0, 34));
+}
+
+#[test]
 fn a_turn_finished_in_view_is_idle_at_once() {
     let sandbox = Sandbox::new();
     let paddock = ready(&sandbox);

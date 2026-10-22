@@ -229,9 +229,7 @@ impl App {
             return Vec::new();
         };
         window
-            .panes
-            .iter()
-            .filter(|p| window.shows(&p.id))
+            .shown_panes()
             .map(|p| {
                 let r = Rect {
                     x: area.x.saturating_add(p.rect.x),
