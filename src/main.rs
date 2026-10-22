@@ -20,16 +20,19 @@ usage: paddock [command]
 
 commands:
   (none)                      open paddock
-  -V, --version               print paddock's version
+  help, -h, --help            print this help
+  version, -V, --version      print paddock's version
   keys                        print the default keys as TOML
   hooks install|uninstall     add or remove paddock's Claude Code hooks
   worktree new|open|list|rm   manage worktrees as spaces, without the UI
                               (paddock worktree --help)
 ";
 
-/// `paddock <version>` for `-V` or `--version` alone, else `None`.
+/// `paddock <version>` for `version`, `-V` or `--version` alone, else
+/// `None`.
 fn version(args: &[&str]) -> Option<String> {
-    matches!(args, ["-V" | "--version"]).then(|| format!("paddock {}", env!("CARGO_PKG_VERSION")))
+    matches!(args, ["version" | "-V" | "--version"])
+        .then(|| format!("paddock {}", env!("CARGO_PKG_VERSION")))
 }
 
 fn main() -> anyhow::Result<()> {
@@ -61,17 +64,18 @@ mod tests {
     use super::version;
 
     #[test]
-    fn version_flag_prints_the_cargo_version() {
+    fn version_prints_the_cargo_version() {
         let expected = format!("paddock {}", env!("CARGO_PKG_VERSION"));
         assert_eq!(version(&["--version"]), Some(expected.clone()));
-        assert_eq!(version(&["-V"]), Some(expected));
+        assert_eq!(version(&["-V"]), Some(expected.clone()));
+        assert_eq!(version(&["version"]), Some(expected));
     }
 
     #[test]
-    fn version_flag_needs_to_stand_alone() {
+    fn version_needs_to_stand_alone() {
         assert_eq!(version(&[]), None);
         assert_eq!(version(&["-v"]), None);
-        assert_eq!(version(&["version"]), None);
+        assert_eq!(version(&["version", "x"]), None);
         assert_eq!(version(&["--version", "x"]), None);
         assert_eq!(version(&["keys", "--version"]), None);
     }
