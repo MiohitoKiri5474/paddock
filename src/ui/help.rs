@@ -2,7 +2,8 @@
 //! default keys it fits an 80x24 terminal.
 
 use crate::config::Floats;
-use crate::input::keymap::{label, Keymap};
+use crate::input::keymap::{label, Binding, Key, Keymap};
+use crate::input::Command;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::text::Line;
@@ -18,6 +19,10 @@ const LABEL: usize = 6;
 const HINT_WIDTH: usize = 69;
 /// Columns the box adds around the lines: borders and a space each side.
 const FRAME: usize = 4;
+/// Commands the help shows in one cell, by name, with the description
+/// they share there: a row saved keeps the help within 80x24.
+const PAIRED: &[(&str, &str, &str)] =
+    &[("move_tab_left", "move_tab_right", "move tab left / right")];
 /// The prompt popup's keys, which are fixed (`Backspace` and `Delete`
 /// too, left out to fit one line).
 const PROMPT_KEYS: [&str; 5] = [
@@ -40,17 +45,26 @@ pub fn title(prefix: &str) -> String {
 /// the dashboard's keys. Copy mode's keys are on its own status line.
 pub fn lines(keys: &Keymap, floats: &Floats) -> Vec<String> {
     let mut out = Vec::new();
-    let mut cells: Vec<String> = keys
+    let shown: Vec<_> = keys
         .commands_with_chords()
         .filter(|(_, k, chords)| !k.is_empty() || !chords.is_empty())
-        .map(|(b, k, chords)| {
-            let chord = match chords {
-                [] => String::new(),
-                _ => format!(" [{}]", label(chords)),
-            };
-            format!("{:<LABEL$} {}{chord}", label(k), b.help)
-        })
         .collect();
+    let mut cells = Vec::new();
+    let mut i = 0;
+    while i < shown.len() {
+        let (b, k, chords) = shown[i];
+        if let Some((cell, next)) = paired(&shown, i) {
+            cells.push(cell);
+            i = next;
+            continue;
+        }
+        let chord = match chords {
+            [] => String::new(),
+            _ => format!(" [{}]", label(chords)),
+        };
+        cells.push(format!("{:<LABEL$} {}{chord}", label(k), b.help));
+        i += 1;
+    }
     cells.extend(floats.list.iter().map(|f| {
         let command: String = f.command.chars().take(FLOAT_COMMAND).collect();
         let cut = if f.command.chars().count() > FLOAT_COMMAND {
@@ -68,6 +82,21 @@ pub fn lines(keys: &Keymap, floats: &Floats) -> Vec<String> {
     let prompt: Vec<String> = PROMPT_KEYS.iter().map(|k| k.to_string()).collect();
     out.extend(wrapped("Prompts:   ", &prompt));
     out
+}
+
+/// The command at `shown[i]` and the one after it as one cell, if they are
+/// a pair of [`PAIRED`] with keys and no chords: the cell, and the index
+/// after the pair.
+fn paired(shown: &[(&Binding<Command>, &[Key], &[Key])], i: usize) -> Option<(String, usize)> {
+    let ((a, ka, ca), (b, kb, cb)) = (shown.get(i)?, shown.get(i + 1)?);
+    let (_, _, help) = PAIRED
+        .iter()
+        .find(|(first, second, _)| a.name == *first && b.name == *second)?;
+    if ka.is_empty() || kb.is_empty() || !ca.is_empty() || !cb.is_empty() {
+        return None;
+    }
+    let keys = format!("{} {}", label(ka), label(kb));
+    Some((format!("{keys:<LABEL$} {help}"), i + 2))
 }
 
 /// `cells` down the left column, then down the right one.
@@ -185,6 +214,8 @@ mod tests {
             .iter()
             .any(|x| x.contains("g      find a space, tab or agent")));
         assert!(l.iter().any(|x| x.contains("G      float: lazygit")));
+        // Moving a tab left and right share a cell.
+        assert!(l.iter().any(|x| x.contains("< >    move tab left / right")));
         assert!(l
             .iter()
             .any(|x| x.contains("[      copy mode: move, select, copy")));
@@ -223,6 +254,18 @@ mod tests {
         let l = lines(&remapped, &Floats::default());
         assert!(l.iter().any(|x| x.contains("t      new tab in this space")));
         assert!(!l.iter().any(|x| x.contains("detach")));
+        // A pair with one half unbound or on a chord shows apart.
+        let apart = keys(&[("move_tab_left", &[])], &[]);
+        let l = lines(&apart, &Floats::default());
+        assert!(l.iter().any(|x| x.contains(">      move tab right")));
+        assert!(!l.iter().any(|x| x.contains("left / right")));
+        let chord = keys(&[], &[("move_tab_right", &["C-M-l"])]);
+        let l = lines(&chord, &Floats::default());
+        assert!(l.iter().any(|x| x.contains("<      move tab left")));
+        assert!(l
+            .iter()
+            .any(|x| x.contains(">      move tab right [C-M-l]")));
+        let l = lines(&remapped, &Floats::default());
         assert!(l
             .iter()
             .any(|x| x.contains("focus left") && !x.contains("[C-h]")));
