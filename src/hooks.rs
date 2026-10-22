@@ -246,10 +246,6 @@ fn should_record(source: &str, settings: impl FnOnce() -> Option<Value>, event: 
     source != PLUGIN_SOURCE || !settings().is_some_and(|s| has_hook(&s, event))
 }
 
-fn read_settings(path: &Path) -> Option<Value> {
-    serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
-}
-
 /// Edit a settings file in place; a missing file counts as `{}`. The file is
 /// replaced atomically.
 #[cfg(test)]
@@ -363,21 +359,22 @@ pub fn command(args: &[&str]) -> Result<()> {
     // Every argument is checked before any file is touched.
     let var = |k: &str| std::env::var(k).ok();
     let kinds = kinds(rest, var)?;
-    let install = action == "install";
-    let exe = if install {
-        std::env::current_exe()
-            .context("cannot find paddock's own path")?
-            .to_string_lossy()
-            .into_owned()
+    let action = if action == "install" {
+        let exe = std::env::current_exe().context("cannot find paddock's own path")?;
+        Action::Install {
+            exe: exe.to_string_lossy().into_owned(),
+        }
     } else {
-        String::new()
+        Action::Uninstall
     };
     // Every file is read and edited before any is written: one paddock
-    // cannot edit (Gemini's with comments, say) leaves them all as they were.
+    // cannot read (Gemini's with comments, say) leaves them all as they
+    // were. Each write is atomic, but a write failing partway leaves the
+    // files written before it.
     let mut edits = Vec::new();
     for kind in kinds {
         let path = settings_path(kind, var)?;
-        edits.push(plan(install, kind, path, &exe)?);
+        edits.push(plan(&action, kind, path)?);
     }
     for edit in edits {
         edit.apply()?;
@@ -385,10 +382,19 @@ pub fn command(args: &[&str]) -> Result<()> {
     Ok(())
 }
 
+/// What `paddock hooks` does to each agent's settings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Action {
+    /// Put paddock's hooks in, calling paddock at `exe`.
+    Install { exe: String },
+    /// Take paddock's hooks out.
+    Uninstall,
+}
+
 /// What `paddock hooks install|uninstall` does to one agent's settings.
 struct Edit {
     kind: AgentKind,
-    install: bool,
+    action: Action,
     path: PathBuf,
     /// The new settings; `None` leaves the file alone: there is nothing to
     /// remove from a file that does not exist, and uninstall never makes one.
@@ -397,22 +403,21 @@ struct Edit {
     plugin: bool,
 }
 
-/// The [`Edit`] of `kind`'s settings at `path`: paddock's hooks (calling
-/// `exe`) put in if `install`, else taken out. The file is read and checked
-/// here, never written.
-fn plan(install: bool, kind: AgentKind, path: PathBuf, exe: &str) -> Result<Edit> {
+/// The [`Edit`] `action` makes to `kind`'s settings at `path`. The file is
+/// read and checked here, never written.
+fn plan(action: &Action, kind: AgentKind, path: PathBuf) -> Result<Edit> {
     let read = read_file(&path)?;
     let plugin = kind == AgentKind::Claude && read.as_ref().is_some_and(plugin_enabled);
-    let settings = if install {
-        let new = self::install(read.unwrap_or_else(|| json!({})), exe, kind)
-            .with_context(|| format!("cannot edit {}", path.display()))?;
-        Some(new)
-    } else {
-        read.map(uninstall)
+    let settings = match action {
+        Action::Install { exe } => Some(
+            install(read.unwrap_or_else(|| json!({})), exe, kind)
+                .with_context(|| format!("cannot edit {}", path.display()))?,
+        ),
+        Action::Uninstall => read.map(uninstall),
     };
     Ok(Edit {
         kind,
-        install,
+        action: action.clone(),
         path,
         settings,
         plugin,
@@ -426,7 +431,7 @@ impl Edit {
         match &self.settings {
             Some(s) => {
                 write_file(&self.path, s)?;
-                let done = if self.install {
+                let done = if matches!(self.action, Action::Install { .. }) {
                     "installed in"
                 } else {
                     "removed from"
@@ -435,7 +440,7 @@ impl Edit {
             }
             None => println!("no paddock hooks to remove: {path} does not exist"),
         }
-        if self.plugin && self.install {
+        if self.plugin && matches!(self.action, Action::Install { .. }) {
             println!(
                 "note: the paddock plugin is enabled and carries these hooks too; \
                  paddock records each event once, from these. To keep only the \
@@ -495,7 +500,7 @@ fn record(args: &[&str]) -> Result<()> {
     let settings = || {
         settings_path(kind, var)
             .ok()
-            .and_then(|p| read_settings(&p))
+            .and_then(|p| read_file(&p).ok().flatten()) // unreadable: none
     };
     if !should_record(&text(SOURCE_VAR), settings, event) {
         return Ok(()); // settings.json's paddock hook records this one

@@ -476,7 +476,7 @@ mod tests {
 
     #[test]
     fn geminis_records_keep_only_what_paddock_uses_and_name_their_kind() {
-        let fixture = super::super::tests::gemini_payload;
+        use crate::sessions::tests::gemini_payload as fixture;
         let gemini = AgentKind::Gemini;
         let n = record(
             gemini,
