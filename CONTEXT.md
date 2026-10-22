@@ -33,7 +33,7 @@ One shell inside paddock, shown in a tab, alone or with others. It is a tmux pan
 _Avoid_: tmux session
 
 **Sidebar**:
-The panel on the left, which can be shown or hidden: SPACES, one line per space with a dot for the most urgent state of its agents, then AGENTS, two lines per main agent in any space with its state, space and tab, and its agent kind's tag where it fits, external sessions last.
+The panel on the left, which can be shown or hidden: SPACES, two lines per space with a dot for the most urgent state of its agents, then its directory and branch and that branch's PR mark (`#123 ✓`) where it fits, then AGENTS, two lines per main agent in any space with its state, space and tab, and its agent kind's tag where it fits, external sessions last.
 
 **Agent**:
 A main agent in the sidebar's AGENTS section. Subagents show only in the dashboard.
@@ -158,5 +158,5 @@ _Avoid_: diff
 Lines added and removed on a task's branch compared with its base branch.
 
 **Pull request (PR)**:
-A task branch's GitHub pull request, as the GitHub CLI (`gh`) reports it: its number, state (open, draft, merged, closed), CI checks rolled up into one mark (`✓`, `✗`, `•`) and review decision. The newest one when a branch has several. paddock only reads it.
+The GitHub pull request of a branch paddock shows (a task's, a space's or a worktree's), as the GitHub CLI (`gh`) reports it: its number, state (open, draft, merged, closed), CI checks rolled up into one mark (`✓`, `✗`, `•`) and review decision. The newest one when a branch has several. paddock only reads it.
 _Avoid_: merge request, MR

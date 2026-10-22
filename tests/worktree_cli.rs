@@ -704,3 +704,118 @@ fn a_name_that_is_one_worktree_s_path_and_another_s_branch_names_neither() {
     exits(&out, 0, "");
     assert!(!dash.exists());
 }
+
+/// `feat/x`'s pull request as the stub `gh` gives it: open, checks
+/// failing, review required.
+const PRS: &str = r#"[
+  {"number":123,"state":"OPEN","isDraft":false,"headRefName":"feat/x",
+   "reviewDecision":"REVIEW_REQUIRED","url":"https://github.com/o/r/pull/123",
+   "statusCheckRollup":[{"__typename":"CheckRun","name":"test","workflowName":"CI",
+     "status":"COMPLETED","conclusion":"FAILURE","startedAt":"2026-10-22T10:00:00Z"}]}
+]"#;
+
+/// The `pr` of each row of `list --json` run in `dir`, by branch, after
+/// checking it exits 0 with nothing on stderr.
+fn listed_prs(sandbox: &Sandbox, dir: &Path) -> Vec<(Value, Value)> {
+    let out = cli(sandbox, dir, &["list", "--json"]);
+    exits(&out, 0, "");
+    assert_eq!(stderr(&out), "", "list says nothing of gh");
+    let rows = json(&out);
+    let rows = rows.as_array().unwrap();
+    for r in rows {
+        let keys: Vec<&String> = r.as_object().unwrap().keys().collect();
+        let at = |k: &str| keys.iter().position(|x| *x == k).unwrap();
+        assert_eq!(at("pr"), at("merged") + 1, "pr right after merged");
+    }
+    rows.iter()
+        .map(|r| (r["branch"].clone(), r["pr"].clone()))
+        .collect()
+}
+
+#[test]
+fn list_gives_each_branchs_pr_from_one_gh_call() {
+    let sandbox = Sandbox::new();
+    sandbox.set_gh(PRS);
+    let dir = repo(&sandbox);
+    let x = made(&sandbox, &dir, "feat/x");
+    made(&sandbox, &dir, "feat/y");
+    let prs = listed_prs(&sandbox, &x);
+    use serde_json::json as j;
+    assert_eq!(
+        prs,
+        [
+            (j!("main"), j!(null)),
+            (
+                j!("feat/x"),
+                j!({"number": 123, "state": "open", "checks": "failing",
+                    "review": "review_required", "url": "https://github.com/o/r/pull/123"})
+            ),
+            (j!("feat/y"), j!(null)),
+        ]
+    );
+    // One call, in the main checkout, from a linked worktree.
+    assert_eq!(
+        sandbox.gh_calls(),
+        [format!(
+            "{} pr list --state all --limit 20 --json \
+             number,state,isDraft,headRefName,statusCheckRollup,reviewDecision,url",
+            real(&dir).display()
+        )]
+    );
+    let out = cli(&sandbox, &dir, &["list"]);
+    exits(&out, 0, "");
+    let text = stdout(&out);
+    let line = |branch: &str| {
+        text.lines()
+            .find(|l| l.split_whitespace().nth(1) == Some(branch))
+            .unwrap_or_else(|| panic!("no {branch}: {text}"))
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    assert!(
+        line("feat/x").ends_with("clean merged #123 open -"),
+        "{text}"
+    );
+    assert!(line("feat/y").ends_with("clean merged - -"), "{text}");
+    assert!(line("main").ends_with("clean merged - -"), "{text}");
+}
+
+#[test]
+fn list_without_gh_or_with_pr_status_off_gives_no_pr_and_exits_0() {
+    let sandbox = Sandbox::new();
+    let dir = repo(&sandbox);
+    made(&sandbox, &dir, "feat/x");
+    // A gh that fails (logged out): no PR, nothing said.
+    let none = |prs: Vec<(Value, Value)>| prs.iter().all(|(_, pr)| pr.is_null());
+    assert!(none(listed_prs(&sandbox, &dir)));
+    assert_eq!(sandbox.gh_calls().len(), 1);
+    // Off: gh is never run, whatever it would say.
+    sandbox.set_gh(PRS);
+    sandbox.write_config("[github]\nrefresh_secs = 0\n");
+    assert!(none(listed_prs(&sandbox, &dir)));
+    assert_eq!(sandbox.gh_calls().len(), 1, "not run");
+    // No gh at all.
+    sandbox.write_config("");
+    sandbox.remove_gh();
+    assert!(none(listed_prs(&sandbox, &dir)));
+    let out = cli(&sandbox, &dir, &["list"]);
+    exits(&out, 0, "");
+    assert_eq!(stderr(&out), "");
+}
+
+#[test]
+fn list_gives_up_on_a_slow_gh_after_5_s() {
+    let sandbox = Sandbox::new();
+    sandbox.set_gh(PRS);
+    // The stub hangs for 30 s.
+    sandbox.slow_gh();
+    let dir = repo(&sandbox);
+    made(&sandbox, &dir, "feat/x");
+    let start = std::time::Instant::now();
+    let prs = listed_prs(&sandbox, &dir);
+    let took = start.elapsed();
+    assert!(prs.iter().all(|(_, pr)| pr.is_null()), "{prs:?}");
+    assert!(took >= std::time::Duration::from_secs(5), "{took:?}");
+    assert!(took < std::time::Duration::from_secs(25), "{took:?}");
+}

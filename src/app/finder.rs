@@ -528,6 +528,7 @@ mod tests {
             current: true,
             path: Some("~/project/api".into()),
             branch: Some("feat/login".into()),
+            pr: None,
             linked: false,
         };
         let none = (None, None);

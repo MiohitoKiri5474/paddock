@@ -42,12 +42,16 @@ impl App {
             .enumerate()
             .map(|(i, space)| {
                 let place = self.places.get(&space.id);
+                // The PR read for this directory and branch (the PR
+                // thread is fed the same key, see `App::prs_wanted`).
+                let pr = place.and_then(|p| self.task_prs.get(&p.pr_key()?)).cloned();
                 SpaceLine {
                     name: space.name().to_string(),
                     state: most_urgent(rows, |r| r.space == space.id),
                     current: i == self.current,
                     path: place.map(|p| home.show(&p.path)),
                     branch: place.and_then(|p| p.branch.clone()),
+                    pr,
                     linked: false,
                 }
             })

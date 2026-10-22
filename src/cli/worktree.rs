@@ -6,6 +6,7 @@
 use super::{rm, Code, Command, Fail, Invocation};
 use crate::config::Config;
 use crate::git::{self, WorkingTree, Worktree};
+use crate::github::{self, Checks, Pr, Prs, Review};
 use crate::hooks::now_ms;
 use crate::paths::{HomePaths, Paths};
 use crate::sessions::{agents, log, Agent, Sessions, State};
@@ -95,11 +96,14 @@ impl Context {
             })
     }
 
+    /// paddock's config.
+    pub fn config(&self) -> Result<Config, Fail> {
+        Config::load(&self.paths.config_dir).map_err(|e| Fail::new(Code::Usage, format!("{e:#}")))
+    }
+
     /// The `[worktrees] directory` from paddock's config.
     pub fn directory(&self) -> Result<PathBuf, Fail> {
-        Config::load(&self.paths.config_dir)
-            .map(|c| c.worktrees.directory)
-            .map_err(|e| Fail::new(Code::Usage, format!("{e:#}")))
+        self.config().map(|c| c.worktrees.directory)
     }
 
     /// The hidden server's pid; `None` if it does not run.
@@ -336,13 +340,58 @@ struct Row {
     dirty: bool,
     /// Every commit checked out there is in the base.
     merged: bool,
+    /// Its branch's pull request, as `gh` gave it; `None` without one,
+    /// without `gh`, or with `[github] refresh_secs = 0`.
+    pr: Option<PrField>,
     /// The states of the agent sessions in its spaces' tabs.
     agents: Vec<&'static str>,
 }
 
+/// A worktree's pull request as `list` gives it: its state and checks in
+/// the dashboard's words, its review in snake case (`checks` and `review`
+/// `None` without any).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct PrField {
+    number: u64,
+    state: &'static str,
+    checks: Option<&'static str>,
+    review: Option<&'static str>,
+    url: String,
+}
+
+impl From<&Pr> for PrField {
+    fn from(pr: &Pr) -> Self {
+        Self {
+            number: pr.number,
+            state: pr.state.label(),
+            checks: pr.checks.map(Checks::label),
+            review: pr.review.map(Review::key),
+            url: pr.url.clone(),
+        }
+    }
+}
+
+/// Ask `gh` for the pull requests of the repository at `main`, on a
+/// thread so the rest of `list` goes on meanwhile; none if `refresh` is
+/// zero (PR status off). Joined, it gives none if `gh` could not answer
+/// (not installed, logged out, no GitHub remote, slower than its limit):
+/// `list` only reports, and says nothing of it.
+fn ask_prs(main: &str, refresh: Duration) -> Option<std::thread::JoinHandle<Prs>> {
+    if refresh.is_zero() {
+        return None;
+    }
+    let main = main.to_string();
+    Some(std::thread::spawn(move || {
+        github::pr_list(&main).unwrap_or_default()
+    }))
+}
+
 fn list(cx: &Context, from: Option<&Path>, json: bool) -> Result<(), Fail> {
     let tree = cx.tree(from)?;
-    let directory = cx.directory()?;
+    let config = cx.config()?;
+    let directory = config.worktrees.directory;
+    // One `gh` call for the repository, while the rest is read.
+    let asked = ask_prs(&tree.main, config.github_refresh);
     let pid = cx.server_pid();
     // `list` only reports: Claude not answering leaves the hook log's word.
     let (sessions, _) = cx.sessions(pid);
@@ -352,7 +401,9 @@ fn list(cx: &Context, from: Option<&Path>, json: bool) -> Result<(), Fail> {
         .iter()
         .map(|s| s.dir.as_deref().and_then(git::working_tree).map(|t| t.top))
         .collect();
-    let rows: Vec<Row> = git::worktrees(&tree.main)
+    let worktrees = git::worktrees(&tree.main);
+    let prs = asked.and_then(|h| h.join().ok()).unwrap_or_default();
+    let rows: Vec<Row> = worktrees
         .into_iter()
         .map(|w| {
             let mine: Vec<&Space> = spaces
@@ -379,6 +430,11 @@ fn list(cx: &Context, from: Option<&Path>, json: bool) -> Result<(), Fail> {
                 space: mine.first().map(|s| s.name.clone()),
                 dirty: git::is_dirty(&w.path),
                 merged: main || git::in_base(&w.path, "HEAD"),
+                pr: w
+                    .branch
+                    .as_ref()
+                    .and_then(|b| prs.get(b))
+                    .map(PrField::from),
                 agents,
                 main,
                 path: w.path,
@@ -407,6 +463,8 @@ fn table(rows: &[Row], home: &HomePaths) -> String {
                 or_dash(r.space.as_deref()),
                 (if r.dirty { "dirty" } else { "clean" }).into(),
                 (if r.merged { "merged" } else { "unmerged" }).into(),
+                r.pr.as_ref()
+                    .map_or_else(|| "-".into(), |p| format!("#{} {}", p.number, p.state)),
                 if r.agents.is_empty() {
                     "-".into()
                 } else {
@@ -441,6 +499,7 @@ fn table(rows: &[Row], home: &HomePaths) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::github::PrState;
 
     fn row(path: &str, branch: Option<&str>) -> Row {
         Row {
@@ -451,6 +510,7 @@ mod tests {
             space: None,
             dirty: false,
             merged: true,
+            pr: None,
             agents: vec![],
         }
     }
@@ -464,13 +524,53 @@ mod tests {
             dirty: true,
             merged: false,
             agents: vec!["waiting", "idle"],
+            pr: Some(PrField::from(&Pr::sample(
+                123,
+                PrState::Open,
+                Some(Checks::Passing),
+                Some(Review::ChangesRequested),
+            ))),
             ..row("/w/repo/feat-x", Some("feat/x"))
         };
         let detached = row("/w/repo/loose", None);
         let json = serde_json::to_string(&[r, detached]).unwrap();
         assert_eq!(
             json,
-            r#"[{"path":"/w/repo/feat-x","branch":"feat/x","main":false,"ours":true,"space":"repo/feat/x","dirty":true,"merged":false,"agents":["waiting","idle"]},{"path":"/w/repo/loose","branch":null,"main":false,"ours":false,"space":null,"dirty":false,"merged":true,"agents":[]}]"#
+            r#"[{"path":"/w/repo/feat-x","branch":"feat/x","main":false,"ours":true,"space":"repo/feat/x","dirty":true,"merged":false,"pr":{"number":123,"state":"open","checks":"passing","review":"changes_requested","url":"https://github.com/o/r/pull/123"},"agents":["waiting","idle"]},{"path":"/w/repo/loose","branch":null,"main":false,"ours":false,"space":null,"dirty":false,"merged":true,"pr":null,"agents":[]}]"#
+        );
+    }
+
+    #[test]
+    fn a_prs_json_names_its_state_checks_and_review_in_words() {
+        let field = |p: &Pr| serde_json::to_value(PrField::from(p)).unwrap();
+        let draft = field(&Pr::sample(1, PrState::Draft, Some(Checks::Pending), None));
+        assert_eq!(
+            (&draft["state"], &draft["checks"], &draft["review"]),
+            (&"draft".into(), &"pending".into(), &serde_json::Value::Null)
+        );
+        let merged = field(&Pr::sample(
+            2,
+            PrState::Merged,
+            Some(Checks::Failing),
+            Some(Review::Approved),
+        ));
+        assert_eq!(
+            (&merged["state"], &merged["checks"], &merged["review"]),
+            (&"merged".into(), &"failing".into(), &"approved".into())
+        );
+        let closed = field(&Pr::sample(
+            3,
+            PrState::Closed,
+            None,
+            Some(Review::Required),
+        ));
+        assert_eq!(
+            (&closed["state"], &closed["checks"], &closed["review"]),
+            (
+                &"closed".into(),
+                &serde_json::Value::Null,
+                &"review_required".into()
+            )
         );
     }
 
@@ -500,15 +600,16 @@ mod tests {
             dirty: true,
             merged: false,
             agents: vec!["running"],
+            pr: Some(PrField::from(&Pr::sample(123, PrState::Open, None, None))),
             ..row("/w/repo/feat-x", Some("feat/x"))
         };
         let home = HomePaths::new();
         let got = table(&[main, x, row("/w/repo/loose", None)], &home);
         assert_eq!(
             got,
-            "/r/repo         main        main    -     repo  clean  merged    -\n\
-             /w/repo/feat-x  feat/x      linked  ours  -     dirty  unmerged  running\n\
-             /w/repo/loose   (detached)  linked  -     -     clean  merged    -\n"
+            "/r/repo         main        main    -     repo  clean  merged    -          -\n\
+             /w/repo/feat-x  feat/x      linked  ours  -     dirty  unmerged  #123 open  running\n\
+             /w/repo/loose   (detached)  linked  -     -     clean  merged    -          -\n"
         );
         assert_eq!(table(&[], &home), "");
     }

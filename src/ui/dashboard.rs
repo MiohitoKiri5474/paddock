@@ -7,7 +7,7 @@
 
 mod table;
 
-use super::session_view;
+use super::{pr_style, session_view};
 use crate::app::{DashboardFilter, Row, RowId, TaskDetails, TaskPrs, TaskRow};
 use crate::github::PrState;
 use crate::sessions::{State, TaskState};
@@ -220,18 +220,6 @@ fn render_keys(keys: &str, area: Rect, buf: &mut Buffer) {
     let dim = Style::default().add_modifier(Modifier::DIM);
     let text = format!(" {keys}");
     buf.set_stringn(area.x, area.y, text, usize::from(area.width), dim);
-}
-
-/// How a PR's number stands out, by its state: open green, draft dim,
-/// merged purple, closed red. Only its colour (or dimness) changes, so the
-/// line's background stays.
-fn pr_style(state: PrState) -> Style {
-    match state {
-        PrState::Open => Style::default().fg(Color::Green),
-        PrState::Draft => Style::default().add_modifier(Modifier::DIM),
-        PrState::Merged => Style::default().fg(Color::Magenta),
-        PrState::Closed => Style::default().fg(Color::Red),
-    }
 }
 
 /// A list line: its cells, its style, and its PR's number and state (the

@@ -380,16 +380,6 @@ mod tests {
     use crate::github::{Checks, PrState, Review};
     use crate::sessions::{SubagentTask, TaskState};
 
-    fn pr(number: u64, state: PrState, checks: Option<Checks>, review: Option<Review>) -> Pr {
-        Pr {
-            number,
-            state,
-            checks,
-            review,
-            url: String::new(),
-        }
-    }
-
     /// A task row on `branch` with git status `status`.
     fn task_row(branch: &str, status: Option<Status>) -> TaskRow {
         TaskRow {
@@ -468,7 +458,7 @@ mod tests {
         let cell = |details: Option<&Details>, p: Option<&Pr>| {
             task(&t, details, p, 0).text[Column::Pr.index()].clone()
         };
-        let open = pr(
+        let open = Pr::sample(
             123,
             PrState::Open,
             Some(Checks::Passing),
@@ -484,11 +474,11 @@ mod tests {
         assert_eq!(cell(None, None), "");
         let cases = [
             (
-                pr(7, PrState::Draft, Some(Checks::Pending), None),
+                Pr::sample(7, PrState::Draft, Some(Checks::Pending), None),
                 "#7 draft •",
             ),
             (
-                pr(
+                Pr::sample(
                     8,
                     PrState::Closed,
                     Some(Checks::Failing),
@@ -497,10 +487,10 @@ mod tests {
                 "#8 closed ✗ changes requested",
             ),
             (
-                pr(9, PrState::Merged, None, Some(Review::Required)),
+                Pr::sample(9, PrState::Merged, None, Some(Review::Required)),
                 "#9 merged review required",
             ),
-            (pr(10, PrState::Open, None, None), "#10 open"),
+            (Pr::sample(10, PrState::Open, None, None), "#10 open"),
         ];
         for (p, want) in cases {
             assert_eq!(cell(None, Some(&p)), want);
@@ -508,14 +498,17 @@ mod tests {
         // The short form, from the same PR.
         let short = |details: Option<&Details>, p: Option<&Pr>| task(&t, details, p, 0).short_pr;
         assert_eq!(short(Some(&merged), Some(&open)), "#123 ✓");
-        let failing = pr(
+        let failing = Pr::sample(
             8,
             PrState::Closed,
             Some(Checks::Failing),
             Some(Review::ChangesRequested),
         );
         assert_eq!(short(None, Some(&failing)), "#8 ✗");
-        assert_eq!(short(None, Some(&pr(9, PrState::Merged, None, None))), "#9");
+        assert_eq!(
+            short(None, Some(&Pr::sample(9, PrState::Merged, None, None))),
+            "#9"
+        );
         assert_eq!(short(Some(&merged), None), "merged");
         assert_eq!(short(None, None), "");
         assert_eq!(header().short_pr, "PR");
