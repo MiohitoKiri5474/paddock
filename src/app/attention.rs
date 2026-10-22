@@ -200,7 +200,11 @@ impl App {
             .filter(|r| !self.is_float_pane(&r.pane))
             .collect();
         for r in followed {
-            self.sessions.apply(r);
+            // A status report with no agy session to go to has no row to
+            // alert about (agy reports its sign-in screen before any hook).
+            if !self.sessions.apply(r) && r.event == sessions::STATUS {
+                continue;
+            }
             let Some(alert) = self.attention.alerts.on_hook(r) else {
                 continue;
             };

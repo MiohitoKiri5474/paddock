@@ -168,9 +168,28 @@ fn an_agy_session_ends_when_its_terminal_closes() {
 #[test]
 fn reports_from_other_programs_or_without_a_session_change_nothing() {
     let sandbox = Sandbox::new();
-    let paddock = ready(&sandbox);
-    // No agy session yet: a report makes no row.
-    write_to(&sandbox, "space-1:0", &status("blocked", Some("question")));
+    let mut paddock = ready(&sandbox);
+    // The second tab is the one looked at, so the first one's alerts would
+    // notify.
+    paddock.command(b"c");
+    paddock.wait_for_current_tab("2:home");
+    paddock.wait_for_text(PROMPT);
+    // An agy session that ended: agy started again reports its sign-in
+    // screen before any hook, which neither brings it back nor alerts.
+    stub_agy(&sandbox);
+    start_agy(&sandbox, &paddock, "space-1:0");
+    agy(&sandbox, "space-1:0", &["SessionStart"]);
+    wait_row(&paddock, "idle", &["● repo", "idle"]);
+    sandbox.tmux(&["send-keys", "-t", "space-1:0", "C-c"]);
+    paddock.wait_for("the session left", |_| {
+        !paddock.full_screen().contains("● repo")
+    });
+    write_to(&sandbox, "space-1:0", &status("blocked", Some("auth")));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    assert!(sandbox.notifications().is_empty());
+    assert!(!paddock.full_screen().contains("● repo"));
+    // agy started again on the same conversation (a resume).
+    start_agy(&sandbox, &paddock, "space-1:0");
     agy(&sandbox, "space-1:0", &["SessionStart"]);
     wait_row(&paddock, "idle", &["● repo", "idle"]);
     // Another program's report says nothing of agy's session.

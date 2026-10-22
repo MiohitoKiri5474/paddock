@@ -647,11 +647,12 @@ impl Sessions {
         *seen = (*seen).max(ts);
     }
 
-    /// Apply one recorded hook event.
-    pub fn apply(&mut self, r: &HookRecord) {
+    /// Apply one recorded hook event. Returns false if it was ignored (see
+    /// [`Sessions::fold`]).
+    pub fn apply(&mut self, r: &HookRecord) -> bool {
         self.leave_external(r);
         if !self.fold(r) {
-            return;
+            return false;
         }
         self.touch(&r.pane, None, r.ts);
         let branch = match &r.agent_id {
@@ -664,6 +665,7 @@ impl Sessions {
         if branch.is_some() {
             self.touch(&r.pane, branch, r.ts);
         }
+        true
     }
 
     /// Fold in hook event `r`. Returns false if it was ignored: it came
@@ -1178,7 +1180,7 @@ mod tests {
     #[test]
     fn status_reports_never_make_a_row() {
         let mut s = Sessions::default();
-        s.apply(&agy_status("blocked", 1));
+        assert!(!s.apply(&agy_status("blocked", 1)), "ignored");
         assert!(s.get("%1").is_none(), "no agy session yet");
         // A Claude session's terminal: some other program's report.
         s.apply(&rec("SessionStart", 2));
