@@ -443,7 +443,7 @@ mod tests {
             space("paddock", None, false),
         ];
         let agents = [
-            agent("api", State::Waiting, "api-server · claude"),
+            agent("api", State::Waiting, "api-server · server"),
             agent("a-very-long-label", State::Running, "api-server · x"),
         ];
         let buf = draw(&spaces, &agents, None);
@@ -456,7 +456,7 @@ mod tests {
             "                       │",
             " AGENTS                │",
             " ● api         waiting │",
-            "   api-server · claude │",
+            "   api-server · server │",
             "                       │",
             " ● a-very-long running │",
             "   api-server · x      │",
