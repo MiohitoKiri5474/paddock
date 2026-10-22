@@ -289,12 +289,15 @@ impl Sandbox {
     /// `paddock hook <event>` with `payload` on stdin, as Claude Code would
     /// run it inside the terminal of tmux session `terminal`.
     pub fn hook(&self, terminal: &str, event: &str, payload: &str) -> std::process::Output {
-        self.hook_args(terminal, &[event], payload)
+        let out = self.hook_args(terminal, &[event], payload);
+        assert!(out.stdout.is_empty(), "a hook prints nothing: {out:?}");
+        out
     }
 
     /// `paddock hook --agent <agent> <event>` with `payload` on stdin, as
     /// that agent's hooks run it inside the terminal of tmux session
-    /// `terminal`.
+    /// `terminal`. It prints nothing, but `{}` for Antigravity (`agy`),
+    /// which reads a reply.
     pub fn agent_hook(
         &self,
         terminal: &str,
@@ -302,7 +305,10 @@ impl Sandbox {
         event: &str,
         payload: &str,
     ) -> std::process::Output {
-        self.hook_args(terminal, &["--agent", agent, event], payload)
+        let out = self.hook_args(terminal, &["--agent", agent, event], payload);
+        let reply: &[u8] = if agent == "agy" { b"{}" } else { b"" };
+        assert_eq!(out.stdout, reply, "{agent}'s reply: {out:?}");
+        out
     }
 
     /// `paddock hook <args>` inside the terminal of tmux session `terminal`.
@@ -314,7 +320,6 @@ impl Sandbox {
             .collect();
         let out = self.run(&args, &[("TMUX", &tmux), ("TMUX_PANE", &pane)], payload);
         assert!(out.status.success(), "hook failed: {out:?}");
-        assert!(out.stdout.is_empty(), "a hook prints nothing: {out:?}");
         out
     }
 }

@@ -4,12 +4,14 @@
 
 pub mod emulator;
 pub mod key_modes;
+pub mod program_status;
 pub mod screen_title;
 pub mod search;
 pub mod seed;
 
 use emulator::Emulator;
 use key_modes::{KeyModeScanner, KeyModes};
+use program_status::{Report, StatusScanner};
 use screen_title::ScreenTitleFilter;
 
 /// Lines of scrollback paddock keeps per terminal (matches tmux's history-limit).
@@ -32,6 +34,9 @@ pub struct Terminal {
     emulator: Emulator,
     keys: KeyModeScanner,
     titles: ScreenTitleFilter,
+    status: StatusScanner,
+    /// Status reports read from the output, until taken.
+    reports: Vec<Report>,
     /// Output held back while paused (copy mode), fed when it goes on.
     held: Option<Vec<u8>>,
     /// Why the terminal last went on by itself, until asked.
@@ -45,6 +50,8 @@ impl Terminal {
             emulator: Emulator::new(cols, rows, SCROLLBACK),
             keys: KeyModeScanner::default(),
             titles: ScreenTitleFilter::default(),
+            status: StatusScanner::default(),
+            reports: Vec::new(),
             held: None,
             went_on: None,
         }
@@ -52,8 +59,11 @@ impl Terminal {
 
     /// Feed bytes the program wrote, minus screen title escapes the emulator
     /// would draw as text. While paused, they are held back instead, up to
-    /// [`MAX_HELD`]: past it the terminal goes on by itself.
+    /// [`MAX_HELD`]: past it the terminal goes on by itself. Status reports
+    /// (OSC 7501) are read at once, paused or not: the program's state
+    /// does not wait for the view.
     pub fn output(&mut self, bytes: &[u8]) {
+        self.reports.extend(self.status.scan(bytes));
         // While paused, the key-mode scanner and the title filter wait for
         // the bytes too: they see them, in order, when the terminal goes
         // on, and nothing reads their state meanwhile, as no key, paste
@@ -73,6 +83,11 @@ impl Terminal {
         let bytes = self.titles.filter(bytes);
         self.keys.feed(&bytes);
         self.emulator.feed(&bytes);
+    }
+
+    /// The status reports read since the last call, in order.
+    pub fn take_reports(&mut self) -> Vec<Report> {
+        std::mem::take(&mut self.reports)
     }
 
     pub fn key_modes(&self) -> KeyModes {
@@ -133,6 +148,20 @@ impl Terminal {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn status_reports_are_read_even_while_paused() {
+        let mut t = Terminal::new((20, 2));
+        t.pause();
+        t.output(b"\x1b]7501;state=working:app=antigravity\x07");
+        let got = t.take_reports();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].state, "working");
+        assert!(t.take_reports().is_empty(), "taken once");
+        t.go_on();
+        assert!(t.take_reports().is_empty(), "not again when it goes on");
+        assert_eq!(t.emulator().row_text(0), "", "and never drawn");
+    }
 
     #[test]
     fn a_paused_terminal_holds_output_back_until_it_goes_on() {

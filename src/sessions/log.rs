@@ -170,7 +170,51 @@ pub fn record(kind: AgentKind, event: &str, pane: &str, payload: &str, ts: u64) 
             tool_name: field("tool_name"),
             ..common
         },
+        // Antigravity's payloads are camelCase and carry no `cwd`: the
+        // first workspace stands in for it.
+        AgentKind::Agy => HookRecord {
+            session_id: field("conversationId"),
+            cwd: v
+                .get("workspacePaths")
+                .and_then(Value::as_array)
+                .and_then(|paths| paths.first())
+                .and_then(Value::as_str)
+                .map(workspace_dir),
+            reason: field("terminationReason"),
+            fully_idle: v.get("fullyIdle").and_then(Value::as_bool),
+            ..common
+        },
     }
+}
+
+/// A workspace path of Antigravity's as a directory. Its docs do not say
+/// whether it is a path or a `file://` URI, so a URI is read too: without
+/// its scheme, its percent escapes decoded.
+fn workspace_dir(path: &str) -> String {
+    let Some(uri) = path.strip_prefix("file://") else {
+        return path.to_string();
+    };
+    let bytes = uri.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = bytes
+            .get(i + 1..i + 3)
+            .filter(|h| h.iter().all(u8::is_ascii_hexdigit))
+            .and_then(|h| std::str::from_utf8(h).ok())
+            .and_then(|h| u8::from_str_radix(h, 16).ok());
+        match (bytes[i], hex) {
+            (b'%', Some(b)) => {
+                out.push(b);
+                i += 3;
+            }
+            (b, _) => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// A subagent's description as its payload gives it: `SubagentStop` lists

@@ -236,6 +236,9 @@ pub struct App {
     pub(super) start_dir: PathBuf,
     /// Where the layout is saved.
     pub(super) state_dir: PathBuf,
+    /// The server's hook event log, where status reports go too (see
+    /// [`App::record_status`]); `None` until known.
+    pub(super) events_log: Option<PathBuf>,
     pub(super) sessions: Sessions,
     pub(super) task_status: TaskStatus,
     pub(super) task_details: TaskDetails,
@@ -340,6 +343,7 @@ impl App {
             screen,
             start_dir,
             state_dir,
+            events_log: None,
             sessions: Sessions::default(),
             task_status: TaskStatus::new(),
             task_details: TaskDetails::new(),

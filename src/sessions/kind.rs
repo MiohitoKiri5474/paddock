@@ -1,5 +1,5 @@
-//! Agent kinds: which coding agent a session belongs to: Claude Code or
-//! Gemini CLI. What differs between kinds (how a hook payload becomes
+//! Agent kinds: which coding agent a session belongs to: Claude Code,
+//! Gemini CLI or Antigravity CLI. What differs between kinds (how a hook payload becomes
 //! a record and a state, which settings file the hooks go in) matches on
 //! the kind where it is used, so a new kind is an arm in each, not a
 //! rewrite.
@@ -16,11 +16,13 @@ pub enum AgentKind {
     Claude,
     /// Gemini CLI (`gemini`).
     Gemini,
+    /// Antigravity CLI (`agy`).
+    Agy,
 }
 
 impl AgentKind {
     /// Every kind, in the order `paddock hooks` acts on them.
-    pub const ALL: [AgentKind; 2] = [AgentKind::Claude, AgentKind::Gemini];
+    pub const ALL: [AgentKind; 3] = [AgentKind::Claude, AgentKind::Gemini, AgentKind::Agy];
 
     /// The kind's short tag: its name on the command line (`--agent`), in
     /// the hook log, on its rows, and for a tab named after its session.
@@ -28,6 +30,7 @@ impl AgentKind {
         match self {
             AgentKind::Claude => "claude",
             AgentKind::Gemini => "gemini",
+            AgentKind::Agy => "agy",
         }
     }
 
@@ -38,7 +41,7 @@ impl AgentKind {
     pub fn has_snapshot(self) -> bool {
         match self {
             AgentKind::Claude => true,
-            AgentKind::Gemini => false,
+            AgentKind::Gemini | AgentKind::Agy => false,
         }
     }
 
@@ -67,6 +70,7 @@ mod tests {
         }
         assert_eq!(AgentKind::parse("claude"), Some(AgentKind::Claude));
         assert_eq!(AgentKind::parse("gemini"), Some(AgentKind::Gemini));
+        assert_eq!(AgentKind::parse("agy"), Some(AgentKind::Agy));
         assert_eq!(AgentKind::parse("Claude"), None);
         assert_eq!(AgentKind::parse(""), None);
         assert_eq!(AgentKind::parse("cursor"), None);

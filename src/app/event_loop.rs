@@ -187,6 +187,10 @@ fn handle(
             }
             Ok((Flow::Continue, true))
         }
+        Event::Commands(taken, commands) => {
+            let ended = app.sessions.end_exited(taken, &commands);
+            Ok((Flow::Continue, ended))
+        }
         Event::Git(read) => {
             app.task_status.extend(read);
             Ok((Flow::Continue, true))
@@ -243,6 +247,10 @@ fn handle_tmux(app: &mut App, session: &str, msg: Message) -> TmuxHandled {
             }
             if let Some(t) = app.terminals.get_mut(&pane) {
                 t.output(&data);
+                let reports = t.take_reports();
+                if !reports.is_empty() {
+                    app.record_status(&pane, &reports);
+                }
             }
             TmuxHandled {
                 flow: Flow::Continue,

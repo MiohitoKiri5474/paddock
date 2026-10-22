@@ -11,7 +11,8 @@ use super::state::{App, Mode};
 use super::Event;
 use crate::config::Notify;
 use crate::hooks::now_ms;
-use crate::sessions::{self, is_external, state_after, HookRecord, State};
+use crate::sessions::{self, is_external, log, state_after, HookRecord, State};
+use crate::terminal::program_status::Report;
 use std::collections::HashMap;
 use std::io::Read;
 use std::process::{Child, Command, Stdio};
@@ -124,8 +125,11 @@ impl Alerts {
             .clone()
             .or_else(|| last.and_then(|(s, _)| s.clone()));
         // Stop ends one turn each time; other idle events only remind of it.
+        // An event naming no conversation (Antigravity's status reports)
+        // is about the pane's, whichever it is.
+        let same = |s: &Option<String>| s.is_none() || session.is_none() || *s == session;
         let repeat =
-            !sessions::finishes_turn(r) && last.is_some_and(|(s, a)| *s == session && *a == alert);
+            !sessions::alerts_each_turn(r) && last.is_some_and(|(s, a)| same(s) && *a == alert);
         self.last.insert(r.pane.clone(), (session, alert));
         (!repeat).then_some(alert)
     }
@@ -213,6 +217,24 @@ impl App {
                 continue;
             }
             self.notify(&r.pane, alert);
+        }
+    }
+
+    /// Status reports `reports` came from pane `pane`: Antigravity's go
+    /// to the server's hook log, so they fold in order with its hooks
+    /// (whose records reach the log first when they happened first), and
+    /// replay with them when paddock opens again. They name no
+    /// conversation (agy's reports do not say), so they belong to whichever
+    /// the pane runs when folded.
+    pub(super) fn record_status(&mut self, pane: &str, reports: &[Report]) {
+        let Some(path) = self.events_log.clone() else {
+            return;
+        };
+        let ts = now_ms();
+        for r in reports {
+            if let Some(record) = sessions::status_record(pane, r.app.as_deref(), &r.state, ts) {
+                self.report(|_| log::append(&path, &record));
+            }
         }
     }
 
@@ -455,6 +477,51 @@ mod tests {
                 None,
                 None,
                 Some(Idle)
+            ]
+        );
+    }
+
+    #[test]
+    fn an_agy_turn_reported_twice_alerts_once() {
+        let agy = |event: &str| HookRecord {
+            kind: sessions::AgentKind::Agy,
+            ..rec(event, "s")
+        };
+        let stop = HookRecord {
+            fully_idle: Some(true),
+            ..agy("Stop")
+        };
+        // A status report names no conversation: it is the pane's.
+        let status =
+            |state: &str| sessions::status_record("%1", Some("antigravity"), state, 0).unwrap();
+        let got = alerts(&[
+            agy("SessionStart"),
+            agy("PreInvocation"),
+            status("working"),
+            status("blocked"),
+            status("working"),
+            status("done"),
+            stop.clone(),
+            status("idle"),
+            agy("PreInvocation"),
+            stop,
+            status("done"),
+        ]);
+        use Alert::*;
+        assert_eq!(
+            got,
+            [
+                None,
+                None,
+                None,
+                Some(Waiting),
+                None,
+                Some(Idle),
+                None,
+                None,
+                None,
+                Some(Idle),
+                None
             ]
         );
     }
