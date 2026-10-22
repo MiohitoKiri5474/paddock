@@ -97,6 +97,19 @@ fn a_gemini_session_goes_working_waiting_idle_then_ends() {
 }
 
 #[test]
+fn fork_refuses_a_gemini_session() {
+    let sandbox = Sandbox::new();
+    let mut paddock = ready(&sandbox);
+    gemini(&sandbox, "space-1:0", &["SessionStart"]);
+    wait_row(&paddock, "idle", &["● repo", "idle"]);
+    paddock.command(b"o");
+    paddock.wait_for_text("AGENT");
+    paddock.send(b"f");
+    paddock.wait_for_text("fork needs a Claude session");
+    assert!(!sandbox.path("claude.log").exists(), "claude was never run");
+}
+
+#[test]
 fn gemini_clear_keeps_the_terminals_session() {
     let sandbox = Sandbox::new();
     let paddock = ready(&sandbox);

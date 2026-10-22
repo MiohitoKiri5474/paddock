@@ -186,6 +186,24 @@ mod tests {
         assert_eq!(s.get(&external_key("g2")).unwrap().kind, AgentKind::Gemini);
     }
 
+    /// Gemini has no snapshot: only its hooks keep an external session
+    /// alive, so one quiet (waiting, or idle at its prompt) for longer than
+    /// the timeout leaves, and its next hook brings it back.
+    #[test]
+    fn a_quiet_external_gemini_session_leaves_after_the_timeout_until_its_next_hook() {
+        let gemini = |event: &str, ts| HookRecord {
+            kind: AgentKind::Gemini,
+            notification_type: Some("ToolPermission".into()),
+            ..ext(event, "g1", ts)
+        };
+        let mut s = Sessions::default();
+        s.apply(&gemini("Notification", 1));
+        assert_eq!(s.externals(1 + 10 * MIN, 10 * MIN), [external_key("g1")]);
+        assert!(s.externals(2 + 10 * MIN, 10 * MIN).is_empty());
+        s.apply(&gemini("AfterTool", 3 + 10 * MIN));
+        assert_eq!(s.externals(3 + 10 * MIN, 10 * MIN), [external_key("g1")]);
+    }
+
     #[test]
     fn an_external_session_ends_on_any_session_end_even_clear() {
         let mut s = Sessions::default();
