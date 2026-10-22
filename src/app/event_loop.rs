@@ -140,6 +140,7 @@ fn follow_up(app: &mut App, git: &mut GitFeed, effects: &EventEffects) {
     app.check_copy();
     // Any event may show a tab or bring the window back.
     app.see_current();
+    app.see_selected_external();
     // Pane output changes the space or tab shown only through a refresh,
     // which notes the page itself.
     if !effects.output {
@@ -179,6 +180,11 @@ fn handle(
                 .filter(|a| !a.pane.as_deref().is_some_and(|p| app.is_float_pane(p)))
                 .collect();
             app.sessions.reconcile(taken, &agents);
+            // External sessions gone quiet leave (their rows already did),
+            // with their saved dismissals.
+            if app.sessions.prune_externals(taken, app.external.timeout) {
+                app.report(App::save_dismissed);
+            }
             Ok((Flow::Continue, true))
         }
         Event::Git(read) => {

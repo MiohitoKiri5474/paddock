@@ -59,16 +59,36 @@ impl App {
 
     /// Each agent (every row: a main Claude session that has not ended, in
     /// any space): its label, state, its space and tab, and whether it is in
-    /// the focused terminal.
+    /// the focused terminal. An external session's place is its branch,
+    /// else its directory.
     pub(super) fn sidebar_agents(&self, rows: &[Row]) -> Vec<AgentLine> {
+        let home = HomePaths::new();
         rows.iter()
             .map(|r| AgentLine {
                 label: r.label.clone(),
                 state: r.state,
-                place: self.place_of(r, " · ").unwrap_or_default(),
+                place: if r.external {
+                    self.external_place(r, &home)
+                } else {
+                    self.place_of(r, " · ").unwrap_or_default()
+                },
                 current: self.is_current_pane(&r.pane),
+                external: r.external,
             })
             .collect()
+    }
+
+    /// Where external row `r` works: its branch, else its directory.
+    fn external_place(&self, r: &Row, home: &HomePaths) -> String {
+        let dir = || {
+            self.session_in(&r.pane)
+                .and_then(|s| s.cwd.as_deref())
+                .map(|c| home.show(c))
+        };
+        r.main_branch()
+            .map(str::to_string)
+            .or_else(dir)
+            .unwrap_or_default()
     }
 
     /// Where row `r` runs: its space and tab, `sep` between them.

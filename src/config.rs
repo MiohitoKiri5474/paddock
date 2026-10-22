@@ -38,6 +38,10 @@
 //!
 //! [spaces]
 //! new_tab_dir = "current"    # or "root": where new tabs and splits start
+//!
+//! [dashboard]
+//! external = true            # list Claude sessions outside paddock (the External group)
+//! external_timeout = 10      # minutes an external session stays without news
 //! ```
 //!
 //! `paddock keys` prints every action with its default keys.
@@ -62,6 +66,10 @@ const DEFAULT_SIDEBAR_WIDTH: u16 = 32;
 const DEFAULT_CURRENT_SPACE: Color = Color::Indexed(236);
 /// Where new worktrees go unless `[worktrees] directory` says otherwise.
 const DEFAULT_WORKTREES: &str = "~/.paddock/worktrees";
+/// Minutes an external session stays listed with no hook event and absent
+/// from `claude agents --json`.
+const DEFAULT_EXTERNAL_TIMEOUT_MIN: u64 = 10;
+const MS_PER_MIN: u64 = 60_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
@@ -82,6 +90,8 @@ pub struct Config {
     pub worktrees: Worktrees,
     /// Where new tabs and splits start.
     pub new_tab_dir: NewTabDir,
+    /// Whether and how long external sessions are listed.
+    pub external: External,
 }
 
 /// `[spaces] new_tab_dir`: where a new tab or split starts.
@@ -93,6 +103,27 @@ pub enum NewTabDir {
     Current,
     /// In the space's root.
     Root,
+}
+
+/// `[dashboard]`: the External group of Claude sessions running outside
+/// paddock's terminals, in the dashboard and the sidebar's AGENTS.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct External {
+    /// Whether the group shows (and its sessions notify).
+    pub shown: bool,
+    /// How long (ms) an external session stays with no hook event and
+    /// absent from `claude agents --json`: its Claude may have been killed
+    /// without a `SessionEnd`.
+    pub timeout: u64,
+}
+
+impl Default for External {
+    fn default() -> Self {
+        Self {
+            shown: true,
+            timeout: DEFAULT_EXTERNAL_TIMEOUT_MIN * MS_PER_MIN,
+        }
+    }
 }
 
 /// `[worktrees]`: where `C-a W` checks a new branch out.
@@ -179,6 +210,8 @@ struct RawConfig {
     worktrees: RawWorktrees,
     #[serde(default)]
     spaces: RawSpaces,
+    #[serde(default)]
+    dashboard: RawDashboard,
 }
 
 /// A `[spaces]` table as written.
@@ -186,6 +219,15 @@ struct RawConfig {
 #[serde(deny_unknown_fields)]
 struct RawSpaces {
     new_tab_dir: Option<NewTabDir>,
+}
+
+/// A `[dashboard]` table as written.
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct RawDashboard {
+    external: Option<bool>,
+    /// Minutes.
+    external_timeout: Option<u64>,
 }
 
 /// A `[worktrees]` table as written.
@@ -309,6 +351,14 @@ impl Config {
         let worktrees = Worktrees::configured(directory, std::env::var("HOME").ok().as_deref())?;
         let c = raw.colors;
         let tabs = TabColors::default();
+        let external = External {
+            shown: raw.dashboard.external.unwrap_or(true),
+            timeout: match raw.dashboard.external_timeout {
+                None => External::default().timeout,
+                Some(0) => bail!("[dashboard] external_timeout: must be at least 1 (minutes)"),
+                Some(min) => min.saturating_mul(MS_PER_MIN),
+            },
+        };
         Ok(Self {
             prefix,
             keys,
@@ -330,6 +380,7 @@ impl Config {
             floats,
             worktrees,
             new_tab_dir: raw.spaces.new_tab_dir.unwrap_or_default(),
+            external,
         })
     }
 }
@@ -353,6 +404,7 @@ impl Default for Config {
             floats: Floats::default(),
             worktrees: Worktrees::default(),
             new_tab_dir: NewTabDir::default(),
+            external: External::default(),
         }
     }
 }
@@ -506,6 +558,31 @@ mod tests {
         assert!(Config::parse("[notify]\nidle = \"no\"\n").is_err());
         assert!(Config::parse("[notify]\nidle = 0\n").is_err());
         assert!(Config::parse("[notify]\ndone = false\n").is_err());
+    }
+
+    #[test]
+    fn external_sessions_show_for_ten_minutes_unless_configured() {
+        let on = External::default();
+        assert_eq!(
+            on,
+            External {
+                shown: true,
+                timeout: 600_000
+            }
+        );
+        assert_eq!(Config::parse("").unwrap().external, on);
+        let c = Config::parse("[dashboard]\nexternal = false\nexternal_timeout = 2\n").unwrap();
+        assert_eq!(
+            c.external,
+            External {
+                shown: false,
+                timeout: 120_000
+            }
+        );
+        let err = |t: &str| format!("{:#}", Config::parse(t).unwrap_err());
+        assert!(err("[dashboard]\nexternal_timeout = 0\n").contains("at least 1"));
+        assert!(Config::parse("[dashboard]\nexternal = 1\n").is_err());
+        assert!(Config::parse("[dashboard]\nexternals = true\n").is_err());
     }
 
     #[test]

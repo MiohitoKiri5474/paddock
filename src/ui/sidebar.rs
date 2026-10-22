@@ -12,6 +12,10 @@
 //!  AGENTS
 //!  ● api-server  waiting
 //!    api-server · claude
+//!
+//!  EXTERNAL
+//!  ● web  idle
+//!    feat/login
 //! ```
 //!
 //! A space's dot shows the most urgent state of the agents in it (none
@@ -35,7 +39,9 @@
 //! second line is dim and names its space and tab; the current agent (the
 //! one in the focused terminal) has the current space's background too.
 //! While the sidebar has the keyboard, the selected space or agent is drawn
-//! reversed.
+//! reversed. External sessions (Claude outside paddock's terminals) close
+//! AGENTS under their own header, dim, their second line naming their branch
+//! (else their directory).
 
 use super::STATE_DOT;
 use crate::sessions::State;
@@ -45,6 +51,7 @@ use ratatui::style::{Color, Modifier, Style};
 
 const SPACES: &str = "SPACES";
 const AGENTS: &str = "AGENTS";
+const EXTERNAL: &str = "EXTERNAL";
 /// Columns before a name: one space, the dot, one space.
 const INDENT: u16 = 3;
 
@@ -80,10 +87,14 @@ pub enum Entry {
 pub struct AgentLine {
     pub label: String,
     pub state: State,
-    /// Where it runs: `space · tab`.
+    /// Where it runs: `space · tab`; an external session's branch, else
+    /// its directory.
     pub place: String,
     /// Its pane is the focused terminal of the page shown now.
     pub current: bool,
+    /// It runs outside paddock's terminals: drawn dim, in the external
+    /// group after the others.
+    pub external: bool,
 }
 
 /// A line of the sidebar, below the top of its area. Drawing and clicks
@@ -114,9 +125,10 @@ pub fn pick(line: Line, spaces: usize) -> Option<usize> {
 }
 
 /// The sidebar's lines for `entries` (spaces and repository headers) and
-/// `agents` agents, top first. Spaces and headers are numbered apart, in
-/// their order among `entries`.
-pub fn lines(entries: &[Entry], agents: usize) -> Vec<Line> {
+/// `agents` agents, top first, the last `external` of them under their own
+/// header. Spaces and headers are numbered apart, in their order among
+/// `entries`.
+pub fn lines(entries: &[Entry], agents: usize, external: usize) -> Vec<Line> {
     let mut out = vec![Line::Header(SPACES)];
     let (mut spaces, mut repos) = (0, 0);
     for entry in entries {
@@ -132,8 +144,11 @@ pub fn lines(entries: &[Entry], agents: usize) -> Vec<Line> {
         }
     }
     out.extend([Line::Blank, Line::Header(AGENTS)]);
+    let first_external = agents.saturating_sub(external);
     for i in 0..agents {
-        if i > 0 {
+        if i == first_external {
+            out.extend([Line::Blank, Line::Header(EXTERNAL)]);
+        } else if i > 0 {
             out.push(Line::Blank);
         }
         out.extend([Line::Agent(i), Line::AgentPlace(i)]);
@@ -201,7 +216,8 @@ pub fn render(
         selected,
         current_bg,
     };
-    for (line, y) in lines(entries, agents.len())
+    let external = agents.iter().filter(|a| a.external).count();
+    for (line, y) in lines(entries, agents.len(), external)
         .into_iter()
         .zip(area.top()..area.bottom())
     {
@@ -267,14 +283,16 @@ impl Sidebar<'_> {
             }
             Line::Agent(i) => {
                 let a = &self.agents[i];
-                put(dot_x, STATE_DOT, dot(a.state));
+                // An external session is dim all along: dot, label, state.
+                let faded = |style: Style| if a.external { style.patch(dim) } else { style };
+                put(dot_x, STATE_DOT, faded(dot(a.state)));
                 let state = a.state.label();
                 let width = u16::try_from(state.chars().count()).unwrap_or(0);
                 let state_x = end.saturating_sub(width).max(name_x);
                 let room = usize::from(state_x.saturating_sub(name_x + 1));
                 let label: String = a.label.chars().take(room).collect();
-                put(name_x, &label, Style::default());
-                put(state_x, state, highlight(a.state));
+                put(name_x, &label, faded(Style::default()));
+                put(state_x, state, faded(highlight(a.state)));
             }
             Line::SpacePlace(i) => {
                 let s = &self.spaces[i];
@@ -331,11 +349,17 @@ pub fn place(path: &str, branch: Option<&str>, width: usize) -> String {
 }
 
 /// What the sidebar line at screen row `y` of `area` picks, if anything.
-pub fn pick_at(entries: &[Entry], agents: usize, area: Rect, y: u16) -> Option<usize> {
+/// `agents` and `external` are as [`lines`] takes them.
+pub fn pick_at(
+    entries: &[Entry],
+    (agents, external): (usize, usize),
+    area: Rect,
+    y: u16,
+) -> Option<usize> {
     if !(area.top()..area.bottom()).contains(&y) {
         return None;
     }
-    let line = lines(entries, agents)
+    let line = lines(entries, agents, external)
         .into_iter()
         .nth(usize::from(y - area.y))?;
     let spaces = entries
@@ -366,6 +390,7 @@ mod tests {
 
     fn agent(label: &str, state: State, place: &str) -> AgentLine {
         AgentLine {
+            external: false,
             label: label.into(),
             state,
             place: place.into(),
@@ -551,7 +576,7 @@ mod tests {
         }
         // Clicks: the header picks nothing; the spaces count without it.
         let area = Rect::new(0, 0, 24, 12);
-        let at = |y| pick_at(&entries, 1, area, y);
+        let at = |y| pick_at(&entries, (1, 0), area, y);
         assert_eq!((at(1), at(4)), (Some(0), Some(1)));
         assert_eq!(at(5), None, "header");
         assert_eq!((at(6), at(7)), (Some(2), Some(2)));
@@ -564,7 +589,7 @@ mod tests {
         // 3 SPACES, 4-5 space 0, 6-7 space 1, 8 blank, 9 AGENTS,
         // 10-11 agent 0, 12 blank, 13-14 agent 1.
         let two = entries(&[space("a", None, false), space("b", None, false)]);
-        let at = |y| pick_at(&two, 2, area, y);
+        let at = |y| pick_at(&two, (2, 0), area, y);
         assert_eq!(at(3), None, "header");
         assert_eq!((at(4), at(5)), (Some(0), Some(0)));
         assert_eq!((at(6), at(7)), (Some(1), Some(1)));
@@ -580,7 +605,7 @@ mod tests {
     fn lines_put_a_blank_between_agents_only() {
         use Line::*;
         assert_eq!(
-            lines(&entries(&[space("a", None, false)]), 2),
+            lines(&entries(&[space("a", None, false)]), 2, 0),
             [
                 Header(SPACES),
                 Space(0),
@@ -594,6 +619,57 @@ mod tests {
                 AgentPlace(1)
             ]
         );
+    }
+
+    #[test]
+    fn external_agents_close_agents_under_their_own_header() {
+        use Line::*;
+        let ent = entries(&[space("a", None, false)]);
+        assert_eq!(
+            lines(&ent, 2, 1)[3..],
+            [
+                Blank,
+                Header(AGENTS),
+                Agent(0),
+                AgentPlace(0),
+                Blank,
+                Header(EXTERNAL),
+                Agent(1),
+                AgentPlace(1)
+            ]
+        );
+        assert_eq!(
+            lines(&ent, 1, 1)[3..],
+            [
+                Blank,
+                Header(AGENTS),
+                Blank,
+                Header(EXTERNAL),
+                Agent(0),
+                AgentPlace(0)
+            ]
+        );
+        let area = Rect::new(0, 0, 24, 20);
+        // The external header picks nothing; its agent is pick 2.
+        assert_eq!(pick_at(&ent, (2, 1), area, 8), None);
+        assert_eq!(pick_at(&ent, (2, 1), area, 9), Some(2));
+        let agents = [
+            agent("api", State::Running, "a · claude"),
+            AgentLine {
+                external: true,
+                ..agent("web", State::Waiting, "feat/x")
+            },
+        ];
+        let buf = draw(&[space("a", Some(State::Running), false)], &agents, None);
+        assert_eq!(text(&buf, 8).trim_end_matches([' ', '│']), " EXTERNAL");
+        assert!(text(&buf, 9).starts_with(" ● web"), "{}", text(&buf, 9));
+        // The whole line is dim: dot, label and state word.
+        for x in [1, 3, 16] {
+            assert!(buf[(x, 9)].modifier.contains(Modifier::DIM), "dim at {x}");
+            assert!(!buf[(x, 5)].modifier.contains(Modifier::DIM), "{x}");
+        }
+        assert_eq!(text(&buf, 10).trim_end_matches([' ', '│']), "   feat/x");
+        assert!(buf[(3, 10)].modifier.contains(Modifier::DIM));
     }
 
     #[test]

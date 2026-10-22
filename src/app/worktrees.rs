@@ -99,13 +99,14 @@ pub enum SpaceEntry {
 impl App {
     /// The directory an action on `pick` starts from: the space's, or the
     /// agent's pane's; without a pick, the focused terminal's. Read now.
-    fn dir_for(&self, pick: Option<&Pick>) -> PathBuf {
-        match pick {
+    /// An external agent has none: refused, never the focused terminal's.
+    fn dir_for(&self, pick: Option<&Pick>) -> Result<PathBuf> {
+        let dir = match pick {
             Some(Pick::Space(id)) => self.space_dir_now(id),
-            Some(Pick::Agent(pane)) => self.dir_of(pane),
+            Some(Pick::Agent(pane)) => self.dir_of(pane)?,
             None => None,
-        }
-        .unwrap_or_else(|| self.new_dir())
+        };
+        Ok(dir.unwrap_or_else(|| self.new_dir()))
     }
 
     /// Space `id`'s directory, read now (the sidebar's may be seconds
@@ -125,7 +126,13 @@ impl App {
     /// The working tree the directory of `pick` (see [`Self::dir_for`]) is
     /// in, or a notice if none.
     fn tree_for(&mut self, pick: Option<&Pick>) -> Option<WorkingTree> {
-        let dir = self.dir_for(pick);
+        let dir = match self.dir_for(pick) {
+            Ok(dir) => dir,
+            Err(e) => {
+                self.notice = Some(format!("{e:#}"));
+                return None;
+            }
+        };
         let tree = git::working_tree(&dir.to_string_lossy());
         if tree.is_none() {
             self.notice = Some(format!("{} is not in a git repository", dir.display()));

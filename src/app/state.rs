@@ -10,7 +10,10 @@ use super::finder::Finder;
 use super::floats::Shown;
 use super::mouse::Press;
 use super::pages::Pages;
-use super::rows::{rows, Placed, Row, RowId, TaskDetails, TaskStatus};
+use super::rows::{
+    pane_only, rows, Externals, Placed, Row, RowId, TaskDetails, TaskStatus, EXTERNAL_DIR,
+    EXTERNAL_TYPE,
+};
 use super::saved;
 use super::sidebar::clamp_width;
 use super::sidebar::Selection;
@@ -18,7 +21,7 @@ use super::space::Space;
 use super::watch::Place;
 use super::worktrees::{DeleteQuestion, WorktreeList};
 use super::Event;
-use crate::config::{Config, Floats, NewTabDir, Worktrees};
+use crate::config::{Config, External, Floats, NewTabDir, Worktrees};
 use crate::git::WorkingTree;
 use crate::hooks::now_ms;
 use crate::input::keymap::Keymap;
@@ -268,6 +271,8 @@ pub struct App {
     pub(super) float_panes: HashSet<String>,
     /// Where new worktrees are checked out.
     pub(super) worktrees: Worktrees,
+    /// Whether and how long external sessions are listed (`[dashboard]`).
+    pub(super) external: External,
     /// Where new tabs and splits start.
     pub(super) new_tab_dir: NewTabDir,
 }
@@ -352,6 +357,7 @@ impl App {
             float: None,
             float_panes: HashSet::new(),
             worktrees: config.worktrees.clone(),
+            external: config.external,
             new_tab_dir: config.new_tab_dir,
         };
         app.load_dismissed();
@@ -428,9 +434,23 @@ impl App {
         })
     }
 
-    /// The Claude session rows, in display order.
+    /// The Claude session rows, in display order: the external group last,
+    /// unless `[dashboard] external` hides it.
     pub fn rows(&self) -> Vec<Row> {
-        rows(&self.sessions, &self.task_status, self.placed())
+        rows(
+            &self.sessions,
+            &self.task_status,
+            self.placed(),
+            self.external_rows(),
+        )
+    }
+
+    /// Which external sessions get rows now, if any.
+    pub(super) fn external_rows(&self) -> Option<Externals> {
+        self.external.shown.then(|| Externals {
+            now: now_ms(),
+            timeout: self.external.timeout,
+        })
     }
 
     /// Dismiss a session row: it leaves the rows, and stays gone after
@@ -447,6 +467,11 @@ impl App {
             .collect();
         self.task_status.retain(|task, _| shown.contains(task));
         self.task_details.retain(|task, _| shown.contains(task));
+        self.save_dismissed()
+    }
+
+    /// Write the dismissed rows to the state directory.
+    pub(super) fn save_dismissed(&mut self) -> Result<()> {
         dismissed::save(&self.state_dir, &self.sessions.dismissals())
     }
 
@@ -488,20 +513,24 @@ impl App {
         Ok(())
     }
 
-    /// Pane `pane`'s shell directory, if it still exists.
-    pub(super) fn dir_of(&self, pane: &str) -> Option<PathBuf> {
-        self.server
+    /// Pane `pane`'s shell directory, if it still exists. An external
+    /// session has none: refused.
+    pub(super) fn dir_of(&self, pane: &str) -> Result<Option<PathBuf>> {
+        pane_only(pane, EXTERNAL_DIR)?;
+        Ok(self
+            .server
             .display(pane, "#{pane_current_path}")
             .ok()
             .map(PathBuf::from)
-            .filter(|p| p.is_dir())
+            .filter(|p| p.is_dir()))
     }
 
     /// Where a new shell starts: the focused pane's directory, else the
     /// directory paddock started in.
     pub(super) fn new_dir(&self) -> PathBuf {
+        // The focused terminal is a pane, never an external session.
         self.current_pane()
-            .and_then(|p| self.dir_of(&p))
+            .and_then(|p| self.dir_of(&p).ok().flatten())
             .unwrap_or_else(|| self.start_dir.clone())
     }
 
@@ -557,6 +586,7 @@ impl App {
     /// Send bytes to pane `pane`'s program, returning its view to the live
     /// screen. Every key, paste and mouse report for a pane comes here.
     pub(super) fn input(&mut self, pane: &str, bytes: &[u8]) -> Result<()> {
+        pane_only(pane, EXTERNAL_TYPE)?;
         self.note_float_input(pane);
         if let Some(t) = self.terminals.get_mut(pane) {
             t.emulator_mut().scroll_to_bottom();

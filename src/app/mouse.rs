@@ -177,9 +177,12 @@ impl App {
     fn press_sidebar(&mut self, y: u16) -> bool {
         let area = Rect::new(0, 0, self.sidebar_width(), self.screen.1);
         let picks = self.sidebar_picks();
-        let entries = self.sidebar_spaces(&self.rows());
+        let rows = self.rows();
+        let entries = self.sidebar_spaces(&rows);
         let agents = picks.len() - self.spaces.len();
-        let Some(pick) = sidebar::pick_at(&entries, agents, area, y).and_then(|i| picks.get(i))
+        let external = rows.iter().filter(|r| r.external).count();
+        let Some(pick) =
+            sidebar::pick_at(&entries, (agents, external), area, y).and_then(|i| picks.get(i))
         else {
             return false;
         };

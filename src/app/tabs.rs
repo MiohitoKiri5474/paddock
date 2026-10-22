@@ -2,6 +2,7 @@
 //! session, a tab one of its windows. paddock asks tmux to change them and
 //! reads them back when tmux reports a change.
 
+use super::rows::{pane_only, EXTERNAL_CLOSE, EXTERNAL_FORK, EXTERNAL_OPEN};
 use super::space::clamp;
 use super::state::{is_session_id, next_name, App, CloseTarget, Mode, NameTarget, Renamed};
 use super::watch;
@@ -206,6 +207,10 @@ impl App {
     /// Bring pane `pane` to the screen: its space and tab become current and
     /// it gets the focus.
     pub fn jump_to(&mut self, pane: &str) {
+        if let Err(e) = pane_only(pane, EXTERNAL_OPEN) {
+            self.notice = Some(e.to_string());
+            return;
+        }
         let Some(i) = self.space_of(pane) else {
             return;
         };
@@ -260,7 +265,7 @@ impl App {
             return Ok(());
         };
         let (id, name) = (space.id.clone(), space.name().to_string());
-        let Some(dir) = self.dir_of(&pane) else {
+        let Some(dir) = self.dir_of(&pane)? else {
             bail!("the focused terminal's directory is unknown: the space root stays");
         };
         self.server.set_root(&id, &dir)?;
@@ -293,6 +298,7 @@ impl App {
     /// tmux closes its tab with its last pane, and its space with its last
     /// tab, and reports each.
     pub fn close(&mut self, pane: &str) -> Result<()> {
+        pane_only(pane, EXTERNAL_CLOSE)?;
         match self.session_in(pane).map(|s| s.state) {
             Some(state @ (State::Running | State::Waiting)) => {
                 self.ask_close(CloseTarget::Pane(pane.to_string()), state);
@@ -347,6 +353,7 @@ impl App {
     /// --fork-session`, typed into the new shell so the tab stays when
     /// Claude exits.
     pub fn fork(&mut self, pane: &str) -> Result<()> {
+        pane_only(pane, EXTERNAL_FORK)?;
         let Some((session_id, cwd)) = self
             .session_in(pane)
             .and_then(|s| Some((s.session_id.clone()?, s.cwd.clone())))
@@ -361,11 +368,10 @@ impl App {
         let Some(i) = self.space_of(pane) else {
             bail!("that terminal is closed");
         };
-        let dir = cwd
-            .map(PathBuf::from)
-            .filter(|p| p.is_dir())
-            .or_else(|| self.dir_of(pane))
-            .unwrap_or_else(|| self.start_dir.clone());
+        let dir = match cwd.map(PathBuf::from).filter(|p| p.is_dir()) {
+            Some(dir) => dir,
+            None => self.dir_of(pane)?.unwrap_or_else(|| self.start_dir.clone()),
+        };
         let id = self.spaces[i].id.clone();
         let new = self.open_tab(&id, dir)?;
         self.current = i;
