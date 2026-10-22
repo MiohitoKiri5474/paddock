@@ -1,6 +1,7 @@
 //! Everything that talks to the hidden tmux server.
 
 pub mod control;
+pub mod layout;
 pub mod protocol;
 pub mod server;
 pub mod structure;

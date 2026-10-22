@@ -139,6 +139,10 @@ Every key is an action with a name you can rebind (see [Configure](#configure));
 | `k` `Up` | focus up | `focus_up` |
 | `l` `Right` | focus right | `focus_right` |
 | `=` | even out the focused split | `equalize` |
+| `H` | move split border left | `resize_left` |
+| `J` | move split border down | `resize_down` |
+| `K` | move split border up | `resize_up` |
+| `L` | move split border right | `resize_right` |
 | `z` | zoom the focused split | `zoom` |
 | `x` | close pane (asks if busy) | `close` |
 | `f` | fork Claude into a new tab | `fork` |

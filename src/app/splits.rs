@@ -1,12 +1,29 @@
 //! Splitting a tab into several panes, moving focus between them and
-//! zooming one, through tmux, which keeps the layout and the zoom (ADR 0006);
-//! and keeping each space's size and the saved state in step.
+//! zooming one, resizing them by key or by dragging a border, through
+//! tmux, which keeps the layout and the zoom (ADR 0006); and keeping each
+//! space's size and the saved state in step.
 
+use super::mouse::Press;
 use super::saved::{self, Saved};
 use super::space::clamp;
 use super::state::App;
+use crate::input::prefix::RESIZE_STEP;
 use crate::input::Direction;
+use crate::tmux::layout::{self, Border};
 use anyhow::Result;
+use crossterm::event::{MouseEvent, MouseEventKind};
+use ratatui::layout::Position;
+use std::time::{Duration, Instant};
+
+/// tmux's flag for `dir` (`select-pane`, `resize-pane`).
+fn flag(dir: Direction) -> &'static str {
+    match dir {
+        Direction::Left => "-L",
+        Direction::Down => "-D",
+        Direction::Up => "-U",
+        Direction::Right => "-R",
+    }
+}
 
 impl App {
     /// Split the focused pane: side by side if `columns`, else top and
@@ -31,14 +48,19 @@ impl App {
         ) else {
             return Ok(());
         };
-        let flag = match dir {
-            Direction::Left => "-L",
-            Direction::Down => "-D",
-            Direction::Up => "-U",
-            Direction::Right => "-R",
-        };
-        self.server.select_towards(&pane, flag)?;
+        self.server.select_towards(&pane, flag(dir))?;
         self.refresh(&id)
+    }
+
+    /// Move the focused pane's border in `dir` by [`RESIZE_STEP`], as
+    /// tmux's `resize-pane` does: the border after it, or before it for
+    /// the last pane of a row or column. tmux keeps the layout, and its
+    /// `%layout-change` redraws.
+    pub fn resize_split(&mut self, dir: Direction) -> Result<()> {
+        match self.current_pane() {
+            Some(pane) => self.server.resize(&pane, flag(dir), RESIZE_STEP),
+            None => Ok(()),
+        }
     }
 
     /// Give the focused pane and the panes beside it the same size.
@@ -88,5 +110,142 @@ impl App {
             sidebar: self.sidebar_wish,
         };
         saved::save(&self.state_dir, &saved)
+    }
+}
+
+/// Least time between two `resize-pane` sent while a split's border is
+/// dragged; the last size always goes on release.
+const DRAG_INTERVAL: Duration = Duration::from_millis(40);
+
+/// A split's border held by the mouse.
+#[derive(Debug)]
+pub struct SplitDrag {
+    border: Border,
+    /// The size last sent to tmux (at first, the one it has), and when.
+    size: u16,
+    sent: Option<Instant>,
+}
+
+impl SplitDrag {
+    /// `border`, pressed at `at` on its axis (window coordinates).
+    fn new(border: Border, at: u16) -> Self {
+        Self {
+            size: border.size(at),
+            border,
+            sent: None,
+        }
+    }
+
+    /// The size to send for the border dragged to `at` at `now`: none if
+    /// it is the size last sent or, while the button is held, if one went
+    /// less than [`DRAG_INTERVAL`] ago.
+    fn due(&mut self, at: u16, now: Instant, released: bool) -> Option<u16> {
+        let size = self.border.size(at);
+        let soon = self
+            .sent
+            .is_some_and(|sent| now.duration_since(sent) < DRAG_INTERVAL);
+        if size == self.size || (soon && !released) {
+            return None;
+        }
+        self.size = size;
+        self.sent = Some(now);
+        Some(size)
+    }
+}
+
+impl App {
+    /// A left press at screen `(col, row)`: if it is on a border between
+    /// two of the current tab's splits, hold that border to drag it, and
+    /// return true. A zoomed tab shows no borders.
+    pub(super) fn press_split_border(&mut self, col: u16, row: u16) -> bool {
+        let area = self.area();
+        if !area.contains(Position::new(col, row)) {
+            return false;
+        }
+        let window = match self.current_space().and_then(|s| s.current_window()) {
+            Some(w) if !w.zoomed && w.panes.len() > 1 => w.id.clone(),
+            _ => return false,
+        };
+        let text = match self.server.layout(&window) {
+            Ok(text) => text,
+            Err(e) => {
+                self.notice = Some(format!("{e:#}"));
+                return false;
+            }
+        };
+        let (x, y) = (col - area.x, row - area.y);
+        let Some(border) = layout::parse(&text).and_then(|l| l.border_at(x, y)) else {
+            return false;
+        };
+        let at = if border.columns { x } else { y };
+        self.press = Some(Press::Split(SplitDrag::new(border, at)));
+        true
+    }
+
+    /// The button held on a split's border moved or let go: the border
+    /// follows the pointer through tmux (`resize-pane -x`/`-y`), at most
+    /// every [`DRAG_INTERVAL`], and its last place goes on release.
+    /// tmux's `%layout-change` redraws.
+    pub(super) fn split_border_held(&mut self, m: MouseEvent) -> bool {
+        let released = matches!(m.kind, MouseEventKind::Up(_));
+        let area = self.area();
+        let Some(Press::Split(drag)) = &mut self.press else {
+            return false;
+        };
+        let columns = drag.border.columns;
+        let at = if columns {
+            m.column.saturating_sub(area.x)
+        } else {
+            m.row.saturating_sub(area.y)
+        };
+        let due = drag.due(at, Instant::now(), released);
+        let pane = drag.border.pane.clone();
+        if released {
+            self.press = None;
+        }
+        if let Some(size) = due {
+            self.report(|app| app.server.resize_to(&pane, columns, size));
+        }
+        true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The border of a 34 | 33 split, pressed.
+    fn pressed() -> SplitDrag {
+        let text = r#"{"V":2,"L":{"t":"h","w":68,"h":29,"x":0,"y":0,"c":[
+            {"t":"p","w":34,"h":29,"x":0,"y":0,"I":"%1"},
+            {"t":"p","w":33,"h":29,"x":35,"y":0,"I":"%2"}]}}"#;
+        let border = layout::parse(text).unwrap().border_at(34, 3).unwrap();
+        SplitDrag::new(border, 34)
+    }
+
+    #[test]
+    fn a_drag_sends_at_most_one_size_per_interval_and_the_last_on_release() {
+        let t0 = Instant::now();
+        let ms = Duration::from_millis;
+        let mut drag = pressed();
+        assert_eq!(drag.due(36, t0, false), Some(36));
+        assert_eq!(drag.due(37, t0 + ms(10), false), None, "too soon");
+        assert_eq!(drag.due(38, t0 + ms(39), false), None, "too soon");
+        assert_eq!(drag.due(39, t0 + ms(40), false), Some(39));
+        assert_eq!(drag.due(39, t0 + ms(200), false), None, "no change");
+        assert_eq!(drag.due(41, t0 + ms(210), true), Some(41), "release");
+    }
+
+    #[test]
+    fn a_click_or_a_release_where_the_last_size_went_sends_nothing() {
+        let t0 = Instant::now();
+        assert_eq!(pressed().due(34, t0, true), None, "a click");
+        let mut drag = pressed();
+        assert_eq!(drag.due(30, t0, false), Some(30));
+        assert_eq!(drag.due(30, t0, true), None);
+        // Back where it was pressed: tmux has another size by now.
+        let mut back = pressed();
+        assert_eq!(back.due(30, t0, false), Some(30));
+        assert_eq!(back.due(34, t0, true), Some(34));
     }
 }

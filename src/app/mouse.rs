@@ -1,11 +1,13 @@
 //! The mouse: clicks focus a pane, open a space or agent, or switch
 //! tabs; the
 //! wheel and programs' mouse reports go to the pane under the pointer;
-//! dragging selects text and releasing copies it. While a float is shown,
+//! dragging selects text and releasing copies it; dragging the border
+//! between two splits moves it (see `splits.rs`). While a float is shown,
 //! the mouse reaches only the float; a click outside it does nothing.
 //! While the finder is open, see `finder.rs`. In copy mode the wheel over
 //! its terminal scrolls the copy view, and a click or drag leaves it first.
 
+use super::splits::SplitDrag;
 use super::state::{App, Mode, TAB_BAR_ROWS};
 use crate::input::mouse::WHEEL_LINES;
 use crate::input::{route_mouse, MouseAction};
@@ -29,6 +31,8 @@ pub enum Press {
     /// once the pointer left the border's column (until then, a release is
     /// a click on that row).
     Border { row: u16, dragged: bool },
+    /// On a border between two splits: dragging moves it.
+    Split(SplitDrag),
 }
 
 impl App {
@@ -109,6 +113,10 @@ impl App {
                 return Ok(changed);
             }
             let hit = self.under(m.column, m.row);
+            // Between the panes: a border held is dragged, never selects.
+            if left && hit.is_none() && self.press_split_border(m.column, m.row) {
+                return Ok(false);
+            }
             if let (true, Some((pane, _))) = (left, &hit) {
                 self.focus_pane(pane);
             }
@@ -212,6 +220,7 @@ impl App {
                 let (row, dragged) = (*row, *dragged);
                 return Ok(self.border_held(m, row, dragged));
             }
+            Some(Press::Split(_)) => return Ok(self.split_border_held(m)),
             None => return Ok(false),
         };
         let (Some(rect), true) = (self.rect_of(&pane), self.terminals.contains_key(&pane)) else {
@@ -235,7 +244,7 @@ impl App {
                 Some(Press::Select { dragged, .. }) => {
                     copied = select_held(t.emulator_mut(), dragged, &m, (row, col));
                 }
-                Some(Press::Border { .. }) | None => {}
+                Some(Press::Border { .. } | Press::Split(_)) | None => {}
             }
         }
         if let Some(bytes) = report {

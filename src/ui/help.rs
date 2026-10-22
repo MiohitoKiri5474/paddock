@@ -21,13 +21,20 @@ const HINT_WIDTH: usize = 69;
 const FRAME: usize = 4;
 /// Commands the help shows in one cell, by name, with the description
 /// they share there: a row saved keeps the help within 80x24.
-const PAIRED: &[(&str, &str, &str)] = &[
-    ("move_tab_left", "move_tab_right", "move tab left / right"),
+const PAIRED: &[(&[&str], &str)] = &[
     (
-        "sidebar_narrower",
-        "sidebar_wider",
+        &["move_tab_left", "move_tab_right"],
+        "move tab left / right",
+    ),
+    (
+        &["resize_left", "resize_down", "resize_up", "resize_right"],
+        "move split border ←↓↑→",
+    ),
+    (
+        &["sidebar_narrower", "sidebar_wider"],
         "sidebar narrower / wider",
     ),
+    (&["copy_mode", "search"], "copy mode / search history"),
 ];
 /// The prompt popup's keys, which are fixed (`Backspace` and `Delete`
 /// too, left out to fit one line).
@@ -90,19 +97,21 @@ pub fn lines(keys: &Keymap, floats: &Floats) -> Vec<String> {
     out
 }
 
-/// The command at `shown[i]` and the one after it as one cell, if they are
-/// a pair of [`PAIRED`] with keys and no chords: the cell, and the index
-/// after the pair.
+/// The command at `shown[i]` and the ones after it as one cell, if they
+/// are a group of [`PAIRED`], each with keys and no chords: the cell, and
+/// the index after the group.
 fn paired(shown: &[(&Binding<Command>, &[Key], &[Key])], i: usize) -> Option<(String, usize)> {
-    let ((a, ka, ca), (b, kb, cb)) = (shown.get(i)?, shown.get(i + 1)?);
-    let (_, _, help) = PAIRED
-        .iter()
-        .find(|(first, second, _)| a.name == *first && b.name == *second)?;
-    if ka.is_empty() || kb.is_empty() || !ca.is_empty() || !cb.is_empty() {
+    let (names, help) = PAIRED.iter().find(|(names, _)| {
+        let group = shown.get(i..i + names.len());
+        group.is_some_and(|g| g.iter().map(|(b, _, _)| b.name).eq(names.iter().copied()))
+    })?;
+    let group = &shown[i..i + names.len()];
+    if group.iter().any(|(_, k, c)| k.is_empty() || !c.is_empty()) {
         return None;
     }
-    let keys = format!("{} {}", label(ka), label(kb));
-    Some((format!("{keys:<LABEL$} {help}"), i + 2))
+    let keys: Vec<String> = group.iter().map(|(_, k, _)| label(k)).collect();
+    let keys = keys.join(" ");
+    Some((format!("{keys:<LABEL$} {help}"), i + names.len()))
 }
 
 /// `cells` down the left column, then down the right one.
@@ -220,18 +229,21 @@ mod tests {
             .iter()
             .any(|x| x.contains("g      find a space, tab or agent")));
         assert!(l.iter().any(|x| x.contains("G      float: lazygit")));
-        // Moving a tab left and right share a cell, as do sidebar widths.
+        // Moving a tab left and right share a cell, as do sidebar widths,
+        // the four resize keys, and copy mode and search.
         assert!(l.iter().any(|x| x.contains("< >    move tab left / right")));
         assert!(l
             .iter()
             .any(|x| x.contains("{ }    sidebar narrower / wider")));
         assert!(l
             .iter()
+            .any(|x| x.contains("H J K L move split border ←↓↑→")));
+        assert!(l
+            .iter()
             .any(|x| x.contains("z      zoom the focused split")));
         assert!(l
             .iter()
-            .any(|x| x.contains("[      copy mode: move, select, copy")));
-        assert!(l.iter().any(|x| x.contains("/      search the history")));
+            .any(|x| x.contains("[ /    copy mode / search history")));
         assert!(l.iter().any(|x| x.starts_with("Sidebar:   j down  k up")));
         assert!(l.iter().any(|x| x.contains("I interact  / filter")));
         assert!(l
@@ -270,7 +282,7 @@ mod tests {
         let apart = keys(&[("move_tab_left", &[])], &[]);
         let l = lines(&apart, &Floats::default());
         assert!(l.iter().any(|x| x.contains(">      move tab right")));
-        assert!(!l.iter().any(|x| x.contains("left / right")));
+        assert!(!l.iter().any(|x| x.contains("tab left / right")));
         let chord = keys(&[], &[("move_tab_right", &["C-M-l"])]);
         let l = lines(&chord, &Floats::default());
         assert!(l.iter().any(|x| x.contains("<      move tab left")));
