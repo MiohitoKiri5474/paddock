@@ -305,16 +305,6 @@ mod tests {
     use crate::github::PrState;
     use std::cell::RefCell;
 
-    fn pr(number: u64) -> Pr {
-        Pr {
-            number,
-            state: PrState::Open,
-            checks: None,
-            review: None,
-            url: String::new(),
-        }
-    }
-
     fn task(dir: &str, branch: &str) -> (String, String) {
         (dir.into(), branch.into())
     }
@@ -324,7 +314,7 @@ mod tests {
         move || t
     }
 
-    /// Never stop a pass.
+    /// Nothing changed while a pass runs.
     fn go() -> Option<Tasks> {
         None
     }
@@ -340,7 +330,10 @@ mod tests {
         let calls = RefCell::new(Vec::new());
         let fetch = |repo: &str| {
             calls.borrow_mut().push(repo.to_string());
-            Ok(Prs::from([("feat/a".to_string(), pr(1))]))
+            Ok(Prs::from([(
+                "feat/a".to_string(),
+                Pr::sample(1, PrState::Open, None, None),
+            )]))
         };
         let tasks = [
             task("/r", "feat/a"),
@@ -357,7 +350,7 @@ mod tests {
             "worktrees share their repository's call"
         );
         let got = cache.lookup(&tasks);
-        assert_eq!(got[0].1, Some(pr(1)));
+        assert_eq!(got[0].1, Some(Pr::sample(1, PrState::Open, None, None)));
         assert_eq!(got[1].1, None, "no PR for feat/b");
         assert_eq!(got[2].1, None, "not a repository");
 
@@ -480,10 +473,18 @@ mod tests {
         let mut cache = Cache::new(Duration::from_secs(1));
         let tasks = [task("/r", "feat/a")];
         let t0 = Instant::now();
-        let ok = |_: &str| Ok(Prs::from([("feat/a".to_string(), pr(1))]));
+        let ok = |_: &str| {
+            Ok(Prs::from([(
+                "feat/a".to_string(),
+                Pr::sample(1, PrState::Open, None, None),
+            )]))
+        };
         let bad = |_: &str| Err("gh: not logged in".to_string());
         cache.refresh(&tasks, at(t0), resolve, ok, go);
-        assert_eq!(cache.lookup(&tasks)[0].1, Some(pr(1)));
+        assert_eq!(
+            cache.lookup(&tasks)[0].1,
+            Some(Pr::sample(1, PrState::Open, None, None))
+        );
         let (_, failures) =
             cache.refresh(&tasks, at(t0 + Duration::from_secs(1)), resolve, bad, go);
         assert_eq!(failures, ["/r: gh: not logged in"]);

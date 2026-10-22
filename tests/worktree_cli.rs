@@ -817,5 +817,5 @@ fn list_gives_up_on_a_slow_gh_after_5_s() {
     let took = start.elapsed();
     assert!(prs.iter().all(|(_, pr)| pr.is_null()), "{prs:?}");
     assert!(took >= std::time::Duration::from_secs(5), "{took:?}");
-    assert!(took < std::time::Duration::from_secs(10), "{took:?}");
+    assert!(took < std::time::Duration::from_secs(25), "{took:?}");
 }

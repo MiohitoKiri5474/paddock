@@ -321,7 +321,7 @@ impl Sidebar<'_> {
                 let number = format!("#{}", pr.number);
                 let checks = pr.checks.map(|c| format!(" {}", c.mark()));
                 let mark = number.width() + checks.as_deref().map_or(0, str::width);
-                if let Some(at) = tag_x(x, place_width(path, branch), mark, end) {
+                if let Some(at) = end_x(x, place_width(path, branch), mark, end) {
                     let at = put(at, &number, pr_style(pr.state));
                     if let Some(checks) = &checks {
                         put(at, checks, dim);
@@ -334,7 +334,7 @@ impl Sidebar<'_> {
                 let a = &self.agents[i];
                 put(name_x, &a.place, dim);
                 let tag = a.kind.tag();
-                if let Some(at) = tag_x(name_x, a.place.width(), tag.width(), end) {
+                if let Some(at) = end_x(name_x, a.place.width(), tag.width(), end) {
                     put(at, tag, dim);
                 }
             }
@@ -343,12 +343,13 @@ impl Sidebar<'_> {
     }
 }
 
-/// Where a tag `tag` cells wide starts so that it ends at `end`, if it
-/// fits after `text` cells of text drawn from `x`, a cell or more apart.
+/// Where something `width` cells wide (a kind tag, a PR mark) starts so
+/// that it ends at `end`, if it fits after `text` cells of text drawn from
+/// `x`, a cell or more apart.
 /// The text is never cut for it.
-fn tag_x(x: u16, text: usize, tag: usize, end: u16) -> Option<u16> {
+fn end_x(x: u16, text: usize, width: usize, end: u16) -> Option<u16> {
     let cells = |w: usize| u16::try_from(w).unwrap_or(u16::MAX);
-    let at = end.saturating_sub(cells(tag));
+    let at = end.saturating_sub(cells(width));
     (at > x.saturating_add(cells(text))).then_some(at)
 }
 
@@ -879,11 +880,11 @@ mod tests {
     }
 
     #[test]
-    fn a_tag_goes_at_the_end_only_a_cell_or_more_after_the_text() {
-        assert_eq!(tag_x(3, 5, 6, 22), Some(16));
-        assert_eq!(tag_x(3, 12, 6, 22), Some(16), "one cell apart");
-        assert_eq!(tag_x(3, 13, 6, 22), None, "touching");
-        assert_eq!(tag_x(3, 0, 30, 22), None, "wider than the line");
+    fn a_tag_or_mark_goes_at_the_end_only_a_cell_or_more_after_the_text() {
+        assert_eq!(end_x(3, 5, 6, 22), Some(16));
+        assert_eq!(end_x(3, 12, 6, 22), Some(16), "one cell apart");
+        assert_eq!(end_x(3, 13, 6, 22), None, "touching");
+        assert_eq!(end_x(3, 0, 30, 22), None, "wider than the line");
         assert_eq!(place_width("~/專案", Some("x")), 9);
     }
 }

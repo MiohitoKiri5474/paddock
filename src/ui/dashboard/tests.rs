@@ -486,13 +486,7 @@ fn the_list_never_starts_with_another_sessions_task_rows() {
 fn a_prs_number_is_coloured_by_its_state_on_the_lines_background() {
     use crate::github::{Checks, Pr, PrState};
     let area = Rect::new(0, 0, 100, 30);
-    let pr = |number: u64, state: PrState| Pr {
-        number,
-        state,
-        checks: Some(Checks::Passing),
-        review: None,
-        url: String::new(),
-    };
+    let pr = |number: u64, state: PrState| Pr::sample(number, state, Some(Checks::Passing), None);
     let branches = ["a", "b", "c", "d"];
     let states = [
         PrState::Open,

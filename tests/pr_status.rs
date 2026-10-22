@@ -1,6 +1,6 @@
-//! Ticket 36: pull request status on the dashboard, read with a stub `gh`
-//! (see the harness's `write_gh_stub`) against real temporary git
-//! repositories. The real `gh` and its login are never touched.
+//! Pull request status on the dashboard and in the sidebar, read with a
+//! stub `gh` (see the harness's `write_gh_stub`) against real temporary
+//! git repositories. The real `gh` and its login are never touched.
 
 mod harness;
 
