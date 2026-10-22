@@ -11,6 +11,7 @@ mod floats;
 mod input;
 mod mouse;
 mod pages;
+mod prs;
 mod rows;
 mod saved;
 mod screen;
@@ -24,7 +25,7 @@ mod watch;
 mod worktrees;
 
 pub use dashboard::DashboardFilter;
-pub use rows::{Row, RowId, TaskDetails, TaskRow};
+pub use rows::{Row, RowId, TaskDetails, TaskPrs, TaskRow};
 
 use crate::config::Config;
 use crate::git::{Details, Status};
@@ -61,6 +62,12 @@ pub enum Event {
     Details(Vec<((String, String), Details)>),
     /// Each space's directory and branch just read, by tmux session id.
     Spaces(Vec<(String, watch::Place)>),
+    /// Pull requests just read for the dashboard's tasks, by
+    /// `(directory, branch)`; `None` for none.
+    Prs(prs::Read),
+    /// Something to say in the tab bar, from a thread (`p` failed to open
+    /// a pull request).
+    Notice(String),
     /// Showing a notification failed, with what the notifier said.
     NotifyFailed(String),
 }
@@ -106,6 +113,7 @@ pub fn run() -> Result<()> {
         &state_dir,
         &tx,
     )?;
+    let prs = prs::start(config.github_refresh, state_dir.join(prs::LOG_FILE), &tx);
 
     // Only now may another thread read stdin (ratatui has finished its queries).
     std::thread::spawn(move || {
@@ -118,7 +126,7 @@ pub fn run() -> Result<()> {
         let _ = tx.send(Event::Detach);
     });
 
-    let result = event_loop::run(&mut screen, app, &rx, git);
+    let result = event_loop::run(&mut screen, app, &rx, git, prs);
     drop(screen_guard);
     // Shown at start too, but only until the first key: repeat them where
     // they stay.

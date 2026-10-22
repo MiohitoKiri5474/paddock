@@ -6,6 +6,7 @@ mod cli;
 mod config;
 mod fuzzy;
 mod git;
+mod github;
 mod hooks;
 mod input;
 mod instance;

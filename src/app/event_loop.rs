@@ -22,9 +22,11 @@ const MS_PER_SEC: u64 = 1000;
 /// What tmux tells every control client when a session is made or ends.
 const SESSIONS_CHANGED: &str = "%sessions-changed";
 
-/// Tells the git thread which task rows are on screen.
+/// Tells the git thread which task rows are on screen, and the pull
+/// requests' thread too while PR status is on.
 struct GitFeed {
     tx: Sender<watch::Watched>,
+    prs: Option<Sender<watch::Watched>>,
     sent: watch::Watched,
 }
 
@@ -35,6 +37,9 @@ impl GitFeed {
         if now || tasks != self.sent {
             // The thread only ends with the app.
             let _ = self.tx.send(tasks.clone());
+            if let Some(prs) = &self.prs {
+                let _ = prs.send(tasks.clone());
+            }
             self.sent = tasks;
         }
     }
@@ -84,7 +89,10 @@ impl EventEffects {
                     ..
                 }
             ),
-            rows_may_move: !matches!(event, Event::Tmux { .. } | Event::Git(_) | Event::Spaces(_)),
+            rows_may_move: !matches!(
+                event,
+                Event::Tmux { .. } | Event::Git(_) | Event::Spaces(_) | Event::Prs(_)
+            ),
         }
     }
 }
@@ -94,9 +102,11 @@ pub fn run(
     mut app: App,
     rx: &Receiver<Event>,
     git: Sender<watch::Watched>,
+    prs: Option<Sender<watch::Watched>>,
 ) -> Result<()> {
     let mut git = GitFeed {
         tx: git,
+        prs,
         sent: watch::Watched::default(),
     };
     // The spaces' directories and branches are read at once.
@@ -204,6 +214,14 @@ fn handle(
         }
         Event::Spaces(read) => {
             app.places.extend(read);
+            Ok((Flow::Continue, true))
+        }
+        Event::Prs(read) => {
+            app.store_prs(read);
+            Ok((Flow::Continue, true))
+        }
+        Event::Notice(text) => {
+            app.notice = Some(text);
             Ok((Flow::Continue, true))
         }
         Event::NotifyFailed(error) => {
@@ -424,6 +442,7 @@ fn draw_dashboard(app: &App, area: Rect, buf: &mut Buffer) -> Option<Position> {
         rows: &listed,
         keys: &keys,
         details: &app.task_details,
+        prs: &app.task_prs,
         selected: d.selected.as_ref(),
         preview: row
             .and_then(|r| app.terminals.get(&r.pane))

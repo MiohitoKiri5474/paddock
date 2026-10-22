@@ -61,6 +61,8 @@ pub enum DashboardAction {
     Dismiss,
     Close,
     Fork,
+    /// Open the session's pull request in the browser.
+    OpenPr,
     Interact,
     /// Type a filter for the list.
     Filter,
@@ -365,6 +367,12 @@ pub const DASHBOARD: &[Binding<DashboardAction>] = &[
         DashboardAction::Fork,
         &["f"],
         "fork the Claude session",
+    ),
+    bind(
+        "pr",
+        DashboardAction::OpenPr,
+        &["p"],
+        "open the session's pull request in the browser",
     ),
     bind(
         "interact",

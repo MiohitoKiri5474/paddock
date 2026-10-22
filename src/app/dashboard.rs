@@ -8,10 +8,13 @@
 //! session through the same dismiss, close, fork and jump as the rest of
 //! the app.
 
+use super::prs::Read;
 use super::rows::{pane_only, row_ids, Row, RowId, EXTERNAL_TYPE};
 use super::state::{App, Mode, Panel};
 use super::watch::Watched;
+use super::Event;
 use crate::fuzzy;
+use crate::github;
 use crate::input::keymap::DashboardAction;
 use crate::input::line::LineEdit;
 use crate::input::{encode_key, encode_paste};
@@ -203,6 +206,10 @@ impl App {
             Some(DashboardAction::Up) => self.dashboard_move(d, -1),
             Some(DashboardAction::Dismiss) => self.dashboard_dismiss(d),
             Some(DashboardAction::Back) => Mode::Normal,
+            Some(DashboardAction::OpenPr) => {
+                self.open_pr(&d);
+                Mode::Dashboard(d)
+            }
             Some(DashboardAction::Filter) => Mode::Dashboard(Dashboard {
                 filter: DashboardFilter {
                     typing: true,
@@ -281,6 +288,50 @@ impl App {
         Mode::Dashboard(d.anchored(&row_ids(&self.dashboard_rows(&d))))
     }
 
+    /// Keep the pull requests just read (see [`super::prs`]); a task
+    /// without one loses the one it had.
+    pub(super) fn store_prs(&mut self, read: Read) {
+        for (task, pr) in read {
+            match pr {
+                Some(pr) => self.task_prs.insert(task, pr),
+                None => self.task_prs.remove(&task),
+            };
+        }
+    }
+
+    /// `p`: open the selected session's pull request in the browser
+    /// (`gh pr view --web` in its directory): its main agent's branch's,
+    /// else the first subagent branch's with one. Without one, a notice.
+    /// An external session's too: it only opens a page. `gh` failing comes
+    /// back as a notice.
+    fn open_pr(&mut self, d: &Dashboard) {
+        let Some(row) = self.dashboard_row(d) else {
+            return;
+        };
+        let main_first = row
+            .tasks
+            .iter()
+            .filter(|t| t.subagent.is_none())
+            .chain(row.tasks.iter().filter(|t| t.subagent.is_some()));
+        let found = main_first
+            .clone()
+            .find_map(|t| Some((t, self.task_prs.get(&(t.cwd.clone(), t.branch.clone()))?)));
+        let Some((task, pr)) = found else {
+            self.notice = Some(match main_first.map(|t| &t.branch).next() {
+                Some(branch) => format!("no pull request for {branch}"),
+                None => "no pull request: no branch".to_string(),
+            });
+            return;
+        };
+        let number = pr.number;
+        let events = self.events.clone();
+        github::open_web(&task.cwd, number, move |done| {
+            if let Err(e) = done {
+                let _ = events.send(Event::Notice(format!("cannot open PR #{number}: {e}")));
+            }
+        });
+    }
+
     /// Open, close, fork and interact on the selected session's terminal.
     fn dashboard_act(&mut self, d: Dashboard, action: DashboardAction) -> Mode {
         let Some(row) = self.dashboard_row(&d) else {
@@ -324,6 +375,7 @@ impl App {
             | DashboardAction::Up
             | DashboardAction::Dismiss
             | DashboardAction::Filter
+            | DashboardAction::OpenPr
             | DashboardAction::Back => Mode::Dashboard(d),
         }
     }

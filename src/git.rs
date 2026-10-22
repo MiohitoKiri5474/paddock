@@ -30,7 +30,7 @@ const MAX_UNTRACKED: u64 = 1 << 20;
 // ponytail: the deadlines are per git call, not per key: `x` makes several
 // reads, `C-a O` some per space, a delete several mutations, all on the UI
 // thread. The upgrade is to run deletes and mutations off it.
-const READ_TIMEOUT: Duration = Duration::from_secs(5);
+pub const READ_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long adding or removing a worktree may take (a checkout of a big
 /// repository) before it counts as failed.
 // ponytail: a `worktree remove` killed at this deadline can leave a
@@ -103,17 +103,19 @@ fn git_command(dir: &str, args: &[&str], env: &[(&str, &str)]) -> Command {
     command
 }
 
-/// Every git paddock runs ends here: start `command` and wait at most
+/// Every git paddock runs ends here (and `gh`, see [`crate::github`]):
+/// start `command` and wait at most
 /// `timeout` for it to exit and for its output to end, then give up (and
 /// kill git if it still runs). A process git leaves behind holding its
 /// pipes (a hook's `cmd &`) counts as not finished too. Returns stdout,
 /// or why it failed (see [`reason`]). Never prints: hooks must stay
 /// silent.
-fn wait(mut command: Command, timeout: Duration) -> Result<String, String> {
+pub fn wait(mut command: Command, timeout: Duration) -> Result<String, String> {
     let late = || late_reason(timeout);
+    let program = command.get_program().to_string_lossy().into_owned();
     let mut child = command
         .spawn()
-        .map_err(|e| format!("cannot run git: {e}"))?;
+        .map_err(|e| format!("cannot run {program}: {e}"))?;
     // Read both pipes while waiting, so a long output never stalls git.
     let stdout = drain(child.stdout.take());
     let stderr = drain(child.stderr.take());
