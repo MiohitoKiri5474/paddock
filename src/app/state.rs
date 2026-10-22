@@ -330,7 +330,8 @@ impl App {
                 config.keys.commands.clone(),
                 config.keys.direct.clone(),
                 config.floats.list.iter().map(|f| f.key).collect(),
-            ),
+            )
+            .with_repeat(config.repeat),
             prefix_name: config.prefix.name(),
             keymap: config.keys.clone(),
             mode: Mode::Normal,

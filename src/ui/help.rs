@@ -12,22 +12,32 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
 /// The most of a float's command the help shows.
 const FLOAT_COMMAND: usize = 16;
 /// Columns between the two columns of command keys.
-const GAP: usize = 3;
-/// Columns for a command's keys before its description.
+const GAP: usize = 2;
+/// The least columns for a command's keys before its description; a
+/// column of cells widens them to its widest keys, so that its
+/// descriptions line up.
 const LABEL: usize = 6;
 /// The widest a line of sidebar or dashboard keys gets before wrapping.
 const HINT_WIDTH: usize = 69;
 /// Columns the box adds around the lines: borders and a space each side.
 const FRAME: usize = 4;
-/// Commands the help shows in one cell, by name, with the description
-/// they share there: a row saved keeps the help within 80x24.
-const PAIRED: &[(&str, &str, &str)] = &[
-    ("move_tab_left", "move_tab_right", "move tab left / right"),
+/// Commands the help shows in one shared cell, by name, with the
+/// description they share there: each row saved keeps the help within
+/// 80x24.
+const SHARED: &[(&[&str], &str)] = &[
     (
-        "sidebar_narrower",
-        "sidebar_wider",
+        &["move_tab_left", "move_tab_right"],
+        "move tab left / right",
+    ),
+    (
+        &["resize_left", "resize_down", "resize_up", "resize_right"],
+        "move split border ←↓↑→",
+    ),
+    (
+        &["sidebar_narrower", "sidebar_wider"],
         "sidebar narrower / wider",
     ),
+    (&["copy_mode", "search"], "copy mode / search history"),
 ];
 /// The prompt popup's keys, which are fixed (`Backspace` and `Delete`
 /// too, left out to fit one line).
@@ -59,7 +69,7 @@ pub fn lines(keys: &Keymap, floats: &Floats) -> Vec<String> {
     let mut i = 0;
     while i < shown.len() {
         let (b, k, chords) = shown[i];
-        if let Some((cell, next)) = paired(&shown, i) {
+        if let Some((cell, next)) = shared(&shown, i) {
             cells.push(cell);
             i = next;
             continue;
@@ -68,7 +78,7 @@ pub fn lines(keys: &Keymap, floats: &Floats) -> Vec<String> {
             [] => String::new(),
             _ => format!(" [{}]", label(chords)),
         };
-        cells.push(format!("{:<LABEL$} {}{chord}", label(k), b.help));
+        cells.push((label(k), format!("{}{chord}", b.help)));
         i += 1;
     }
     cells.extend(floats.list.iter().map(|f| {
@@ -78,7 +88,7 @@ pub fn lines(keys: &Keymap, floats: &Floats) -> Vec<String> {
         } else {
             ""
         };
-        format!("{:<LABEL$} float: {command}{cut}", f.key.name())
+        (f.key.name(), format!("float: {command}{cut}"))
     }));
     out.extend(two_columns(&cells));
     // No blank line before the panels' keys: their titles set them apart,
@@ -90,31 +100,54 @@ pub fn lines(keys: &Keymap, floats: &Floats) -> Vec<String> {
     out
 }
 
-/// The command at `shown[i]` and the one after it as one cell, if they are
-/// a pair of [`PAIRED`] with keys and no chords: the cell, and the index
-/// after the pair.
-fn paired(shown: &[(&Binding<Command>, &[Key], &[Key])], i: usize) -> Option<(String, usize)> {
-    let ((a, ka, ca), (b, kb, cb)) = (shown.get(i)?, shown.get(i + 1)?);
-    let (_, _, help) = PAIRED
-        .iter()
-        .find(|(first, second, _)| a.name == *first && b.name == *second)?;
-    if ka.is_empty() || kb.is_empty() || !ca.is_empty() || !cb.is_empty() {
+/// The command at `shown[i]` and the ones after it as one cell, if they
+/// are a group of [`SHARED`], each with keys and no chords: the cell, and
+/// the index after the group. Its keys are written apart, or together
+/// (`HJKL`) when apart they would not fit in [`LABEL`].
+fn shared(shown: &[(&Binding<Command>, &[Key], &[Key])], i: usize) -> Option<(Cell, usize)> {
+    let (names, help) = SHARED.iter().find(|(names, _)| {
+        let group = shown.get(i..i + names.len());
+        group.is_some_and(|g| g.iter().map(|(b, _, _)| b.name).eq(names.iter().copied()))
+    })?;
+    let group = &shown[i..i + names.len()];
+    if group.iter().any(|(_, k, c)| k.is_empty() || !c.is_empty()) {
         return None;
     }
-    let keys = format!("{} {}", label(ka), label(kb));
-    Some((format!("{keys:<LABEL$} {help}"), i + 2))
+    let keys: Vec<String> = group.iter().map(|(_, k, _)| label(k)).collect();
+    let apart = keys.join(" ");
+    let keys = if apart.chars().count() <= LABEL {
+        apart
+    } else {
+        keys.concat()
+    };
+    Some(((keys, help.to_string()), i + names.len()))
+}
+
+/// A cell of the two columns: a command's keys and what they do.
+type Cell = (String, String);
+
+/// One column's cells as text, the descriptions lined up after the
+/// column's widest keys (at least [`LABEL`]).
+fn column(cells: &[Cell]) -> Vec<String> {
+    let keys = cells.iter().map(|(k, _)| k.chars().count());
+    let width = keys.max().unwrap_or(0).max(LABEL);
+    cells
+        .iter()
+        .map(|(keys, what)| format!("{keys:<width$} {what}"))
+        .collect()
 }
 
 /// `cells` down the left column, then down the right one.
-fn two_columns(cells: &[String]) -> Vec<String> {
+fn two_columns(cells: &[Cell]) -> Vec<String> {
     let rows = cells.len().div_ceil(2);
-    let width = cells.iter().map(|c| c.chars().count()).max().unwrap_or(0) + GAP;
     let (left, right) = cells.split_at(rows);
-    left.iter()
+    let (left, right) = (column(left), column(right));
+    let width = left.iter().map(|c| c.chars().count()).max().unwrap_or(0) + GAP;
+    left.into_iter()
         .enumerate()
         .map(|(i, l)| match right.get(i) {
             Some(r) => format!("{l:<width$}{r}"),
-            None => l.clone(),
+            None => l,
         })
         .collect()
 }
@@ -201,42 +234,76 @@ mod tests {
         assert!(l.iter().any(|x| x.contains("o open_worktree")));
         assert!(l
             .iter()
-            .any(|x| x.contains("c      new tab in this space [C-M-c]")));
+            .any(|x| x.contains("c       new tab in this space [C-M-c]")));
         assert!(l.iter().any(|x| x.contains("l Right focus right [C-l]")));
-        assert!(l.iter().any(|x| x.contains("n      next tab   ")));
+        assert!(l.iter().any(|x| x.contains("n       next tab   ")));
         assert!(!l.iter().any(|x| x.contains("C-M-]") || x.contains("C-M-[")));
         assert!(l
             .iter()
-            .any(|x| x.contains("|      split side by side [C-\\]")));
+            .any(|x| x.contains("|       split side by side [C-\\]")));
         assert!(l
             .iter()
-            .any(|x| x.contains("-      split top and bottom [C--]")));
+            .any(|x| x.contains("-       split top and bottom [C--]")));
         assert!(l
             .iter()
             .any(|x| x.contains("x      close pane (asks if busy)")));
-        assert!(l.iter().any(|x| x.contains("1...9  go to tab")));
-        assert!(l.iter().any(|x| x.contains("R      set space root here")));
+        assert!(l.iter().any(|x| x.contains("1...9   go to tab")));
+        assert!(l.iter().any(|x| x.contains("R       set space root here")));
         assert!(l
             .iter()
             .any(|x| x.contains("g      find a space, tab or agent")));
         assert!(l.iter().any(|x| x.contains("G      float: lazygit")));
-        // Moving a tab left and right share a cell, as do sidebar widths.
-        assert!(l.iter().any(|x| x.contains("< >    move tab left / right")));
+        // Moving a tab left and right share a cell, as do sidebar widths,
+        // the four resize keys, and copy mode and search.
+        assert!(l
+            .iter()
+            .any(|x| x.contains("< >     move tab left / right")));
         assert!(l
             .iter()
             .any(|x| x.contains("{ }    sidebar narrower / wider")));
         assert!(l
             .iter()
+            .any(|x| x.contains("HJKL   move split border ←↓↑→")));
+        assert!(l
+            .iter()
             .any(|x| x.contains("z      zoom the focused split")));
         assert!(l
             .iter()
-            .any(|x| x.contains("[      copy mode: move, select, copy")));
-        assert!(l.iter().any(|x| x.contains("/      search the history")));
+            .any(|x| x.contains("[ /    copy mode / search history")));
         assert!(l.iter().any(|x| x.starts_with("Sidebar:   j down  k up")));
         assert!(l.iter().any(|x| x.contains("I interact  / filter")));
         assert!(l
             .iter()
             .any(|x| x.starts_with("Prompts:   Enter ok  Esc cancel")));
+    }
+
+    #[test]
+    fn descriptions_line_up_in_each_column() {
+        let l = lines(&Keymap::default(), &Floats::default());
+        // The column (in characters) where `text` starts on its line.
+        let at = |text: &str| -> usize {
+            let line = l.iter().find(|x| x.contains(text)).expect(text);
+            line[..line.find(text).unwrap()].chars().count()
+        };
+        // Left: single keys, the widest keys (`l Right`), a shared cell.
+        let left = [
+            "new tab in this space",
+            "focus right",
+            "go to tab",
+            "move tab left / right",
+            "even out the focused split",
+        ];
+        assert!(left.iter().all(|d| at(d) == at(left[0])), "{l:#?}");
+        // Right: the four resize keys, a pair, plain keys and a float.
+        let right = [
+            "move split border",
+            "zoom the focused split",
+            "sidebar narrower / wider",
+            "copy mode / search history",
+            "float: lazygit",
+        ];
+        assert!(right.iter().all(|d| at(d) == at(right[0])), "{l:#?}");
+        assert!(at(right[0]) > at(left[0]));
     }
 
     #[test]
@@ -264,19 +331,21 @@ mod tests {
             &[("focus_left", &[""]), ("help", &["F1"])],
         );
         let l = lines(&remapped, &Floats::default());
-        assert!(l.iter().any(|x| x.contains("t      new tab in this space")));
+        assert!(l
+            .iter()
+            .any(|x| x.contains("t       new tab in this space")));
         assert!(!l.iter().any(|x| x.contains("detach")));
         // A pair with one half unbound or on a chord shows apart.
         let apart = keys(&[("move_tab_left", &[])], &[]);
         let l = lines(&apart, &Floats::default());
-        assert!(l.iter().any(|x| x.contains(">      move tab right")));
-        assert!(!l.iter().any(|x| x.contains("left / right")));
+        assert!(l.iter().any(|x| x.contains(">       move tab right")));
+        assert!(!l.iter().any(|x| x.contains("tab left / right")));
         let chord = keys(&[], &[("move_tab_right", &["C-M-l"])]);
         let l = lines(&chord, &Floats::default());
-        assert!(l.iter().any(|x| x.contains("<      move tab left")));
+        assert!(l.iter().any(|x| x.contains("<       move tab left")));
         assert!(l
             .iter()
-            .any(|x| x.contains(">      move tab right [C-M-l]")));
+            .any(|x| x.contains(">       move tab right [C-M-l]")));
         let l = lines(&remapped, &Floats::default());
         assert!(l
             .iter()

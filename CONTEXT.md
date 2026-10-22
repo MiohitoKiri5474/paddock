@@ -21,7 +21,7 @@ The space whose tabs the tab bar shows. It has its own background in the sidebar
 One page of a space, holding one or more terminals arranged as splits. It is a tmux window of the space's session.
 
 **Split**:
-A terminal sharing its tab with others, beside or above them. It is a tmux pane; tmux keeps the layout.
+A terminal sharing its tab with others, beside or above them. It is a tmux pane; tmux keeps the layout and the sizes, which `C-a H/J/K/L` and dragging the border between two splits change.
 _Avoid_: window (that is a tab)
 
 **Zoom**:

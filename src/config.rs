@@ -3,6 +3,7 @@
 //! ```toml
 //! [keys]
 //! prefix = "C-b"
+//! repeat_ms = 500            # resize keys repeat without the prefix this long; 0: never
 //!
 //! [keys.commands]            # keys after the prefix, by action
 //! new_tab = "t"              # a key, a list of keys, or "" for none
@@ -57,9 +58,13 @@ use ratatui::style::Color;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 pub const FILE_NAME: &str = "config.toml";
 const DEFAULT_PREFIX: &str = "C-a";
+/// Milliseconds the resize keys work again without the prefix, as tmux's
+/// `repeat-time` does for `bind -r`.
+const DEFAULT_REPEAT_MS: u64 = 500;
 /// Columns the sidebar takes, border included, until resized.
 const DEFAULT_SIDEBAR_WIDTH: u16 = 32;
 /// A dark grey, a little darker than most dark themes' background.
@@ -75,6 +80,9 @@ const MS_PER_MIN: u64 = 60_000;
 pub struct Config {
     pub prefix: Key,
     pub keys: Keymap,
+    /// How long a repeating command's keys (resizing a split) work
+    /// without the prefix after it ran; zero for never.
+    pub repeat: Duration,
     /// Settings that work but may surprise, to show at start.
     pub warnings: Warnings,
     /// Background of the current space.
@@ -285,6 +293,7 @@ enum RawColor {
 #[serde(deny_unknown_fields)]
 struct RawKeys {
     prefix: Option<String>,
+    repeat_ms: Option<u64>,
     #[serde(default)]
     commands: RawSection,
     /// `None` while `[keys.direct]` is not written at all.
@@ -362,6 +371,7 @@ impl Config {
         Ok(Self {
             prefix,
             keys,
+            repeat: Duration::from_millis(raw.keys.repeat_ms.unwrap_or(DEFAULT_REPEAT_MS)),
             warnings,
             current_space: colour(c.current_space, DEFAULT_CURRENT_SPACE)?,
             tabs: TabColors {
@@ -396,6 +406,7 @@ impl Default for Config {
         Self {
             prefix,
             keys,
+            repeat: Duration::from_millis(DEFAULT_REPEAT_MS),
             warnings,
             current_space: DEFAULT_CURRENT_SPACE,
             tabs: TabColors::default(),
@@ -416,7 +427,9 @@ pub fn default_keys_toml() -> String {
          # (~/.config/paddock/{FILE_NAME}); \"\" unbinds an action.\n\
          # Not configurable: the prefix pressed twice sends it to the terminal,\n\
          # and Esc always leaves typing into the dashboard preview.\n\
-         [keys]\nprefix = \"{DEFAULT_PREFIX}\"\n\n{}\n{}",
+         [keys]\nprefix = \"{DEFAULT_PREFIX}\"\n\
+         # ms the resize keys work again without the prefix; 0 turns it off\n\
+         repeat_ms = {DEFAULT_REPEAT_MS}\n\n{}\n{}",
         Keymap::default().toml(),
         Floats::default().toml()
     )
@@ -453,6 +466,21 @@ mod tests {
         assert_eq!(Config::parse("").unwrap().prefix, ctrl('a'));
         assert_eq!(Config::parse("[keys]\n").unwrap().prefix, ctrl('a'));
         assert_eq!(Config::default().prefix, ctrl('a'));
+    }
+
+    #[test]
+    fn the_repeat_window_is_500_ms_unless_set_and_0_turns_it_off() {
+        let ms = Duration::from_millis;
+        assert_eq!(Config::default().repeat, ms(500));
+        assert_eq!(Config::parse("").unwrap().repeat, ms(500));
+        let parse = |t: &str| Config::parse(&format!("[keys]\nrepeat_ms = {t}\n"));
+        assert_eq!(parse("300").unwrap().repeat, ms(300));
+        assert_eq!(parse("0").unwrap().repeat, Duration::ZERO);
+        for bad in ["-1", "\"500\"", "0.5"] {
+            assert!(parse(bad).is_err(), "{bad}");
+        }
+        let printed = Config::parse(&default_keys_toml()).unwrap();
+        assert_eq!(printed.repeat, ms(500));
     }
 
     #[test]
@@ -603,6 +631,8 @@ mod tests {
     fn the_printed_default_keys_read_back_as_the_defaults() {
         let text = default_keys_toml();
         assert!(text.contains("[keys.commands]\nnew_tab = \"c\""), "{text}");
+        assert!(text.contains("resize_left = \"H\""), "{text}");
+        assert!(text.contains("repeat_ms = 500"), "{text}");
         assert!(
             text.contains("[keys.direct]\nnew_tab = \"C-M-c\""),
             "{text}"

@@ -347,6 +347,30 @@ impl Server {
         self.run(&["resize-pane", "-Z", "-t", pane]).map(drop)
     }
 
+    /// Move `pane`'s border in direction `flag` (`-L`, `-R`, `-U`, `-D`) by
+    /// `cells`. tmux stops at its smallest pane without an error, and
+    /// unzooms the window first.
+    pub fn resize(&self, pane: &str, flag: &str, cells: u16) -> Result<()> {
+        let cells = cells.to_string();
+        self.run(&["resize-pane", flag, "-t", pane, &cells])
+            .map(drop)
+    }
+
+    /// Make `pane`'s layout cell `size` columns wide (`columns`) or rows
+    /// high, moving the border [`super::layout::Border`] names.
+    pub fn resize_to(&self, pane: &str, columns: bool, size: u16) -> Result<()> {
+        let flag = if columns { "-x" } else { "-y" };
+        let size = size.to_string();
+        self.run(&["resize-pane", "-t", pane, flag, &size])
+            .map(drop)
+    }
+
+    /// Window `window`'s layout as tmux writes it (`#{window_layout}`).
+    pub fn layout(&self, window: &str) -> Result<String> {
+        let out = self.run(&["display-message", "-p", "-t", window, "#{window_layout}"])?;
+        Ok(out.trim_end().to_string())
+    }
+
     pub fn rename_session(&self, id: &str, name: &str) -> Result<()> {
         self.run(&["rename-session", "-t", id, &unexpanded(name)])
             .map(drop)

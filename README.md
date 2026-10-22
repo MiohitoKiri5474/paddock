@@ -139,6 +139,10 @@ Every key is an action with a name you can rebind (see [Configure](#configure));
 | `k` `Up` | focus up | `focus_up` |
 | `l` `Right` | focus right | `focus_right` |
 | `=` | even out the focused split | `equalize` |
+| `H` | move split border left | `resize_left` |
+| `J` | move split border down | `resize_down` |
+| `K` | move split border up | `resize_up` |
+| `L` | move split border right | `resize_right` |
 | `z` | zoom the focused split | `zoom` |
 | `x` | close pane (asks if busy) | `close` |
 | `f` | fork Claude into a new tab | `fork` |
@@ -161,6 +165,8 @@ Every key is an action with a name you can rebind (see [Configure](#configure));
 `C-a` pressed twice sends a literal `C-a`. `go_to_tab`'s first key goes to tab 1, its second to tab 2, and so on. `close` closes the pane; the last one closes its tab, the last tab its space, and it asks first if Claude is busy. Renaming, naming a new space (prefilled with `space-N`; `Enter` keeps it) and that question open a small box in the middle of the screen; `Esc` or a click outside it cancels. `{`/`}` can also be done by dragging the sidebar's border.
 
 Zoom: `C-a z` makes the focused split fill its tab, and the tab bar shows a `Z` after the tab's name; `C-a z` again gives every split its place back, with the focus where it was. The other splits are hidden but keep running. Moving the focus (`C-a h/j/k/l`, a direct chord, or `C-a a` and the finder jumping to a hidden split), splitting, evening out (`C-a =`), or closing the zoomed split undoes the zoom first, as in tmux. With a float shown, `C-a z` hides the float, then zooms. The zoom lives in tmux (`resize-pane -Z`), so it survives detaching, and a zoom made in `tmux -L paddock attach` shows in paddock too. A Claude in a hidden split that finishes a turn stays `done` until you see it. `zoom` has no direct chord by default.
+
+Resizing: `C-a H`, `J`, `K` and `L` move the focused split's border left, down, up or right by 2 columns (or rows), the way tmux's `resize-pane` does: the border after the split, or the one before it for the last split of a row or column. After `C-a H`, the four keys work again without the prefix for 500 ms, each press starting the wait over, as tmux's `bind -r` does: `C-a H H H` moves the border 6 columns. Any other key ends that and is read as usual (so `H` typed later goes to the terminal); `[keys] repeat_ms` sets the wait, and `0` turns it off. You can also press on the line between two splits and drag it: the splits follow the pointer, and the size is kept on release. A press on that line never selects text. Dragging needs tmux 3.8 or later, whose layout paddock reads as JSON (`#{window_layout}`); with an older tmux a drag on that line does nothing, and the keys still work. A split stops at 1 column or row, without a message. The sizes live in tmux, so they survive detaching; `C-a =` evens them out again, and resizing a zoomed tab unzooms it first, as in tmux. The resize keys have no direct chord by default.
 
 The finder (`C-a g`) opens a box framed like the prompts: a text field on top and, under it, every space (name, directory, branch), every tab (`space › tab`, directory, branch) and every agent (name, state, `space › tab`), each with its kind as a marker. Typing filters them fuzzily (case-insensitive unless you type an uppercase letter; contiguous and word-start matches rank first) against name, kind, directory and branch, best match first. `Up`/`Down` (or `C-p`/`C-n`) move, `Enter` shows the one selected (its space and tab, with its pane focused), `Esc` or a click outside cancels (a float shown stays shown); a click on a row opens it and the wheel moves the selection. While the field is empty, `b`, `w`, `i` and `d` show only agents that are waiting (blocked), running (working), idle or done, `a` all again, and the title says which; with text in the field they are ordinary characters. The finder's keys are fixed, except that `finder` in `[keys.commands]` names the key that opens it.
 
@@ -201,7 +207,7 @@ In the dashboard (`[keys.dashboard]`):
 
 While typing into the preview, every key goes to the terminal except `Esc`, which only leaves and is never passed on; this is fixed, so a remap can never trap you there. `/` opens a one-line filter under the dashboard's title: the list keeps only the blocks whose session name, branch or state fuzzy-match what you type; `Enter` keeps the filter and returns the keys to the list, `Esc` clears it and leaves the filter line. Task rows show line changes, ahead/behind, the diff and changed files against the base branch (`origin/HEAD`, else `main`/`master`), the last commit's age, and `merged` once the branch is in its base. Prompt editing (`Enter`, `Esc`, `Left`/`Right`, `Home`/`End`, `Backspace`/`Delete`, `C-u` (clear), `C-w` (delete word)), the dashboard filter's keys (the same editing; `Enter` keeps, `Esc` clears) and the `y` that confirms a close or a worktree delete are fixed too, as are `j`/`k`/`Enter`/`Esc` in the worktree list.
 
-Mouse: click to focus a split, switch tabs (`+` after the tabs opens one, `<`/`>` scroll a full bar), or open a space or agent; the wheel over the tab bar switches tabs; wheel scrolls history; drag selects and copies (hold Shift over programs that use the mouse).
+Mouse: click to focus a split, switch tabs (`+` after the tabs opens one, `<`/`>` scroll a full bar), or open a space or agent; the wheel over the tab bar switches tabs; wheel scrolls history; drag selects and copies (hold Shift over programs that use the mouse); dragging the line between two splits resizes them, and dragging the sidebar's border resizes the sidebar.
 
 #### Copy mode
 
@@ -258,6 +264,7 @@ Some commands also fire on one chord, no prefix (`[keys.direct]`), whenever a te
 ```toml
 [keys]
 prefix = "C-a"
+repeat_ms = 500           # resize keys work again without the prefix this long; 0 turns it off
 
 [keys.commands]           # keys after the prefix, by action name
 new_tab = "t"             # one key...
@@ -328,7 +335,7 @@ Once you resize the sidebar (`C-a {`, `C-a }` or dragging its border), paddock s
 
 After the prefix, Shift does not matter for a key bound without it (Shift+arrows move focus too); in the sidebar and the dashboard, neither do Ctrl and Shift. A key bound with the modifier wins. A direct chord matches only as bound.
 
-paddock refuses to start, naming the file and the setting, on an unknown action or section, a key it cannot read, a key listed twice for one action, a key bound to two actions in the same section (unbind one with `""`, even a default), or the prefix key inside a `[keys.…]` section. In `[floats]` the keys use the same syntax and are refused the same way when they cannot be read, are listed twice, are the prefix, or are bound in `[keys.commands]` (the default `G` too: write `G = ""` to free it); `width` and `height` are whole percents from 1 to 100. `g` now opens the finder, so a float you had on `[floats] g` must move to another key (lazygit's default moved to `G`).
+paddock refuses to start, naming the file and the setting, on an unknown action or section, a key it cannot read, a key listed twice for one action, a key bound to two actions in the same section (unbind one with `""`, even a default), or the prefix key inside a `[keys.…]` section. In `[floats]` the keys use the same syntax and are refused the same way when they cannot be read, are listed twice, are the prefix, or are bound in `[keys.commands]` (the default `G` too: write `G = ""` to free it); `width` and `height` are whole percents from 1 to 100. `g` now opens the finder, so a float you had on `[floats] g` must move to another key (lazygit's default moved to `G`). Likewise `H`, `J`, `K` and `L` now resize splits: a float or another command on one of them must move, or free the key with `resize_left = ""` (and so on) in `[keys.commands]`.
 
 ## Worktree command
 
