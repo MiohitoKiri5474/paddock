@@ -3,7 +3,7 @@
 //! terminal per pane, the agent sessions in them, and what the keyboard is
 //! doing (typing into the focused pane, naming, finding, reading help).
 
-use super::attention::Attention;
+use super::attention::{Attention, PendingStatus};
 use super::copy::CopyMode;
 use super::dashboard::Dashboard;
 use super::finder::Finder;
@@ -27,7 +27,7 @@ use crate::hooks::now_ms;
 use crate::input::keymap::Keymap;
 use crate::input::line::LineEdit;
 use crate::input::PrefixKeys;
-use crate::sessions::{dismissed, ProgramState, Session, Sessions, State};
+use crate::sessions::{dismissed, Session, Sessions, State};
 use crate::terminal::Terminal;
 use crate::tmux::structure::Window;
 use crate::tmux::Server;
@@ -247,7 +247,7 @@ pub struct App {
     pub(super) agy_running: Arc<AtomicBool>,
     /// Per pane, agy's latest status report (its state and when it came)
     /// waiting for the pane's agy session (see [`App::record_status`]).
-    pub(super) pending_status: HashMap<String, (ProgramState, u64)>,
+    pub(super) pending_status: HashMap<String, PendingStatus>,
     pub(super) sessions: Sessions,
     pub(super) task_status: TaskStatus,
     pub(super) task_details: TaskDetails,

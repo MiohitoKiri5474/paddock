@@ -185,7 +185,8 @@ fn reports_from_other_programs_or_without_a_session_change_nothing() {
         !paddock.full_screen().contains("● repo")
     });
     write_to(&sandbox, "space-1:0", &status("blocked", Some("auth")));
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    // More than the 1 s a report may come before its session starts.
+    std::thread::sleep(std::time::Duration::from_millis(1_500));
     assert!(sandbox.notifications().is_empty());
     assert!(!paddock.full_screen().contains("● repo"));
     // agy started again on the same conversation (a resume).
@@ -252,6 +253,48 @@ fn a_report_right_after_the_start_hook_waits_for_its_session() {
     write_to(&sandbox, "space-1:0", &status("blocked", Some("auth")));
     wait_row(&paddock, "waiting", &["● repo", "waiting"]);
     assert_eq!(server_log(&sandbox).matches("OSC7501").count(), 1);
+}
+
+/// The state on the session row of `repo`, if there is one.
+fn repo_state(paddock: &Paddock) -> Option<&'static str> {
+    let rows = paddock.full_rows();
+    let row = rows.iter().find(|l| l.contains("● repo"))?;
+    ["waiting", "done", "idle", "running"]
+        .into_iter()
+        .find(|s| row.contains(s))
+}
+
+#[test]
+fn a_report_just_before_its_session_starts_folds_the_same_live_and_on_replay() {
+    let sandbox = Sandbox::new();
+    stub_agy(&sandbox);
+    let mut paddock = ready(&sandbox);
+    start_agy(&sandbox, &paddock, "space-1:0");
+    // The report comes before agy's first hooks, within the 1 s it may.
+    write_to(&sandbox, "space-1:0", &status("blocked", Some("auth")));
+    agy(&sandbox, "space-1:0", &["SessionStart", "PreInvocation"]);
+    paddock.wait_for("the report and both hooks", |_| {
+        server_log(&sandbox).contains("OSC7501")
+            && matches!(repo_state(&paddock), Some("waiting" | "running"))
+    });
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let live = repo_state(&paddock);
+    // Written no earlier than any hook folded before it.
+    let log = server_log(&sandbox);
+    let ts = |event: &str| -> u64 {
+        log.lines()
+            .map(|l| serde_json::from_str::<Value>(l).unwrap())
+            .find(|v| v["event"] == event)
+            .and_then(|v| v["ts"].as_u64())
+            .unwrap()
+    };
+    assert!(ts("OSC7501") >= ts("SessionStart"), "{log}");
+
+    paddock.detach_keys();
+    assert!(paddock.wait_exit());
+    let again = ready(&sandbox);
+    again.wait_for("the replayed row", |_| repo_state(&again).is_some());
+    assert_eq!(repo_state(&again), live, "{log}");
 }
 
 #[test]

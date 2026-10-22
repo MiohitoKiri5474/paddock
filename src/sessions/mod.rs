@@ -217,23 +217,18 @@ pub const STATUS: &str = "OSC7501";
 /// The `app` Antigravity names itself in its status reports.
 pub const AGY_APP: &str = "antigravity";
 
-/// The record of a status report with `state` from program `app`, written
-/// in pane `pane` at `ts` (ms): `None` unless Antigravity wrote it (other
-/// programs report too, and say nothing of a session).
-pub fn status_record(
-    pane: &str,
-    app: Option<&str>,
-    state: ProgramState,
-    ts: u64,
-) -> Option<HookRecord> {
-    (app == Some(AGY_APP)).then(|| HookRecord {
+/// The record of Antigravity's status report `state`, written in pane
+/// `pane`, at `ts` (ms). Other programs' reports (another `app`) say
+/// nothing of a session and get none.
+pub fn status_record(pane: &str, state: ProgramState, ts: u64) -> HookRecord {
+    HookRecord {
         event: STATUS.to_string(),
         pane: pane.to_string(),
         status: Some(state),
         kind: AgentKind::Agy,
         ts,
         ..HookRecord::default()
-    })
+    }
 }
 
 /// The session state an event leads to, if it changes it.
@@ -780,8 +775,14 @@ impl Sessions {
             .is_some_and(|s| s.kind == AgentKind::Agy && !s.ended())
     }
 
+    /// When paddock last heard of pane `pane`'s session (ms since the
+    /// epoch): its latest record.
+    pub fn last_heard(&self, pane: &str) -> Option<u64> {
+        self.by_pane.get(pane).map(|s| s.alive)
+    }
+
     /// Whether pane `pane` runs a live Antigravity session that had
-    /// started by `ts` (ms): a report made then is about it.
+    /// started by `ts` (ms).
     pub fn agy_live_by(&self, pane: &str, ts: u64) -> bool {
         self.agy_live_in(pane) && self.by_pane[pane].started <= ts
     }
@@ -1141,7 +1142,7 @@ mod tests {
     /// Antigravity's status report `state` in pane `%1` at `ts`.
     pub(super) fn agy_status(state: &str, ts: u64) -> HookRecord {
         let state = ProgramState::parse(state).unwrap();
-        status_record("%1", Some(AGY_APP), state, ts).unwrap()
+        status_record("%1", state, ts)
     }
 
     /// The conversation id in the Antigravity fixtures.
@@ -1200,9 +1201,9 @@ mod tests {
     }
 
     #[test]
-    fn only_antigravitys_status_reports_are_recorded() {
+    fn a_status_record_is_antigravitys() {
         let blocked = ProgramState::Blocked;
-        let r = status_record("%3", Some("antigravity"), blocked, 7).unwrap();
+        let r = status_record("%3", blocked, 7);
         assert_eq!(r.event, STATUS);
         assert_eq!(r.pane, "%3");
         assert_eq!(r.kind, AgentKind::Agy);
@@ -1212,8 +1213,6 @@ mod tests {
         let line = serde_json::to_string(&r).unwrap();
         assert!(line.contains(r#""status":"blocked""#), "{line}");
         assert_eq!(serde_json::from_str::<HookRecord>(&line).unwrap(), r);
-        assert_eq!(status_record("%3", Some("brew"), blocked, 7), None);
-        assert_eq!(status_record("%3", None, blocked, 7), None);
     }
 
     #[test]

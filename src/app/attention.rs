@@ -89,8 +89,18 @@ impl Notify {
 
 /// How long (ms) a status report from a terminal with no agy session yet
 /// waits for one: a few log polls, so the `SessionStart` agy ran before it
-/// is folded.
+/// is folded. Also how much earlier than its session's start a report may
+/// be made and still belong to it.
 const STATUS_WAIT_MS: u64 = 1_000;
+
+/// agy's latest status report from a terminal with no agy session yet,
+/// waiting for one (see [`App::record_status`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct PendingStatus {
+    pub state: ProgramState,
+    /// When the report came (ms since the epoch).
+    pub ts: u64,
+}
 
 /// The last alert of each terminal's session, so that one wait or one
 /// finished turn notifies once however many hooks report it.
@@ -240,8 +250,8 @@ impl App {
     ///
     /// A hook reaches the app up to a log poll after it ran, so agy's
     /// first report may come before its `SessionStart` is folded: the
-    /// latest report of a pane with no agy session yet waits (see
-    /// [`App::retry_status`]) up to [`STATUS_WAIT_MS`] for one.
+    /// latest report of a pane with no agy session yet waits for one (see
+    /// [`App::retry_status`]).
     pub(super) fn record_status(&mut self, pane: &str, reports: &[Report]) {
         let ts = now_ms();
         for r in reports {
@@ -252,26 +262,36 @@ impl App {
                 self.pending_status.remove(pane);
                 self.write_status(pane, r.state, ts);
             } else {
-                self.pending_status.insert(pane.to_string(), (r.state, ts));
+                let pending = PendingStatus { state: r.state, ts };
+                self.pending_status.insert(pane.to_string(), pending);
             }
         }
     }
 
-    /// Record the reports that waited for their pane's agy session (see
-    /// [`App::record_status`]) once it is there, if it had started when
-    /// they were made; drop the others, and those that waited too long.
+    /// Go over the reports waiting for their pane's agy session (see
+    /// [`App::record_status`]), in this order:
+    /// - the pane runs a live agy session that started at most
+    ///   [`STATUS_WAIT_MS`] after the report came: it is recorded, after
+    ///   the session's latest record;
+    /// - the pane runs a live agy session that started later than that:
+    ///   the report is about an earlier one, and is dropped;
+    /// - no live agy session there yet: it waits on until it is
+    ///   [`STATUS_WAIT_MS`] old, then is dropped.
     pub(super) fn retry_status(&mut self) {
         let now = now_ms();
         let pending = std::mem::take(&mut self.pending_status);
-        for (pane, (state, ts)) in pending {
-            if self.sessions.agy_live_by(&pane, ts) {
-                self.write_status(&pane, state, ts);
-            } else if !self.sessions.agy_live_in(&pane) && now.saturating_sub(ts) <= STATUS_WAIT_MS
+        for (pane, p) in pending {
+            let ours = p.ts.saturating_add(STATUS_WAIT_MS);
+            if self.sessions.agy_live_by(&pane, ours) {
+                // Never before a record already folded, so a replay of the
+                // log folds it where it was folded now.
+                let after = self.sessions.last_heard(&pane).unwrap_or(0);
+                self.write_status(&pane, p.state, p.ts.max(after));
+            } else if !self.sessions.agy_live_in(&pane)
+                && now.saturating_sub(p.ts) <= STATUS_WAIT_MS
             {
-                self.pending_status.insert(pane, (state, ts));
+                self.pending_status.insert(pane, p);
             }
-            // Otherwise it came before this session started, or too long
-            // ago: dropped.
         }
     }
 
@@ -285,9 +305,7 @@ impl App {
         if !self.sessions.is_new_status(pane, state) {
             return;
         }
-        let Some(record) = sessions::status_record(pane, Some(sessions::AGY_APP), state, ts) else {
-            return;
-        };
+        let record = sessions::status_record(pane, state, ts);
         match log::append(&path, &record) {
             Ok(()) => self.sessions.note_status(pane, state),
             Err(e) => self.notice = Some(format!("{e:#}")),
@@ -421,7 +439,7 @@ mod tests {
 
     fn agy_status(state: &str) -> HookRecord {
         let state = ProgramState::parse(state).unwrap();
-        sessions::status_record("%1", Some("antigravity"), state, 0).unwrap()
+        sessions::status_record("%1", state, 0)
     }
 
     #[test]
@@ -606,7 +624,7 @@ mod tests {
         // A status report names no conversation: it is the pane's.
         let status = |state: &str| {
             let state = ProgramState::parse(state).unwrap();
-            sessions::status_record("%1", Some("antigravity"), state, 0).unwrap()
+            sessions::status_record("%1", state, 0)
         };
         let got = alerts(&[
             agy("SessionStart"),
