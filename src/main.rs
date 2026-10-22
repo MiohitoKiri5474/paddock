@@ -64,7 +64,7 @@ mod tests {
     use super::version;
 
     #[test]
-    fn version_flag_prints_the_cargo_version() {
+    fn version_prints_the_cargo_version() {
         let expected = format!("paddock {}", env!("CARGO_PKG_VERSION"));
         assert_eq!(version(&["--version"]), Some(expected.clone()));
         assert_eq!(version(&["-V"]), Some(expected.clone()));
@@ -72,7 +72,7 @@ mod tests {
     }
 
     #[test]
-    fn version_flag_needs_to_stand_alone() {
+    fn version_needs_to_stand_alone() {
         assert_eq!(version(&[]), None);
         assert_eq!(version(&["-v"]), None);
         assert_eq!(version(&["version", "x"]), None);
