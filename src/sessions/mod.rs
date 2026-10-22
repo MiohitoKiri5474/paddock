@@ -628,8 +628,8 @@ impl Sessions {
                 .by_pane
                 .entry(pane.clone())
                 .or_insert_with(|| Session::new(Some(a.session_id.clone())));
-            // The snapshot lists Claude's sessions only: a live session of a
-            // kind without a snapshot is left to its hooks.
+            // A live session of a kind without a snapshot is not in this
+            // one: it is left to its hooks.
             if !s.ended() && !s.kind.has_snapshot() {
                 continue;
             }

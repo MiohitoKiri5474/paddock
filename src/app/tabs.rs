@@ -294,7 +294,8 @@ impl App {
         .unwrap_or_default()
     }
 
-    /// End pane `pane`, first asking if Claude there is running or waiting.
+    /// End pane `pane`, first asking if an agent there is running or
+    /// waiting.
     /// tmux closes its tab with its last pane, and its space with its last
     /// tab, and reports each.
     pub fn close(&mut self, pane: &str) -> Result<()> {

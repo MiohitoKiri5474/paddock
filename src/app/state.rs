@@ -1,6 +1,6 @@
 //! What the running app holds: the spaces (tmux sessions, ADR 0006),
 //! each with its tabs (windows) and splits (panes) as tmux has them, a
-//! terminal per pane, the Claude sessions in them, and what the keyboard is
+//! terminal per pane, the agent sessions in them, and what the keyboard is
 //! doing (typing into the focused pane, naming, finding, reading help).
 
 use super::attention::Attention;

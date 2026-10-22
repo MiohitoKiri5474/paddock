@@ -39,7 +39,7 @@
 //! second line is dim and names its space and tab; the current agent (the
 //! one in the focused terminal) has the current space's background too.
 //! While the sidebar has the keyboard, the selected space or agent is drawn
-//! reversed. External sessions (Claude outside paddock's terminals) close
+//! reversed. External sessions (agents outside paddock's terminals) close
 //! AGENTS under their own header, dim, their second line naming their branch
 //! (else their directory).
 
