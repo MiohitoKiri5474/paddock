@@ -35,7 +35,8 @@ use anyhow::{Context, Result};
 use crossterm::event as ct;
 use signal_hook::consts::SIGTERM;
 use signal_hook::iterator::Signals;
-use std::sync::mpsc;
+use std::collections::HashMap;
+use std::sync::{mpsc, Arc};
 
 /// Everything the event loop waits on, from tmux and from the outer terminal.
 pub enum Event {
@@ -51,6 +52,9 @@ pub enum Event {
     Hooks(Vec<HookRecord>),
     /// A `claude agents --json` snapshot and when it was taken (ms).
     Agents(u64, Vec<Agent>),
+    /// Each pane's `pane_current_command`, by pane id, and when it was
+    /// read (ms).
+    Commands(u64, HashMap<String, String>),
     /// Git status just read for tasks, by `(directory, branch)`.
     Git(Vec<((String, String), Status)>),
     /// Dashboard details just read for tasks, by `(directory, branch)`.
@@ -85,7 +89,7 @@ pub fn run() -> Result<()> {
 
     let (screen_guard, mut screen) = screen::ScreenGuard::enter()?;
     let size = screen.size().context("cannot read the terminal size")?;
-    let app = state::App::start(
+    let mut app = state::App::start(
         server,
         &config,
         (size.width, size.height),
@@ -93,7 +97,15 @@ pub fn run() -> Result<()> {
         start_dir,
         state_dir.clone(),
     )?;
-    let git = watch::start(&app.server, &state_dir, &tx)?;
+    let events_log = watch::server_log(&app.server, &state_dir)?;
+    app.events_log = Some(events_log.clone());
+    let git = watch::start(
+        &app.server,
+        events_log,
+        Arc::clone(&app.agy_running),
+        &state_dir,
+        &tx,
+    )?;
 
     // Only now may another thread read stdin (ratatui has finished its queries).
     std::thread::spawn(move || {

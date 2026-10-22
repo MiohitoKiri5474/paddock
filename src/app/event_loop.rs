@@ -171,6 +171,8 @@ fn handle(
         Event::Detach => Ok((Flow::Quit, true)),
         Event::Hooks(records) => {
             app.hooks(&records);
+            app.retry_status();
+            app.note_agy_running();
             Ok((Flow::Continue, true))
         }
         Event::Agents(taken, agents) => {
@@ -186,6 +188,11 @@ fn handle(
                 app.report(App::save_dismissed);
             }
             Ok((Flow::Continue, true))
+        }
+        Event::Commands(taken, commands) => {
+            let ended = app.sessions.end_exited(taken, &commands);
+            app.note_agy_running();
+            Ok((Flow::Continue, ended))
         }
         Event::Git(read) => {
             app.task_status.extend(read);
@@ -243,6 +250,10 @@ fn handle_tmux(app: &mut App, session: &str, msg: Message) -> TmuxHandled {
             }
             if let Some(t) = app.terminals.get_mut(&pane) {
                 t.output(&data);
+                let reports = t.take_reports();
+                if !reports.is_empty() {
+                    app.record_status(&pane, &reports);
+                }
             }
             TmuxHandled {
                 flow: Flow::Continue,

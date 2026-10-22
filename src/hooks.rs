@@ -1,7 +1,7 @@
 //! Agent hooks. For Claude Code, the paddock plugin carries them
 //! (`plugins/paddock/hooks/hooks.json`); `paddock hooks install|uninstall`
 //! edits each agent's settings file (Claude's for users without the plugin,
-//! Gemini CLI's always); `paddock hook
+//! Gemini CLI's and Antigravity CLI's always); `paddock hook
 //! [--agent <kind>] <event>` records one event (no `--agent`: Claude's, as
 //! the hooks installed before kinds existed call it).
 
@@ -42,6 +42,30 @@ pub const GEMINI_EVENTS: &[&str] = &[
     "SessionEnd",
 ];
 
+/// The Antigravity CLI events paddock listens to. Not `PreToolUse`: agy
+/// needs a decision from it. Not `PostToolUse` or `PostInvocation`: they
+/// change no state paddock shows (agy's status reports do, in paddock's
+/// terminals).
+pub const AGY_EVENTS: &[&str] = &["SessionStart", "PreInvocation", "Stop"];
+
+/// The `timeout` of paddock's Antigravity hooks, in seconds (agy's unit;
+/// its default is 30 s), as for Gemini.
+const AGY_TIMEOUT_S: u64 = 10;
+
+/// The name of paddock's entry in Antigravity's `hooks.json`, which is
+/// keyed by hook name: `{"paddock": {"<event>": [...]}}`.
+pub const AGY_HOOK_NAME: &str = "paddock";
+
+/// What `paddock hook` prints for an event of `kind`. Claude and Gemini
+/// show a hook's output to the model, so it prints nothing; Antigravity
+/// reads a JSON reply, and `{}` asks nothing of it for any event.
+fn reply(kind: AgentKind) -> &'static str {
+    match kind {
+        AgentKind::Claude | AgentKind::Gemini => "",
+        AgentKind::Agy => "{}",
+    }
+}
+
 /// The `timeout` of paddock's Gemini hooks, in milliseconds: a hung
 /// `paddock` stalls Gemini 10 s at most (Gemini's default is 60 s), as the
 /// plugin's hooks bound Claude.
@@ -67,6 +91,7 @@ fn restart(kind: AgentKind) -> String {
         match kind {
             AgentKind::Claude => "Claude",
             AgentKind::Gemini => "Gemini",
+            AgentKind::Agy => "Antigravity",
         }
     )
 }
@@ -76,13 +101,15 @@ fn events(kind: AgentKind) -> &'static [&'static str] {
     match kind {
         AgentKind::Claude => EVENTS,
         AgentKind::Gemini => GEMINI_EVENTS,
+        AgentKind::Agy => AGY_EVENTS,
     }
 }
 
 /// Where `kind` reads its user hooks. Claude:
 /// `$CLAUDE_CONFIG_DIR/settings.json`, else `~/.claude/settings.json`.
 /// Gemini: `$GEMINI_CLI_HOME/.gemini/settings.json`, else
-/// `~/.gemini/settings.json`.
+/// `~/.gemini/settings.json`. Antigravity: `~/.gemini/config/hooks.json`
+/// (its docs name no variable that moves it).
 pub fn settings_path(kind: AgentKind, var: impl Fn(&str) -> Option<String>) -> Result<PathBuf> {
     let non_empty = |k: &str| var(k).filter(|v| !v.is_empty());
     match kind {
@@ -101,6 +128,10 @@ pub fn settings_path(kind: AgentKind, var: impl Fn(&str) -> Option<String>) -> R
                 .context("HOME is not set")?;
             Ok(PathBuf::from(home).join(".gemini").join("settings.json"))
         }
+        AgentKind::Agy => {
+            let home = non_empty("HOME").context("HOME is not set")?;
+            Ok(PathBuf::from(home).join(".gemini/config/hooks.json"))
+        }
     }
 }
 
@@ -110,13 +141,16 @@ pub fn settings_path(kind: AgentKind, var: impl Fn(&str) -> Option<String>) -> R
 fn hook_command(exe: &str, kind: AgentKind, event: &str) -> String {
     match kind {
         AgentKind::Claude => format!("{} hook {event}", quote(exe)),
-        AgentKind::Gemini => format!("{} hook --agent {} {event}", quote(exe), kind.tag()),
+        AgentKind::Gemini | AgentKind::Agy => {
+            format!("{} hook --agent {} {event}", quote(exe), kind.tag())
+        }
     }
 }
 
 /// The group `install` writes for `event` of `kind`: one command hook.
 /// Claude's has no timeout (as before kinds existed); Gemini's has
-/// [`GEMINI_TIMEOUT_MS`].
+/// [`GEMINI_TIMEOUT_MS`]. Antigravity's events paddock listens to take
+/// their command hooks directly, not in groups: [`AGY_TIMEOUT_S`].
 fn hook_group(exe: &str, kind: AgentKind, event: &str) -> Value {
     let command = hook_command(exe, kind, event);
     match kind {
@@ -124,6 +158,7 @@ fn hook_group(exe: &str, kind: AgentKind, event: &str) -> Value {
         AgentKind::Gemini => json!({"hooks": [
             {"type": "command", "command": command, "timeout": GEMINI_TIMEOUT_MS}
         ]}),
+        AgentKind::Agy => json!({"type": "command", "command": command, "timeout": AGY_TIMEOUT_S}),
     }
 }
 
@@ -193,7 +228,44 @@ fn remove_hooks(settings: &mut Value, matches: impl Fn(&str) -> bool) {
 
 /// `kind`'s settings with paddock's hooks (calling `exe`) and without old
 /// ones.
-pub fn install(mut settings: Value, exe: &str, kind: AgentKind) -> Result<Value> {
+pub fn install(settings: Value, exe: &str, kind: AgentKind) -> Result<Value> {
+    match kind {
+        AgentKind::Claude | AgentKind::Gemini => install_events(settings, exe, kind),
+        AgentKind::Agy => install_named(settings, exe, kind),
+    }
+}
+
+/// Settings without paddock's hooks; everything else stays.
+pub fn uninstall(mut settings: Value, kind: AgentKind) -> Value {
+    match kind {
+        AgentKind::Claude | AgentKind::Gemini => remove_hooks(&mut settings, is_ours),
+        AgentKind::Agy => {
+            if let Some(obj) = settings.as_object_mut() {
+                obj.remove(AGY_HOOK_NAME);
+            }
+        }
+    }
+    settings
+}
+
+/// [`install`] in a hooks file keyed by hook name (Antigravity's): the
+/// entry [`AGY_HOOK_NAME`], replaced whole, lists each event's hook. Other
+/// named hooks stay as they are.
+fn install_named(mut settings: Value, exe: &str, kind: AgentKind) -> Result<Value> {
+    let Some(obj) = settings.as_object_mut() else {
+        bail!("hooks are not a JSON object");
+    };
+    let entry: Map<String, Value> = events(kind)
+        .iter()
+        .map(|event| ((*event).to_string(), json!([hook_group(exe, kind, event)])))
+        .collect();
+    obj.insert(AGY_HOOK_NAME.to_string(), Value::Object(entry));
+    Ok(settings)
+}
+
+/// [`install`] in settings with a `hooks` object keyed by event (Claude's
+/// and Gemini's).
+fn install_events(mut settings: Value, exe: &str, kind: AgentKind) -> Result<Value> {
     remove_hooks(&mut settings, |c| is_ours(c) || c.contains(LEGACY));
     let Some(obj) = settings.as_object_mut() else {
         bail!("settings are not a JSON object");
@@ -212,12 +284,6 @@ pub fn install(mut settings: Value, exe: &str, kind: AgentKind) -> Result<Value>
         }
     }
     Ok(settings)
-}
-
-/// Settings without paddock's hooks; everything else stays.
-pub fn uninstall(mut settings: Value) -> Value {
-    remove_hooks(&mut settings, is_ours);
-    settings
 }
 
 /// Whether the settings hold one of paddock's hooks for `event`.
@@ -296,11 +362,13 @@ fn write_file(path: &Path, settings: &Value) -> Result<()> {
 
 /// Whether `paddock hooks install|uninstall` without `--agent` acts on
 /// `kind`, with environment `var`. Claude always, as before kinds existed,
-/// whether or not `claude` is on `PATH`; Gemini when `gemini` is on `PATH`.
+/// whether or not `claude` is on `PATH`; Gemini when `gemini` is on
+/// `PATH`, Antigravity when `agy` is.
 fn by_default(kind: AgentKind, var: impl Fn(&str) -> Option<String>) -> bool {
     match kind {
         AgentKind::Claude => true,
         AgentKind::Gemini => on_path("gemini", var("PATH").as_deref().unwrap_or_default()),
+        AgentKind::Agy => on_path("agy", var("PATH").as_deref().unwrap_or_default()),
     }
 }
 
@@ -413,7 +481,7 @@ fn plan(action: &Action, kind: AgentKind, path: PathBuf) -> Result<Edit> {
             install(read.unwrap_or_else(|| json!({})), exe, kind)
                 .with_context(|| format!("cannot edit {}", path.display()))?,
         ),
-        Action::Uninstall => read.map(uninstall),
+        Action::Uninstall => read.map(|s| uninstall(s, kind)),
     };
     Ok(Edit {
         kind,
@@ -475,9 +543,10 @@ pub fn now_ms() -> u64 {
 /// `paddock hook [--agent <kind>] <event>` (`args` after `hook`): record
 /// the event, in its server's log if it comes from one of paddock's
 /// terminals, else in the external log (it runs for every agent on the
-/// machine, so that stays one append). Never prints, never fails, even on
-/// arguments it does not understand: the agent would show the output to the
-/// model, or block on a failing hook.
+/// machine, so that stays one append). Never fails, even on arguments it
+/// does not understand, and prints only the agent's [`reply`] (nothing for
+/// Claude and Gemini): the agent would show the output to the model, or
+/// block on a failing hook.
 pub fn hook(args: &[&str]) -> ! {
     std::panic::set_hook(Box::new(|_| {}));
     let _ = std::panic::catch_unwind(|| {
@@ -485,6 +554,11 @@ pub fn hook(args: &[&str]) -> ! {
             log_error(&e);
         }
     });
+    let kind = hook_args(args).map_or(AgentKind::Claude, |(kind, _)| kind);
+    let mut out = std::io::stdout();
+    let _ = out
+        .write_all(reply(kind).as_bytes())
+        .and_then(|()| out.flush());
     std::process::exit(0)
 }
 
@@ -607,13 +681,13 @@ mod tests {
 
     #[test]
     fn uninstall_removes_only_paddocks_hooks() {
-        let s = uninstall(install(json!({"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "keep-me"}]}]}}), EXE, CLAUDE).unwrap());
+        let s = uninstall(install(json!({"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "keep-me"}]}]}}), EXE, CLAUDE).unwrap(), CLAUDE);
         assert_eq!(
             s,
             json!({"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "keep-me"}]}]}})
         );
         assert_eq!(
-            uninstall(install(json!({}), EXE, CLAUDE).unwrap()),
+            uninstall(install(json!({}), EXE, CLAUDE).unwrap(), CLAUDE),
             json!({})
         );
     }
@@ -785,15 +859,109 @@ mod tests {
             install(gemini_settings(), "/moved/paddock", GEMINI).unwrap(),
             "idempotent, even after paddock moved"
         );
-        assert_eq!(uninstall(s), gemini_settings(), "exactly as before");
+        assert_eq!(uninstall(s, GEMINI), gemini_settings(), "exactly as before");
+    }
+
+    const AGY: AgentKind = AgentKind::Agy;
+
+    /// A user's Antigravity `hooks.json`, with named hooks of their own.
+    fn agy_hooks() -> Value {
+        json!({
+            "lint-after-command": {
+                "PostToolUse": [{"matcher": "run_command", "hooks": [
+                    {"type": "command", "command": "./scripts/lint.sh", "timeout": 10}
+                ]}]
+            },
+            "reminder": {
+                "enabled": false,
+                "PreInvocation": [{"type": "command", "command": "./scripts/reminder.sh"}]
+            }
+        })
+    }
+
+    #[test]
+    fn agy_hooks_are_one_named_entry_with_a_timeout_in_seconds() {
+        let s = install(json!({}), EXE, AGY).unwrap();
+        let mut want = Map::new();
+        for event in AGY_EVENTS {
+            want.insert(
+                (*event).to_string(),
+                json!([{
+                    "type": "command",
+                    "command": format!("{EXE} hook --agent agy {event}"),
+                    "timeout": 10
+                }]),
+            );
+        }
+        assert_eq!(s, json!({"paddock": want}));
+        for event in AGY_EVENTS {
+            assert!(is_ours(&hook_command(EXE, AGY, event)));
+            assert_eq!(
+                hook_args(&["--agent", "agy", event]).unwrap(),
+                (AGY, *event)
+            );
+        }
+        assert_eq!(AGY_EVENTS, ["SessionStart", "PreInvocation", "Stop"]);
+    }
+
+    #[test]
+    fn agy_install_and_uninstall_keep_the_users_named_hooks() {
+        let s = install(agy_hooks(), EXE, AGY).unwrap();
+        for name in ["lint-after-command", "reminder"] {
+            assert_eq!(s[name], agy_hooks()[name], "{name}");
+        }
+        assert_eq!(
+            install(s.clone(), "/moved/paddock", AGY).unwrap(),
+            install(agy_hooks(), "/moved/paddock", AGY).unwrap(),
+            "idempotent, even after paddock moved"
+        );
+        assert_eq!(uninstall(s, AGY), agy_hooks(), "exactly as before");
+        assert_eq!(uninstall(json!({}), AGY), json!({}));
+        // Only paddock's entry goes: another's hook calling paddock stays.
+        let theirs = json!({"mine": {"Stop": [{"type": "command", "command": "paddock hook --agent agy Stop"}]}});
+        assert_eq!(uninstall(theirs.clone(), AGY), theirs);
+        assert!(install(json!([]), EXE, AGY).is_err());
+    }
+
+    #[test]
+    fn only_agy_hooks_reply() {
+        assert_eq!(reply(CLAUDE), "");
+        assert_eq!(reply(GEMINI), "");
+        assert_eq!(reply(AGY), "{}");
+    }
+
+    #[test]
+    fn agys_hooks_file_is_under_home() {
+        let env = |pairs: &'static [(&'static str, &'static str)]| {
+            move |k: &str| {
+                pairs
+                    .iter()
+                    .find(|(n, _)| *n == k)
+                    .map(|(_, v)| v.to_string())
+            }
+        };
+        let p = settings_path(AGY, env(&[("HOME", "/h"), ("GEMINI_CLI_HOME", "/g")])).unwrap();
+        assert_eq!(p, PathBuf::from("/h/.gemini/config/hooks.json"));
+        assert!(settings_path(AGY, env(&[])).is_err());
+    }
+
+    #[test]
+    fn hooks_act_on_agy_by_default_only_when_it_is_on_path() {
+        let bin = bin_with("agy", 0o755);
+        let dir = bin.path().to_str().unwrap();
+        assert_eq!(kinds(&[], path_env(dir)).unwrap(), [CLAUDE, AGY]);
+        let both = bin_with("gemini", 0o755);
+        let path = format!("{dir}:{}", both.path().to_str().unwrap());
+        assert_eq!(kinds(&[], path_env(&path)).unwrap(), [CLAUDE, GEMINI, AGY]);
+        assert_eq!(kinds(&["--agent", "agy"], path_env("")).unwrap(), [AGY]);
     }
 
     #[test]
     fn uninstall_keeps_entries_it_did_not_empty() {
         let s = json!({"hooks": {"disabled": [], "Stop": []}});
-        assert_eq!(uninstall(s.clone()), s);
+        assert_eq!(uninstall(s.clone(), GEMINI), s);
         let theirs = json!({"hooks": {"Stop": [{"hooks": []}]}});
-        assert_eq!(uninstall(theirs.clone()), theirs);
+        assert_eq!(uninstall(theirs.clone(), CLAUDE), theirs);
     }
 
     /// The plugin hooks' `timeout`, in seconds.
@@ -936,7 +1104,7 @@ mod tests {
         );
         let link = dir.path().join("link.json");
         std::os::unix::fs::symlink(&path, &link).unwrap();
-        edit_file(&link, |s| Ok(uninstall(s))).unwrap();
+        edit_file(&link, |s| Ok(uninstall(s, CLAUDE))).unwrap();
         assert!(link.is_symlink(), "the link stays a link");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "{}\n");
         std::fs::write(&path, "{oops").unwrap();

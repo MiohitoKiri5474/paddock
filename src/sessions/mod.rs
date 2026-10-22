@@ -15,10 +15,12 @@ pub mod dismissed;
 mod external;
 mod kind;
 pub mod log;
+mod program_state;
 
 pub use dismissed::Dismissal;
 pub use external::{external_key, is_external};
 pub use kind::AgentKind;
+pub use program_state::ProgramState;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -111,6 +113,14 @@ pub struct HookRecord {
     /// A subagent's task description, when the hook could find it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Whether the agent is fully idle after a `Stop` (Antigravity's
+    /// `fullyIdle`: the turn is over and its background work done).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fully_idle: Option<bool>,
+    /// The state of a program status report (see [`STATUS`]); only
+    /// Antigravity's records have one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<ProgramState>,
     /// Milliseconds since the Unix epoch.
     pub ts: u64,
     /// The agent the hook ran for. Left out of the log for Claude, so old
@@ -129,30 +139,95 @@ pub const CLEAR: &str = "clear";
 const COMPACT: &str = "compact";
 
 /// Whether `r` is the agent starting a conversation (Claude: startup,
-/// resume, `/clear`), not going on with one (compaction). Gemini: any
-/// `SessionStart` (startup, resume, `/clear`).
+/// resume, `/clear`), not going on with one (compaction). Gemini and
+/// Antigravity: any `SessionStart`.
 pub fn restarts(r: &HookRecord) -> bool {
     match r.kind {
         AgentKind::Claude => r.event == "SessionStart" && r.source.as_deref() != Some(COMPACT),
-        AgentKind::Gemini => r.event == "SessionStart",
+        AgentKind::Gemini | AgentKind::Agy => r.event == "SessionStart",
     }
 }
 
 /// Whether `r` is the main agent finishing a turn (Claude: `Stop`; Gemini:
-/// `AfterAgent`). Each one is a new turn done; other idle events only
-/// remind of it.
+/// `AfterAgent`; Antigravity: a fully idle `Stop`, or a [`STATUS`] report
+/// of `done` or `error`). Each one is a new turn done; other idle events
+/// only remind of it.
 pub fn finishes_turn(r: &HookRecord) -> bool {
     match r.kind {
         AgentKind::Claude => r.event == "Stop",
         AgentKind::Gemini => r.event == "AfterAgent",
+        AgentKind::Agy => match r.event.as_str() {
+            "Stop" => r.fully_idle == Some(true),
+            STATUS => matches!(r.status, Some(ProgramState::Done | ProgramState::Error)),
+            _ => false,
+        },
+    }
+}
+
+/// Whether each turn `r` finishes (see [`finishes_turn`]) alerts anew.
+/// Antigravity reports the end of a turn twice in a terminal (its `Stop`
+/// hook and its `done` status), so its second report only reminds; each
+/// of its turns starts with a running event, which makes the next alert
+/// new.
+pub fn alerts_each_turn(r: &HookRecord) -> bool {
+    match r.kind {
+        AgentKind::Claude | AgentKind::Gemini => finishes_turn(r),
+        AgentKind::Agy => false,
+    }
+}
+
+/// Whether an idle `r` alerts: for Claude and Gemini, unless it starts a
+/// conversation; for Antigravity, only when it finishes a turn (agy
+/// reports `idle` at start and as it quits, with nothing done).
+pub fn alerts_idle(r: &HookRecord) -> bool {
+    match r.kind {
+        AgentKind::Claude | AgentKind::Gemini => !restarts(r),
+        AgentKind::Agy => finishes_turn(r),
+    }
+}
+
+/// Whether alerts take an `r` naming no conversation, or following an
+/// alert that named none, as about the pane's current one. Only for
+/// Antigravity, whose status reports name none; Claude's and Gemini's
+/// events are compared by their conversation exactly.
+pub fn matches_any_conversation(r: &HookRecord) -> bool {
+    match r.kind {
+        AgentKind::Claude | AgentKind::Gemini => false,
+        AgentKind::Agy => true,
     }
 }
 
 /// Whether `r` ends the conversation (any `SessionEnd`, `/clear` included,
 /// for Claude and Gemini alike), whether or not the session goes on.
+/// Antigravity sends no such event: its session ends when its terminal
+/// closes or goes back to the shell (see [`Sessions::end_exited`]).
 fn ends_conversation(r: &HookRecord) -> bool {
     match r.kind {
         AgentKind::Claude | AgentKind::Gemini => r.event == "SessionEnd",
+        AgentKind::Agy => false,
+    }
+}
+
+/// The event of a program status report (OSC 7501) Antigravity wrote in a
+/// terminal of paddock's: paddock records it in the server's log as if a
+/// hook had, its state in [`HookRecord::status`]. Never a hook's event
+/// name.
+pub const STATUS: &str = "OSC7501";
+
+/// The `app` Antigravity names itself in its status reports.
+pub const AGY_APP: &str = "antigravity";
+
+/// The record of Antigravity's status report `state`, written in pane
+/// `pane`, at `ts` (ms). Other programs' reports (another `app`) say
+/// nothing of a session and get none.
+pub fn status_record(pane: &str, state: ProgramState, ts: u64) -> HookRecord {
+    HookRecord {
+        event: STATUS.to_string(),
+        pane: pane.to_string(),
+        status: Some(state),
+        kind: AgentKind::Agy,
+        ts,
+        ..HookRecord::default()
     }
 }
 
@@ -161,6 +236,7 @@ pub fn state_after(r: &HookRecord) -> Option<State> {
     let state = match r.kind {
         AgentKind::Claude => claude_state(r)?,
         AgentKind::Gemini => gemini_state(r)?,
+        AgentKind::Agy => agy_state(r)?,
     };
     // A subagent blocked on you blocks its session; its other events say
     // nothing about the main agent.
@@ -201,6 +277,26 @@ fn gemini_state(r: &HookRecord) -> Option<State> {
     })
 }
 
+/// [`state_after`] an Antigravity CLI hook event or status report. Its
+/// hooks say when a session starts, a prompt runs (`PreInvocation`) and
+/// the agent is fully idle again (`Stop`); only its status reports (see
+/// [`STATUS`]) say it waits on you. A `Stop` with background work left
+/// changes nothing.
+fn agy_state(r: &HookRecord) -> Option<State> {
+    Some(match r.event.as_str() {
+        "SessionStart" => State::Idle,
+        "PreInvocation" => State::Running,
+        "Stop" if r.fully_idle == Some(true) => State::Idle,
+        STATUS => match r.status? {
+            ProgramState::Working => State::Running,
+            ProgramState::Blocked => State::Waiting,
+            ProgramState::Done | ProgramState::Error | ProgramState::Idle => State::Idle,
+            ProgramState::Clear => return None,
+        },
+        _ => return None,
+    })
+}
+
 /// The `notification_type` of Gemini's permission prompt.
 const TOOL_PERMISSION: &str = "ToolPermission";
 
@@ -224,6 +320,7 @@ pub fn needs_branch(r: &HookRecord) -> bool {
             "AfterTool" => r.tool_name.as_deref() == Some(GEMINI_SHELL),
             _ => false,
         },
+        AgentKind::Agy => matches!(r.event.as_str(), "SessionStart" | "PreInvocation"),
     };
     switched && r.cwd.is_some()
 }
@@ -319,6 +416,14 @@ pub struct Session {
     pub alive: u64,
     /// Subagents seen, in the order they reached their current branch.
     subagents: Vec<Subagent>,
+    /// The state of the last status report recorded for it (see
+    /// [`Sessions::note_status`]), until a hook changes its state.
+    status: Option<ProgramState>,
+    /// When its agent last started a conversation (ms since the epoch).
+    started: u64,
+    /// When a hook other than such a start last set its state (ms since
+    /// the epoch; 0 if none has).
+    changed: u64,
 }
 
 impl Session {
@@ -339,6 +444,9 @@ impl Session {
             hooked: None,
             alive: 0,
             subagents: Vec::new(),
+            status: None,
+            started: 0,
+            changed: 0,
         }
     }
 
@@ -572,11 +680,12 @@ impl Sessions {
         *seen = (*seen).max(ts);
     }
 
-    /// Apply one recorded hook event.
-    pub fn apply(&mut self, r: &HookRecord) {
+    /// Apply one recorded hook event. Returns false if it was ignored (see
+    /// [`Sessions::fold`]).
+    pub fn apply(&mut self, r: &HookRecord) -> bool {
         self.leave_external(r);
         if !self.fold(r) {
-            return;
+            return false;
         }
         self.touch(&r.pane, None, r.ts);
         let branch = match &r.agent_id {
@@ -589,11 +698,18 @@ impl Sessions {
         if branch.is_some() {
             self.touch(&r.pane, branch, r.ts);
         }
+        true
     }
 
     /// Fold in hook event `r`. Returns false if it was ignored: it came
-    /// late, from a session that already ended.
+    /// late, from a session that already ended, or it is a status report
+    /// from a terminal with no running Antigravity session (status reports
+    /// never make a row: its hooks do).
     fn fold(&mut self, r: &HookRecord) -> bool {
+        let live_agy = |s: &Session| s.kind == AgentKind::Agy && !s.ended();
+        if r.event == STATUS && !self.by_pane.get(&r.pane).is_some_and(live_agy) {
+            return false;
+        }
         let s = self
             .by_pane
             .entry(r.pane.clone())
@@ -609,6 +725,9 @@ impl Sessions {
         }
         s.kind = r.kind;
         s.alive = s.alive.max(r.ts);
+        if restarts(r) {
+            s.started = r.ts;
+        }
         // A subagent's directory is its worktree, not the session's.
         if r.cwd.is_some() && r.agent_id.is_none() {
             s.cwd.clone_from(&r.cwd);
@@ -628,6 +747,12 @@ impl Sessions {
             };
             s.updated = r.ts;
             s.hooked = Some(r.ts);
+            // The state is now the report's, or a hook's: the next report
+            // of any state is news.
+            s.status = r.status;
+            if r.event != STATUS && !restarts(r) {
+                s.changed = r.ts;
+            }
         }
         if let Some(id) = &r.agent_id {
             s.apply_subagent(id, r);
@@ -647,6 +772,75 @@ impl Sessions {
             }
         }
         true
+    }
+
+    /// Whether pane `pane` runs a live Antigravity session, which its
+    /// status reports are about.
+    pub fn agy_live_in(&self, pane: &str) -> bool {
+        self.by_pane
+            .get(pane)
+            .is_some_and(|s| s.kind == AgentKind::Agy && !s.ended())
+    }
+
+    /// When paddock last heard of pane `pane`'s session (ms since the
+    /// epoch): its latest record.
+    pub fn last_heard(&self, pane: &str) -> Option<u64> {
+        self.by_pane.get(pane).map(|s| s.alive)
+    }
+
+    /// Whether pane `pane` runs a live Antigravity session that had
+    /// started by `ts` (ms).
+    pub fn agy_live_by(&self, pane: &str, ts: u64) -> bool {
+        self.agy_live_in(pane) && self.by_pane[pane].started <= ts
+    }
+
+    /// Whether a hook other than a start set the state of pane `pane`'s
+    /// session after `ts` (ms): a report made at `ts` is older news.
+    pub fn hook_changed_after(&self, pane: &str, ts: u64) -> bool {
+        self.by_pane.get(pane).is_some_and(|s| s.changed > ts)
+    }
+
+    /// Whether a status report `state` from pane `pane` says something
+    /// new: the pane runs a live Antigravity session, and no report
+    /// recorded since its state last changed otherwise said `state`.
+    pub fn is_new_status(&self, pane: &str, state: ProgramState) -> bool {
+        self.agy_live_in(pane) && self.by_pane[pane].status != Some(state)
+    }
+
+    /// Note that a status report `state` from pane `pane` was recorded
+    /// (see [`Sessions::is_new_status`]).
+    pub fn note_status(&mut self, pane: &str, state: ProgramState) {
+        if let Some(s) = self.by_pane.get_mut(pane) {
+            s.status = Some(state);
+        }
+    }
+
+    /// Whether an Antigravity session runs in one of paddock's terminals,
+    /// so it may quit back to the shell (see [`Sessions::end_exited`]).
+    pub fn agy_in_terminals(&self) -> bool {
+        self.by_pane
+            .iter()
+            .any(|(k, s)| !is_external(k) && s.kind == AgentKind::Agy && !s.ended())
+    }
+
+    /// End each Antigravity session whose terminal's command was a shell
+    /// when `commands` (each pane's `pane_current_command`) was read, at
+    /// `taken` (ms): agy quit back to it. Antigravity sends no hook when it
+    /// quits; a terminal that closed has no row anyway. A list read before
+    /// the session's last event may be from before agy started, and is
+    /// ignored. Returns whether any ended.
+    pub fn end_exited(&mut self, taken: u64, commands: &HashMap<String, String>) -> bool {
+        let mut ended = false;
+        for (pane, s) in &mut self.by_pane {
+            let quit = !is_external(pane) && commands.get(pane).is_some_and(|c| is_shell(c));
+            if s.kind == AgentKind::Agy && !s.ended() && quit && s.alive < taken {
+                s.state = State::Stopped;
+                s.updated = taken;
+                s.status = None;
+                ended = true;
+            }
+        }
+        ended
     }
 
     /// Fold in a `claude agents --json` snapshot taken at `taken` (ms). It
@@ -703,6 +897,19 @@ impl Sessions {
         }
     }
 }
+
+/// Whether `command` (a pane's `pane_current_command`) is a shell: a
+/// login shell's name starts with `-`.
+pub fn is_shell(command: &str) -> bool {
+    let name = command.strip_prefix('-').unwrap_or(command);
+    SHELLS.contains(&name)
+}
+
+/// The shells [`is_shell`] knows.
+const SHELLS: &[&str] = &[
+    "sh", "bash", "zsh", "fish", "dash", "ksh", "mksh", "oksh", "yash", "tcsh", "csh", "nu",
+    "xonsh", "elvish", "pwsh", "ion", "osh", "ysh",
+];
 
 /// A session row's label: the session name if set, else the tab name
 /// (`None` while it still has its default name), else the directory name,
@@ -930,6 +1137,365 @@ mod tests {
         s.reconcile(100_000, &[agent(S1, "idle", Some("%1"))]);
         assert_eq!(state(&s), State::Running);
         assert_eq!(s.get("%1").unwrap().session_id.as_deref(), Some(GEMINI_S));
+    }
+
+    /// The record of the Antigravity payload in
+    /// `tests/fixtures/hooks/agy/<name>.json` (`<event>[-<variant>]`),
+    /// shaped from agy's hook docs, in pane `%1`.
+    pub(super) fn agy(name: &str, ts: u64) -> HookRecord {
+        let path = format!(
+            "{}/tests/fixtures/hooks/agy/{name}.json",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let payload = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
+        let event = name.split('-').next().unwrap();
+        log::record(AgentKind::Agy, event, "%1", &payload, ts)
+    }
+
+    /// Antigravity's status report `state` in pane `%1` at `ts`.
+    pub(super) fn agy_status(state: &str, ts: u64) -> HookRecord {
+        let state = ProgramState::parse(state).unwrap();
+        status_record("%1", state, ts)
+    }
+
+    /// The conversation id in the Antigravity fixtures.
+    const AGY_S: &str = "dddddddd-eeee-4fff-8aaa-bbbbbbbbbbbb";
+
+    #[test]
+    fn agy_events_reach_their_states() {
+        let cases = [
+            ("SessionStart", Some(State::Idle)),
+            ("PreInvocation", Some(State::Running)),
+            ("Stop", Some(State::Idle)),
+            ("Stop-error", Some(State::Idle)),
+            ("Stop-busy", None),
+        ];
+        for (name, want) in cases {
+            let r = agy(name, 1);
+            assert_eq!(r.kind, AgentKind::Agy);
+            assert_eq!(r.session_id.as_deref(), Some(AGY_S), "conversationId");
+            assert_eq!(r.cwd.as_deref(), Some("/tmp/repo"), "first workspace");
+            assert_eq!(state_after(&r), want, "{name}");
+        }
+        assert_eq!(agy("Stop", 1).fully_idle, Some(true));
+        assert_eq!(agy("Stop-busy", 1).fully_idle, Some(false));
+        assert_eq!(agy("Stop-error", 1).reason.as_deref(), Some("error"));
+        assert!(finishes_turn(&agy("Stop", 1)));
+        assert!(!finishes_turn(&agy("Stop-busy", 1)));
+        for (state, want) in [
+            ("working", Some(State::Running)),
+            ("blocked", Some(State::Waiting)),
+            ("done", Some(State::Idle)),
+            ("error", Some(State::Idle)),
+            ("idle", Some(State::Idle)),
+            ("clear", None),
+        ] {
+            let r = agy_status(state, 1);
+            assert_eq!(state_after(&r), want, "{state}");
+            assert_eq!(finishes_turn(&r), matches!(state, "done" | "error"));
+        }
+        // Events paddock does not install change nothing, nor do Claude's
+        // or Gemini's names under Antigravity.
+        for event in [
+            "PreToolUse",
+            "PostToolUse",
+            "PostInvocation",
+            "SessionEnd",
+            "UserPromptSubmit",
+            "AfterAgent",
+        ] {
+            let r = HookRecord {
+                kind: AgentKind::Agy,
+                ..rec(event, 1)
+            };
+            assert_eq!(state_after(&r), None, "{event}");
+            assert!(!ends_conversation(&r), "{event}");
+        }
+    }
+
+    #[test]
+    fn a_status_record_is_antigravitys() {
+        let blocked = ProgramState::Blocked;
+        let r = status_record("%3", blocked, 7);
+        assert_eq!(r.event, STATUS);
+        assert_eq!(r.pane, "%3");
+        assert_eq!(r.kind, AgentKind::Agy);
+        assert_eq!(r.status, Some(blocked));
+        assert_eq!(r.notification_type, None);
+        assert_eq!(r.ts, 7);
+        let line = serde_json::to_string(&r).unwrap();
+        assert!(line.contains(r#""status":"blocked""#), "{line}");
+        assert_eq!(serde_json::from_str::<HookRecord>(&line).unwrap(), r);
+    }
+
+    #[test]
+    fn workspace_uris_read_as_directories() {
+        let payload = r#"{"conversationId":"c","workspacePaths":["file:///tmp/my%20repo","/x"]}"#;
+        let r = log::record(AgentKind::Agy, "SessionStart", "%1", payload, 1);
+        assert_eq!(r.cwd.as_deref(), Some("/tmp/my repo"));
+        let none = log::record(AgentKind::Agy, "SessionStart", "%1", "{}", 1);
+        assert_eq!(none.cwd, None);
+        assert_eq!(none.session_id, None);
+    }
+
+    #[test]
+    fn an_agy_turn_goes_idle_working_waiting_working_done() {
+        let mut s = Sessions::default();
+        let mut seen = Vec::new();
+        for r in [
+            agy("SessionStart", 1),
+            agy("PreInvocation", 2),
+            agy_status("working", 3),
+            agy_status("blocked", 4),
+            agy_status("working", 5),
+            agy_status("done", 6),
+            agy("Stop", 7),
+            agy_status("idle", 8),
+        ] {
+            s.apply(&r);
+            seen.push(state(&s));
+        }
+        assert_eq!(
+            seen,
+            [
+                State::Idle,
+                State::Running,
+                State::Running,
+                State::Waiting,
+                State::Running,
+                State::Done,
+                State::Done,
+                State::Done,
+            ]
+        );
+        let session = s.get("%1").unwrap();
+        assert_eq!(session.kind, AgentKind::Agy);
+        assert_eq!(session.session_id.as_deref(), Some(AGY_S));
+        assert_eq!(label(session, None), "repo");
+        s.see("%1");
+        assert_eq!(state(&s), State::Idle);
+    }
+
+    #[test]
+    fn only_a_new_report_for_a_live_agy_session_is_recorded() {
+        let (blocked, working) = (ProgramState::Blocked, ProgramState::Working);
+        let mut s = Sessions::default();
+        assert!(!s.is_new_status("%1", blocked), "no session");
+        s.apply(&rec("SessionStart", 1));
+        assert!(!s.agy_live_in("%1"));
+        assert!(!s.is_new_status("%1", blocked), "Claude's");
+        s.apply(&agy("SessionStart", 2));
+        assert!(s.agy_live_in("%1"));
+        assert!(s.is_new_status("%1", blocked));
+        assert!(s.is_new_status("%1", blocked), "until noted as written");
+        s.note_status("%1", blocked);
+        assert!(!s.is_new_status("%1", blocked), "said already");
+        assert!(s.is_new_status("%1", working));
+        // A new conversation starts over.
+        s.apply(&HookRecord {
+            session_id: Some("next".into()),
+            ..agy("SessionStart", 4)
+        });
+        assert!(s.is_new_status("%1", blocked));
+        let shells = HashMap::from([("%1".to_string(), "zsh".to_string())]);
+        s.end_exited(10, &shells);
+        assert!(!s.is_new_status("%1", working), "ended");
+    }
+
+    #[test]
+    fn a_report_is_about_an_agy_session_only_once_it_started() {
+        let mut s = Sessions::default();
+        s.apply(&agy("SessionStart", 10));
+        assert!(s.agy_live_by("%1", 10));
+        assert!(s.agy_live_by("%1", 11));
+        assert!(!s.agy_live_by("%1", 9), "made before it started");
+        assert!(!s.agy_live_by("%2", 11), "another terminal");
+    }
+
+    #[test]
+    fn a_hook_after_a_report_makes_it_older_news() {
+        let mut s = Sessions::default();
+        s.apply(&agy("SessionStart", 10));
+        assert!(!s.hook_changed_after("%1", 5), "the start does not count");
+        s.apply(&agy("PreInvocation", 20));
+        assert!(s.hook_changed_after("%1", 15));
+        assert!(!s.hook_changed_after("%1", 20));
+        s.apply(&agy_status("blocked", 30));
+        assert!(!s.hook_changed_after("%1", 25), "a report does not count");
+        s.apply(&agy("Stop-busy", 40));
+        assert!(
+            !s.hook_changed_after("%1", 25),
+            "nor a hook that set no state"
+        );
+        assert!(!s.hook_changed_after("%2", 0), "no session");
+        s.apply(&HookRecord {
+            session_id: Some("next".into()),
+            ..agy("SessionStart", 50)
+        });
+        assert!(
+            !s.hook_changed_after("%1", 15),
+            "a new conversation starts over"
+        );
+    }
+
+    #[test]
+    fn only_agys_alerts_match_any_conversation() {
+        assert!(matches_any_conversation(&agy_status("done", 1)));
+        assert!(matches_any_conversation(&agy("Stop", 1)));
+        assert!(!matches_any_conversation(&rec("Stop", 1)));
+        assert!(!matches_any_conversation(&gemini("AfterAgent", 1)));
+    }
+
+    #[test]
+    fn a_hook_changing_the_state_makes_the_same_report_news_again() {
+        let blocked = ProgramState::Blocked;
+        let mut s = Sessions::default();
+        s.apply(&agy("SessionStart", 1));
+        // Live: blocked written, then the prompt runs on (a hook).
+        s.note_status("%1", blocked);
+        s.apply(&agy_status("blocked", 2));
+        assert_eq!(state(&s), State::Waiting);
+        assert!(!s.is_new_status("%1", blocked));
+        s.apply(&agy("PreInvocation", 3));
+        assert_eq!(state(&s), State::Running);
+        assert!(s.is_new_status("%1", blocked));
+        s.note_status("%1", blocked);
+        s.apply(&agy_status("blocked", 4));
+        assert_eq!(state(&s), State::Waiting, "waiting again");
+        // Replayed, the log agrees: a report noted, a hook clears it.
+        let mut replay = Sessions::default();
+        for r in [
+            agy("SessionStart", 1),
+            agy_status("blocked", 2),
+            agy("PreInvocation", 3),
+        ] {
+            replay.apply(&r);
+        }
+        assert!(replay.is_new_status("%1", blocked));
+        replay.apply(&agy_status("blocked", 4));
+        assert!(!replay.is_new_status("%1", blocked));
+    }
+
+    #[test]
+    fn agy_in_terminals_counts_only_live_agy_sessions_in_panes() {
+        let mut s = Sessions::default();
+        s.apply(&rec("SessionStart", 1));
+        assert!(!s.agy_in_terminals());
+        s.apply(&HookRecord {
+            pane: "%2".into(),
+            ..agy("SessionStart", 2)
+        });
+        assert!(s.agy_in_terminals());
+        let shells = HashMap::from([("%2".to_string(), "zsh".to_string())]);
+        s.end_exited(10, &shells);
+        assert!(!s.agy_in_terminals(), "ended");
+        let external = log::keyed_external(HookRecord {
+            pane: String::new(),
+            ..agy("SessionStart", 20)
+        })
+        .unwrap();
+        s.apply(&external);
+        assert!(!s.agy_in_terminals(), "external");
+    }
+
+    #[test]
+    fn shells_are_known_by_name() {
+        for shell in [
+            "zsh", "-zsh", "bash", "fish", "sh", "nu", "xonsh", "elvish", "pwsh",
+        ] {
+            assert!(is_shell(shell), "{shell}");
+        }
+        for other in ["agy", "node", "vim", "zshx", "", "-"] {
+            assert!(!is_shell(other), "{other}");
+        }
+    }
+
+    #[test]
+    fn status_reports_never_make_a_row() {
+        let mut s = Sessions::default();
+        assert!(!s.apply(&agy_status("blocked", 1)), "ignored");
+        assert!(s.get("%1").is_none(), "no agy session yet");
+        // A Claude session's terminal: some other program's report.
+        s.apply(&rec("SessionStart", 2));
+        s.apply(&agy_status("working", 3));
+        assert_eq!(state(&s), State::Idle);
+        assert_eq!(s.get("%1").unwrap().kind, AgentKind::Claude);
+    }
+
+    #[test]
+    fn agy_ends_when_its_terminal_goes_back_to_the_shell() {
+        let commands = |c: &str| HashMap::from([("%1".to_string(), c.to_string())]);
+        let mut s = Sessions::default();
+        s.apply(&agy("SessionStart", 10));
+        assert!(!s.end_exited(20, &commands("agy")), "still running");
+        assert!(!s.end_exited(20, &commands("node")), "not a shell");
+        assert!(!s.end_exited(20, &HashMap::new()), "the pane is gone");
+        assert!(!s.end_exited(5, &commands("zsh")), "read before it started");
+        assert!(s.shown("%1").is_some());
+        assert!(s.end_exited(20, &commands("-zsh")));
+        assert_eq!(state(&s), State::Stopped);
+        assert!(s.shown("%1").is_none());
+        assert!(!s.end_exited(30, &commands("zsh")), "ended once");
+        // agy's last report as it quits, and a late Stop, lag behind.
+        s.apply(&agy_status("idle", 21));
+        s.apply(&agy("Stop", 22));
+        assert!(s.shown("%1").is_none());
+        // agy again in the same terminal: a new conversation.
+        s.apply(&HookRecord {
+            session_id: Some("next".into()),
+            ..agy("SessionStart", 40)
+        });
+        assert_eq!(state(&s), State::Idle);
+    }
+
+    #[test]
+    fn only_agy_sessions_end_at_the_shell() {
+        let commands = HashMap::from([
+            ("%1".to_string(), "zsh".to_string()),
+            ("%2".to_string(), "zsh".to_string()),
+        ]);
+        let mut s = Sessions::default();
+        s.apply(&rec("SessionStart", 1));
+        s.apply(&HookRecord {
+            pane: "%2".into(),
+            ..gemini("SessionStart", 1)
+        });
+        assert!(!s.end_exited(10, &commands));
+        assert_eq!(state(&s), State::Idle);
+        assert_eq!(s.get("%2").unwrap().state, State::Idle);
+    }
+
+    #[test]
+    fn agy_reads_the_branch_when_it_may_have_switched() {
+        for (name, want) in [
+            ("SessionStart", true),
+            ("PreInvocation", true),
+            ("Stop", false),
+        ] {
+            assert_eq!(needs_branch(&agy(name, 1)), want, "{name}");
+        }
+        assert!(!needs_branch(&agy_status("working", 1)));
+    }
+
+    #[test]
+    fn an_external_agy_session_leaves_after_the_timeout() {
+        let external = |r: HookRecord| {
+            log::keyed_external(HookRecord {
+                pane: String::new(),
+                ..r
+            })
+            .unwrap()
+        };
+        let mut s = Sessions::default();
+        s.apply(&external(agy("PreInvocation", 1_000)));
+        s.apply(&external(agy("Stop", 2_000)));
+        let key = external_key(AGY_S);
+        assert_eq!(s.get(&key).unwrap().state, State::Done);
+        assert_eq!(s.externals(3_000, 5_000), [key.as_str()]);
+        // No end event and no snapshot: it goes once quiet for the timeout.
+        assert!(s.externals(8_000, 5_000).is_empty());
+        let shells = HashMap::from([(key.clone(), "zsh".to_string())]);
+        assert!(!s.end_exited(3_000, &shells), "never a terminal's");
     }
 
     #[test]

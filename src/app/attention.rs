@@ -11,10 +11,12 @@ use super::state::{App, Mode};
 use super::Event;
 use crate::config::Notify;
 use crate::hooks::now_ms;
-use crate::sessions::{self, is_external, state_after, HookRecord, State};
+use crate::sessions::{self, is_external, log, state_after, HookRecord, ProgramState, State};
+use crate::terminal::program_status::Report;
 use std::collections::HashMap;
 use std::io::Read;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 /// The AppleScript that shows a notification; its message is the script's
@@ -85,6 +87,21 @@ impl Notify {
     }
 }
 
+/// How long (ms) a status report from a terminal with no agy session yet
+/// waits for one: a few log polls, so the `SessionStart` agy ran before it
+/// is folded. Also how much earlier than its session's start a report may
+/// be made and still belong to it.
+const STATUS_WAIT_MS: u64 = 1_000;
+
+/// agy's latest status report from a terminal with no agy session yet,
+/// waiting for one (see [`App::record_status`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct PendingStatus {
+    pub state: ProgramState,
+    /// When the report came (ms since the epoch).
+    pub ts: u64,
+}
+
 /// The last alert of each terminal's session, so that one wait or one
 /// finished turn notifies once however many hooks report it.
 #[derive(Debug, Default)]
@@ -98,7 +115,7 @@ impl Alerts {
         let alert = match state_after(r) {
             Some(State::Waiting) => Alert::Waiting,
             // A new session starting idle has not finished anything.
-            Some(State::Idle) if !sessions::restarts(r) => Alert::Idle,
+            Some(State::Idle) if sessions::alerts_idle(r) => Alert::Idle,
             _ => {
                 // Work went on: the next alert is new. A subagent working on
                 // ends its wait, but not the main agent's finished turn.
@@ -124,8 +141,11 @@ impl Alerts {
             .clone()
             .or_else(|| last.and_then(|(s, _)| s.clone()));
         // Stop ends one turn each time; other idle events only remind of it.
+        let loose = sessions::matches_any_conversation(r);
+        let same =
+            |s: &Option<String>| *s == session || (loose && (s.is_none() || session.is_none()));
         let repeat =
-            !sessions::finishes_turn(r) && last.is_some_and(|(s, a)| *s == session && *a == alert);
+            !sessions::alerts_each_turn(r) && last.is_some_and(|(s, a)| same(s) && *a == alert);
         self.last.insert(r.pane.clone(), (session, alert));
         (!repeat).then_some(alert)
     }
@@ -196,7 +216,11 @@ impl App {
             .filter(|r| !self.is_float_pane(&r.pane))
             .collect();
         for r in followed {
-            self.sessions.apply(r);
+            // A status report with no agy session to go to has no row to
+            // alert about (agy reports its sign-in screen before any hook).
+            if !self.sessions.apply(r) && r.event == sessions::STATUS {
+                continue;
+            }
             let Some(alert) = self.attention.alerts.on_hook(r) else {
                 continue;
             };
@@ -214,6 +238,88 @@ impl App {
             }
             self.notify(&r.pane, alert);
         }
+    }
+
+    /// Status reports `reports` came from pane `pane`: Antigravity's go
+    /// to the server's hook log, so they fold in order with its hooks
+    /// (whose records reach the log first when they happened first), and
+    /// replay with them when paddock opens again. They name no
+    /// conversation (agy's reports do not say), so they belong to whichever
+    /// the pane runs when folded. Only a report for a live agy session in
+    /// the pane, saying something new, is recorded.
+    ///
+    /// A hook reaches the app up to a log poll after it ran, so agy's
+    /// first report may come before its `SessionStart` is folded: the
+    /// latest report of a pane with no agy session yet waits for one (see
+    /// [`App::retry_status`]).
+    pub(super) fn record_status(&mut self, pane: &str, reports: &[Report]) {
+        let ts = now_ms();
+        for r in reports {
+            if r.app.as_deref() != Some(sessions::AGY_APP) {
+                continue;
+            }
+            if self.sessions.agy_live_in(pane) {
+                self.pending_status.remove(pane);
+                self.write_status(pane, r.state, ts);
+            } else {
+                let pending = PendingStatus { state: r.state, ts };
+                self.pending_status.insert(pane.to_string(), pending);
+            }
+        }
+    }
+
+    /// Go over the reports waiting for their pane's agy session (see
+    /// [`App::record_status`]), after each batch of hooks, in this order:
+    /// - the pane runs a live agy session that started at most
+    ///   [`STATUS_WAIT_MS`] after the report came:
+    ///   - a hook other than that start set its state after the report
+    ///     came: the report is older news, and is dropped;
+    ///   - else it is recorded, after the session's latest record;
+    /// - the pane runs a live agy session that started later than that:
+    ///   the report is about an earlier one, and is dropped;
+    /// - no live agy session there yet: it waits on, and once it is more
+    ///   than [`STATUS_WAIT_MS`] old, the next batch drops it.
+    pub(super) fn retry_status(&mut self) {
+        let now = now_ms();
+        let pending = std::mem::take(&mut self.pending_status);
+        for (pane, p) in pending {
+            let latest_start = p.ts.saturating_add(STATUS_WAIT_MS);
+            if self.sessions.agy_live_by(&pane, latest_start) {
+                if !self.sessions.hook_changed_after(&pane, p.ts) {
+                    // Never before a record already folded, so a replay of
+                    // the log folds it where it was folded now.
+                    let after = self.sessions.last_heard(&pane).unwrap_or(0);
+                    self.write_status(&pane, p.state, p.ts.max(after));
+                }
+            } else if !self.sessions.agy_live_in(&pane)
+                && now.saturating_sub(p.ts) <= STATUS_WAIT_MS
+            {
+                self.pending_status.insert(pane, p);
+            }
+        }
+    }
+
+    /// Append agy's report `state` from `pane`, made at `ts`, to the
+    /// server's log if it says something new; it counts as said once
+    /// written.
+    fn write_status(&mut self, pane: &str, state: ProgramState, ts: u64) {
+        let Some(path) = self.events_log.clone() else {
+            return;
+        };
+        if !self.sessions.is_new_status(pane, state) {
+            return;
+        }
+        let record = sessions::status_record(pane, state, ts);
+        match log::append(&path, &record) {
+            Ok(()) => self.sessions.note_status(pane, state),
+            Err(e) => self.notice = Some(format!("{e:#}")),
+        }
+    }
+
+    /// Tell the watcher whether an Antigravity session runs in a terminal.
+    pub(super) fn note_agy_running(&self) {
+        let running = self.sessions.agy_in_terminals();
+        self.agy_running.store(running, Ordering::Relaxed);
     }
 
     /// `C-a a`: jump to the next session that needs you.
@@ -326,6 +432,56 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sessions::AgentKind;
+
+    fn agy_rec(event: &str) -> HookRecord {
+        HookRecord {
+            kind: AgentKind::Agy,
+            ..rec(event, "s")
+        }
+    }
+
+    fn agy_status(state: &str) -> HookRecord {
+        let state = ProgramState::parse(state).unwrap();
+        sessions::status_record("%1", state, 0)
+    }
+
+    #[test]
+    fn agys_idle_reports_never_alert_without_a_finished_turn() {
+        // Started, then quit without a prompt: agy reports idle both times.
+        let got = alerts(&[
+            agy_rec("SessionStart"),
+            agy_status("idle"),
+            agy_status("idle"),
+        ]);
+        assert_eq!(got, [None, None, None]);
+        let busy = HookRecord {
+            fully_idle: Some(false),
+            ..agy_rec("Stop")
+        };
+        assert_eq!(alerts(&[agy_rec("PreInvocation"), busy]), [None, None]);
+    }
+
+    #[test]
+    fn claude_after_agy_in_a_pane_alerts_as_ever() {
+        // agy's turn ends (a report naming no conversation), then Claude
+        // runs in the same terminal: its first idle reminder is new.
+        let idle_prompt = HookRecord {
+            notification_type: Some("idle_prompt".into()),
+            ..rec("Notification", "c")
+        };
+        let got = alerts(&[
+            agy_rec("PreInvocation"),
+            agy_status("done"),
+            rec("SessionStart", "c"),
+            idle_prompt.clone(),
+            idle_prompt,
+        ]);
+        assert_eq!(
+            got,
+            [None, Some(Alert::Idle), None, Some(Alert::Idle), None]
+        );
+    }
 
     fn rec(event: &str, session: &str) -> HookRecord {
         HookRecord {
@@ -455,6 +611,53 @@ mod tests {
                 None,
                 None,
                 Some(Idle)
+            ]
+        );
+    }
+
+    #[test]
+    fn an_agy_turn_reported_twice_alerts_once() {
+        let agy = |event: &str| HookRecord {
+            kind: sessions::AgentKind::Agy,
+            ..rec(event, "s")
+        };
+        let stop = HookRecord {
+            fully_idle: Some(true),
+            ..agy("Stop")
+        };
+        // A status report names no conversation: it is the pane's.
+        let status = |state: &str| {
+            let state = ProgramState::parse(state).unwrap();
+            sessions::status_record("%1", state, 0)
+        };
+        let got = alerts(&[
+            agy("SessionStart"),
+            agy("PreInvocation"),
+            status("working"),
+            status("blocked"),
+            status("working"),
+            status("done"),
+            stop.clone(),
+            status("idle"),
+            agy("PreInvocation"),
+            stop,
+            status("done"),
+        ]);
+        use Alert::*;
+        assert_eq!(
+            got,
+            [
+                None,
+                None,
+                None,
+                Some(Waiting),
+                None,
+                Some(Idle),
+                None,
+                None,
+                None,
+                Some(Idle),
+                None
             ]
         );
     }

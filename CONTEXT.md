@@ -1,6 +1,6 @@
 # paddock
 
-paddock is a terminal workspace for running coding agents (Claude Code and Gemini CLI). It keeps your terminals alive in the background and shows which agent sessions, and which branches they work on, need you.
+paddock is a terminal workspace for running coding agents (Claude Code, Gemini CLI and Antigravity CLI). It keeps your terminals alive in the background and shows which agent sessions, and which branches they work on, need you.
 
 ## Language
 
@@ -63,15 +63,19 @@ A live picture of a session's screen inside the dashboard. In interactive previe
 ### Agents and work
 
 **Session**:
-A coding agent's conversation (Claude Code or Gemini CLI; Antigravity CLI to come) running, or that ran, in a terminal. One running outside paddock's terminals is an external session.
+A coding agent's conversation (Claude Code, Gemini CLI or Antigravity CLI) running, or that ran, in a terminal. One running outside paddock's terminals is an external session.
 _Avoid_: agent (too broad), terminal, tmux session
 
 **Agent kind**:
-Which coding agent a session belongs to: `claude` (Claude Code) or `gemini` (Gemini CLI). Its rows show it as a short tag, and a tab named after its session takes it. Fork, subagents and the `claude agents --json` snapshot are Claude's alone.
+Which coding agent a session belongs to: `claude` (Claude Code), `gemini` (Gemini CLI) or `agy` (Antigravity CLI). Its rows show it as a short tag, and a tab named after its session takes it. Fork, subagents and the `claude agents --json` snapshot are Claude's alone.
 _Avoid_: agent type, provider, model
 
+**Status report**:
+An agent's report of its state (working, waiting on you, done, failed, idle) that it writes to its terminal's output (OSC 7501), read by paddock from that output. Only Antigravity CLI's count, and only in paddock's terminals; they are how its waits show.
+_Avoid_: status line, notification (that is macOS's)
+
 **Ended**:
-A session whose terminal was closed or whose agent quit. It leaves the dashboard and the sidebar; a new agent in the same terminal is a new session. `/clear` (Claude's or Gemini's) does not end it.
+A session whose terminal was closed or whose agent quit (agy: its terminal is back at the shell). It leaves the dashboard and the sidebar; a new agent in the same terminal is a new session. `/clear` (Claude's or Gemini's) does not end it.
 _Avoid_: stopped (a subagent task's state)
 
 **Main agent**:

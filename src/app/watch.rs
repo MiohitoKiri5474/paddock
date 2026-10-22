@@ -12,8 +12,11 @@ use crate::sessions::{agents, log, HookRecord};
 use crate::tmux::Server;
 use crate::worktree::space_dir;
 use anyhow::{Context, Result};
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// How often to look for new hook events.
@@ -125,16 +128,51 @@ fn places(server: &Server, spaces: &[String]) -> Vec<(String, Place)> {
         .collect()
 }
 
-/// Start the threads. They end when the event loop goes away. Returns where
-/// to send the tasks on screen: each list is read at once, then every
-/// [`GIT_POLL`] until the next one.
-pub fn start(server: &Server, state_dir: &Path, tx: &Sender<Event>) -> Result<Sender<Watched>> {
+/// The hook event log of `server` (see [`log::path`]).
+pub fn server_log(server: &Server, state_dir: &Path) -> Result<PathBuf> {
     let pid: u32 = server
         .run(&["display-message", "-p", "#{pid}"])?
         .trim()
         .parse()
         .context("cannot read the tmux server's pid")?;
-    let mut reader = log::Reader::new(log::path(state_dir, pid));
+    Ok(log::path(state_dir, pid))
+}
+
+/// Each pane's `pane_current_command`, by pane id; `None` if tmux cannot
+/// say.
+fn pane_commands(server: &Server) -> Option<HashMap<String, String>> {
+    let out = server
+        .run(&[
+            "list-panes",
+            "-a",
+            "-F",
+            "#{pane_id} #{pane_current_command}",
+        ])
+        .ok()?;
+    Some(parse_commands(&out))
+}
+
+/// `list-panes` output of `<pane id> <command>` lines, by pane id.
+fn parse_commands(out: &str) -> HashMap<String, String> {
+    out.lines()
+        .filter_map(|l| l.split_once(' '))
+        .map(|(pane, command)| (pane.to_string(), command.to_string()))
+        .collect()
+}
+
+/// Start the threads, reading the server's hook events from `server_log`
+/// (see [`server_log`]), and each terminal's command while `agy_running`
+/// says an Antigravity session runs in one. They end when the event loop
+/// goes away. Returns where to send the tasks on screen: each list is read
+/// at once, then every [`GIT_POLL`] until the next one.
+pub fn start(
+    server: &Server,
+    server_log: PathBuf,
+    agy_running: Arc<AtomicBool>,
+    state_dir: &Path,
+    tx: &Sender<Event>,
+) -> Result<Sender<Watched>> {
+    let mut reader = log::Reader::new(server_log);
     // Every agent on the machine appends to the external log: trim it
     // before replaying it, and while paddock runs. Failing that, it is read
     // whole.
@@ -163,6 +201,18 @@ pub fn start(server: &Server, state_dir: &Path, tx: &Sender<Event>) -> Result<Se
     let agents_server = server.clone();
     let events = tx.clone();
     std::thread::spawn(move || loop {
+        // Whether Antigravity quit back to the shell (see
+        // `Sessions::end_exited`).
+        let taken = now_ms();
+        let commands = agy_running
+            .load(Ordering::Relaxed)
+            .then(|| pane_commands(&agents_server))
+            .flatten();
+        if let Some(commands) = commands {
+            if events.send(Event::Commands(taken, commands)).is_err() {
+                break;
+            }
+        }
         let taken = now_ms();
         if let Some(list) = agents::fetch(&agents_server) {
             if events.send(Event::Agents(taken, list)).is_err() {
@@ -223,6 +273,15 @@ fn read_watched(server: &Server, watched: &Watched, events: &Sender<Event>) -> b
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pane_commands_are_read_by_pane() {
+        let got = parse_commands("%1 agy\n%2 -zsh\n%3 my tool\n\n%4\n");
+        assert_eq!(got.len(), 3);
+        assert_eq!(got["%1"], "agy");
+        assert_eq!(got["%2"], "-zsh");
+        assert_eq!(got["%3"], "my tool", "a name with a space");
+    }
 
     #[test]
     fn a_space_shows_its_root_as_stored_with_what_is_checked_out_there() {
