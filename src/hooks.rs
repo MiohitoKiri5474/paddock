@@ -166,20 +166,20 @@ fn remove_hooks(settings: &mut Value, matches: impl Fn(&str) -> bool) {
         let Some(groups) = groups.as_array_mut() else {
             continue;
         };
-        let before = groups.len();
+        let groups_before = groups.len();
         groups.retain_mut(|g| {
             let Some(list) = g.get_mut("hooks").and_then(Value::as_array_mut) else {
                 return true;
             };
-            let before = list.len();
+            let hooks_before = list.len();
             list.retain(|h| {
                 !h.get("command")
                     .and_then(Value::as_str)
                     .is_some_and(&matches)
             });
-            !(list.is_empty() && before > 0)
+            !(list.is_empty() && hooks_before > 0)
         });
-        if groups.is_empty() && before > 0 {
+        if groups.is_empty() && groups_before > 0 {
             emptied.push(event.clone());
         }
     }
@@ -252,15 +252,28 @@ fn read_settings(path: &Path) -> Option<Value> {
 
 /// Edit a settings file in place; a missing file counts as `{}`. The file is
 /// replaced atomically.
-pub fn edit_file(path: &Path, f: impl FnOnce(Value) -> Result<Value>) -> Result<()> {
+#[cfg(test)]
+fn edit_file(path: &Path, f: impl FnOnce(Value) -> Result<Value>) -> Result<()> {
+    let settings = read_file(path)?.unwrap_or_else(|| json!({}));
+    write_file(path, &f(settings)?)
+}
+
+/// The settings in the file at `path`, `None` if there is none.
+fn read_file(path: &Path) -> Result<Option<Value>> {
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => "{}".into(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e).with_context(|| format!("cannot read {}", path.display())),
     };
-    let settings: Value = serde_json::from_str(&text)
-        .with_context(|| format!("invalid JSON in {}", path.display()))?;
-    let mut out = serde_json::to_string_pretty(&f(settings)?)?;
+    serde_json::from_str(&text)
+        .map(Some)
+        .with_context(|| format!("invalid JSON in {}", path.display()))
+}
+
+/// Replace the settings file at `path` with `settings`, atomically,
+/// creating it and its directory if needed.
+fn write_file(path: &Path, settings: &Value) -> Result<()> {
+    let mut out = serde_json::to_string_pretty(settings)?;
     out.push('\n');
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
@@ -350,38 +363,88 @@ pub fn command(args: &[&str]) -> Result<()> {
     // Every argument is checked before any file is touched.
     let var = |k: &str| std::env::var(k).ok();
     let kinds = kinds(rest, var)?;
-    let paths: Vec<(AgentKind, PathBuf)> = kinds
-        .into_iter()
-        .map(|k| Ok((k, settings_path(k, var)?)))
-        .collect::<Result<_>>()?;
-    for (kind, path) in paths {
-        if action == "install" {
-            install_in(kind, &path)?;
-        } else {
-            edit_file(&path, |s| Ok(uninstall(s)))?;
-            println!("paddock hooks removed from {}", path.display());
-        }
-        println!("{}", restart(kind));
+    let install = action == "install";
+    let exe = if install {
+        std::env::current_exe()
+            .context("cannot find paddock's own path")?
+            .to_string_lossy()
+            .into_owned()
+    } else {
+        String::new()
+    };
+    // Every file is read and edited before any is written: one paddock
+    // cannot edit (Gemini's with comments, say) leaves them all as they were.
+    let mut edits = Vec::new();
+    for kind in kinds {
+        let path = settings_path(kind, var)?;
+        edits.push(plan(install, kind, path, &exe)?);
+    }
+    for edit in edits {
+        edit.apply()?;
     }
     Ok(())
 }
 
-/// `paddock hooks install` for `kind`, whose settings are at `path`.
-fn install_in(kind: AgentKind, path: &Path) -> Result<()> {
-    let exe = std::env::current_exe().context("cannot find paddock's own path")?;
-    let exe = exe.to_string_lossy().into_owned();
-    let plugin =
-        kind == AgentKind::Claude && read_settings(path).is_some_and(|s| plugin_enabled(&s));
-    edit_file(path, |s| install(s, &exe, kind))?;
-    println!("paddock hooks installed in {}", path.display());
-    if plugin {
-        println!(
-            "note: the paddock plugin is enabled and carries these hooks too; \
-             paddock records each event once, from these. To keep only the \
-             plugin's, run `paddock hooks uninstall --agent claude`."
-        );
+/// What `paddock hooks install|uninstall` does to one agent's settings.
+struct Edit {
+    kind: AgentKind,
+    install: bool,
+    path: PathBuf,
+    /// The new settings; `None` leaves the file alone: there is nothing to
+    /// remove from a file that does not exist, and uninstall never makes one.
+    settings: Option<Value>,
+    /// Claude's settings enable the paddock plugin.
+    plugin: bool,
+}
+
+/// The [`Edit`] of `kind`'s settings at `path`: paddock's hooks (calling
+/// `exe`) put in if `install`, else taken out. The file is read and checked
+/// here, never written.
+fn plan(install: bool, kind: AgentKind, path: PathBuf, exe: &str) -> Result<Edit> {
+    let read = read_file(&path)?;
+    let plugin = kind == AgentKind::Claude && read.as_ref().is_some_and(plugin_enabled);
+    let settings = if install {
+        let new = self::install(read.unwrap_or_else(|| json!({})), exe, kind)
+            .with_context(|| format!("cannot edit {}", path.display()))?;
+        Some(new)
+    } else {
+        read.map(uninstall)
+    };
+    Ok(Edit {
+        kind,
+        install,
+        path,
+        settings,
+        plugin,
+    })
+}
+
+impl Edit {
+    /// Write the file and say what was done.
+    fn apply(self) -> Result<()> {
+        let path = self.path.display();
+        match &self.settings {
+            Some(s) => {
+                write_file(&self.path, s)?;
+                let done = if self.install {
+                    "installed in"
+                } else {
+                    "removed from"
+                };
+                println!("paddock hooks {done} {path}");
+            }
+            None => println!("no paddock hooks to remove: {path} does not exist"),
+        }
+        if self.plugin && self.install {
+            println!(
+                "note: the paddock plugin is enabled and carries these hooks too; \
+                 paddock records each event once, from these. To keep only the \
+                 plugin's, run `paddock hooks uninstall --agent claude`."
+            );
+        }
+        println!("{}", restart(self.kind));
+        Ok(())
     }
-    Ok(())
 }
 
 /// The agent and event of `paddock hook`'s arguments: `<event>` is
