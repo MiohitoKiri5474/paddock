@@ -16,10 +16,16 @@ fn is_separator(c: char) -> bool {
     c.is_whitespace() || c.is_ascii_punctuation() || c == '·' || c == '›'
 }
 
+/// Whether matching `query` ignores case: unless it has an uppercase
+/// letter. The finder, the dashboard filter and copy-mode search share it.
+pub fn ignores_case(query: &str) -> bool {
+    query.chars().all(|c| !c.is_uppercase())
+}
+
 /// How well `query` matches `text`: `None` if it does not, else a score
 /// where higher is better (an empty query matches everything, scoring 0).
 pub fn score(query: &str, text: &str) -> Option<i32> {
-    let fold = query.chars().all(|c| !c.is_uppercase());
+    let fold = ignores_case(query);
     let lower = |c: char| {
         if fold {
             c.to_lowercase().next().unwrap_or(c)

@@ -2,8 +2,11 @@
 //! session, a tab one of its windows. paddock asks tmux to change them and
 //! reads them back when tmux reports a change.
 
+use super::rows::{pane_only, EXTERNAL_CLOSE, EXTERNAL_FORK, EXTERNAL_OPEN};
 use super::space::clamp;
 use super::state::{is_session_id, next_name, App, CloseTarget, Mode, NameTarget, Renamed};
+use super::watch;
+use crate::paths::HomePaths;
 use crate::sessions::State;
 use crate::terminal::Terminal;
 use crate::tmux::server::quote;
@@ -75,7 +78,7 @@ impl App {
         let Some(id) = self.current_space().map(|i| i.id.clone()) else {
             return Ok(());
         };
-        let dir = self.new_dir();
+        let dir = self.tab_dir();
         self.open_tab(&id, dir).map(drop)
     }
 
@@ -204,6 +207,10 @@ impl App {
     /// Bring pane `pane` to the screen: its space and tab become current and
     /// it gets the focus.
     pub fn jump_to(&mut self, pane: &str) {
+        if let Err(e) = pane_only(pane, EXTERNAL_OPEN) {
+            self.notice = Some(e.to_string());
+            return;
+        }
         let Some(i) = self.space_of(pane) else {
             return;
         };
@@ -214,7 +221,7 @@ impl App {
         };
         space.structure.current = w;
         let window = &mut space.structure.windows[w];
-        window.active = pane.to_string();
+        window.focus(pane);
         let id = window.id.clone();
         self.report(|app| app.server.select(&id, Some(pane)));
     }
@@ -251,6 +258,27 @@ impl App {
         self.refresh(&id)
     }
 
+    /// `C-a R`: make the focused terminal's directory the current space's
+    /// root, saying so in a notice.
+    pub fn set_root(&mut self) -> Result<()> {
+        let (Some(pane), Some(space)) = (self.current_pane(), self.current_space()) else {
+            return Ok(());
+        };
+        let (id, name) = (space.id.clone(), space.name().to_string());
+        let Some(dir) = self.dir_of(&pane)? else {
+            bail!("the focused terminal's directory is unknown: the space root stays");
+        };
+        self.server.set_root(&id, &dir)?;
+        let root = dir.to_string_lossy();
+        self.notice = Some(format!("{name}'s root: {}", HomePaths::new().show(&root)));
+        // Read again now, so the finder is never stale, even for a space
+        // whose place the background read has not reached yet.
+        if let Some(place) = watch::place(&self.server, &id) {
+            self.places.insert(id, place);
+        }
+        Ok(())
+    }
+
     /// What the prompt for `target` starts with: the current name, the
     /// default for a new space, or nothing for a branch.
     pub fn name_of(&self, target: &NameTarget) -> String {
@@ -270,6 +298,7 @@ impl App {
     /// tmux closes its tab with its last pane, and its space with its last
     /// tab, and reports each.
     pub fn close(&mut self, pane: &str) -> Result<()> {
+        pane_only(pane, EXTERNAL_CLOSE)?;
         match self.session_in(pane).map(|s| s.state) {
             Some(state @ (State::Running | State::Waiting)) => {
                 self.ask_close(CloseTarget::Pane(pane.to_string()), state);
@@ -324,6 +353,7 @@ impl App {
     /// --fork-session`, typed into the new shell so the tab stays when
     /// Claude exits.
     pub fn fork(&mut self, pane: &str) -> Result<()> {
+        pane_only(pane, EXTERNAL_FORK)?;
         let Some((session_id, cwd)) = self
             .session_in(pane)
             .and_then(|s| Some((s.session_id.clone()?, s.cwd.clone())))
@@ -338,11 +368,10 @@ impl App {
         let Some(i) = self.space_of(pane) else {
             bail!("that terminal is closed");
         };
-        let dir = cwd
-            .map(PathBuf::from)
-            .filter(|p| p.is_dir())
-            .or_else(|| self.dir_of(pane))
-            .unwrap_or_else(|| self.start_dir.clone());
+        let dir = match cwd.map(PathBuf::from).filter(|p| p.is_dir()) {
+            Some(dir) => dir,
+            None => self.dir_of(pane)?.unwrap_or_else(|| self.start_dir.clone()),
+        };
         let id = self.spaces[i].id.clone();
         let new = self.open_tab(&id, dir)?;
         self.current = i;

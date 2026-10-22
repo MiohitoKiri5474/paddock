@@ -1,11 +1,15 @@
 //! The mouse: clicks focus a pane, open a space or agent, or switch
 //! tabs; the
 //! wheel and programs' mouse reports go to the pane under the pointer;
-//! dragging selects text and releasing copies it. While a float is shown,
+//! dragging selects text and releasing copies it; dragging the border
+//! between two splits moves it (see `splits.rs`). While a float is shown,
 //! the mouse reaches only the float; a click outside it does nothing.
-//! While the finder is open, see `finder.rs`.
+//! While the finder is open, see `finder.rs`. In copy mode the wheel over
+//! its terminal scrolls the copy view, and a click or drag leaves it first.
 
+use super::splits::SplitDrag;
 use super::state::{App, Mode, TAB_BAR_ROWS};
+use crate::input::mouse::WHEEL_LINES;
 use crate::input::{route_mouse, MouseAction};
 use crate::terminal::emulator::Emulator;
 use crate::ui::sidebar;
@@ -27,6 +31,8 @@ pub enum Press {
     /// once the pointer left the border's column (until then, a release is
     /// a click on that row).
     Border { row: u16, dragged: bool },
+    /// On a border between two splits: dragging moves it.
+    Split(SplitDrag),
 }
 
 impl App {
@@ -39,6 +45,9 @@ impl App {
             Mode::Finder { .. } => return Ok(self.finder_mouse(m)),
             Mode::Help | Mode::Dashboard(_) => return Ok(false),
             _ => {}
+        }
+        if let Some(changed) = self.copy_mouse(m) {
+            return Ok(changed);
         }
         match m.kind {
             MouseEventKind::Down(_) => self.press(m),
@@ -61,6 +70,32 @@ impl App {
         true
     }
 
+    /// The mouse in copy mode: the wheel over its terminal scrolls the
+    /// copy view (elsewhere it does nothing), and motion does nothing; any
+    /// other event leaves copy mode and then acts as usual (`None`).
+    fn copy_mouse(&mut self, m: MouseEvent) -> Option<bool> {
+        let Mode::Copy(copy) = &self.mode else {
+            return None;
+        };
+        let lines = match m.kind {
+            MouseEventKind::ScrollUp => WHEEL_LINES,
+            MouseEventKind::ScrollDown => -WHEEL_LINES,
+            MouseEventKind::Moved | MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight => {
+                return Some(false)
+            }
+            MouseEventKind::Down(_) | MouseEventKind::Drag(_) | MouseEventKind::Up(_) => {
+                self.end_copy();
+                return None;
+            }
+        };
+        let at = Position::new(m.column, m.row);
+        let over = self.rect_of(&copy.pane).is_some_and(|r| r.contains(at));
+        if over {
+            self.copy_wheel(lines);
+        }
+        Some(over)
+    }
+
     fn press(&mut self, m: MouseEvent) -> Result<bool> {
         if let Some(Press::Select { pane, .. }) = self.press.take() {
             if let Some(t) = self.terminals.get_mut(&pane) {
@@ -78,6 +113,10 @@ impl App {
                 return Ok(changed);
             }
             let hit = self.under(m.column, m.row);
+            // Between the panes: a border held is dragged, never selects.
+            if left && hit.is_none() && self.press_split_border(m.column, m.row) {
+                return Ok(false);
+            }
             if let (true, Some((pane, _))) = (left, &hit) {
                 self.focus_pane(pane);
             }
@@ -146,9 +185,12 @@ impl App {
     fn press_sidebar(&mut self, y: u16) -> bool {
         let area = Rect::new(0, 0, self.sidebar_width(), self.screen.1);
         let picks = self.sidebar_picks();
-        let entries = self.sidebar_spaces(&self.rows());
+        let rows = self.rows();
+        let entries = self.sidebar_spaces(&rows);
         let agents = picks.len() - self.spaces.len();
-        let Some(pick) = sidebar::pick_at(&entries, agents, area, y).and_then(|i| picks.get(i))
+        let external = rows.iter().filter(|r| r.external).count();
+        let Some(pick) =
+            sidebar::pick_at(&entries, (agents, external), area, y).and_then(|i| picks.get(i))
         else {
             return false;
         };
@@ -178,6 +220,7 @@ impl App {
                 let (row, dragged) = (*row, *dragged);
                 return Ok(self.border_held(m, row, dragged));
             }
+            Some(Press::Split(_)) => return Ok(self.split_border_held(m)),
             None => return Ok(false),
         };
         let (Some(rect), true) = (self.rect_of(&pane), self.terminals.contains_key(&pane)) else {
@@ -201,7 +244,7 @@ impl App {
                 Some(Press::Select { dragged, .. }) => {
                     copied = select_held(t.emulator_mut(), dragged, &m, (row, col));
                 }
-                Some(Press::Border { .. }) | None => {}
+                Some(Press::Border { .. } | Press::Split(_)) | None => {}
             }
         }
         if let Some(bytes) = report {
@@ -343,7 +386,7 @@ fn select_held(
 
 /// Put `text` on the clipboard with `pbcopy`, or with the program named by
 /// `PADDOCK_COPY_COMMAND` (tests use it to keep off the real clipboard).
-fn copy(text: &str) -> Result<()> {
+pub(super) fn copy(text: &str) -> Result<()> {
     let program = std::env::var_os("PADDOCK_COPY_COMMAND").unwrap_or_else(|| "pbcopy".into());
     let name = program.to_string_lossy().into_owned();
     let mut child = Command::new(&program)

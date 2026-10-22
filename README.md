@@ -13,7 +13,7 @@ Design: [docs/design.md](docs/design.md). Glossary: [CONTEXT.md](CONTEXT.md). De
 
 ## Install
 
-Pick one of these, then install the hooks (below).
+Pick one of these, then connect Claude Code (below).
 
 **Homebrew** (recommended; installs tmux too):
 
@@ -23,11 +23,11 @@ brew install MiohitoKiri5474/paddock/paddock
 
 If an earlier `brew install` failed while tapping, run `brew untap miohitokiri5474/paddock` first. Upgrade with `brew upgrade paddock`.
 
-**Release tarball** (Apple Silicon). Download `paddock-v0.0.3-aarch64-apple-darwin.tar.gz` and its `.sha256` from [Releases](https://github.com/MiohitoKiri5474/paddock/releases), then:
+**Release tarball** (Apple Silicon). Download `paddock-v0.0.4-aarch64-apple-darwin.tar.gz` and its `.sha256` from [Releases](https://github.com/MiohitoKiri5474/paddock/releases), then:
 
 ```sh
-shasum -a 256 -c paddock-v0.0.3-aarch64-apple-darwin.tar.gz.sha256
-tar xzf paddock-v0.0.3-aarch64-apple-darwin.tar.gz
+shasum -a 256 -c paddock-v0.0.4-aarch64-apple-darwin.tar.gz.sha256
+tar xzf paddock-v0.0.4-aarch64-apple-darwin.tar.gz
 xattr -d com.apple.quarantine paddock   # unsigned binary: lets Gatekeeper run it ("No such xattr" is fine)
 sudo mkdir -p /usr/local/bin             # missing on a fresh Apple Silicon Mac
 sudo mv paddock /usr/local/bin/         # or anywhere on your PATH
@@ -36,7 +36,7 @@ sudo mv paddock /usr/local/bin/         # or anywhere on your PATH
 **Cargo**, from a tag:
 
 ```sh
-cargo install --git https://github.com/MiohitoKiri5474/paddock --tag v0.0.3 --locked
+cargo install --git https://github.com/MiohitoKiri5474/paddock --tag v0.0.4 --locked
 ```
 
 If it fails with `failed to authenticate when downloading repository: git@github.com:…` (your git config rewrites GitHub URLs to SSH), let cargo use the `git` command: prefix the command with `CARGO_NET_GIT_FETCH_WITH_CLI=true`, or set `git-fetch-with-cli = true` under `[net]` in `~/.cargo/config.toml`.
@@ -47,18 +47,50 @@ If it fails with `failed to authenticate when downloading repository: git@github
 cargo install --path . --locked     # installs ~/.cargo/bin/paddock
 ```
 
-Then install the Claude Code hooks:
+### Connect Claude Code
+
+paddock tracks Claude sessions through Claude Code hooks. Install the paddock plugin, which carries them, in Claude Code:
+
+```text
+/plugin marketplace add MiohitoKiri5474/paddock
+/plugin install paddock@paddock
+```
+
+Then restart running Claude sessions. The plugin's hooks run `paddock` from your `PATH`, so make sure `which paddock` finds it in the shell you start Claude from (Homebrew and `cargo install` put it there). Without `paddock` on `PATH` the hooks do nothing, quietly. The plugin also carries the worktree skills (see [Claude Code plugin](#claude-code-plugin)).
+
+**Fallback, without the plugin**: write the hooks into `~/.claude/settings.json` instead.
 
 ```sh
 cp ~/.claude/settings.json ~/.claude/settings.json.bak
 paddock hooks install               # adds paddock's hooks to ~/.claude/settings.json
 ```
 
-`hooks install` keeps other hooks (for example Supacode's), removes the old tmux-claude-session-manager hooks, and records the binary's full path, so install from a stable location. Re-run it after upgrading paddock or moving its binary.
+`hooks install` keeps other hooks (for example Supacode's), removes the old tmux-claude-session-manager hooks, and records the binary's full path, so install from a stable location. Re-run it after upgrading paddock or moving its binary. It says so when the plugin is enabled in that file.
+
+Both at once records each event once, as long as the `paddock` on your `PATH` is the release that added the plugin's hooks or newer: the plugin's hook steps aside when `settings.json` holds paddock's hook for that event. An older `paddock` records each event twice.
+
+### Move from `hooks install` to the plugin
+
+1. Upgrade paddock first (`brew upgrade paddock`, or reinstall it the way you installed it), so the `paddock` on `PATH` knows the plugin's hooks. Then get the plugin with its hooks. If you have the plugin already (an earlier one has no hooks), update it from your shell:
+
+   ```sh
+   claude plugin marketplace update paddock
+   claude plugin update paddock@paddock
+   ```
+
+   Otherwise install it (see [Connect Claude Code](#connect-claude-code)).
+2. Restart running Claude sessions, or run `/reload-plugins` in each; that loads the updated plugin, hooks included. Both sets of hooks now run, and each event is still recorded once.
+3. Remove the settings hooks, then restart running Claude sessions (`/reload-plugins` does not reload settings hooks):
+
+   ```sh
+   paddock hooks uninstall             # removes only paddock's hooks from ~/.claude/settings.json
+   ```
+
+Config and state are kept.
 
 ### Switch install method
 
-The hooks point at the old binary by its full path, so remove them with it before it goes, then install them again with the new one. For example, from Cargo to Homebrew:
+With the plugin, nothing else changes: the new `paddock` only has to be on `PATH`. With `hooks install`, the hooks point at the old binary by its full path, so remove them with it before it goes, then install them again with the new one. For example, from Cargo to Homebrew:
 
 ```sh
 # Detach paddock first (C-a d); your terminals keep running in tmux.
@@ -74,10 +106,14 @@ Restart running Claude sessions so they use the new hooks. Config and state are 
 ## Use
 
 ```sh
-paddock          # open (a second launch offers to take over)
+paddock            # open (a second launch offers to take over)
+paddock version    # or -V, --version: print `paddock <version>`, for bug reports
+paddock help       # or -h, --help: list the commands
 ```
 
 The sidebar has two sections. SPACES lists your spaces, each with its directory and git branch on a dim second line: each space is a tmux session on paddock's hidden server, its tabs are the session's windows and its splits their panes, so `tmux -L paddock attach` shows the same thing. AGENTS lists every main Claude session in any space, with its state (waiting, done, idle, running) and the space and tab it runs in. The space you are in and the agent in the focused terminal have a darker background (`[colors] current_space`), and `C-a s` puts the sidebar's selection on that agent (else on that space). Open a tab with `C-a c` and run `claude` in it; the dashboard (`C-a o`) shows the branches it and its subagents work on. The dashboard lists the sessions on top as an aligned table (NAME, STATE, ↑↓, CHANGES, BASE, FILES, AGE, MERGED; on a narrow screen whole columns drop, NAME and STATE stay). A session and its branch and subagent rows form one block: only sessions are selected, the whole selected block is highlighted, and `D` dismisses the block. A session leaves the sidebar and the dashboard by itself once it ends: when its terminal (pane, tab or space) is closed, or when Claude quits in it (`/exit`, Ctrl-D); the selection moves to the session that takes its place. A new `claude` in that terminal is a new session and shows up as usual. Below the list, a live preview of the selected session sits in a rounded border (`I` types into it), and the keys are on the last line. A turn that ends while you look elsewhere is `done` until you look at its tab, then `idle`. You get a macOS notification when a session or one of its subagents starts waiting, or when a main agent finishes a turn (a subagent finishing never notifies).
+
+External sessions: Claude running outside paddock's terminals (another terminal app, an IDE) shows too, dim, in an EXTERNAL group at the bottom of AGENTS and of the dashboard, with its state, its branch and task rows, but no screen: the preview says `external session: no screen`. paddock learns of it from the same hooks (the plugin's, or `hooks install`, both global to Claude) and from `claude agents --json`; its label is the session's name, else its directory's. It can't be jumped to, closed, forked or typed into: `Enter`, `x`, `f` and `I` on it only show a notice, `C-a a` skips it, and the finder leaves it out; `D` dismisses it. Waiting or done, it notifies and its dot shows like any other; with no tab to look at, a finished turn stays `done` until its row is selected in the dashboard, or in AGENTS while the sidebar has the keyboard. It leaves when it ends (`SessionEnd`, `/clear` included), or once nothing has been heard of it for `[dashboard] external_timeout` minutes (no hook event, not in `claude agents --json`), as when its Claude was killed. `[dashboard] external = false` hides the group and its notifications. Its hook events go to `~/.local/state/paddock/events/external.jsonl`; once it passes 4 MiB, paddock trims it (when it opens, and every few seconds while it runs) to the last day's records, at most the newest 2 MiB of them.
 
 ### Keys
 
@@ -93,6 +129,7 @@ Every key is an action with a name you can rebind (see [Configure](#configure));
 | `1` `2` `3` `4` `5` `6` `7` `8` `9` | go to tab 1, 2, ... 9 | `go_to_tab` |
 | `,` | rename tab | `rename_tab` |
 | `$` | rename space | `rename_space` |
+| `R` | set space root here | `set_root` |
 | `<` | move tab left | `move_tab_left` |
 | `>` | move tab right | `move_tab_right` |
 | `\|` | split side by side | `split_right` |
@@ -102,6 +139,11 @@ Every key is an action with a name you can rebind (see [Configure](#configure));
 | `k` `Up` | focus up | `focus_up` |
 | `l` `Right` | focus right | `focus_right` |
 | `=` | even out the focused split | `equalize` |
+| `H` | move split border left | `resize_left` |
+| `J` | move split border down | `resize_down` |
+| `K` | move split border up | `resize_up` |
+| `L` | move split border right | `resize_right` |
+| `z` | zoom the focused split | `zoom` |
 | `x` | close pane (asks if busy) | `close` |
 | `f` | fork Claude into a new tab | `fork` |
 | `W` | new worktree as a new space | `new_worktree` |
@@ -115,16 +157,24 @@ Every key is an action with a name you can rebind (see [Configure](#configure));
 | `o` | dashboard | `dashboard` |
 | `g` | find a space, tab or agent | `finder` |
 | `d` | detach (terminals go on) | `detach` |
+| `[` | copy mode: move, select, copy | `copy_mode` |
+| `/` | search the history | `search` |
 | `?` | this help | `help` |
 | `G` | show or hide lazygit in a float | `[floats] G` |
 
 `C-a` pressed twice sends a literal `C-a`. `go_to_tab`'s first key goes to tab 1, its second to tab 2, and so on. `close` closes the pane; the last one closes its tab, the last tab its space, and it asks first if Claude is busy. Renaming, naming a new space (prefilled with `space-N`; `Enter` keeps it) and that question open a small box in the middle of the screen; `Esc` or a click outside it cancels. `{`/`}` can also be done by dragging the sidebar's border.
+
+Zoom: `C-a z` makes the focused split fill its tab, and the tab bar shows a `Z` after the tab's name; `C-a z` again gives every split its place back, with the focus where it was. The other splits are hidden but keep running. Moving the focus (`C-a h/j/k/l`, a direct chord, or `C-a a` and the finder jumping to a hidden split), splitting, evening out (`C-a =`), or closing the zoomed split undoes the zoom first, as in tmux. With a float shown, `C-a z` hides the float, then zooms. The zoom lives in tmux (`resize-pane -Z`), so it survives detaching, and a zoom made in `tmux -L paddock attach` shows in paddock too. A Claude in a hidden split that finishes a turn stays `done` until you see it. `zoom` has no direct chord by default.
+
+Resizing: `C-a H`, `J`, `K` and `L` move the focused split's border left, down, up or right by 2 columns (or rows), the way tmux's `resize-pane` does: the border after the split, or the one before it for the last split of a row or column. After `C-a H`, the four keys work again without the prefix for 500 ms, each press starting the wait over, as tmux's `bind -r` does: `C-a H H H` moves the border 6 columns. Any other key ends that and is read as usual (so `H` typed later goes to the terminal); `[keys] repeat_ms` sets the wait, and `0` turns it off. You can also press on the line between two splits and drag it: the splits follow the pointer, and the size is kept on release. A press on that line never selects text. Dragging needs tmux 3.8 or later, whose layout paddock reads as JSON (`#{window_layout}`); with an older tmux a drag on that line does nothing, and the keys still work. A split stops at 1 column or row, without a message. The sizes live in tmux, so they survive detaching; `C-a =` evens them out again, and resizing a zoomed tab unzooms it first, as in tmux. The resize keys have no direct chord by default.
 
 The finder (`C-a g`) opens a box framed like the prompts: a text field on top and, under it, every space (name, directory, branch), every tab (`space › tab`, directory, branch) and every agent (name, state, `space › tab`), each with its kind as a marker. Typing filters them fuzzily (case-insensitive unless you type an uppercase letter; contiguous and word-start matches rank first) against name, kind, directory and branch, best match first. `Up`/`Down` (or `C-p`/`C-n`) move, `Enter` shows the one selected (its space and tab, with its pane focused), `Esc` or a click outside cancels (a float shown stays shown); a click on a row opens it and the wheel moves the selection. While the field is empty, `b`, `w`, `i` and `d` show only agents that are waiting (blocked), running (working), idle or done, `a` all again, and the title says which; with text in the field they are ordinary characters. The finder's keys are fixed, except that `finder` in `[keys.commands]` names the key that opens it.
 
 Floats (`[floats]`): `C-a G` shows lazygit in a box over the whole screen, sidebar included, framed like the prompts and titled with its command; `C-a G` again hides it and the program keeps running, so showing it again brings back the same program and state. When the program exits, the float closes, and the next `C-a G` starts it again. Each space has its own float per key, started in the focused terminal's directory; it lives in the space's tmux session (so it survives detaching) but is never a tab, never in `C-a Tab`'s history, and paddock does not follow Claude in it. One float shows at a time. While it shows, every key, paste and mouse event inside it goes to it, except the prefix: `C-a` commands still work, and one that changes the page or gives the sidebar or dashboard the keyboard hides the float first. A click outside it does nothing. A float whose key you remove from `[floats]` is closed, with its program, the next time paddock opens. Floats are tmux windows, so `tmux -L paddock attach` lists them next to the tabs.
 
 Worktrees: a git worktree is a space. `C-a W` asks for a branch name (edited like the other prompts) and, in the focused terminal's repository, runs `git worktree add -b <branch> <path>` (`git worktree add <path> <branch>` if the branch exists), where `<path>` is `<[worktrees] directory>/<repo>/<branch>` with slashes in the branch written `-`; then it opens a new space named `<repo>/<branch>` with its first tab there. A name git refuses, a path that exists or any git error shows as a notice (git's reason first), and nothing is left half-made. `C-a O` lists the repository's worktrees that have no space yet: `j`/`k` move, `Enter` opens one, `Esc` cancels. In the sidebar, a space in a linked worktree is listed one cell in, under its repository's main-checkout space, or under a dim header with the repository's name when no space is in the main checkout; `W` and `o` there act on the selected space's repository, and `x` on a worktree space no longer just closes it: it deletes it. A worktree space is one paddock made, a linked worktree at exactly `<[worktrees] directory>/<repo>/<name>`; the main checkout and other worktrees (such as Claude's `.claude/worktrees/agent-*`) are never deleted, and `x` on their spaces only closes them, as before. Deleting asks `delete <branch> and its worktree (ignored files too)? y/n`; `n` (any key but `y`) cancels and nothing is deleted or closed. If the worktree has uncommitted changes, or commits not in its base (a branch's or a detached HEAD's), it asks again naming every risk; an unmerged branch is said to be kept (`… remove the worktree anyway? (the branch is kept) y/n`). Then it closes the space and any other space in that worktree (asking if Claude is busy in any, as close does), runs `git worktree remove` (`--force` only if you confirmed uncommitted changes; changes or commits made after the question leave everything in place, with a notice) and `git branch -d` (never `-D`: a branch git finds unmerged is kept, and a notice says so). `delete_worktree` (unbound by default) does the same for the current space. Every git read paddock makes gives up after 5 s, adding and removing after 60 s.
+
+Space roots: every space has a root directory, kept in its tmux session as the option `@paddock-root`. A space gets the directory it was made in: the focused terminal's for `C-a C`, the worktree for `C-a W`, `C-a O` and `paddock worktree new|open`. `C-a R` makes the focused terminal's directory the current space's root, and says so in the tab bar. With `[spaces] new_tab_dir = "root"`, new tabs and splits start in the root wherever the focused terminal has gone; with the default `"current"` they start in the focused terminal's directory, as before. A space made by an older paddock has no root until `C-a R`; until then its first tab's directory serves, and a root that was deleted falls back to the focused terminal's directory. The sidebar still shows each space's first tab's directory; the finder's space rows show the root as it was made (links kept) and the branch checked out there, if it is in a git checkout.
 
 The help (`C-a ?`) says how the prefix works in its top border, so the keys fit an 80x24 terminal.
 
@@ -157,11 +207,43 @@ In the dashboard (`[keys.dashboard]`):
 
 While typing into the preview, every key goes to the terminal except `Esc`, which only leaves and is never passed on; this is fixed, so a remap can never trap you there. `/` opens a one-line filter under the dashboard's title: the list keeps only the blocks whose session name, branch or state fuzzy-match what you type; `Enter` keeps the filter and returns the keys to the list, `Esc` clears it and leaves the filter line. Task rows show line changes, ahead/behind, the diff and changed files against the base branch (`origin/HEAD`, else `main`/`master`), the last commit's age, and `merged` once the branch is in its base. Prompt editing (`Enter`, `Esc`, `Left`/`Right`, `Home`/`End`, `Backspace`/`Delete`, `C-u` (clear), `C-w` (delete word)), the dashboard filter's keys (the same editing; `Enter` keeps, `Esc` clears) and the `y` that confirms a close or a worktree delete are fixed too, as are `j`/`k`/`Enter`/`Esc` in the worktree list.
 
-Mouse: click to focus a split, switch tabs (`+` after the tabs opens one, `<`/`>` scroll a full bar), or open a space or agent; the wheel over the tab bar switches tabs; wheel scrolls history; drag selects and copies (hold Shift over programs that use the mouse).
+Mouse: click to focus a split, switch tabs (`+` after the tabs opens one, `<`/`>` scroll a full bar), or open a space or agent; the wheel over the tab bar switches tabs; wheel scrolls history; drag selects and copies (hold Shift over programs that use the mouse); dragging the line between two splits resizes them, and dragging the sidebar's border resizes the sidebar.
+
+#### Copy mode
+
+`C-a [` puts the terminal you type into (the float shown, else the focused split) in copy mode: its view stops following the program, a cursor appears, and the keys of `[keys.copy]` move it over the whole history and the screen, select, copy and search. The program keeps running; what it writes meanwhile shows when you leave. The bottom line reads ` COPY  line N/M ` (with ` match i/n ` after a search) and as many of the keys as fit; it moves to the top while the cursor is on the bottom row. `C-a /` opens copy mode with the search prompt already open.
+
+| Key | Action | Name |
+|---|---|---|
+| `h` `Left` | cursor left | `left` |
+| `j` `Down` | cursor down | `down` |
+| `k` `Up` | cursor up | `up` |
+| `l` `Right` | cursor right | `right` |
+| `w` | start of the next word | `next_word` |
+| `b` | start of the word | `previous_word` |
+| `e` | end of the word | `word_end` |
+| `0` | start of the line | `line_start` |
+| `$` | end of the line | `line_end` |
+| `g` | top of the history | `top` |
+| `G` | bottom of history | `bottom` |
+| `C-u` | half a page up | `half_page_up` |
+| `C-d` | half a page down | `half_page_down` |
+| `C-b` | a page up | `page_up` |
+| `C-f` | a page down | `page_down` |
+| `v` | start or stop a selection | `select` |
+| `V` | start or stop a line selection | `select_lines` |
+| `y` `Enter` | copy the selection and leave | `copy` |
+| `/` | search back towards the top | `search_up` |
+| `?` | search on towards the bottom | `search_down` |
+| `n` | next match, the search's way | `next_match` |
+| `N` | previous match | `previous_match` |
+| `Esc` `q` | leave without copying | `leave` |
+
+`y` copies the selection to the clipboard the way dragging does (a line selection without its last newline) and leaves; with nothing selected it just leaves. `v` or `V` again stops selecting; the other switches kind. A search is plain text, case-insensitive unless it has an uppercase letter (as in the finder), over the whole history and screen, rows wrapped into one line counting as one; its prompt is edited like the others (`Enter` searches, `Esc` closes it), and paste goes into it. `Enter` jumps to the nearest match back up from the cursor for `/`, down for `?`; `n` goes on the same way, `N` the other, both wrapping around. Every match on screen is highlighted; with none, a notice says so and the cursor stays. The prefix works in copy mode, except in the search prompt, which takes every key as the other prompts do; a command leaves copy mode first. Direct chords do not fire. The wheel over the terminal scrolls the copy view; a click or drag leaves copy mode and acts as usual. Copy mode also ends when its terminal closes or leaves the screen, when the terminal is resized, and if more than 8 MiB of output piles up meanwhile (with a notice). A default copy key that is your prefix (`C-b` under `prefix = "C-b"`) is left out.
 
 #### Direct
 
-Some commands also fire on one chord, no prefix (`[keys.direct]`), whenever a terminal has the keyboard: not in the sidebar, the dashboard, a prompt, the finder or a float (a float gets every key but the prefix). Any action from the prefix table can be bound here; by default:
+Some commands also fire on one chord, no prefix (`[keys.direct]`), whenever a terminal has the keyboard: not in the sidebar, the dashboard, a prompt, the finder, copy mode or a float (a float gets every key but the prefix). Any action from the prefix table can be bound here; by default:
 
 | Key | Action | Name |
 |---|---|---|
@@ -182,6 +264,7 @@ Some commands also fire on one chord, no prefix (`[keys.direct]`), whenever a te
 ```toml
 [keys]
 prefix = "C-a"
+repeat_ms = 500           # resize keys work again without the prefix this long; 0 turns it off
 
 [keys.commands]           # keys after the prefix, by action name
 new_tab = "t"             # one key...
@@ -198,6 +281,9 @@ back = ["Esc", "q"]
 
 [keys.dashboard]          # while the dashboard is open
 interact = "i"
+
+[keys.copy]               # in copy mode (C-a [)
+leave = ["Esc", "q", "C-c"]
 
 [colors]
 current_space = 236       # the current space's and agent's background, and the dashboard selection's: 256-colour index or "#rrggbb" (also read as current_item)
@@ -220,9 +306,18 @@ idle = true               # a macOS notification when a main agent finishes its 
 
 [worktrees]
 directory = "~/.paddock/worktrees"  # C-a W checks new worktrees out in <directory>/<repo>/<branch>
+
+[spaces]
+new_tab_dir = "root"      # new tabs and splits start in the space's root; "current" (the default) in the focused terminal's directory
+
+[dashboard]
+external = true           # list Claude sessions running outside paddock (the External group); false hides them
+external_timeout = 10     # minutes an external session stays with no hook event and no longer in `claude agents --json`
 ```
 
 `[worktrees] directory` must be absolute once `~` is expanded, and not your home directory itself; paddock refuses to start otherwise.
+
+`[spaces] new_tab_dir` is `"current"` (the default) or `"root"`, and applies to new splits too; anything else is refused at start. A space's root is described under [Use](#use).
 
 Both notifications are on by default; `false` turns one off. The session's state, the sidebar and tab markers, `C-a a` and the dashboard work the same either way.
 
@@ -240,7 +335,7 @@ Once you resize the sidebar (`C-a {`, `C-a }` or dragging its border), paddock s
 
 After the prefix, Shift does not matter for a key bound without it (Shift+arrows move focus too); in the sidebar and the dashboard, neither do Ctrl and Shift. A key bound with the modifier wins. A direct chord matches only as bound.
 
-paddock refuses to start, naming the file and the setting, on an unknown action or section, a key it cannot read, a key listed twice for one action, a key bound to two actions in the same section (unbind one with `""`, even a default), or the prefix key inside a `[keys.…]` section. In `[floats]` the keys use the same syntax and are refused the same way when they cannot be read, are listed twice, are the prefix, or are bound in `[keys.commands]` (the default `G` too: write `G = ""` to free it); `width` and `height` are whole percents from 1 to 100. `g` now opens the finder, so a float you had on `[floats] g` must move to another key (lazygit's default moved to `G`).
+paddock refuses to start, naming the file and the setting, on an unknown action or section, a key it cannot read, a key listed twice for one action, a key bound to two actions in the same section (unbind one with `""`, even a default), or the prefix key inside a `[keys.…]` section. In `[floats]` the keys use the same syntax and are refused the same way when they cannot be read, are listed twice, are the prefix, or are bound in `[keys.commands]` (the default `G` too: write `G = ""` to free it); `width` and `height` are whole percents from 1 to 100. `g` now opens the finder, so a float you had on `[floats] g` must move to another key (lazygit's default moved to `G`). Likewise `H`, `J`, `K` and `L` now resize splits: a float or another command on one of them must move, or free the key with `resize_left = ""` (and so on) in `[keys.commands]`.
 
 ## Worktree command
 
@@ -263,14 +358,14 @@ paddock worktree rm feat/x             # close its spaces, remove it, delete the
 
 ## Claude Code plugin
 
-This repository is also a Claude Code plugin marketplace. Its `paddock` plugin carries a skill, `paddock-worktrees`, that teaches Claude when and how to use `paddock worktree` (check `list` first, work in the path `new` returns, delete only when asked or merged, never pass `--discard-*` without your say-so, and ask you on exit code 3), plus two slash commands, `/paddock:worktree-new <branch>` and `/paddock:worktree-list`. In Claude Code:
+This repository is also a Claude Code plugin marketplace. Its `paddock` plugin carries paddock's hooks (see [Connect Claude Code](#connect-claude-code)) and a skill, `paddock-worktrees`, that teaches Claude when and how to use `paddock worktree` (check `list` first, work in the path `new` returns, delete only when asked or merged, never pass `--discard-*` without your say-so, and ask you on exit code 3), plus two slash commands, `/paddock:worktree-new <branch>` and `/paddock:worktree-list`. In Claude Code:
 
 ```text
 /plugin marketplace add MiohitoKiri5474/paddock
 /plugin install paddock@paddock
 ```
 
-The plugin needs `paddock` on your `PATH`. It does not carry the hooks: keep using `paddock hooks install` for those.
+The plugin needs `paddock` on your `PATH`.
 
 ## Files
 

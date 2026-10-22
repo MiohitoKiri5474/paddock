@@ -1,18 +1,20 @@
 //! Background threads that feed session information into the event loop:
-//! new lines of the hook event log, `claude agents --json` snapshots, and the
-//! git status of task rows on screen (and their details while the dashboard
-//! is open), and each space's directory and branch.
+//! new lines of the hook event logs (this server's and the external one),
+//! `claude agents --json` snapshots, the git status of task rows on screen
+//! (and their details while the dashboard is open), and each space's
+//! directory and branch.
 
 use super::Event;
 use crate::git;
 use crate::hooks::now_ms;
-use crate::sessions::{agents, log};
+use crate::paths::HomePaths;
+use crate::sessions::{agents, log, HookRecord};
 use crate::tmux::Server;
 use crate::worktree::space_dir;
 use anyhow::{Context, Result};
 use std::path::Path;
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// How often to look for new hook events.
 const LOG_POLL: Duration = Duration::from_millis(200);
@@ -20,6 +22,37 @@ const LOG_POLL: Duration = Duration::from_millis(200);
 const AGENTS_POLL: Duration = Duration::from_secs(3);
 /// How often to re-read git for the task rows on screen.
 const GIT_POLL: Duration = Duration::from_secs(3);
+/// How often to look whether the external log needs trimming (a `stat`).
+const EXTERNAL_CHECK: Duration = AGENTS_POLL;
+
+/// Trim the external log (see [`log::compact`]), whose reader got to
+/// `read`.
+fn compact_external(path: &Path, read: u64) -> Result<Option<log::Compacted>> {
+    log::compact(
+        path,
+        log::EXTERNAL_MAX_BYTES,
+        now_ms(),
+        log::EXTERNAL_KEEP_MS,
+        read,
+    )
+}
+
+/// While paddock runs: once the external log passes its cap, trim it and
+/// have `reader` go on in the trimmed file. Returns the records past what
+/// `reader` had read, from the bytes the trim read, so none is skipped or
+/// read twice.
+fn trim_external(path: &Path, reader: &mut log::Reader) -> Vec<HookRecord> {
+    if !log::too_big(path, log::EXTERNAL_MAX_BYTES) {
+        return Vec::new();
+    }
+    match compact_external(path, reader.position()) {
+        Ok(Some(done)) => {
+            reader.resume_at(done.kept);
+            done.unread
+        }
+        _ => Vec::new(),
+    }
+}
 
 /// Tasks to keep the git status of, as `(directory, branch)`.
 pub type Tasks = Vec<(String, String)>;
@@ -43,18 +76,52 @@ pub struct Place {
     /// The working tree and its repository's main checkout; `None`
     /// outside a git repository.
     pub tree: Option<git::WorkingTree>,
+    /// The space's root as stored (as the user made it, links kept);
+    /// `None` for a space made before roots, whose root is `path`.
+    pub root: Option<String>,
+    /// What is checked out at the root (as `branch` at `path`); `None`
+    /// outside a git checkout.
+    pub root_branch: Option<String>,
 }
 
-/// Read each of `spaces`' directory and branch.
+impl Place {
+    /// The space's root: as stored, else its directory.
+    pub fn root(&self) -> &str {
+        self.root.as_deref().unwrap_or(&self.path)
+    }
+
+    /// The root and what is checked out there, as the finder shows them
+    /// (home as `~`): a branch always belongs to the directory beside it.
+    pub fn root_shown(&self, home: &HomePaths) -> (String, Option<String>) {
+        (home.show(self.root()), self.root_branch.clone())
+    }
+}
+
+/// Space `id`'s directory, root and what is checked out in each, read
+/// now; `None` if tmux cannot say.
+pub fn place(server: &Server, id: &str) -> Option<Place> {
+    let path = space_dir(server, id)?;
+    let branch = git::head(&path);
+    let tree = git::working_tree(&path);
+    let root = server.root(id);
+    let root_branch = match &root {
+        Some(root) => git::head(root),
+        None => branch.clone(),
+    };
+    Some(Place {
+        path,
+        branch,
+        tree,
+        root,
+        root_branch,
+    })
+}
+
+/// Read each of `spaces`' place.
 fn places(server: &Server, spaces: &[String]) -> Vec<(String, Place)> {
     spaces
         .iter()
-        .filter_map(|id| {
-            let path = space_dir(server, id)?;
-            let branch = git::head(&path);
-            let tree = git::working_tree(&path);
-            Some((id.clone(), Place { path, branch, tree }))
-        })
+        .filter_map(|id| Some((id.clone(), place(server, id)?)))
         .collect()
 }
 
@@ -68,13 +135,29 @@ pub fn start(server: &Server, state_dir: &Path, tx: &Sender<Event>) -> Result<Se
         .parse()
         .context("cannot read the tmux server's pid")?;
     let mut reader = log::Reader::new(log::path(state_dir, pid));
+    // Every Claude on the machine appends to the external log: trim it
+    // before replaying it, and while paddock runs. Failing that, it is read
+    // whole.
+    let external_path = log::external_path(state_dir);
+    let _ = compact_external(&external_path, u64::MAX);
+    let mut external = log::Reader::new(external_path.clone());
     let events = tx.clone();
-    std::thread::spawn(move || loop {
-        let records = reader.read_new();
-        if !records.is_empty() && events.send(Event::Hooks(records)).is_err() {
-            break;
+    std::thread::spawn(move || {
+        let mut checked = Instant::now();
+        loop {
+            let server = reader.read_new();
+            let mut outside = external.read_new();
+            if checked.elapsed() >= EXTERNAL_CHECK {
+                checked = Instant::now();
+                outside.extend(trim_external(&external_path, &mut external));
+            }
+            // One batch in time order, late records included.
+            let records = log::merged(server, outside);
+            if !records.is_empty() && events.send(Event::Hooks(records)).is_err() {
+                break;
+            }
+            std::thread::sleep(LOG_POLL);
         }
-        std::thread::sleep(LOG_POLL);
     });
 
     let agents_server = server.clone();
@@ -135,4 +218,35 @@ fn read_watched(server: &Server, watched: &Watched, events: &Sender<Event>) -> b
         .map(|(dir, branch)| ((dir.clone(), branch.clone()), git::details(dir, branch)))
         .collect();
     events.send(Event::Details(read)).is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_space_shows_its_root_as_stored_with_what_is_checked_out_there() {
+        let home = HomePaths::new();
+        let place = |root: Option<&str>, root_branch: Option<&str>| Place {
+            path: "/w/api".into(),
+            branch: Some("main".into()),
+            tree: None,
+            root: root.map(str::to_string),
+            root_branch: root_branch.map(str::to_string),
+        };
+        // Made before roots: its directory is its root.
+        assert_eq!(
+            place(None, Some("main")).root_shown(&home),
+            ("/w/api".into(), Some("main".into()))
+        );
+        // Stored as made, links kept; the branch is the root's own.
+        assert_eq!(
+            place(Some("/tmp/x/sub"), Some("feat")).root_shown(&home),
+            ("/tmp/x/sub".into(), Some("feat".into()))
+        );
+        assert_eq!(
+            place(Some("/w/notes"), None).root_shown(&home),
+            ("/w/notes".into(), None)
+        );
+    }
 }

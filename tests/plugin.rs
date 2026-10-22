@@ -1,7 +1,8 @@
 //! Ticket 25: the repository is a Claude Code plugin marketplace. A cheap
 //! check of what `claude plugin validate --strict` checks in full: both
 //! manifests parse, names match, sources exist, and every skill has
-//! frontmatter with a name and a description.
+//! frontmatter with a name and a description. Ticket 27: the plugin's hooks
+//! run silently, and with `paddock hooks install`'s record each event once.
 
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -104,4 +105,261 @@ fn the_marketplace_lists_the_paddock_plugin_and_every_skill_has_frontmatter() {
             assert!(!allowed.contains("worktree *"), "{skill}: {allowed}");
         }
     }
+}
+
+// Ticket 27: the plugin carries paddock's hooks. A unit test in
+// `src/hooks.rs` checks the file against `hooks::EVENTS` and the groups
+// `paddock hooks install` writes; these run its commands as Claude would.
+
+const PADDOCK: &str = env!("CARGO_BIN_EXE_paddock");
+const SOCKET: &str = "paddock-plugin-test";
+const SERVER_PID: &str = "4242";
+const PAYLOAD: &str = r#"{"session_id":"s1"}"#;
+
+fn plugin_hooks() -> Value {
+    read_json(&Path::new(ROOT).join("plugins/paddock/hooks/hooks.json"))
+}
+
+/// `(event, command)` for every hook in a `{"hooks": {event: [group]}}` file.
+fn hook_commands(file: &Value) -> Vec<(String, String)> {
+    let events = file["hooks"]
+        .as_object()
+        .expect("a top-level \"hooks\" map");
+    events
+        .iter()
+        .flat_map(|(event, groups)| {
+            groups
+                .as_array()
+                .expect("a list of groups")
+                .iter()
+                .flat_map(|g| g["hooks"].as_array().expect("hooks").clone())
+                .map(move |h| {
+                    assert_eq!(h["type"], "command", "{event}");
+                    (event.clone(), text(&h, "command", event))
+                })
+        })
+        .collect()
+}
+
+fn events_of(commands: &[(String, String)]) -> Vec<String> {
+    commands.iter().map(|(e, _)| e.clone()).collect()
+}
+
+/// HOME, state and PATH of their own, never the user's.
+struct Sandbox {
+    dir: tempfile::TempDir,
+}
+
+impl Sandbox {
+    fn new() -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        for d in ["home", "state", "bin", "work"] {
+            std::fs::create_dir(dir.path().join(d)).unwrap();
+        }
+        Self { dir }
+    }
+
+    fn path(&self, name: &str) -> PathBuf {
+        self.dir.path().join(name)
+    }
+
+    fn settings(&self) -> PathBuf {
+        self.path("home/.claude/settings.json")
+    }
+
+    /// Put `paddock` on the sandbox's PATH.
+    fn add_paddock(&self) {
+        std::os::unix::fs::symlink(PADDOCK, self.path("bin/paddock")).unwrap();
+    }
+
+    /// `program args`, with `stdin`, as if in a terminal of paddock's server.
+    fn run(&self, program: &str, args: &[&str], stdin: &str) -> std::process::Output {
+        self.run_where(true, program, args, stdin)
+    }
+
+    /// [`Self::run`], in a terminal of paddock's server if `inside`, else
+    /// outside any tmux (an external session).
+    fn run_where(
+        &self,
+        inside: bool,
+        program: &str,
+        args: &[&str],
+        stdin: &str,
+    ) -> std::process::Output {
+        use std::io::Write;
+        let path = format!("{}:/usr/bin:/bin", self.path("bin").display());
+        let mut cmd = std::process::Command::new(program);
+        cmd.args(args).env_clear();
+        if inside {
+            cmd.env("TMUX", format!("/nowhere/{SOCKET},{SERVER_PID},0"))
+                .env("TMUX_PANE", "%7");
+        }
+        let mut child = cmd
+            .env("HOME", self.path("home"))
+            .env("PATH", path)
+            .env("XDG_STATE_HOME", self.path("state"))
+            .env("XDG_CONFIG_HOME", self.path("home/.config"))
+            .env("PADDOCK_TMUX_SOCKET", SOCKET)
+            .current_dir(self.path("work"))
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut input = child.stdin.take().unwrap();
+        // A program that exits without reading closes the pipe: fine.
+        let _ = input.write_all(stdin.as_bytes());
+        drop(input);
+        child.wait_with_output().unwrap()
+    }
+
+    /// Run a hook command as Claude Code does: `sh -c`, the payload on
+    /// stdin. It must exit 0 and print nothing: stdout of `SessionStart` and
+    /// `UserPromptSubmit` reaches Claude's context.
+    fn fire(&self, command: &str) {
+        self.fire_where(true, command);
+    }
+
+    /// [`Self::fire`], in paddock's terminal if `inside`, else outside it.
+    fn fire_where(&self, inside: bool, command: &str) {
+        let out = self.run_where(inside, "/bin/sh", &["-c", command], PAYLOAD);
+        assert!(out.status.success(), "{command}: {out:?}");
+        assert!(out.stdout.is_empty(), "{command}: {out:?}");
+        assert!(out.stderr.is_empty(), "{command}: {out:?}");
+    }
+
+    /// The events recorded, in order.
+    fn events(&self) -> Vec<String> {
+        self.events_in(&format!("{SERVER_PID}.jsonl"))
+    }
+
+    /// The events recorded in the log named `name`, in order.
+    fn events_in(&self, name: &str) -> Vec<String> {
+        let log = self.path("state/paddock/events").join(name);
+        let Ok(body) = std::fs::read_to_string(&log) else {
+            return Vec::new();
+        };
+        body.lines()
+            .map(|l| text(&serde_json::from_str(l).unwrap(), "event", "record"))
+            .collect()
+    }
+}
+
+#[test]
+fn the_plugin_hooks_run_paddock_hook_for_their_event() {
+    let commands = hook_commands(&plugin_hooks());
+    assert_eq!(commands.len(), 10, "one hook per event");
+    for (event, command) in &commands {
+        assert!(
+            command.ends_with(&format!("; paddock hook {event} >/dev/null 2>&1 || true")),
+            "{command}"
+        );
+    }
+}
+
+#[test]
+fn a_failing_paddock_on_path_never_reaches_claude() {
+    let sandbox = Sandbox::new();
+    // Some other `paddock`, or a broken one: prints, and exits 2, which
+    // would block `Stop`.
+    let fake = sandbox.path("bin/paddock");
+    std::fs::write(&fake, "#!/bin/sh\necho out\necho err >&2\nexit 2\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    for (_, command) in hook_commands(&plugin_hooks()) {
+        sandbox.fire(&command);
+    }
+    assert!(sandbox.events().is_empty());
+}
+
+#[test]
+fn without_paddock_on_path_the_plugin_hooks_exit_0_silently() {
+    let sandbox = Sandbox::new();
+    for (_, command) in hook_commands(&plugin_hooks()) {
+        sandbox.fire(&command);
+    }
+    assert!(sandbox.events().is_empty());
+}
+
+#[test]
+fn the_plugin_hooks_alone_record_every_event_once() {
+    let sandbox = Sandbox::new();
+    sandbox.add_paddock();
+    let commands = hook_commands(&plugin_hooks());
+    for (_, command) in &commands {
+        sandbox.fire(command);
+    }
+    assert_eq!(sandbox.events(), events_of(&commands));
+}
+
+#[test]
+fn the_plugin_and_settings_hooks_together_record_every_event_once() {
+    let sandbox = Sandbox::new();
+    sandbox.add_paddock();
+    let out = sandbox.run(PADDOCK, &["hooks", "install"], "");
+    assert!(out.status.success(), "{out:?}");
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("plugin"));
+
+    let from_settings = hook_commands(&read_json(&sandbox.settings()));
+    let from_plugin = hook_commands(&plugin_hooks());
+    assert_eq!(events_of(&from_settings), events_of(&from_plugin));
+    // The plugin's copies defer to the settings' ones.
+    for (_, p) in &from_plugin {
+        sandbox.fire(p);
+    }
+    assert!(sandbox.events().is_empty(), "{:?}", sandbox.events());
+    // Claude runs both copies of an event, in either order.
+    for (i, ((_, s), (_, p))) in from_settings.iter().zip(&from_plugin).enumerate() {
+        let (first, second) = if i % 2 == 0 { (s, p) } else { (p, s) };
+        sandbox.fire(first);
+        sandbox.fire(second);
+    }
+    assert_eq!(sandbox.events(), events_of(&from_plugin));
+}
+
+#[test]
+fn external_events_are_recorded_once_with_both_sources_installed() {
+    let sandbox = Sandbox::new();
+    sandbox.add_paddock();
+    let out = sandbox.run(PADDOCK, &["hooks", "install"], "");
+    assert!(out.status.success(), "{out:?}");
+    let from_settings = hook_commands(&read_json(&sandbox.settings()));
+    let from_plugin = hook_commands(&plugin_hooks());
+    for ((_, s), (_, p)) in from_settings.iter().zip(&from_plugin) {
+        sandbox.fire_where(false, p);
+        sandbox.fire_where(false, s);
+    }
+    assert_eq!(sandbox.events_in("external.jsonl"), events_of(&from_plugin));
+    assert!(sandbox.events().is_empty(), "not the server's log");
+}
+
+#[test]
+fn hooks_install_notes_an_enabled_plugin() {
+    let sandbox = Sandbox::new();
+    std::fs::create_dir_all(sandbox.settings().parent().unwrap()).unwrap();
+    std::fs::write(
+        sandbox.settings(),
+        r#"{"enabledPlugins": {"paddock@paddock": true}}"#,
+    )
+    .unwrap();
+    let out = sandbox.run(PADDOCK, &["hooks", "install"], "");
+    assert!(out.status.success(), "{out:?}");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("the paddock plugin is enabled"), "{stdout}");
+    assert!(stdout.contains("paddock hooks uninstall"), "{stdout}");
+    assert!(
+        stdout.contains("Restart running Claude sessions"),
+        "{stdout}"
+    );
+    let settings = read_json(&sandbox.settings());
+    assert_eq!(settings["enabledPlugins"]["paddock@paddock"], true);
+    assert!(settings["hooks"]["Stop"].is_array());
+
+    let out = sandbox.run(PADDOCK, &["hooks", "uninstall"], "");
+    assert!(out.status.success(), "{out:?}");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("Restart running Claude sessions"),
+        "{stdout}"
+    );
 }

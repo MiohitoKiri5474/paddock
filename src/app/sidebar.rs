@@ -5,6 +5,7 @@ use super::space::MIN_SIZE;
 use super::state::{App, Mode, Panel};
 use super::worktrees::SpaceEntry;
 use crate::input::keymap::SidebarAction;
+use crate::sessions::is_external;
 use crossterm::event::KeyEvent;
 
 /// The narrowest the sidebar gets.
@@ -43,8 +44,16 @@ pub enum SidebarTarget {
 pub enum Pick {
     /// A space, by tmux session id (`$N`).
     Space(String),
-    /// An agent, by the pane it runs in (`%N`).
+    /// An agent, by the pane it runs in (`%N`), or an external session's
+    /// key.
     Agent(String),
+}
+
+impl Pick {
+    /// Whether it is an external session: nothing to show, close or fork.
+    pub fn is_external(&self) -> bool {
+        matches!(self, Pick::Agent(key) if is_external(key))
+    }
 }
 
 /// The sidebar's keyboard selection: what it is on, and the index of its
@@ -162,6 +171,14 @@ impl App {
         self.mode = match self.keymap.sidebar.action(&key) {
             Some(SidebarAction::Down) => Mode::Sidebar(s.moved(&picks, 1)),
             Some(SidebarAction::Up) => Mode::Sidebar(s.moved(&picks, -1)),
+            // An external agent cannot be shown: the sidebar keeps the
+            // keyboard, with a notice.
+            Some(SidebarAction::Open) if s.pick.as_ref().is_some_and(Pick::is_external) => {
+                if let Some(p) = &s.pick {
+                    self.open(p);
+                }
+                Mode::Sidebar(s)
+            }
             Some(SidebarAction::Open) => {
                 if let Some(p) = &s.pick {
                     self.open(p);
@@ -194,6 +211,12 @@ impl App {
                 self.mode = Mode::Sidebar(s.clone());
                 self.start_open_worktree(s.pick.as_ref());
                 return;
+            }
+            Some(SidebarAction::Fork) if s.pick.as_ref().is_some_and(Pick::is_external) => {
+                if let Some(pane) = self.agent_of(s.pick.as_ref()) {
+                    self.report(|app| app.fork(&pane));
+                }
+                Mode::Sidebar(s)
             }
             Some(SidebarAction::Fork) => match self.agent_of(s.pick.as_ref()) {
                 // The fork's tab gets the keyboard.

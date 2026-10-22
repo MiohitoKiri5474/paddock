@@ -24,6 +24,11 @@ const KEPT_VARS: &[&str] = &[
     "PADDOCK_TMUX_SOCKET",
 ];
 
+/// The session option holding a space's root: the directory it was made
+/// in, or the one `set_root` (`C-a R`) gave it. New tabs and splits start
+/// there with `[spaces] new_tab_dir = "root"`.
+pub const ROOT_OPTION: &str = "@paddock-root";
+
 /// `TERM` tmux itself sees (the panes get `default-terminal`).
 const SERVER_TERM: &str = "xterm-256color";
 const HISTORY_LIMIT: u32 = 50_000;
@@ -137,10 +142,15 @@ impl Server {
             .unwrap_or_default()
     }
 
-    /// Start a session running the user's shell, starting the server if needed.
+    /// Start a session running the user's shell in `cwd`, starting the
+    /// server if needed. `cwd` is also its root ([`ROOT_OPTION`]), set in
+    /// the same tmux run: a command after `new-session` in one run targets
+    /// the new session, and no other client's command (a structure read,
+    /// `paddock worktree`) sees the session without its root.
     pub fn new_session(&self, name: &str, cwd: &Path, (cols, rows): (u16, u16)) -> Result<Session> {
+        let root = root_arg(cwd);
         let cwd = start_dir(cwd);
-        let named = literal(name);
+        let named = unexpanded(name);
         let (x, y) = (cols.to_string(), rows.to_string());
         let args = [
             "new-session",
@@ -156,12 +166,29 @@ impl Server {
             &y,
             "-c",
             &cwd,
+            ";",
+            "set-option",
+            ROOT_OPTION,
+            &root,
         ];
         let id = self.run(&args)?.trim().to_string();
         Ok(Session {
             id,
             name: name.to_string(),
         })
+    }
+
+    /// Make `dir` session `id`'s root ([`ROOT_OPTION`]).
+    pub fn set_root(&self, id: &str, dir: &Path) -> Result<()> {
+        self.run(&["set-option", "-t", id, ROOT_OPTION, &root_arg(dir)])
+            .map(drop)
+    }
+
+    /// Session `id`'s root as stored; `None` if it has none (a space made
+    /// before roots) or tmux cannot say.
+    pub fn root(&self, id: &str) -> Option<String> {
+        let format = format!("#{{{ROOT_OPTION}}}");
+        self.display(id, &format).ok().filter(|r| !r.is_empty())
     }
 
     /// Apply the generated config to a server that already runs: tmux reads
@@ -287,7 +314,7 @@ impl Server {
 
     /// Rename a window; tmux then stops naming it after its command.
     pub fn rename_window(&self, window: &str, name: &str) -> Result<()> {
-        self.run(&["rename-window", "-t", window, &literal(name)])
+        self.run(&["rename-window", "-t", window, &unexpanded(name)])
             .map(drop)
     }
 
@@ -315,8 +342,37 @@ impl Server {
         self.run(&["select-layout", "-E", "-t", pane]).map(drop)
     }
 
+    /// Zoom `pane` to fill its window, or unzoom its window.
+    pub fn zoom(&self, pane: &str) -> Result<()> {
+        self.run(&["resize-pane", "-Z", "-t", pane]).map(drop)
+    }
+
+    /// Move `pane`'s border in direction `flag` (`-L`, `-R`, `-U`, `-D`) by
+    /// `cells`. tmux stops at its smallest pane without an error, and
+    /// unzooms the window first.
+    pub fn resize(&self, pane: &str, flag: &str, cells: u16) -> Result<()> {
+        let cells = cells.to_string();
+        self.run(&["resize-pane", flag, "-t", pane, &cells])
+            .map(drop)
+    }
+
+    /// Make `pane`'s layout cell `size` columns wide (`columns`) or rows
+    /// high, moving the border [`super::layout::Border`] names.
+    pub fn resize_to(&self, pane: &str, columns: bool, size: u16) -> Result<()> {
+        let flag = if columns { "-x" } else { "-y" };
+        let size = size.to_string();
+        self.run(&["resize-pane", "-t", pane, flag, &size])
+            .map(drop)
+    }
+
+    /// Window `window`'s layout as tmux writes it (`#{window_layout}`).
+    pub fn layout(&self, window: &str) -> Result<String> {
+        let out = self.run(&["display-message", "-p", "-t", window, "#{window_layout}"])?;
+        Ok(out.trim_end().to_string())
+    }
+
     pub fn rename_session(&self, id: &str, name: &str) -> Result<()> {
-        self.run(&["rename-session", "-t", id, &literal(name)])
+        self.run(&["rename-session", "-t", id, &unexpanded(name)])
             .map(drop)
     }
 
@@ -334,16 +390,31 @@ impl Server {
     }
 }
 
-/// `dir` for `-c`, as a [`literal`]: tmux expands formats there, and
-/// `##` is a literal `#`.
+/// `dir` for `-c`, as an [`unexpanded`] argument.
 fn start_dir(dir: &Path) -> String {
-    literal(&dir.to_string_lossy().replace('#', "##"))
+    unexpanded(&dir.to_string_lossy())
 }
 
-/// `arg` as one tmux argument that stays itself: tmux reads an argument
-/// ending in `;` as a command separator, and one ending in `\;` as that
-/// argument with a `;` for the `\;`. Every argument from the user (a
-/// name, directory, float key or command) goes through it.
+/// `dir` as the value of [`ROOT_OPTION`], a [`literal`] argument:
+/// `set-option` does not format-expand a value without `-F`, so only a
+/// final `;` needs care (a `#` is stored as is).
+fn root_arg(dir: &Path) -> String {
+    literal(&dir.to_string_lossy())
+}
+
+/// `arg` for an argument tmux format-expands (a session or window name, a
+/// start directory), as a [`literal`] that tmux also stores as given: every
+/// `#` is doubled, and tmux expands `##` to `#`. Without it `v#S` would be
+/// stored as `v` followed by the session's name.
+fn unexpanded(arg: &str) -> String {
+    literal(&arg.replace('#', "##"))
+}
+
+/// `arg` as one tmux argument rather than the end of a command: tmux reads
+/// an argument ending in `;` as a command separator, and one ending in `\;`
+/// as that argument with a `;` for the `\;`. That is all it guarantees: it
+/// does not stop format expansion, which [`unexpanded`] does. Every argument
+/// from the user (a name, directory, float key or command) goes through it.
 fn literal(arg: &str) -> String {
     match arg.strip_suffix(';') {
         Some(rest) => format!("{rest}\\;"),
@@ -506,6 +577,49 @@ mod tests {
     }
 
     #[test]
+    fn unexpanded_doubles_every_hash_and_keeps_a_trailing_semicolon() {
+        assert_eq!(unexpanded("plain"), "plain");
+        assert_eq!(unexpanded("v#S"), "v##S");
+        assert_eq!(unexpanded("#"), "##");
+        assert_eq!(unexpanded("a##b"), "a####b");
+        assert_eq!(
+            unexpanded("#{session_id}#(id)#,"),
+            "##{session_id}##(id)##,"
+        );
+        assert_eq!(unexpanded("x#;"), r"x##\;");
+    }
+
+    #[test]
+    fn names_with_a_hash_are_taken_literally() {
+        let tmp = tempfile::tempdir().unwrap();
+        let server = Server::new(Paths {
+            socket: format!("paddock-unit-hashes-{}", std::process::id()),
+            state_dir: tmp.path().join("state"),
+            config_dir: tmp.path().join("config"),
+        });
+        server.write_config().unwrap();
+        let dir = tmp.path().canonicalize().unwrap();
+        let name = |id: &str| server.display(id, "#{session_name}|#{window_name}");
+        let run = || -> Result<Vec<String>> {
+            let s = server.new_session("v#S", &dir, (80, 24))?;
+            let started = name(&s.id)?;
+            let window = server.display(&s.id, "#{window_id}")?;
+            server.rename_window(&window, "w#{session_id}#(id)#")?;
+            server.rename_session(&s.id, "s#S;")?;
+            Ok(vec![started, name(&s.id)?])
+        };
+        let got = run();
+        let socket = server.run(&["display-message", "-p", "#{socket_path}"]);
+        let _ = server.run(&["kill-server"]);
+        if let Ok(socket) = socket {
+            let _ = std::fs::remove_file(socket.trim());
+        }
+        let got = got.unwrap();
+        assert!(got[0].starts_with("v#S|"), "{got:?}");
+        assert_eq!(got[1], "s#S;|w#{session_id}#(id)#");
+    }
+
+    #[test]
     fn names_and_directories_ending_in_a_semicolon_are_taken_literally() {
         let tmp = tempfile::tempdir().unwrap();
         let server = Server::new(Paths {
@@ -577,6 +691,42 @@ mod tests {
         let got = got.unwrap();
         // The tab stays current and unmarked; the floats are marked.
         assert_eq!(got[..3], ["1 1 []", "0 1 [;]", "0 1 [C-;]"], "{got:?}");
+    }
+
+    #[test]
+    fn a_new_session_s_directory_is_its_root_whatever_its_characters() {
+        let tmp = tempfile::tempdir().unwrap();
+        let server = Server::new(Paths {
+            socket: format!("paddock-unit-root-{}", std::process::id()),
+            state_dir: tmp.path().join("state"),
+            config_dir: tmp.path().join("config"),
+        });
+        server.write_config().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let dir = base.join(r#"a #{session_id} 'q' "w" \ x;"#);
+        let other = base.join("b#S;");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::create_dir(&other).unwrap();
+        let run = || -> Result<Vec<Option<String>>> {
+            let s = server.new_session("t", &dir, (80, 24))?;
+            // The root goes to the session just made, not the one before.
+            let second = server.new_session("u", &base, (80, 24))?;
+            let made = server.root(&s.id);
+            server.set_root(&s.id, &other)?;
+            let changed = server.root(&s.id);
+            server.run(&["set-option", "-u", "-t", &s.id, ROOT_OPTION])?;
+            let unset = server.root(&s.id);
+            Ok(vec![made, server.root(&second.id), changed, unset])
+        };
+        let got = run();
+        let socket = server.run(&["display-message", "-p", "#{socket_path}"]);
+        let _ = server.run(&["kill-server"]);
+        if let Ok(socket) = socket {
+            let _ = std::fs::remove_file(socket.trim());
+        }
+        let path = |p: &Path| Some(p.to_string_lossy().into_owned());
+        // Spaces made before roots have none.
+        assert_eq!(got.unwrap(), [path(&dir), path(&base), path(&other), None]);
     }
 
     #[test]

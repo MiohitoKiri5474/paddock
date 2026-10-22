@@ -145,7 +145,7 @@ fn hook_events_drive_the_agent_row() {
 type Case<'a> = (&'a str, &'a [(&'a str, &'a str)], &'a str);
 
 #[test]
-fn hooks_outside_paddock_record_nothing_and_say_nothing() {
+fn hooks_outside_paddock_say_nothing_and_go_to_the_external_log() {
     let sandbox = Sandbox::new();
     let _paddock = ready(&sandbox);
     let pid = sandbox.display("space-1", "#{pid}");
@@ -167,10 +167,19 @@ fn hooks_outside_paddock_record_nothing_and_say_nothing() {
             "{what}: {out:?}"
         );
     }
-    assert!(
-        !sandbox.path("state/paddock/events").exists(),
-        "nothing recorded"
-    );
+    // External sessions: none in the server's log, each in the external one.
+    let events = sandbox.path("state/paddock/events");
+    assert!(!events.join(format!("{pid}.jsonl")).exists());
+    let external = std::fs::read_to_string(events.join("external.jsonl")).unwrap();
+    let recorded: Vec<Value> = external
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(recorded.len(), cases.len(), "{external}");
+    for r in &recorded {
+        assert_eq!(r["session_id"], SESSION);
+        assert!(r.get("pane").is_none(), "{r}");
+    }
 
     // A broken payload in a paddock terminal is still silent and still exits 0.
     let out = sandbox.hook("space-1", "SessionStart", "{not json");

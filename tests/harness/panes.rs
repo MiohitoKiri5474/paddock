@@ -1,0 +1,59 @@
+//! Splits as tests see them: every pane's size as tmux has it, and text
+//! in a region of the drawn screen.
+
+use super::{Paddock, Sandbox, TIMEOUT};
+use std::time::{Duration, Instant};
+
+/// Every pane's size as tmux has it, as `window.pane WxH`, in order.
+pub fn pane_sizes(sandbox: &Sandbox) -> Vec<String> {
+    let out = sandbox.tmux(&[
+        "list-panes",
+        "-a",
+        "-F",
+        "#{window_index}.#{pane_index} #{pane_width}x#{pane_height}",
+    ]);
+    out.lines().map(str::to_string).collect()
+}
+
+/// Wait until [`pane_sizes`] is `expected`.
+pub fn wait_for_pane_sizes(sandbox: &Sandbox, expected: &[&str]) {
+    let start = Instant::now();
+    while start.elapsed() < TIMEOUT {
+        if pane_sizes(sandbox) == expected {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(pane_sizes(sandbox), expected, "pane sizes in tmux");
+}
+
+/// The part of a drawn row from column `from` (inclusive) to `to` (exclusive).
+pub fn cols(row: &str, from: usize, to: usize) -> String {
+    row.chars()
+        .skip(from)
+        .take(to.saturating_sub(from))
+        .collect()
+}
+
+/// Whether `text` shows in the given region (rows and columns of the
+/// screen right of the sidebar).
+pub fn in_region(p: &Paddock, text: &str, rows: (usize, usize), columns: (usize, usize)) -> bool {
+    p.rows()[rows.0..rows.1]
+        .iter()
+        .any(|r| cols(r, columns.0, columns.1).contains(text))
+}
+
+/// Wait until `text` shows in the given region (see [`in_region`]).
+pub fn wait_in_region(p: &Paddock, text: &str, rows: (usize, usize), columns: (usize, usize)) {
+    let start = Instant::now();
+    while start.elapsed() < TIMEOUT {
+        if in_region(p, text, rows, columns) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    panic!(
+        "{text:?} not in rows {rows:?}, columns {columns:?}; screen:\n{}",
+        p.full_screen()
+    );
+}

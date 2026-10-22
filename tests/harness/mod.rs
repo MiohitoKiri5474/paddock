@@ -8,6 +8,11 @@
 
 #![allow(dead_code)] // Each test binary uses a different part of the harness.
 
+mod panes;
+
+#[allow(unused_imports)] // Each test binary uses a different part of them.
+pub use panes::{cols, in_region, pane_sizes, wait_for_pane_sizes, wait_in_region};
+
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -634,6 +639,12 @@ impl Paddock {
     pub fn reversed(&self, row: u16, col: u16) -> bool {
         let parser = self.screen.lock().expect("screen lock");
         parser.screen().cell(row, col).is_some_and(|c| c.inverse())
+    }
+
+    /// Whether the cell at screen (row, col), 0-based, is drawn dim.
+    pub fn dim(&self, row: u16, col: u16) -> bool {
+        let parser = self.screen.lock().expect("screen lock");
+        parser.screen().cell(row, col).is_some_and(|c| c.dim())
     }
 
     /// Foreground and background colour of the cell at (row, col), 0-based.

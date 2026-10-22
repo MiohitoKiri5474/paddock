@@ -10,18 +10,30 @@ paddock is a terminal workspace for running Claude Code. It keeps your terminals
 A named group of tabs you create to organise work, listed in the sidebar's SPACES section. It is a tmux session on the hidden server.
 _Avoid_: workspace, project, group, category
 
+**Space root**:
+A space's own directory: the one it was made in (a worktree space's worktree), until `C-a R` makes it the focused terminal's. New tabs and splits can start there (`[spaces] new_tab_dir = "root"`). A space made before roots uses its first tab's directory. Not the **Main checkout**, which belongs to a repository, not a space.
+_Avoid_: root (alone), home, base (that is a branch), project directory
+
 **Current space**:
 The space whose tabs the tab bar shows. It has its own background in the sidebar.
 
 **Tab**:
 One page of a space, holding one or more terminals arranged as splits. It is a tmux window of the space's session.
 
+**Split**:
+A terminal sharing its tab with others, beside or above them. It is a tmux pane; tmux keeps the layout and the sizes, which `C-a H/J/K/L` and dragging the border between two splits change.
+_Avoid_: window (that is a tab)
+
+**Zoom**:
+A split filling its tab for a while (`C-a z`), the others hidden but running; the tab bar marks the tab with a `Z`. It is tmux's `resize-pane -Z`, so it lives in tmux.
+_Avoid_: maximise, fullscreen
+
 **Terminal**:
-One shell inside paddock, shown in a tab or a split. It is a tmux pane and keeps running when paddock is closed.
+One shell inside paddock, shown in a tab, alone or with others. It is a tmux pane and keeps running when paddock is closed.
 _Avoid_: tmux session
 
 **Sidebar**:
-The panel on the left, which can be shown or hidden: SPACES, one line per space with a dot for the most urgent state of its agents, then AGENTS, two lines per main agent in any space with its state, space and tab.
+The panel on the left, which can be shown or hidden: SPACES, one line per space with a dot for the most urgent state of its agents, then AGENTS, two lines per main agent in any space with its state, space and tab, external sessions last.
 
 **Agent**:
 A main agent in the sidebar's AGENTS section. Subagents show only in the dashboard.
@@ -36,6 +48,10 @@ The main area, showing the current tab's terminals.
 **Finder**:
 A box opened by the prefix and `g` with a text field and, under it, every space, tab and agent that fuzzy-matches the text, best first; `Enter` shows the one selected. It is a mode of the app, like naming, not a float.
 _Avoid_: picker, palette, goto, switcher
+
+**Copy mode**:
+A mode of one terminal, opened by the prefix and `[`, where its view stops following output and keys move a cursor over its history and screen to select, copy and search; leaving shows what came meanwhile. It is a mode of the app, like the finder.
+_Avoid_: scroll mode, vi mode
 
 **Dashboard**:
 An overlay with the task tree, full details and a live preview of the selected row.
@@ -66,7 +82,7 @@ One purpose of work, identified by its git branch: one purpose, one branch.
 _Avoid_: job, ticket, worktree
 
 **External session**:
-A Claude session running outside paddock's terminals. paddock shows its state and branch, but not its screen.
+A Claude session running outside paddock's terminals (another terminal app, an IDE). paddock shows it dimmed in an External group at the bottom of the dashboard and of AGENTS, with its state and branch, but not its screen. It can only be dismissed: never shown, closed, forked or typed into; and `C-a a` skips it. It leaves when it ends, or after a quiet timeout.
 
 ### States
 
