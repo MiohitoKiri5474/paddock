@@ -748,7 +748,7 @@ fn list_gives_each_branchs_pr_from_one_gh_call() {
             (
                 j!("feat/x"),
                 j!({"number": 123, "state": "open", "checks": "failing",
-                    "review": "review required", "url": "https://github.com/o/r/pull/123"})
+                    "review": "review_required", "url": "https://github.com/o/r/pull/123"})
             ),
             (j!("feat/y"), j!(null)),
         ]
@@ -802,4 +802,20 @@ fn list_without_gh_or_with_pr_status_off_gives_no_pr_and_exits_0() {
     let out = cli(&sandbox, &dir, &["list"]);
     exits(&out, 0, "");
     assert_eq!(stderr(&out), "");
+}
+
+#[test]
+fn list_gives_up_on_a_slow_gh_after_5_s() {
+    let sandbox = Sandbox::new();
+    sandbox.set_gh(PRS);
+    // The stub hangs for 30 s.
+    sandbox.slow_gh();
+    let dir = repo(&sandbox);
+    made(&sandbox, &dir, "feat/x");
+    let start = std::time::Instant::now();
+    let prs = listed_prs(&sandbox, &dir);
+    let took = start.elapsed();
+    assert!(prs.iter().all(|(_, pr)| pr.is_null()), "{prs:?}");
+    assert!(took >= std::time::Duration::from_secs(5), "{took:?}");
+    assert!(took < std::time::Duration::from_secs(10), "{took:?}");
 }

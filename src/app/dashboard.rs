@@ -8,7 +8,7 @@
 //! session through the same dismiss, close, fork and jump as the rest of
 //! the app.
 
-use super::prs::{self, PrUpdate};
+use super::prs::PrUpdate;
 use super::rows::{pane_only, row_ids, Row, RowId, EXTERNAL_TYPE};
 use super::state::{App, Mode, Panel};
 use super::watch::Watched;
@@ -211,29 +211,6 @@ impl App {
                 .collect(),
             details: true,
         }
-    }
-
-    /// What shows PRs now (see [`super::prs`]): the open dashboard's tasks,
-    /// then, while the sidebar shows, each space's directory and the branch
-    /// checked out there (the branch its line draws), each pair once.
-    /// Empty while neither shows: nothing is asked of `gh` then.
-    pub fn prs_wanted(&self) -> prs::Wanted {
-        let dashboard = self.dashboard().is_some();
-        let open = dashboard.then(|| self.watched_tasks().tasks);
-        let spaces = (self.sidebar_width() > 0).then(|| {
-            self.spaces
-                .iter()
-                .filter_map(|s| self.places.get(&s.id))
-                .filter_map(|p| Some((p.path.clone(), p.branch.clone()?)))
-                .collect::<Vec<_>>()
-        });
-        let mut tasks: Vec<(String, String)> = Vec::new();
-        for t in open.into_iter().chain(spaces).flatten() {
-            if !tasks.contains(&t) {
-                tasks.push(t);
-            }
-        }
-        prs::Wanted { tasks, dashboard }
     }
 
     /// A key for the dashboard. Interactive: see [`Self::interactive_key`];

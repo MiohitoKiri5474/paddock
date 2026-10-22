@@ -347,9 +347,9 @@ struct Row {
     agents: Vec<&'static str>,
 }
 
-/// A worktree's pull request as `list` gives it, its state, checks and
-/// review in the dashboard's words (`checks` and `review` `None` without
-/// any).
+/// A worktree's pull request as `list` gives it: its state and checks in
+/// the dashboard's words, its review in snake case (`checks` and `review`
+/// `None` without any).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct PrField {
     number: u64,
@@ -365,7 +365,7 @@ impl From<&Pr> for PrField {
             number: pr.number,
             state: pr.state.label(),
             checks: pr.checks.map(Checks::label),
-            review: pr.review.map(Review::label),
+            review: pr.review.map(Review::key),
             url: pr.url.clone(),
         }
     }
@@ -515,16 +515,6 @@ mod tests {
         }
     }
 
-    fn pr(number: u64, state: PrState, checks: Option<Checks>, review: Option<Review>) -> Pr {
-        Pr {
-            number,
-            state,
-            checks,
-            review,
-            url: format!("https://github.com/o/r/pull/{number}"),
-        }
-    }
-
     #[test]
     fn a_list_row_s_json_has_every_field_in_a_fixed_order() {
         let r = Row {
@@ -534,7 +524,7 @@ mod tests {
             dirty: true,
             merged: false,
             agents: vec!["waiting", "idle"],
-            pr: Some(PrField::from(&pr(
+            pr: Some(PrField::from(&Pr::sample(
                 123,
                 PrState::Open,
                 Some(Checks::Passing),
@@ -546,19 +536,19 @@ mod tests {
         let json = serde_json::to_string(&[r, detached]).unwrap();
         assert_eq!(
             json,
-            r#"[{"path":"/w/repo/feat-x","branch":"feat/x","main":false,"ours":true,"space":"repo/feat/x","dirty":true,"merged":false,"pr":{"number":123,"state":"open","checks":"passing","review":"changes requested","url":"https://github.com/o/r/pull/123"},"agents":["waiting","idle"]},{"path":"/w/repo/loose","branch":null,"main":false,"ours":false,"space":null,"dirty":false,"merged":true,"pr":null,"agents":[]}]"#
+            r#"[{"path":"/w/repo/feat-x","branch":"feat/x","main":false,"ours":true,"space":"repo/feat/x","dirty":true,"merged":false,"pr":{"number":123,"state":"open","checks":"passing","review":"changes_requested","url":"https://github.com/o/r/pull/123"},"agents":["waiting","idle"]},{"path":"/w/repo/loose","branch":null,"main":false,"ours":false,"space":null,"dirty":false,"merged":true,"pr":null,"agents":[]}]"#
         );
     }
 
     #[test]
     fn a_prs_json_names_its_state_checks_and_review_in_words() {
         let field = |p: &Pr| serde_json::to_value(PrField::from(p)).unwrap();
-        let draft = field(&pr(1, PrState::Draft, Some(Checks::Pending), None));
+        let draft = field(&Pr::sample(1, PrState::Draft, Some(Checks::Pending), None));
         assert_eq!(
             (&draft["state"], &draft["checks"], &draft["review"]),
             (&"draft".into(), &"pending".into(), &serde_json::Value::Null)
         );
-        let merged = field(&pr(
+        let merged = field(&Pr::sample(
             2,
             PrState::Merged,
             Some(Checks::Failing),
@@ -568,13 +558,18 @@ mod tests {
             (&merged["state"], &merged["checks"], &merged["review"]),
             (&"merged".into(), &"failing".into(), &"approved".into())
         );
-        let closed = field(&pr(3, PrState::Closed, None, Some(Review::Required)));
+        let closed = field(&Pr::sample(
+            3,
+            PrState::Closed,
+            None,
+            Some(Review::Required),
+        ));
         assert_eq!(
             (&closed["state"], &closed["checks"], &closed["review"]),
             (
                 &"closed".into(),
                 &serde_json::Value::Null,
-                &"review required".into()
+                &"review_required".into()
             )
         );
     }
@@ -605,7 +600,7 @@ mod tests {
             dirty: true,
             merged: false,
             agents: vec!["running"],
-            pr: Some(PrField::from(&pr(123, PrState::Open, None, None))),
+            pr: Some(PrField::from(&Pr::sample(123, PrState::Open, None, None))),
             ..row("/w/repo/feat-x", Some("feat/x"))
         };
         let home = HomePaths::new();

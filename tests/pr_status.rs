@@ -362,7 +362,7 @@ fn a_slow_gh_never_stalls_the_screen_and_is_given_up_after_5_s() {
     assert!(gh_log(&sandbox)[0].contains("gh did not finish in 5s"));
 }
 
-// Ticket 37: the sidebar marks each space's branch's PR, read while the
+// The sidebar marks each space's branch's PR, read while the
 // dashboard is closed too, as long as the sidebar shows.
 
 /// A repository at `~/r` (short enough for the mark beside `feat/x` in

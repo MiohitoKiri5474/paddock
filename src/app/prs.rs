@@ -1,18 +1,17 @@
-//! The pull requests of the dashboard's task rows (ticket 36) and of the
-//! sidebar's spaces (ticket 37), read with `gh` on a thread of their own,
-//! so a slow `gh` never holds up the screen nor git's reads. One `gh pr
-//! list` per repository (its main checkout: worktrees of one repository
-//! share it), cached for `[github] refresh_secs`, and asked again when
-//! the dashboard opens if what was read is older than [`REOPEN_FLOOR`].
-//! Repositories are asked one after another (each up to gh's 5 s limit);
-//! a pass stops early once the dashboard closes or nothing shows PRs.
-//! While the sidebar is hidden and the dashboard closed, nothing is
-//! asked. A
-//! repository `gh` cannot answer for (no `gh`, logged out, no GitHub
-//! remote, failed, too slow) has no PR status until it can, and logs one
-//! line to `gh.log` in the state directory, not again until it has
-//! answered.
+//! The pull requests of the dashboard's task rows and of the sidebar's
+//! spaces, read with `gh` on a thread of their own, so a slow `gh` never
+//! holds up the screen nor git's reads. One `gh pr list` per repository
+//! (its main checkout: worktrees of one repository share it), cached for
+//! `[github] refresh_secs`, and asked again when the dashboard opens if
+//! what was read is older than [`REOPEN_FLOOR`]. Repositories are asked
+//! one after another (each up to gh's 5 s limit); a pass skips those no
+//! longer wanted once what shows changes. While the sidebar is hidden and
+//! the dashboard closed, nothing is asked. A repository `gh` cannot answer
+//! for (no `gh`, logged out, no GitHub remote, failed, too slow) has no PR
+//! status until it can, and logs one line to `gh.log` in the state
+//! directory, not again until it has answered.
 
+use super::state::App;
 use super::watch::Tasks;
 use super::Event;
 use crate::git;
@@ -75,20 +74,13 @@ impl Cache {
         }
     }
 
-    /// Ask `fetch` for each repository of `tasks` that is due by `clock`
-    /// (never read,
-    /// read `refresh` ago, or marked by [`Self::opened`]), one after
-    /// another, placing directories with `resolve`; before each, stop if
-    /// `stop` says so. Returns whether anything was read, and the failures
-    /// to log (once per repository until it answers again).
-    pub fn refresh(
+    /// The repositories of `tasks`, each once, placing directories not
+    /// placed yet with `resolve`.
+    fn repos_of(
         &mut self,
         tasks: &[(String, String)],
-        clock: impl Fn() -> Instant,
-        resolve: impl Fn(&str) -> Option<String>,
-        fetch: impl Fn(&str) -> Result<Prs, String>,
-        mut stop: impl FnMut() -> bool,
-    ) -> (bool, Vec<String>) {
+        resolve: &impl Fn(&str) -> Option<String>,
+    ) -> Vec<String> {
         let mut repos: Vec<String> = Vec::new();
         for (dir, _) in tasks {
             let repo = self
@@ -100,6 +92,26 @@ impl Cache {
                 repos.push(repo);
             }
         }
+        repos
+    }
+
+    /// Ask `fetch` for each repository of `tasks` that is due by `clock`
+    /// (never read, read `refresh` ago, or marked by [`Self::opened`]), one
+    /// after another, placing directories with `resolve`. Before each,
+    /// `changed` gives what is wanted now if that changed since: a
+    /// repository no longer wanted is skipped, the others are still read.
+    /// Returns whether anything was read, and the failures to log (once
+    /// per repository until it answers again).
+    pub fn refresh(
+        &mut self,
+        tasks: &[(String, String)],
+        clock: impl Fn() -> Instant,
+        resolve: impl Fn(&str) -> Option<String>,
+        fetch: impl Fn(&str) -> Result<Prs, String>,
+        mut changed: impl FnMut() -> Option<Tasks>,
+    ) -> (bool, Vec<String>) {
+        let repos = self.repos_of(tasks, &resolve);
+        let mut wanted = repos.clone();
         let mut read = false;
         let mut failures = Vec::new();
         for repo in repos {
@@ -110,8 +122,11 @@ impl Cache {
             if !due {
                 continue;
             }
-            if stop() {
-                break;
+            if let Some(now) = changed() {
+                wanted = self.repos_of(&now, &resolve);
+            }
+            if !wanted.contains(&repo) {
+                continue;
             }
             let prs = match fetch(&repo) {
                 Ok(prs) => {
@@ -187,6 +202,29 @@ pub struct Wanted {
     pub dashboard: bool,
 }
 
+impl App {
+    /// What shows PRs now: the open dashboard's tasks, then, while the
+    /// sidebar shows, each space's [`super::watch::Place::pr_key`], each
+    /// pair once. Empty while neither shows: nothing is asked of `gh` then.
+    pub fn prs_wanted(&self) -> Wanted {
+        let dashboard = self.dashboard().is_some();
+        let open = dashboard.then(|| self.watched_tasks().tasks);
+        let spaces = (self.sidebar_width() > 0).then(|| {
+            self.spaces
+                .iter()
+                .filter_map(|s| self.places.get(&s.id)?.pr_key())
+                .collect::<Tasks>()
+        });
+        let mut tasks = Tasks::new();
+        for t in open.into_iter().chain(spaces).flatten() {
+            if !tasks.contains(&t) {
+                tasks.push(t);
+            }
+        }
+        Wanted { tasks, dashboard }
+    }
+}
+
 /// Take `inbox` (what came, oldest first) into `wanted`: the latest list
 /// wins, and the dashboard opened if it is open now and was closed before
 /// or anywhere in between (a close and a reopen queued behind a slow gh
@@ -200,14 +238,6 @@ fn take(wanted: &mut Wanted, inbox: Vec<Wanted>, cache: &mut Cache) {
         closed = !w.dashboard;
         *wanted = w;
     }
-}
-
-/// Whether a pass reading for `now` should stop before its next repository,
-/// told `latest`: nothing shows PRs any more, or the dashboard closed
-/// (what is left to read may be its tasks only; the next pass reads what
-/// still shows).
-fn stops(now: &Wanted, latest: Option<&Wanted>) -> bool {
-    latest.is_some_and(|w| w.tasks.is_empty() || (now.dashboard && !w.dashboard))
 }
 
 /// Start the thread, reading every `refresh` (none if zero: PR status is
@@ -248,11 +278,17 @@ fn run(watch_rx: &Receiver<Wanted>, events: &Sender<Event>, refresh: Duration, l
         }
         let tasks = &wanted.tasks;
         // Before each repository, look whether what shows changed so.
-        let stop = || {
+        let changed = || {
+            let before = inbox.len();
             inbox.extend(watch_rx.try_iter());
-            stops(&wanted, inbox.last())
+            if inbox.len() > before {
+                inbox.last().map(|w| w.tasks.clone())
+            } else {
+                None
+            }
         };
-        let (read, failures) = cache.refresh(tasks, Instant::now, repo_of, github::pr_list, stop);
+        let (read, failures) =
+            cache.refresh(tasks, Instant::now, repo_of, github::pr_list, changed);
         log(log_path, &failures);
         if read || sent.as_ref() != Some(tasks) {
             if events.send(Event::Prs(cache.lookup(tasks))).is_err() {
@@ -289,8 +325,8 @@ mod tests {
     }
 
     /// Never stop a pass.
-    fn go() -> bool {
-        false
+    fn go() -> Option<Tasks> {
+        None
     }
 
     /// Two worktrees of `/r` and a directory outside any repository.
@@ -386,8 +422,9 @@ mod tests {
         assert_eq!(*calls.borrow(), 2, "due once, not again");
     }
 
-    #[test]
-    fn a_pass_stops_before_the_next_repository_once_told() {
+    /// A pass over `/a`, `/b` and `/c` told, after reading `/a`, that only
+    /// `now` is wanted; the repositories it asked.
+    fn pass_told(now: &[(String, String)]) -> Vec<String> {
         let mut cache = Cache::new(Duration::from_secs(60));
         let calls = RefCell::new(Vec::new());
         let fetch = |repo: &str| {
@@ -397,34 +434,25 @@ mod tests {
         let resolve = |dir: &str| Some(dir.to_string());
         let tasks = [task("/a", "x"), task("/b", "y"), task("/c", "z")];
         let mut asked = 0;
-        let stop_after_one = || {
+        let changed = || {
             asked += 1;
-            asked > 1
+            (asked == 2).then(|| now.to_vec())
         };
-        let t0 = Instant::now();
-        let (read, _) = cache.refresh(&tasks, at(t0), resolve, fetch, stop_after_one);
-        assert!(read);
-        assert_eq!(*calls.borrow(), ["/a"], "one after another, then stopped");
-        cache.refresh(&tasks, at(t0), resolve, fetch, go);
-        assert_eq!(*calls.borrow(), ["/a", "/b", "/c"], "the rest next pass");
+        cache.refresh(&tasks, at(Instant::now()), resolve, fetch, changed);
+        calls.into_inner()
     }
 
     #[test]
-    fn a_pass_stops_when_nothing_shows_or_the_dashboard_closes() {
-        let shows = |dashboard, tasks: &[(String, String)]| Wanted {
-            tasks: tasks.to_vec(),
-            dashboard,
-        };
-        let some = [task("/r", "feat/a")];
-        let open = shows(true, &some);
-        let sidebar = shows(false, &some);
-        assert!(!stops(&open, None), "nothing new");
-        assert!(!stops(&open, Some(&open)));
-        assert!(stops(&open, Some(&sidebar)), "the dashboard closed");
-        assert!(stops(&open, Some(&shows(false, &[]))), "nothing shows");
-        assert!(stops(&sidebar, Some(&shows(false, &[]))), "sidebar hidden");
-        assert!(!stops(&sidebar, Some(&sidebar)), "the sidebar still shows");
-        assert!(!stops(&sidebar, Some(&open)), "opening adds, not stops");
+    fn a_pass_skips_only_what_is_no_longer_wanted() {
+        assert_eq!(pass_told(&[]), ["/a"], "nothing shows: the rest is skipped");
+        // The dashboard closed, its task on /b gone; the sidebar still
+        // shows a space in /c.
+        assert_eq!(pass_told(&[task("/c", "z")]), ["/a", "/c"]);
+        assert_eq!(
+            pass_told(&[task("/a", "x"), task("/b", "y"), task("/c", "z")]),
+            ["/a", "/b", "/c"],
+            "unchanged"
+        );
     }
 
     #[test]

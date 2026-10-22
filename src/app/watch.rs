@@ -93,6 +93,13 @@ impl Place {
         self.root.as_deref().unwrap_or(&self.path)
     }
 
+    /// The directory and the branch checked out there, as the sidebar draws
+    /// them: the key its pull request is read and kept by. `None` outside
+    /// a repository.
+    pub fn pr_key(&self) -> Option<(String, String)> {
+        Some((self.path.clone(), self.branch.clone()?))
+    }
+
     /// The root and what is checked out there, as the finder shows them
     /// (home as `~`): a branch always belongs to the directory beside it.
     pub fn root_shown(&self, home: &HomePaths) -> (String, Option<String>) {

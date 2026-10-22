@@ -90,12 +90,22 @@ pub enum Review {
 }
 
 impl Review {
-    /// How the dashboard and `paddock worktree list --json` write it.
+    /// How the dashboard writes it.
     pub fn label(self) -> &'static str {
         match self {
             Self::Approved => "approved",
             Self::ChangesRequested => "changes requested",
             Self::Required => "review required",
+        }
+    }
+
+    /// How `paddock worktree list --json` writes it: GitHub's
+    /// `reviewDecision`, in snake case.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Approved => "approved",
+            Self::ChangesRequested => "changes_requested",
+            Self::Required => "review_required",
         }
     }
 }
@@ -112,6 +122,25 @@ pub struct Pr {
     /// Its page. Not shown on the dashboard (`p` asks gh by number, as
     /// ticket 36 says); `paddock worktree list --json` gives it.
     pub url: String,
+}
+
+#[cfg(test)]
+impl Pr {
+    /// PR `number` of `o/r`, for tests.
+    pub fn sample(
+        number: u64,
+        state: PrState,
+        checks: Option<Checks>,
+        review: Option<Review>,
+    ) -> Self {
+        Self {
+            number,
+            state,
+            checks,
+            review,
+            url: format!("https://github.com/o/r/pull/{number}"),
+        }
+    }
 }
 
 /// Each branch's newest pull request, by branch name.

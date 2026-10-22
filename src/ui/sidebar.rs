@@ -22,10 +22,10 @@
 //! without agents); its second line, dim, shows its directory and the git
 //! branch checked out there, then, at the end and only where it fits after
 //! both uncut, the branch's pull request: its number in its state's colour
-//! and its checks mark (`✓`, `✗`, `•`). A space in a linked worktree is listed one
-//! cell further in, under its repository's main-checkout space, or under
-//! a dim header with the repository's name when no space is in the main
-//! checkout:
+//! and its checks mark (`✓`, `✗`, `•`). A space in a linked worktree is
+//! listed one cell further in, under its repository's main-checkout space,
+//! or under a dim header with the repository's name when no space is in
+//! the main checkout:
 //!
 //! ```text
 //!  ● api-server
@@ -51,7 +51,7 @@ use crate::sessions::{AgentKind, State};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 const SPACES: &str = "SPACES";
 const AGENTS: &str = "AGENTS";
@@ -310,7 +310,8 @@ impl Sidebar<'_> {
                 let Some(path) = &s.path else {
                     return;
                 };
-                put(x, &place(path, s.branch.as_deref(), room), dim);
+                let branch = s.branch.as_deref();
+                put(x, &place(path, branch, room), dim);
                 // The PR's mark at the end, only where it fits after the
                 // whole place: the directory and branch are never cut
                 // for it.
@@ -319,12 +320,9 @@ impl Sidebar<'_> {
                 };
                 let number = format!("#{}", pr.number);
                 let checks = pr.checks.map(|c| format!(" {}", c.mark()));
-                let mark_width = number.width() + checks.as_deref().map_or(0, str::width);
-                let whole = path.width() + s.branch.as_deref().map_or(0, |b| b.width() + 2);
-                let width = |w: usize| u16::try_from(w).unwrap_or(u16::MAX);
-                let mark_x = end.saturating_sub(width(mark_width));
-                if mark_x > x.saturating_add(width(whole)) {
-                    let at = put(mark_x, &number, pr_style(pr.state));
+                let mark = number.width() + checks.as_deref().map_or(0, str::width);
+                if let Some(at) = tag_x(x, place_width(path, branch), mark, end) {
+                    let at = put(at, &number, pr_style(pr.state));
                     if let Some(checks) = &checks {
                         put(at, checks, dim);
                     }
@@ -336,12 +334,8 @@ impl Sidebar<'_> {
                 let a = &self.agents[i];
                 put(name_x, &a.place, dim);
                 let tag = a.kind.tag();
-                let width = u16::try_from(tag.width()).unwrap_or(u16::MAX);
-                let tag_x = end.saturating_sub(width);
-                let place_end =
-                    name_x.saturating_add(u16::try_from(a.place.width()).unwrap_or(u16::MAX));
-                if tag_x > place_end {
-                    put(tag_x, tag, dim);
+                if let Some(at) = tag_x(name_x, a.place.width(), tag.width(), end) {
+                    put(at, tag, dim);
                 }
             }
             Line::Blank => {}
@@ -349,24 +343,61 @@ impl Sidebar<'_> {
     }
 }
 
+/// Where a tag `tag` cells wide starts so that it ends at `end`, if it
+/// fits after `text` cells of text drawn from `x`, a cell or more apart.
+/// The text is never cut for it.
+fn tag_x(x: u16, text: usize, tag: usize, end: u16) -> Option<u16> {
+    let cells = |w: usize| u16::try_from(w).unwrap_or(u16::MAX);
+    let at = end.saturating_sub(cells(tag));
+    (at > x.saturating_add(cells(text))).then_some(at)
+}
+
+/// The cells `path  branch` takes uncut (see [`place`]).
+fn place_width(path: &str, branch: Option<&str>) -> usize {
+    path.width() + branch.map_or(0, |b| b.width() + 2)
+}
+
+/// The longest start of `t` at most `n` cells wide.
+fn first_cells(t: &str, n: usize) -> String {
+    let mut used = 0;
+    t.chars()
+        .take_while(|c| {
+            used += c.width().unwrap_or(0);
+            used <= n
+        })
+        .collect()
+}
+
+/// The longest end of `t` at most `n` cells wide.
+fn last_cells(t: &str, n: usize) -> String {
+    let mut used = 0;
+    let mut kept: Vec<char> = t
+        .chars()
+        .rev()
+        .take_while(|c| {
+            used += c.width().unwrap_or(0);
+            used <= n
+        })
+        .collect();
+    kept.reverse();
+    kept.into_iter().collect()
+}
+
 /// A space's directory and branch in `width` cells: `path  branch`. Too
 /// long, the path loses its start first (`…ject/api`), then the branch its
 /// end (`feat/lo…`).
 pub fn place(path: &str, branch: Option<&str>, width: usize) -> String {
-    let len = |t: &str| t.chars().count();
     let tail = |t: &str, n: usize| -> String {
-        if len(t) <= n {
+        if t.width() <= n {
             return t.to_string();
         }
-        let keep: String = t.chars().skip(len(t) + 1 - n.max(1)).collect();
-        format!("…{keep}")
+        format!("…{}", last_cells(t, n.saturating_sub(1)))
     };
     let head = |t: &str, n: usize| -> String {
-        if len(t) <= n {
+        if t.width() <= n {
             return t.to_string();
         }
-        let keep: String = t.chars().take(n.saturating_sub(1)).collect();
-        format!("{keep}…")
+        format!("{}…", first_cells(t, n.saturating_sub(1)))
     };
     let Some(branch) = branch else {
         return if width == 0 {
@@ -375,16 +406,13 @@ pub fn place(path: &str, branch: Option<&str>, width: usize) -> String {
             tail(path, width)
         };
     };
-    let path_room = width.saturating_sub(len(branch) + 2);
+    let path_room = width.saturating_sub(branch.width() + 2);
     if path_room >= 1 {
         return format!("{}  {branch}", tail(path, path_room));
     }
     // Even `…` and the branch do not fit: keep `…` and cut the branch.
     let branch_room = width.saturating_sub(3);
-    format!("…  {}", head(branch, branch_room))
-        .chars()
-        .take(width)
-        .collect()
+    first_cells(&format!("…  {}", head(branch, branch_room)), width)
 }
 
 /// What the sidebar line at screen row `y` of `area` picks, if anything.
@@ -744,16 +772,6 @@ mod tests {
         );
     }
 
-    fn pr(number: u64, state: PrState, checks: Option<Checks>) -> Pr {
-        Pr {
-            number,
-            state,
-            checks,
-            review: None,
-            url: String::new(),
-        }
-    }
-
     /// A space in `path` on `branch`, with `pr`.
     fn on(path: &str, branch: &str, pr: Option<Pr>) -> SpaceLine {
         SpaceLine {
@@ -766,7 +784,7 @@ mod tests {
 
     #[test]
     fn a_spaces_pr_is_marked_after_its_branch_only_where_it_fits() {
-        let open = Some(pr(123, PrState::Open, Some(Checks::Passing)));
+        let open = Some(Pr::sample(123, PrState::Open, Some(Checks::Passing), None));
         let spaces = [
             on("~/r", "feat/x", open.clone()),
             // The whole place fills the line: no mark, nothing cut.
@@ -789,7 +807,11 @@ mod tests {
     #[test]
     fn a_prs_number_is_coloured_by_its_state() {
         let mark = |state, checks| {
-            let buf = draw(&[on("~/r", "x", Some(pr(7, state, checks)))], &[], None);
+            let buf = draw(
+                &[on("~/r", "x", Some(Pr::sample(7, state, checks, None)))],
+                &[],
+                None,
+            );
             let at = (0..23)
                 .find(|&x| buf[(x, 2)].symbol() == "#")
                 .expect("a mark");
@@ -848,7 +870,20 @@ mod tests {
         assert_eq!(place("~/a", None, 19), "~/a");
         for width in 0..25 {
             let got = place("~/project/herdr", Some("feature/branch"), width);
-            assert!(got.chars().count() <= width, "{width}: {got:?}");
+            assert!(got.width() <= width, "{width}: {got:?}");
+            // Wide characters count by the cells they take.
+            let wide = place("~/專案/前端", Some("功能/登入"), width);
+            assert!(wide.width() <= width, "{width}: {wide:?}");
         }
+        assert_eq!(place("~/專案/前端", Some("x"), 10), "…/前端  x");
+    }
+
+    #[test]
+    fn a_tag_goes_at_the_end_only_a_cell_or_more_after_the_text() {
+        assert_eq!(tag_x(3, 5, 6, 22), Some(16));
+        assert_eq!(tag_x(3, 12, 6, 22), Some(16), "one cell apart");
+        assert_eq!(tag_x(3, 13, 6, 22), None, "touching");
+        assert_eq!(tag_x(3, 0, 30, 22), None, "wider than the line");
+        assert_eq!(place_width("~/專案", Some("x")), 9);
     }
 }
