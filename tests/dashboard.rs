@@ -124,8 +124,9 @@ fn rows_are_tagged_with_their_agents_kind() {
     open(&mut paddock);
     paddock.wait_for_text("AGENT");
     paddock.wait_for("the dashboard's tag", |s| {
-        s.lines()
-            .any(|l| l.contains(" repo ") && l.contains("idle   claude"))
+        s.lines().any(|l| {
+            l.contains(" repo ") && l.contains(" idle ") && l.trim_end().ends_with(" claude")
+        })
     });
 }
 

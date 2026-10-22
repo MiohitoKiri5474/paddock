@@ -10,5 +10,5 @@ pub mod session_view;
 pub mod sidebar;
 pub mod tab_bar;
 
-/// Marks a Claude state: in the sidebar and before a tab's name.
+/// Marks an agent state: in the sidebar and before a tab's name.
 pub const STATE_DOT: &str = "●";

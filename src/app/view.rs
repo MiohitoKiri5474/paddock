@@ -54,7 +54,7 @@ impl App {
             .collect()
     }
 
-    /// Each agent (every row: a main Claude session that has not ended, in
+    /// Each agent (every row: a main agent session that has not ended, in
     /// any space): its label, state, its space and tab, and whether it is in
     /// the focused terminal. An external session's place is its branch,
     /// else its directory.

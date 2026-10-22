@@ -1,6 +1,6 @@
 //! The sidebar, with a border on its right edge: a SPACES section with one
 //! line per space (tmux session, ADR 0006), then an AGENTS section with two
-//! lines per main Claude session, across every space:
+//! lines per main agent session, across every space:
 //!
 //! ```text
 //!  SPACES
@@ -48,6 +48,7 @@ use crate::sessions::{AgentKind, State};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
+use unicode_width::UnicodeWidthStr;
 
 const SPACES: &str = "SPACES";
 const AGENTS: &str = "AGENTS";
@@ -305,15 +306,18 @@ impl Sidebar<'_> {
                 }
             }
             Line::AgentPlace(i) => {
-                // The kind's tag under the state; the place is cut first.
+                // The kind's tag under the state, only where it fits after
+                // the whole place: the place is never cut for it.
                 let a = &self.agents[i];
+                put(name_x, &a.place, dim);
                 let tag = a.kind.tag();
-                let width = u16::try_from(tag.chars().count()).unwrap_or(0);
-                let tag_x = end.saturating_sub(width).max(name_x);
-                let room = usize::from(tag_x.saturating_sub(name_x + 1));
-                let place: String = a.place.chars().take(room).collect();
-                put(name_x, &place, dim);
-                put(tag_x, tag, dim);
+                let width = u16::try_from(tag.width()).unwrap_or(u16::MAX);
+                let tag_x = end.saturating_sub(width);
+                let place_end =
+                    name_x.saturating_add(u16::try_from(a.place.width()).unwrap_or(u16::MAX));
+                if tag_x > place_end {
+                    put(tag_x, tag, dim);
+                }
             }
             Line::Blank => {}
         }
@@ -455,7 +459,7 @@ mod tests {
             "   api-server · claude │",
             "                       │",
             " ● a-very-long running │",
-            "   api-server · claude │",
+            "   api-server · x      │",
         ];
         for (y, line) in want.iter().enumerate() {
             assert_eq!(text(&buf, y as u16), *line, "row {y}");
@@ -687,7 +691,7 @@ mod tests {
     }
 
     #[test]
-    fn an_agents_kind_is_tagged_under_its_state_and_its_place_cut_first() {
+    fn an_agents_kind_is_tagged_under_its_state_only_where_its_place_fits() {
         let agents = [
             agent("api", State::Waiting, "api · x"),
             agent("web", State::Idle, "a-long-space-name · tab"),
@@ -702,7 +706,7 @@ mod tests {
             "   api · x      claude │",
             "                       │",
             " ● web            idle │",
-            "   a-long-space claude │",
+            "   a-long-space-name · │",
         ];
         for (y, line) in want.iter().enumerate() {
             assert_eq!(text(&buf, top + y as u16), *line, "row {y}");

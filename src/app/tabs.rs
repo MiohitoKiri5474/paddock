@@ -308,8 +308,8 @@ impl App {
         }
     }
 
-    /// End space `id` with all its tabs, first asking if Claude is running
-    /// or waiting in any of its panes.
+    /// End space `id` with all its tabs, first asking if an agent is
+    /// running or waiting in any of its panes.
     pub fn close_space(&mut self, id: &str) -> Result<()> {
         let busy = self
             .rows()
@@ -326,7 +326,7 @@ impl App {
         }
     }
 
-    /// Ask before closing `target`, where Claude is `state`. A panel with
+    /// Ask before closing `target`, where an agent is `state`. A panel with
     /// the keyboard (the sidebar or the dashboard) gets it back after.
     pub(super) fn ask_close(&mut self, target: CloseTarget, state: State) {
         let back = std::mem::replace(&mut self.mode, Mode::Normal).into_panel();

@@ -264,10 +264,10 @@ fn renders_rows_tasks_and_a_live_preview() {
     assert_eq!(
         [1, 2, 3, 4, 5, 6].map(|y| text(&buf, y)),
         [
-            " NAME             STATE    AGENT   ↑↓  CHANGES   BASE  FILES  AGE  MERGED",
+            " NAME             STATE    ↑↓  CHANGES   BASE  FILES  AGE  MERGED  AGENT",
             "",
-            " api              idle     claude",
-            "   feat/a                                +3 −1  +5 −0      2       ✓",
+            " api              idle                                             claude",
+            "   feat/a                        +3 −1  +5 −0      2       ✓",
             "   Fix b · fix/b  waiting",
             "",
         ]

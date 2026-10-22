@@ -14,8 +14,6 @@ enum Column {
     Name,
     /// A session's or a subagent's state.
     State,
-    /// A session's agent kind, as a tag (`claude`).
-    Agent,
     /// Commits ahead of and behind upstream.
     AheadBehind,
     /// Uncommitted lines added and removed.
@@ -28,6 +26,8 @@ enum Column {
     Age,
     /// Merged into the base branch.
     Merged,
+    /// A session's agent kind, as a tag (`claude`).
+    Agent,
 }
 
 /// How many columns there are.
@@ -36,13 +36,13 @@ const COUNT: usize = 9;
 const COLUMNS: [Column; COUNT] = [
     Column::Name,
     Column::State,
-    Column::Agent,
     Column::AheadBehind,
     Column::Changes,
     Column::Base,
     Column::Files,
     Column::Age,
     Column::Merged,
+    Column::Agent,
 ];
 /// What a column shows and how.
 struct Spec {
@@ -59,10 +59,6 @@ const SPECS: [Spec; COUNT] = [
     },
     Spec {
         header: "STATE",
-        right_aligned: false,
-    },
-    Spec {
-        header: "AGENT",
         right_aligned: false,
     },
     Spec {
@@ -89,17 +85,21 @@ const SPECS: [Spec; COUNT] = [
         header: "MERGED",
         right_aligned: false,
     },
+    Spec {
+        header: "AGENT",
+        right_aligned: false,
+    },
 ];
 /// The columns dropped, in this order, while the name does not fit. Name
-/// and state always stay; the agent goes last.
+/// and state always stay; the agent, last on the line, goes first.
 const DROP_ORDER: [Column; 7] = [
+    Column::Agent,
     Column::Merged,
     Column::Files,
     Column::Base,
     Column::AheadBehind,
     Column::Age,
     Column::Changes,
-    Column::Agent,
 ];
 /// Spaces between two columns.
 const GAP: usize = 2;
@@ -306,13 +306,13 @@ mod tests {
             [
                 "  feat/a",
                 "",
-                "",
                 "↑2",
                 "+30 −144",
                 "+12 −3",
                 "4",
                 "2h",
-                MERGED
+                MERGED,
+                ""
             ]
             .map(String::from)
         );
@@ -371,10 +371,10 @@ mod tests {
         assert_eq!(
             got,
             [
-                " NAME      STATE  AGENT  ↑↓   CHANGES  BASE  FILES  AGE  MERGED",
+                " NAME      STATE  ↑↓   CHANGES  BASE  FILES  AGE  MERGED  AGENT",
                 " api       idle",
-                "   feat/a                       +3 −1            2",
-                "   feat/b                    +30 −144",
+                "   feat/a                +3 −1            2",
+                "   feat/b             +30 −144",
             ]
         );
     }
@@ -442,17 +442,16 @@ mod tests {
         };
         assert_eq!(shown(100).len(), COUNT, "all fit");
         assert_eq!(
-            shown(77),
-            ["NAME", "STATE", "AGENT", "↑↓", "CHANGES", "BASE", "FILES", "AGE"],
-            "merged goes first"
+            shown(70),
+            ["NAME", "STATE", "↑↓", "CHANGES", "BASE", "FILES", "AGE"],
+            "the agent, then merged, go first"
         );
         assert_eq!(
-            shown(67),
-            ["NAME", "STATE", "AGENT", "↑↓", "CHANGES", "BASE", "AGE"],
+            shown(60),
+            ["NAME", "STATE", "↑↓", "CHANGES", "BASE", "AGE"],
             "then files"
         );
-        assert_eq!(shown(57), ["NAME", "STATE", "AGENT", "CHANGES", "AGE"]);
-        assert_eq!(shown(48), ["NAME", "STATE", "AGENT"], "the agent goes last");
+        assert_eq!(shown(50), ["NAME", "STATE", "CHANGES", "AGE"]);
         assert_eq!(shown(20), ["NAME", "STATE"]);
         let w = widths(&lines, 20);
         assert_eq!(line(&long, &w, 20), " a-very-l…  waiting ");

@@ -44,7 +44,9 @@ const PLUGIN_SOURCE: &str = "plugin";
 fn restart(kind: AgentKind) -> String {
     format!(
         "Restart running {} sessions so they use the hooks as they are now.",
-        kind.name()
+        match kind {
+            AgentKind::Claude => "Claude",
+        }
     )
 }
 
@@ -234,8 +236,8 @@ pub fn edit_file(path: &Path, f: impl FnOnce(Value) -> Result<Value>) -> Result<
 }
 
 /// Whether `paddock hooks install|uninstall` without `--agent` acts on
-/// `kind`. Claude always, as before kinds existed (the plugin is its other
-/// way in); other kinds only when their CLI is on `PATH`.
+/// `kind`. Claude always, as before kinds existed, whether or not `claude`
+/// is on `PATH`.
 fn by_default(kind: AgentKind) -> bool {
     match kind {
         AgentKind::Claude => true,

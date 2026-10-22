@@ -28,10 +28,13 @@ impl AgentKind {
         }
     }
 
-    /// The kind's name in messages.
-    pub fn name(self) -> &'static str {
+    /// Whether the kind lists its running sessions in a snapshot that
+    /// [`super::Sessions::reconcile`] folds in. Claude's is `claude agents
+    /// --json` ([`super::agents::fetch`]); a kind without one is left to
+    /// its hooks.
+    pub fn has_snapshot(self) -> bool {
         match self {
-            AgentKind::Claude => "Claude",
+            AgentKind::Claude => true,
         }
     }
 

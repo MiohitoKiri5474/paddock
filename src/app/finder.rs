@@ -264,7 +264,7 @@ impl App {
         out
     }
 
-    /// The directory of the Claude session in pane `pane`, home as `~`,
+    /// The directory of the agent session in pane `pane`, home as `~`,
     /// if known.
     fn shown_cwd(&self, pane: &str, home: &HomePaths) -> Option<String> {
         self.session_in(pane)

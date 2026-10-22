@@ -31,7 +31,7 @@ pub enum State {
     /// The main agent finished a turn you have not looked at yet.
     Done,
     Idle,
-    /// Claude quit: the session ended, so it has no row.
+    /// The agent quit: the session ended, so it has no row.
     Stopped,
     Unknown,
 }
@@ -471,7 +471,7 @@ impl Sessions {
     }
 
     /// Pane `pane`'s session and task rows, leaving out dismissed ones; `None`
-    /// if its session ended (Claude quit: it is stopped) or its session row
+    /// if its session ended (its agent quit: it is stopped) or its session row
     /// is dismissed. A dismissed row stays hidden until an event about it
     /// newer than the dismissal (a dismissed session row hides its task rows
     /// too), so replaying the event log keeps it hidden. An ended session
@@ -628,6 +628,11 @@ impl Sessions {
                 .by_pane
                 .entry(pane.clone())
                 .or_insert_with(|| Session::new(Some(a.session_id.clone())));
+            // The snapshot lists Claude's sessions only: a live session of a
+            // kind without a snapshot is left to its hooks.
+            if !s.ended() && !s.kind.has_snapshot() {
+                continue;
+            }
             let same = s.session_id.as_deref() == Some(a.session_id.as_str());
             // A session that ended never runs again: a snapshot still
             // listing it lags behind.

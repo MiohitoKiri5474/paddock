@@ -1,7 +1,7 @@
 //! The agent session rows: a session row per open pane whose session has
 //! not ended, each with its task rows, in display order. They feed the
 //! spaces' and tabs' states, the sidebar's agents, `C-a a` and the
-//! dashboard. A session that ended (its pane closed, or Claude quit) has no
+//! dashboard. A session that ended (its pane closed, or its agent quit) has no
 //! row.
 //!
 //! External sessions (agents outside paddock's terminals) come last, in
