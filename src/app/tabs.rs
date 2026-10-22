@@ -221,7 +221,7 @@ impl App {
         };
         space.structure.current = w;
         let window = &mut space.structure.windows[w];
-        window.active = pane.to_string();
+        window.focus(pane);
         let id = window.id.clone();
         self.report(|app| app.server.select(&id, Some(pane)));
     }

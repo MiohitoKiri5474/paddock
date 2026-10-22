@@ -342,6 +342,11 @@ impl Server {
         self.run(&["select-layout", "-E", "-t", pane]).map(drop)
     }
 
+    /// Zoom `pane` to fill its window, or unzoom its window.
+    pub fn zoom(&self, pane: &str) -> Result<()> {
+        self.run(&["resize-pane", "-Z", "-t", pane]).map(drop)
+    }
+
     pub fn rename_session(&self, id: &str, name: &str) -> Result<()> {
         self.run(&["rename-session", "-t", id, &unexpanded(name)])
             .map(drop)

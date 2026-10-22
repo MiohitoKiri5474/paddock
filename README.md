@@ -138,6 +138,7 @@ Every key is an action with a name you can rebind (see [Configure](#configure));
 | `k` `Up` | focus up | `focus_up` |
 | `l` `Right` | focus right | `focus_right` |
 | `=` | even out the focused split | `equalize` |
+| `z` | zoom the focused split | `zoom` |
 | `x` | close pane (asks if busy) | `close` |
 | `f` | fork Claude into a new tab | `fork` |
 | `W` | new worktree as a new space | `new_worktree` |
@@ -157,6 +158,8 @@ Every key is an action with a name you can rebind (see [Configure](#configure));
 | `G` | show or hide lazygit in a float | `[floats] G` |
 
 `C-a` pressed twice sends a literal `C-a`. `go_to_tab`'s first key goes to tab 1, its second to tab 2, and so on. `close` closes the pane; the last one closes its tab, the last tab its space, and it asks first if Claude is busy. Renaming, naming a new space (prefilled with `space-N`; `Enter` keeps it) and that question open a small box in the middle of the screen; `Esc` or a click outside it cancels. `{`/`}` can also be done by dragging the sidebar's border.
+
+Zoom: `C-a z` makes the focused split fill its tab, and the tab bar shows a `Z` after the tab's name; `C-a z` again gives every split its place back, with the focus where it was. The other splits are hidden but keep running. Moving the focus (`C-a h/j/k/l`, a direct chord, or `C-a a` and the finder jumping to a hidden split), splitting, evening out (`C-a =`), or closing the zoomed split undoes the zoom first, as in tmux. With a float shown, `C-a z` hides the float, then zooms. The zoom lives in tmux (`resize-pane -Z`), so it survives detaching, and a zoom made in `tmux -L paddock attach` shows in paddock too. A Claude in a hidden split that finishes a turn stays `done` until you see it. `zoom` has no direct chord by default.
 
 The finder (`C-a g`) opens a box framed like the prompts: a text field on top and, under it, every space (name, directory, branch), every tab (`space › tab`, directory, branch) and every agent (name, state, `space › tab`), each with its kind as a marker. Typing filters them fuzzily (case-insensitive unless you type an uppercase letter; contiguous and word-start matches rank first) against name, kind, directory and branch, best match first. `Up`/`Down` (or `C-p`/`C-n`) move, `Enter` shows the one selected (its space and tab, with its pane focused), `Esc` or a click outside cancels (a float shown stays shown); a click on a row opens it and the wheel moves the selection. While the field is empty, `b`, `w`, `i` and `d` show only agents that are waiting (blocked), running (working), idle or done, `a` all again, and the title says which; with text in the field they are ordinary characters. The finder's keys are fixed, except that `finder` in `[keys.commands]` names the key that opens it.
 

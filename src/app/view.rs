@@ -127,6 +127,7 @@ impl App {
                 name: self.tab_name(w),
                 state: most_urgent(rows, |r| r.window == w.id).unwrap_or(State::Unknown),
                 custom: !w.auto_name,
+                zoomed: w.zoomed,
             })
             .collect()
     }
@@ -220,15 +221,15 @@ impl App {
     }
 
     /// The current tab's panes and where they are drawn on the screen,
-    /// clipped to the session area.
+    /// clipped to the session area: only the focused one while it is
+    /// zoomed, as the others are hidden (tmux keeps their old places).
     pub(super) fn pane_rects(&self) -> Vec<(String, Rect)> {
         let area = self.area();
         let Some(window) = self.current_space().and_then(|i| i.current_window()) else {
             return Vec::new();
         };
         window
-            .panes
-            .iter()
+            .shown_panes()
             .map(|p| {
                 let r = Rect {
                     x: area.x.saturating_add(p.rect.x),

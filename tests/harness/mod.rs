@@ -8,6 +8,11 @@
 
 #![allow(dead_code)] // Each test binary uses a different part of the harness.
 
+mod panes;
+
+#[allow(unused_imports)] // Each test binary uses a different part of them.
+pub use panes::{cols, in_region, pane_sizes, wait_for_pane_sizes, wait_in_region};
+
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use std::io::{Read, Write};
 use std::path::PathBuf;

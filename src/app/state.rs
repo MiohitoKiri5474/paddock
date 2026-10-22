@@ -597,13 +597,13 @@ impl App {
         }
     }
 
-    /// Whether pane `pane` is on screen: in the current tab, or the
-    /// float shown.
+    /// Whether pane `pane` is on screen: in the current tab (and not
+    /// hidden by a zoom), or the float shown.
     pub fn shows(&self, pane: &str) -> bool {
         let in_tab = self
             .current_space()
             .and_then(Space::current_window)
-            .is_some_and(|w| w.contains(pane));
+            .is_some_and(|w| w.shows(pane));
         in_tab || self.float_pane().as_deref() == Some(pane)
     }
 
