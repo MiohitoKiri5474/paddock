@@ -1,0 +1,8 @@
+{
+  "session_id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+  "transcript_path": "/home/user/.gemini/tmp/repo/chats/session-2026-10-22T10-00-aaaaaaaa.json",
+  "cwd": "/tmp/repo",
+  "hook_event_name": "SessionStart",
+  "timestamp": "2026-10-22T10:00:00.000Z",
+  "source": "startup"
+}

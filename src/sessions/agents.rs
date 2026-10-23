@@ -1,5 +1,7 @@
 //! `claude agents --json`: the Claude sessions running right now, each
-//! matched to the paddock terminal its process runs in.
+//! matched to the paddock terminal its process runs in. It is the Claude
+//! kind's snapshot ([`super::AgentKind::has_snapshot`]); `reconcile` applies
+//! it to Claude sessions only.
 
 use super::Agent;
 use crate::tmux::Server;

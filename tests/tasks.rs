@@ -92,7 +92,7 @@ fn list(paddock: &Paddock) -> Vec<String> {
         // Up to the preview's border.
         .take_while(|r| !r.starts_with('╭'))
         // Blank lines part the sessions, and fill the list's minimum height.
-        .filter(|r| !r.is_empty() && !r.contains("no Claude sessions yet"))
+        .filter(|r| !r.is_empty() && !r.contains("no agent sessions yet"))
         .map(|r| r.split_whitespace().collect::<Vec<_>>().join(" "))
         .collect()
 }

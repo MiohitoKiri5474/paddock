@@ -181,7 +181,7 @@ fn place_detail(path: Option<&str>, branch: Option<&str>) -> String {
 }
 
 /// A tab's directory and branch, taken as a pair from one place: the
-/// Claude's in its focused pane (`claude`) when its directory is known,
+/// agent's in its focused pane (`claude`) when its directory is known,
 /// else its space's (the first tab's), which needs no round trip to tmux.
 /// A branch is never paired with another place's directory.
 fn tab_place(
@@ -264,7 +264,7 @@ impl App {
         out
     }
 
-    /// The directory of the Claude session in pane `pane`, home as `~`,
+    /// The directory of the agent session in pane `pane`, home as `~`,
     /// if known.
     fn shown_cwd(&self, pane: &str, home: &HomePaths) -> Option<String> {
         self.session_in(pane)
@@ -528,6 +528,7 @@ mod tests {
             current: true,
             path: Some("~/project/api".into()),
             branch: Some("feat/login".into()),
+            pr: None,
             linked: false,
         };
         let none = (None, None);

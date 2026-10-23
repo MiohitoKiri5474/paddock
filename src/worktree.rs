@@ -424,7 +424,7 @@ mod tests {
 
     #[test]
     fn a_git_failure_says_whether_git_ran_out_of_time() {
-        let late = Failure::git(git::late_reason(Duration::from_secs(60)));
+        let late = Failure::git(git::late_reason("git", Duration::from_secs(60)));
         assert!(matches!(late, Failure::Late(_)), "{late:?}");
         let refused = Failure::git("'main' is already used by worktree".into());
         assert!(matches!(refused, Failure::Git(_)), "{refused:?}");

@@ -12,6 +12,7 @@ fn row(label: &str, state: State, tasks: Vec<TaskRow>) -> Row {
         space: "$1".into(),
         window: "@1".into(),
         label: label.into(),
+        kind: crate::sessions::AgentKind::Claude,
         state,
         tasks,
         external: false,
@@ -37,6 +38,7 @@ fn external_sessions_come_dim_under_their_line_with_no_screen() {
         keys: KEYS,
         rows: &rows,
         details: &TaskDetails::new(),
+        prs: &TaskPrs::new(),
         selected: Some(&selected),
         preview: None,
         interactive: false,
@@ -149,6 +151,7 @@ fn the_filter_line_takes_a_row_under_the_title() {
         keys: KEYS,
         rows: &rows,
         details: &TaskDetails::new(),
+        prs: &TaskPrs::new(),
         selected: None,
         preview: None,
         interactive: false,
@@ -251,6 +254,7 @@ fn renders_rows_tasks_and_a_live_preview() {
         keys: KEYS,
         rows: &rows,
         details: &details,
+        prs: &TaskPrs::new(),
         selected: Some(&selected),
         preview: Some(&emu),
         interactive: false,
@@ -263,10 +267,10 @@ fn renders_rows_tasks_and_a_live_preview() {
     assert_eq!(
         [1, 2, 3, 4, 5, 6].map(|y| text(&buf, y)),
         [
-            " NAME             STATE    ↑↓  CHANGES   BASE  FILES  AGE  MERGED",
+            " NAME             STATE    ↑↓  CHANGES   BASE  FILES  AGE  PR      AGENT",
             "",
-            " api              idle",
-            "   feat/a                        +3 −1  +5 −0      2       ✓",
+            " api              idle                                             claude",
+            "   feat/a                        +3 −1  +5 −0      2       merged",
             "   Fix b · fix/b  waiting",
             "",
         ]
@@ -310,6 +314,7 @@ fn only_the_selected_sessions_block_is_highlighted() {
         keys: KEYS,
         rows: &rows,
         details: &TaskDetails::new(),
+        prs: &TaskPrs::new(),
         selected: Some(&selected),
         preview: None,
         interactive: false,
@@ -336,6 +341,7 @@ fn a_rows_preview_without_its_terminal_says_so() {
         keys: KEYS,
         rows: &rows,
         details: &TaskDetails::new(),
+        prs: &TaskPrs::new(),
         selected: Some(&selected),
         preview: None,
         interactive: false,
@@ -355,6 +361,7 @@ fn without_rows_it_says_there_are_no_sessions() {
         keys: KEYS,
         rows: &[],
         details: &TaskDetails::new(),
+        prs: &TaskPrs::new(),
         selected: None,
         preview: None,
         interactive: false,
@@ -364,7 +371,7 @@ fn without_rows_it_says_there_are_no_sessions() {
     };
     render(&view, area, &mut buf);
     assert_eq!(text(&buf, 2), "");
-    assert_eq!(text(&buf, 3), " no Claude sessions yet");
+    assert_eq!(text(&buf, 3), " no agent sessions yet");
     assert_eq!(text(&buf, 6), format!("╭{}╮", "─".repeat(38)));
     assert_eq!(text(&buf, 11), " j down  k up");
 }
@@ -381,6 +388,7 @@ fn the_selected_line_scrolls_into_sight() {
         keys: KEYS,
         rows: &rows,
         details: &TaskDetails::new(),
+        prs: &TaskPrs::new(),
         selected: Some(&selected),
         preview: None,
         interactive: false,
@@ -426,6 +434,7 @@ fn the_selected_line_scrolls_into_sight_with_its_subagents() {
         keys: KEYS,
         rows: &rows,
         details: &TaskDetails::new(),
+        prs: &TaskPrs::new(),
         selected: Some(&selected),
         preview: None,
         interactive: false,
@@ -458,6 +467,7 @@ fn the_list_never_starts_with_another_sessions_task_rows() {
         keys: KEYS,
         rows: &rows,
         details: &TaskDetails::new(),
+        prs: &TaskPrs::new(),
         selected: Some(&selected),
         preview: None,
         interactive: false,
@@ -470,4 +480,63 @@ fn the_list_never_starts_with_another_sessions_task_rows() {
     // r1 is on top rather than r0's last task rows.
     assert!(text(&buf, 3).starts_with(" r1"));
     assert_eq!([4, 5, 6].map(|y| text(&buf, y)), ["", "", ""]);
+}
+
+#[test]
+fn a_prs_number_is_coloured_by_its_state_on_the_lines_background() {
+    use crate::github::{Checks, Pr, PrState};
+    let area = Rect::new(0, 0, 100, 30);
+    let pr = |number: u64, state: PrState| Pr::sample(number, state, Some(Checks::Passing), None);
+    let branches = ["a", "b", "c", "d"];
+    let states = [
+        PrState::Open,
+        PrState::Draft,
+        PrState::Merged,
+        PrState::Closed,
+    ];
+    let prs: TaskPrs = branches
+        .iter()
+        .zip(states)
+        .zip(10..)
+        .map(|((b, s), n)| (("/r".to_string(), b.to_string()), pr(n, s)))
+        .collect();
+    let rows = [row(
+        "api",
+        State::Idle,
+        branches.iter().map(|b| task(b, None)).collect(),
+    )];
+    let selected = RowId {
+        pane: "%api".into(),
+    };
+    let view = View {
+        keys: KEYS,
+        rows: &rows,
+        details: &TaskDetails::new(),
+        prs: &prs,
+        selected: Some(&selected),
+        preview: None,
+        interactive: false,
+        filter: &DashboardFilter::default(),
+        now: 0,
+        selection: SELECTED,
+    };
+    let mut buf = Buffer::empty(area);
+    render(&view, area, &mut buf);
+    let lines: Vec<String> = (0..30).map(|y| text(&buf, y)).collect();
+    let at = |needle: &str| {
+        let y = lines.iter().position(|l| l.contains(needle)).expect(needle);
+        let x = lines[y].chars().position(|c| c == '#').unwrap();
+        (u16::try_from(x).unwrap(), u16::try_from(y).unwrap())
+    };
+    let (x, y) = at("#10 open ✓");
+    assert_eq!(buf[(x, y)].fg, Color::Green);
+    assert_eq!(buf[(x + 2, y)].fg, Color::Green, "the whole number");
+    assert_ne!(buf[(x + 4, y)].fg, Color::Green, "not its state");
+    assert_eq!(buf[(x, y)].bg, SELECTED, "the selection's background stays");
+    let (x, y) = at("#11 draft");
+    assert!(buf[(x, y)].modifier.contains(Modifier::DIM));
+    let (x, y) = at("#12 merged");
+    assert_eq!(buf[(x, y)].fg, Color::Magenta);
+    let (x, y) = at("#13 closed");
+    assert_eq!(buf[(x, y)].fg, Color::Red);
 }

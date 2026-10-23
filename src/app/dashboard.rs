@@ -8,15 +8,45 @@
 //! session through the same dismiss, close, fork and jump as the rest of
 //! the app.
 
+use super::prs::PrUpdate;
 use super::rows::{pane_only, row_ids, Row, RowId, EXTERNAL_TYPE};
 use super::state::{App, Mode, Panel};
 use super::watch::Watched;
+use super::Event;
 use crate::fuzzy;
+use crate::github;
 use crate::input::keymap::DashboardAction;
 use crate::input::line::LineEdit;
 use crate::input::{encode_key, encode_paste};
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use std::sync::mpsc::Sender;
+
+/// Tells the event loop that `p`'s gh is done ([`Event::PrOpened`]) when
+/// dropped: after the outcome is set, or while unwinding from a panic on
+/// the open's thread, so `p` never stays blocked.
+struct Opened {
+    events: Sender<Event>,
+    number: u64,
+    result: Option<Result<(), String>>,
+}
+
+impl Opened {
+    /// Done, with how it went: sent as it drops.
+    fn finish(mut self, result: Result<(), String>) {
+        self.result = Some(result);
+    }
+}
+
+impl Drop for Opened {
+    fn drop(&mut self) {
+        let result = self
+            .result
+            .take()
+            .unwrap_or_else(|| Err("gh's thread failed".to_string()));
+        let _ = self.events.send(Event::PrOpened(self.number, result));
+    }
+}
 
 /// The dashboard's key line while its filter is typed: its keys are
 /// fixed, so they are not read from the keymap.
@@ -203,6 +233,10 @@ impl App {
             Some(DashboardAction::Up) => self.dashboard_move(d, -1),
             Some(DashboardAction::Dismiss) => self.dashboard_dismiss(d),
             Some(DashboardAction::Back) => Mode::Normal,
+            Some(DashboardAction::OpenPr) => {
+                self.open_pr(&d);
+                Mode::Dashboard(d)
+            }
             Some(DashboardAction::Filter) => Mode::Dashboard(Dashboard {
                 filter: DashboardFilter {
                     typing: true,
@@ -281,6 +315,63 @@ impl App {
         Mode::Dashboard(d.anchored(&row_ids(&self.dashboard_rows(&d))))
     }
 
+    /// Keep the pull requests just read (see [`super::prs`]); a task
+    /// without one loses the one it had.
+    pub(super) fn store_prs(&mut self, read: PrUpdate) {
+        for (task, pr) in read {
+            match pr {
+                Some(pr) => self.task_prs.insert(task, pr),
+                None => self.task_prs.remove(&task),
+            };
+        }
+    }
+
+    /// `p`: open the selected session's pull request in the browser
+    /// (`gh pr view --web` in its directory): its main agent's branch's,
+    /// else the first subagent branch's with one. Without one, a notice.
+    /// An external session's too: it only opens a page. `gh` failing comes
+    /// back as a notice. While one open runs, another `p` does nothing.
+    fn open_pr(&mut self, d: &Dashboard) {
+        let Some(row) = self.dashboard_row(d) else {
+            return;
+        };
+        let main_first = row
+            .tasks
+            .iter()
+            .filter(|t| t.subagent.is_none())
+            .chain(row.tasks.iter().filter(|t| t.subagent.is_some()));
+        let found = main_first
+            .clone()
+            .find_map(|t| Some((t, self.task_prs.get(&(t.cwd.clone(), t.branch.clone()))?)));
+        let Some((task, pr)) = found else {
+            self.notice = Some(match main_first.map(|t| &t.branch).next() {
+                Some(branch) => format!("no pull request for {branch}"),
+                None => "no pull request: no branch".to_string(),
+            });
+            return;
+        };
+        // One open at a time: a press while one runs is ignored.
+        if self.pr_opening {
+            return;
+        }
+        self.pr_opening = true;
+        let opened = Opened {
+            events: self.events.clone(),
+            number: pr.number,
+            result: None,
+        };
+        github::open_web(&task.cwd, pr.number, move |done| opened.finish(done));
+    }
+
+    /// `p`'s gh is done (see [`Opened`]): another `p` may open; a failure
+    /// is a notice.
+    pub(super) fn pr_opened(&mut self, number: u64, result: Result<(), String>) {
+        self.pr_opening = false;
+        if let Err(e) = result {
+            self.notice = Some(format!("cannot open PR #{number}: {e}"));
+        }
+    }
+
     /// Open, close, fork and interact on the selected session's terminal.
     fn dashboard_act(&mut self, d: Dashboard, action: DashboardAction) -> Mode {
         let Some(row) = self.dashboard_row(&d) else {
@@ -324,6 +415,7 @@ impl App {
             | DashboardAction::Up
             | DashboardAction::Dismiss
             | DashboardAction::Filter
+            | DashboardAction::OpenPr
             | DashboardAction::Back => Mode::Dashboard(d),
         }
     }
@@ -378,6 +470,7 @@ mod tests {
             space: "$1".into(),
             window: "@1".into(),
             label: label.into(),
+            kind: crate::sessions::AgentKind::Claude,
             state,
             tasks: vec![TaskRow {
                 branch: branch.into(),
@@ -419,6 +512,26 @@ mod tests {
             typing: false,
         };
         assert!(kept.shown());
+    }
+
+    #[test]
+    fn an_open_says_it_is_done_even_when_its_thread_panics() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let opened = |number| Opened {
+            events: tx.clone(),
+            number,
+            result: None,
+        };
+        opened(1).finish(Ok(()));
+        assert!(matches!(rx.try_recv(), Ok(Event::PrOpened(1, Ok(())))));
+        let guard = opened(2);
+        let panicked = std::thread::spawn(move || {
+            let _guard = guard;
+            panic!("gh's thread");
+        })
+        .join();
+        assert!(panicked.is_err());
+        assert!(matches!(rx.try_recv(), Ok(Event::PrOpened(2, Err(_)))));
     }
 
     #[test]
