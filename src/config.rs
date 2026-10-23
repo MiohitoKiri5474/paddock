@@ -41,8 +41,11 @@
 //! new_tab_dir = "current"    # or "root": where new tabs and splits start
 //!
 //! [dashboard]
-//! external = true            # list Claude sessions outside paddock (the External group)
+//! external = true            # list agent sessions outside paddock (the External group)
 //! external_timeout = 10      # minutes an external session stays without news
+//!
+//! [github]
+//! refresh_secs = 60          # how often to ask gh for each repository's PRs; 0: never
 //! ```
 //!
 //! `paddock keys` prints every action with its default keys.
@@ -75,6 +78,8 @@ const DEFAULT_WORKTREES: &str = "~/.paddock/worktrees";
 /// from `claude agents --json`.
 const DEFAULT_EXTERNAL_TIMEOUT_MIN: u64 = 10;
 const MS_PER_MIN: u64 = 60_000;
+/// Seconds between two `gh pr list` of one repository.
+const DEFAULT_GITHUB_REFRESH_SECS: u64 = 60;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
@@ -100,6 +105,9 @@ pub struct Config {
     pub new_tab_dir: NewTabDir,
     /// Whether and how long external sessions are listed.
     pub external: External,
+    /// How often each repository's pull requests are read with `gh`
+    /// (`[github] refresh_secs`); zero for never.
+    pub github_refresh: Duration,
 }
 
 /// `[spaces] new_tab_dir`: where a new tab or split starts.
@@ -113,7 +121,7 @@ pub enum NewTabDir {
     Root,
 }
 
-/// `[dashboard]`: the External group of Claude sessions running outside
+/// `[dashboard]`: the External group of agent sessions running outside
 /// paddock's terminals, in the dashboard and the sidebar's AGENTS.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct External {
@@ -220,6 +228,15 @@ struct RawConfig {
     spaces: RawSpaces,
     #[serde(default)]
     dashboard: RawDashboard,
+    #[serde(default)]
+    github: RawGithub,
+}
+
+/// A `[github]` table as written.
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct RawGithub {
+    refresh_secs: Option<u64>,
 }
 
 /// A `[spaces]` table as written.
@@ -391,6 +408,11 @@ impl Config {
             worktrees,
             new_tab_dir: raw.spaces.new_tab_dir.unwrap_or_default(),
             external,
+            github_refresh: Duration::from_secs(
+                raw.github
+                    .refresh_secs
+                    .unwrap_or(DEFAULT_GITHUB_REFRESH_SECS),
+            ),
         })
     }
 }
@@ -416,6 +438,7 @@ impl Default for Config {
             worktrees: Worktrees::default(),
             new_tab_dir: NewTabDir::default(),
             external: External::default(),
+            github_refresh: Duration::from_secs(DEFAULT_GITHUB_REFRESH_SECS),
         }
     }
 }
@@ -611,6 +634,27 @@ mod tests {
         assert!(err("[dashboard]\nexternal_timeout = 0\n").contains("at least 1"));
         assert!(Config::parse("[dashboard]\nexternal = 1\n").is_err());
         assert!(Config::parse("[dashboard]\nexternals = true\n").is_err());
+    }
+
+    #[test]
+    fn github_refreshes_every_minute_unless_set_and_zero_turns_it_off() {
+        let secs = |t: &str| Config::parse(t).unwrap().github_refresh.as_secs();
+        assert_eq!(secs(""), 60);
+        assert_eq!(Config::default().github_refresh.as_secs(), 60);
+        assert_eq!(secs("[github]\nrefresh_secs = 300\n"), 300);
+        assert_eq!(secs("[github]\nrefresh_secs = 0\n"), 0);
+        assert!(Config::parse("[github]\nrefresh_secs = -1\n").is_err());
+        assert!(Config::parse("[github]\nrefresh = 1\n").is_err());
+    }
+
+    #[test]
+    fn p_on_another_dashboard_action_clashes_with_pr_until_it_is_unbound() {
+        let err = format!(
+            "{:#}",
+            Config::parse("[keys.dashboard]\nfork = \"p\"\n").unwrap_err()
+        );
+        assert!(err.contains("[keys.dashboard]"), "{err}");
+        assert!(Config::parse("[keys.dashboard]\nfork = \"p\"\npr = \"\"\n").is_ok());
     }
 
     #[test]

@@ -7,7 +7,7 @@ use super::space::clamp;
 use super::state::{is_session_id, next_name, App, CloseTarget, Mode, NameTarget, Renamed};
 use super::watch;
 use crate::paths::HomePaths;
-use crate::sessions::State;
+use crate::sessions::{AgentKind, State};
 use crate::terminal::Terminal;
 use crate::tmux::server::quote;
 use anyhow::{bail, Result};
@@ -294,7 +294,8 @@ impl App {
         .unwrap_or_default()
     }
 
-    /// End pane `pane`, first asking if Claude there is running or waiting.
+    /// End pane `pane`, first asking if an agent there is running or
+    /// waiting.
     /// tmux closes its tab with its last pane, and its space with its last
     /// tab, and reports each.
     pub fn close(&mut self, pane: &str) -> Result<()> {
@@ -308,8 +309,8 @@ impl App {
         }
     }
 
-    /// End space `id` with all its tabs, first asking if Claude is running
-    /// or waiting in any of its panes.
+    /// End space `id` with all its tabs, first asking if an agent is
+    /// running or waiting in any of its panes.
     pub fn close_space(&mut self, id: &str) -> Result<()> {
         let busy = self
             .rows()
@@ -326,7 +327,7 @@ impl App {
         }
     }
 
-    /// Ask before closing `target`, where Claude is `state`. A panel with
+    /// Ask before closing `target`, where an agent is `state`. A panel with
     /// the keyboard (the sidebar or the dashboard) gets it back after.
     pub(super) fn ask_close(&mut self, target: CloseTarget, state: State) {
         let back = std::mem::replace(&mut self.mode, Mode::Normal).into_panel();
@@ -354,9 +355,13 @@ impl App {
     /// Claude exits.
     pub fn fork(&mut self, pane: &str) -> Result<()> {
         pane_only(pane, EXTERNAL_FORK)?;
-        let Some((session_id, cwd)) = self
-            .session_in(pane)
-            .and_then(|s| Some((s.session_id.clone()?, s.cwd.clone())))
+        let session = self.session_in(pane);
+        // Only Claude continues a copy of a conversation.
+        if session.is_some_and(|s| s.kind != AgentKind::Claude) {
+            bail!("fork needs a Claude session");
+        }
+        let Some((session_id, cwd)) =
+            session.and_then(|s| Some((s.session_id.clone()?, s.cwd.clone())))
         else {
             bail!("no Claude session here");
         };

@@ -1,9 +1,9 @@
 //! What the running app holds: the spaces (tmux sessions, ADR 0006),
 //! each with its tabs (windows) and splits (panes) as tmux has them, a
-//! terminal per pane, the Claude sessions in them, and what the keyboard is
+//! terminal per pane, the agent sessions in them, and what the keyboard is
 //! doing (typing into the focused pane, naming, finding, reading help).
 
-use super::attention::Attention;
+use super::attention::{Attention, PendingStatus};
 use super::copy::CopyMode;
 use super::dashboard::Dashboard;
 use super::finder::Finder;
@@ -11,7 +11,7 @@ use super::floats::Shown;
 use super::mouse::Press;
 use super::pages::Pages;
 use super::rows::{
-    pane_only, rows, Externals, Placed, Row, RowId, TaskDetails, TaskStatus, EXTERNAL_DIR,
+    pane_only, rows, Externals, Placed, Row, RowId, TaskDetails, TaskPrs, TaskStatus, EXTERNAL_DIR,
     EXTERNAL_TYPE,
 };
 use super::saved;
@@ -38,7 +38,9 @@ use ratatui::layout::Rect;
 use ratatui::style::Color;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::Sender;
+use std::sync::Arc;
 
 /// Rows above the terminals taken by the tab bar.
 pub const TAB_BAR_ROWS: u16 = 1;
@@ -55,7 +57,7 @@ pub enum Mode {
     Help,
     /// The sidebar has the keyboard; holds its selection.
     Sidebar(Selection),
-    /// Asking before closing `target`, where Claude is `state`; `back` is
+    /// Asking before closing `target`, where an agent is `state`; `back` is
     /// the panel asked from, to return to.
     ConfirmClose {
         target: CloseTarget,
@@ -236,9 +238,24 @@ pub struct App {
     pub(super) start_dir: PathBuf,
     /// Where the layout is saved.
     pub(super) state_dir: PathBuf,
+    /// The server's hook event log, where status reports go too (see
+    /// [`App::record_status`]); `None` until known.
+    pub(super) events_log: Option<PathBuf>,
+    /// Whether an Antigravity session runs in one of paddock's terminals:
+    /// only then does the watcher read each terminal's command (see
+    /// [`Sessions::end_exited`]).
+    pub(super) agy_running: Arc<AtomicBool>,
+    /// Per pane, agy's latest status report (its state and when it came)
+    /// waiting for the pane's agy session (see [`App::record_status`]).
+    pub(super) pending_status: HashMap<String, PendingStatus>,
     pub(super) sessions: Sessions,
     pub(super) task_status: TaskStatus,
     pub(super) task_details: TaskDetails,
+    /// Each task's pull request, while `gh` knows one.
+    pub(super) task_prs: TaskPrs,
+    /// A `p` is opening a pull request (its `gh` still runs): another
+    /// press is ignored meanwhile, so they never stack.
+    pub(super) pr_opening: bool,
     /// Each space's directory and branch, by tmux session id, once read.
     pub(super) places: HashMap<String, Place>,
     /// The user hid the sidebar (`C-a b`).
@@ -340,9 +357,14 @@ impl App {
             screen,
             start_dir,
             state_dir,
+            events_log: None,
+            agy_running: Arc::new(AtomicBool::new(false)),
+            pending_status: HashMap::new(),
             sessions: Sessions::default(),
             task_status: TaskStatus::new(),
             task_details: TaskDetails::new(),
+            task_prs: TaskPrs::new(),
+            pr_opening: false,
             places: HashMap::new(),
             sidebar_hidden: false,
             sidebar_default: config.sidebar_width,
@@ -435,7 +457,7 @@ impl App {
         })
     }
 
-    /// The Claude session rows, in display order: the external group last,
+    /// The agent session rows, in display order: the external group last,
     /// unless `[dashboard] external` hides it.
     pub fn rows(&self) -> Vec<Row> {
         rows(
@@ -455,7 +477,7 @@ impl App {
     }
 
     /// Dismiss a session row: it leaves the rows, and stays gone after
-    /// reopening, until Claude reports on it again. Git and terminals are
+    /// reopening, until its agent reports on it again. Git and terminals are
     /// untouched. Task rows are no longer dismissed alone, but task
     /// dismissals saved before still load and apply.
     pub fn dismiss(&mut self, id: &RowId) -> Result<()> {
@@ -550,7 +572,7 @@ impl App {
         root.unwrap_or_else(|| self.new_dir())
     }
 
-    /// The Claude session in pane `pane`, if any.
+    /// The agent session in pane `pane`, if any.
     pub(super) fn session_in(&self, pane: &str) -> Option<&Session> {
         self.sessions.get(pane)
     }

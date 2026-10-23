@@ -29,6 +29,10 @@ const KEPT_VARS: &[&str] = &[
 /// there with `[spaces] new_tab_dir = "root"`.
 pub const ROOT_OPTION: &str = "@paddock-root";
 
+/// Set to `on` in every terminal, so Antigravity CLI reports its state
+/// (OSC 7501) there.
+pub const AGY_STATUS_VAR: &str = "AGY_CLI_OSC7501";
+
 /// `TERM` tmux itself sees (the panes get `default-terminal`).
 const SERVER_TERM: &str = "xterm-256color";
 const HISTORY_LIMIT: u32 = 50_000;
@@ -69,6 +73,11 @@ pub fn config(shell: &str) -> String {
         "set -g window-size latest".into(),
         "set -g update-environment ''".into(),
         "set-environment -g COLORTERM truecolor".into(),
+        // Antigravity CLI reports its state (OSC 7501) only to a terminal
+        // that answers its query. It follows the query with one tmux
+        // answers itself (`CSI c`), so an answer from paddock would always
+        // come too late; this makes agy report anyway.
+        format!("set-environment -g {AGY_STATUS_VAR} on"),
         // Tabs are windows: a shell names its tab after its directory,
         // anything else after its command, until the user renames it.
         "set -g automatic-rename on".into(),
@@ -496,6 +505,7 @@ mod tests {
             "set -g default-shell '/bin/zsh'",
             "set -g automatic-rename on",
             "set -g allow-rename off",
+            "set-environment -g AGY_CLI_OSC7501 on",
         ] {
             assert!(c.lines().any(|l| l == line), "missing {line:?}");
         }

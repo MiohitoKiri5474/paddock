@@ -166,7 +166,7 @@ impl App {
     }
 
     /// Whether pane `pane` is or was in a float of any space: paddock
-    /// does not follow Claude there, not even its last hooks after the
+    /// does not follow an agent there, not even its last hooks after the
     /// float closed.
     pub(super) fn is_float_pane(&self, pane: &str) -> bool {
         self.float_panes.contains(pane)

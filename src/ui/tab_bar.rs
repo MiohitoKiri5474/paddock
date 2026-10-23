@@ -2,7 +2,7 @@
 //! (after herdr's look). The row has a darker panel colour; each tab is a
 //! filled block with its name centred, at least [`MIN_TAB`] cells wide, one
 //! blank column apart. The current tab has the accent colour; a name the
-//! user gave is bold; a tab holding a Claude that needs you gets a coloured
+//! user gave is bold; a tab holding an agent that needs you gets a coloured
 //! `●`, and a zoomed tab a `Z` after its name. A `+` after the last tab
 //! opens a new one. When the tabs do not fit, `<` and `>` scroll and `…`
 //! marks hidden tabs.
@@ -42,7 +42,7 @@ const ZOOM_MARK: &str = "Z";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tab {
     pub name: String,
-    /// The most urgent Claude state in the tab.
+    /// The most urgent agent state in the tab.
     pub state: State,
     /// The user named it (drawn bold).
     pub custom: bool,

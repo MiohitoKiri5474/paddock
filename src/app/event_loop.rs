@@ -4,7 +4,7 @@ use super::input::Flow;
 use super::screen::Screen;
 use super::space::changes_structure;
 use super::state::{App, Mode, TAB_BAR_ROWS};
-use super::{watch, Event};
+use super::{prs, watch, Event};
 use crate::hooks::now_ms;
 use crate::tmux::Message;
 use crate::ui::{dashboard, help, session_view, sidebar};
@@ -22,20 +22,38 @@ const MS_PER_SEC: u64 = 1000;
 /// What tmux tells every control client when a session is made or ends.
 const SESSIONS_CHANGED: &str = "%sessions-changed";
 
-/// Tells the git thread which task rows are on screen.
-struct GitFeed {
+/// Tells the git thread which task rows are on screen, and the pull
+/// requests' thread (while PR status is on) what shows PRs.
+struct TaskFeed {
     tx: Sender<watch::Watched>,
     sent: watch::Watched,
+    prs: Option<Sender<prs::Wanted>>,
+    prs_sent: prs::Wanted,
 }
 
-impl GitFeed {
-    /// Send the tasks on screen if they changed, or always if `now`.
+impl TaskFeed {
+    /// Send the tasks on screen if they changed, or always if `now`; and
+    /// what shows PRs if it changed.
     fn update(&mut self, app: &App, now: bool) {
         let tasks = app.watched_tasks();
         if now || tasks != self.sent {
             // The thread only ends with the app.
             let _ = self.tx.send(tasks.clone());
             self.sent = tasks;
+        }
+        self.update_prs(app);
+    }
+
+    /// Send what shows PRs if it changed: the spaces' branches come with
+    /// their places, which move no row.
+    fn update_prs(&mut self, app: &App) {
+        let Some(tx) = &self.prs else {
+            return;
+        };
+        let wanted = app.prs_wanted();
+        if wanted != self.prs_sent {
+            let _ = tx.send(wanted.clone());
+            self.prs_sent = wanted;
         }
     }
 }
@@ -71,12 +89,16 @@ struct EventEffects {
     /// rows are on screen. A tmux message does once `handle_tmux` changed the
     /// panes: a pane that closes takes its session's row with it.
     rows_may_move: bool,
+    /// The spaces' directories and branches were read: the sidebar's PRs
+    /// may be others now.
+    places: bool,
 }
 
 impl EventEffects {
     fn of(event: &Event) -> Self {
         Self {
             hooks: matches!(event, Event::Hooks(_)),
+            places: matches!(event, Event::Spaces(_)),
             output: matches!(
                 event,
                 Event::Tmux {
@@ -84,7 +106,10 @@ impl EventEffects {
                     ..
                 }
             ),
-            rows_may_move: !matches!(event, Event::Tmux { .. } | Event::Git(_) | Event::Spaces(_)),
+            rows_may_move: !matches!(
+                event,
+                Event::Tmux { .. } | Event::Git(_) | Event::Spaces(_) | Event::Prs(_)
+            ),
         }
     }
 }
@@ -94,13 +119,16 @@ pub fn run(
     mut app: App,
     rx: &Receiver<Event>,
     git: Sender<watch::Watched>,
+    prs: Option<Sender<prs::Wanted>>,
 ) -> Result<()> {
-    let mut git = GitFeed {
+    let mut feed = TaskFeed {
         tx: git,
         sent: watch::Watched::default(),
+        prs,
+        prs_sent: prs::Wanted::default(),
     };
     // The spaces' directories and branches are read at once.
-    git.update(&app, true);
+    feed.update(&app, true);
     let mut dirty = true;
     let mut last_draw = Instant::now()
         .checked_sub(FRAME)
@@ -125,7 +153,7 @@ pub fn run(
             (Flow::Continue, true)
         });
         dirty |= changed;
-        follow_up(&mut app, &mut git, &effects);
+        follow_up(&mut app, &mut feed, &effects);
         if flow == Flow::Quit {
             break;
         }
@@ -134,8 +162,8 @@ pub fn run(
 }
 
 /// Keep up with an event just handled (see `effects`): turns seen, the tab bar
-/// scrolled to the current tab, the dashboard's selection and git's tasks.
-fn follow_up(app: &mut App, git: &mut GitFeed, effects: &EventEffects) {
+/// scrolled to the current tab, the dashboard's selection and the tasks the git and PR threads read.
+fn follow_up(app: &mut App, feed: &mut TaskFeed, effects: &EventEffects) {
     // Copy mode ends with its terminal, or once that is off screen.
     app.check_copy();
     // Any event may show a tab or bring the window back.
@@ -149,7 +177,9 @@ fn follow_up(app: &mut App, git: &mut GitFeed, effects: &EventEffects) {
     }
     if effects.rows_may_move {
         app.anchor_dashboard();
-        git.update(app, effects.hooks);
+        feed.update(app, effects.hooks);
+    } else if effects.places {
+        feed.update_prs(app);
     }
 }
 
@@ -171,6 +201,8 @@ fn handle(
         Event::Detach => Ok((Flow::Quit, true)),
         Event::Hooks(records) => {
             app.hooks(&records);
+            app.retry_status();
+            app.note_agy_running();
             Ok((Flow::Continue, true))
         }
         Event::Agents(taken, agents) => {
@@ -187,6 +219,11 @@ fn handle(
             }
             Ok((Flow::Continue, true))
         }
+        Event::Commands(taken, commands) => {
+            let ended = app.sessions.end_exited(taken, &commands);
+            app.note_agy_running();
+            Ok((Flow::Continue, ended))
+        }
         Event::Git(read) => {
             app.task_status.extend(read);
             Ok((Flow::Continue, true))
@@ -197,6 +234,14 @@ fn handle(
         }
         Event::Spaces(read) => {
             app.places.extend(read);
+            Ok((Flow::Continue, true))
+        }
+        Event::Prs(read) => {
+            app.store_prs(read);
+            Ok((Flow::Continue, true))
+        }
+        Event::PrOpened(number, result) => {
+            app.pr_opened(number, result);
             Ok((Flow::Continue, true))
         }
         Event::NotifyFailed(error) => {
@@ -243,6 +288,10 @@ fn handle_tmux(app: &mut App, session: &str, msg: Message) -> TmuxHandled {
             }
             if let Some(t) = app.terminals.get_mut(&pane) {
                 t.output(&data);
+                let reports = t.take_reports();
+                if !reports.is_empty() {
+                    app.record_status(&pane, &reports);
+                }
             }
             TmuxHandled {
                 flow: Flow::Continue,
@@ -413,6 +462,7 @@ fn draw_dashboard(app: &App, area: Rect, buf: &mut Buffer) -> Option<Position> {
         rows: &listed,
         keys: &keys,
         details: &app.task_details,
+        prs: &app.task_prs,
         selected: d.selected.as_ref(),
         preview: row
             .and_then(|r| app.terminals.get(&r.pane))

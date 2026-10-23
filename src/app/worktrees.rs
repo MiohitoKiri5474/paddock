@@ -297,7 +297,7 @@ impl App {
     }
 
     /// Delete `target`: close every space in its worktree, asking first if
-    /// Claude is running or waiting in any of them (as `close` does), then
+    /// an agent is running or waiting in any of them (as `close` does), then
     /// remove the worktree and delete the branch. `confirmed` is what the
     /// user said yes to losing.
     fn delete_worktree_space(

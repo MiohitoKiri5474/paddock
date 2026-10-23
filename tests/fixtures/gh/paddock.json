@@ -1,0 +1,92 @@
+[
+  {
+    "headRefName": "feat/agy",
+    "isDraft": false,
+    "number": 41,
+    "reviewDecision": "",
+    "state": "MERGED",
+    "statusCheckRollup": [
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-22T13:00:25Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/MiohitoKiri5474/paddock/actions/runs/39782961792/job/119838659449",
+        "name": "test",
+        "startedAt": "2026-10-22T12:59:40Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-22T13:01:23Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/MiohitoKiri5474/paddock/actions/runs/39782961792/job/119839047501",
+        "name": "build",
+        "startedAt": "2026-10-22T13:00:27Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      }
+    ],
+    "url": "https://github.com/MiohitoKiri5474/paddock/pull/41"
+  },
+  {
+    "headRefName": "develop",
+    "isDraft": false,
+    "number": 37,
+    "reviewDecision": "",
+    "state": "MERGED",
+    "statusCheckRollup": [
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-22T08:33:11Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/MiohitoKiri5474/paddock/actions/runs/39748477966/job/119722764524",
+        "name": "test",
+        "startedAt": "2026-10-22T08:32:20Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-22T08:33:02Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/MiohitoKiri5474/paddock/actions/runs/39748461453/job/119722708896",
+        "name": "test",
+        "startedAt": "2026-10-22T08:32:12Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      }
+    ],
+    "url": "https://github.com/MiohitoKiri5474/paddock/pull/37"
+  },
+  {
+    "headRefName": "develop",
+    "isDraft": false,
+    "number": 25,
+    "reviewDecision": "",
+    "state": "MERGED",
+    "statusCheckRollup": [
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-21T16:09:41Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/MiohitoKiri5474/paddock/actions/runs/39632133834/job/119332893577",
+        "name": "test",
+        "startedAt": "2026-10-21T16:08:52Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-21T16:09:38Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/MiohitoKiri5474/paddock/actions/runs/39632102042/job/119332783952",
+        "name": "test",
+        "startedAt": "2026-10-21T16:08:41Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      }
+    ],
+    "url": "https://github.com/MiohitoKiri5474/paddock/pull/25"
+  }
+]

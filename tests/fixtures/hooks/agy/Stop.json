@@ -1,0 +1,10 @@
+{
+  "conversationId": "dddddddd-eeee-4fff-8aaa-bbbbbbbbbbbb",
+  "workspacePaths": ["/tmp/repo"],
+  "transcriptPath": "/home/user/.gemini/antigravity-cli/conversations/dddddddd-eeee-4fff-8aaa-bbbbbbbbbbbb/transcript.jsonl",
+  "artifactDirectoryPath": "/home/user/.gemini/antigravity-cli/brain/dddddddd-eeee-4fff-8aaa-bbbbbbbbbbbb",
+  "modelName": "gemini-3-pro",
+  "executionNum": 1,
+  "terminationReason": "model_stop",
+  "fullyIdle": true
+}

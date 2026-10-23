@@ -384,7 +384,7 @@ fn every_space_in_the_worktree_closes_with_it() {
     x_on_current_space(&mut paddock);
     paddock.wait_for_popup("Delete worktree", "delete feat/s");
     paddock.send(b"y");
-    paddock.wait_for_popup("Close space", "Claude is running: close? y/n");
+    paddock.wait_for_popup("Close space", "an agent is running: close? y/n");
     assert!(path.is_dir(), "not before the answer");
     paddock.send(b"y");
 

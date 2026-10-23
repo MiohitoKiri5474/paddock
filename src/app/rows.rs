@@ -1,18 +1,19 @@
-//! The Claude session rows: a session row per open pane whose session has
+//! The agent session rows: a session row per open pane whose session has
 //! not ended, each with its task rows, in display order. They feed the
 //! spaces' and tabs' states, the sidebar's agents, `C-a a` and the
-//! dashboard. A session that ended (its pane closed, or Claude quit) has no
+//! dashboard. A session that ended (its pane closed, or its agent quit) has no
 //! row.
 //!
-//! External sessions (Claude outside paddock's terminals) come last, in
+//! External sessions (agents outside paddock's terminals) come last, in
 //! their own group: they have no pane, space or tab, so nothing can jump
 //! to, close, fork or type into them.
 
 use crate::git::{Details, Status};
-use crate::sessions::{self, Sessions, State, SubagentTask, Task, TaskState};
+use crate::github::Pr;
+use crate::sessions::{self, AgentKind, Sessions, State, SubagentTask, Task, TaskState};
 use std::collections::HashMap;
 
-/// One Claude session, in the pane it runs in.
+/// One agent session, in the pane it runs in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Row {
     /// The pane's id; an external session's key (see
@@ -23,9 +24,11 @@ pub struct Row {
     /// The pane's tab (tmux window id); empty for an external session.
     pub window: String,
     pub label: String,
+    /// The session's agent, shown as a tag on its row.
+    pub kind: AgentKind,
     pub state: State,
     pub tasks: Vec<TaskRow>,
-    /// Claude runs outside paddock's terminals: no screen, nothing to jump to.
+    /// The agent runs outside paddock's terminals: no screen, nothing to jump to.
     pub external: bool,
 }
 
@@ -104,6 +107,9 @@ pub type TaskStatus = HashMap<(String, String), Status>;
 /// Last known dashboard details of each task, by `(directory, branch)`.
 pub type TaskDetails = HashMap<(String, String), Details>;
 
+/// Last known pull request of each task, by `(directory, branch)`.
+pub type TaskPrs = HashMap<(String, String), Pr>;
+
 /// A pane as the rows see it: its space and window, their places in the
 /// sidebar and tab bar, the tab's name if the user gave it one, and its id.
 pub struct Placed<'a> {
@@ -180,6 +186,7 @@ pub fn rows<'a>(
                 space: p.space.to_string(),
                 window: p.window.to_string(),
                 label: sessions::label(s, p.tab_name),
+                kind: s.kind,
                 state: s.state,
                 tasks: task_rows(tasks, status, s.state),
                 external: false,
@@ -208,6 +215,7 @@ fn external_rows(sessions: &Sessions, status: &TaskStatus, e: Externals) -> Vec<
                 space: String::new(),
                 window: String::new(),
                 label: sessions::label(s, None),
+                kind: s.kind,
                 state: s.state,
                 tasks: task_rows(tasks, status, s.state),
                 external: true,
@@ -468,6 +476,7 @@ mod tests {
             space: space.into(),
             window: "@1".into(),
             label: String::new(),
+            kind: AgentKind::Claude,
             state,
             tasks: Vec::new(),
             external: false,
@@ -541,6 +550,7 @@ mod tests {
             space: String::new(),
             window: String::new(),
             label: String::new(),
+            kind: AgentKind::Claude,
             state: State::Idle,
             tasks,
             external: false,

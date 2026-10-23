@@ -1,8 +1,10 @@
 //! The dashboard list as a table: one cell per column on every line, so
-//! values line up, and columns dropped whole when the list is too narrow.
+//! values line up, and columns dropped whole when the list is too narrow
+//! (the PR column shortened first).
 
 use crate::app::{Row, TaskRow};
 use crate::git::{age, Details};
+use crate::github::Pr;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -24,12 +26,15 @@ enum Column {
     Files,
     /// The last commit's age.
     Age,
-    /// Merged into the base branch.
-    Merged,
+    /// The branch's pull request (`#123 open ✓ approved`), else `merged`
+    /// once git finds it in its base branch.
+    Pr,
+    /// A session's agent kind, as a tag (`claude`).
+    Agent,
 }
 
 /// How many columns there are.
-const COUNT: usize = 8;
+const COUNT: usize = 9;
 /// Every column, left to right.
 const COLUMNS: [Column; COUNT] = [
     Column::Name,
@@ -39,7 +44,8 @@ const COLUMNS: [Column; COUNT] = [
     Column::Base,
     Column::Files,
     Column::Age,
-    Column::Merged,
+    Column::Pr,
+    Column::Agent,
 ];
 /// What a column shows and how.
 struct Spec {
@@ -47,51 +53,78 @@ struct Spec {
     header: &'static str,
     /// Whether values sit at the column's right edge: numbers do.
     right_aligned: bool,
+    /// Its width at most.
+    cap: usize,
 }
 /// Each column's [`Spec`], in [`COLUMNS`]' order.
 const SPECS: [Spec; COUNT] = [
     Spec {
         header: "NAME",
         right_aligned: false,
+        cap: CELL_CAP,
     },
     Spec {
         header: "STATE",
         right_aligned: false,
+        cap: CELL_CAP,
     },
     Spec {
         header: "↑↓",
         right_aligned: true,
+        cap: CELL_CAP,
     },
     Spec {
         header: "CHANGES",
         right_aligned: true,
+        cap: CELL_CAP,
     },
     Spec {
         header: "BASE",
         right_aligned: true,
+        cap: CELL_CAP,
     },
     Spec {
         header: "FILES",
         right_aligned: true,
+        cap: CELL_CAP,
     },
     Spec {
         header: "AGE",
         right_aligned: true,
+        cap: CELL_CAP,
     },
     Spec {
-        header: "MERGED",
+        header: "PR",
         right_aligned: false,
+        cap: PR_CAP,
+    },
+    Spec {
+        header: "AGENT",
+        right_aligned: false,
+        cap: CELL_CAP,
     },
 ];
-/// The columns dropped, in this order, while the name does not fit. Name
-/// and state always stay.
-const DROP_ORDER: [Column; 6] = [
-    Column::Merged,
-    Column::Files,
-    Column::Base,
-    Column::AheadBehind,
-    Column::Age,
-    Column::Changes,
+/// A step taken to make room for the name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Step {
+    /// The column goes.
+    Drop(Column),
+    /// The PR column shows only the number and the checks (`#123 ✓`).
+    ShortenPr,
+}
+
+/// The steps taken, in this order, while the name does not fit. Name and
+/// state always stay; the agent, last on the line, goes first; the PR
+/// column shortens before it goes.
+const NARROWING: [Step; 8] = [
+    Step::Drop(Column::Agent),
+    Step::ShortenPr,
+    Step::Drop(Column::Pr),
+    Step::Drop(Column::Files),
+    Step::Drop(Column::Base),
+    Step::Drop(Column::AheadBehind),
+    Step::Drop(Column::Age),
+    Step::Drop(Column::Changes),
 ];
 /// Spaces between two columns.
 const GAP: usize = 2;
@@ -99,14 +132,17 @@ const GAP: usize = 2;
 const MARGIN: usize = 1;
 /// The name column's width wanted before more columns are dropped.
 const NAME_WANTED: usize = 32;
-/// Every other column's width at most.
+/// Every other column's width at most, but the PR column's.
 const CELL_CAP: usize = 12;
+/// The PR column's width at most: `#12345 closed ✗ changes requested`.
+const PR_CAP: usize = 34;
 /// How a task's name sits under its session's.
 const TASK_INDENT: &str = "  ";
 /// Marks text cut to fit.
 const ELLIPSIS: char = '…';
-/// The merged column's value for a merged branch.
-const MERGED: &str = "✓";
+/// The PR column's value for a branch without a PR that git finds in its
+/// base branch.
+const MERGED: &str = "merged";
 
 impl Column {
     /// The column's place, left to right.
@@ -120,29 +156,86 @@ impl Column {
     }
 }
 
-/// One line's cells, a column each; empty when unknown.
-pub type Cells = [String; COUNT];
+/// One line's cells: a column each (empty when unknown), and the PR
+/// column's short form (`#123 ✓`), shown when the list is narrow.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Cells {
+    text: [String; COUNT],
+    short_pr: String,
+}
 
-/// Each column's width; `None` once dropped.
-pub type Widths = [Option<usize>; COUNT];
+/// Each column's width (`None` once dropped), and whether the PR column
+/// shows its short form.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Widths {
+    columns: [Option<usize>; COUNT],
+    short_pr: bool,
+}
+
+/// A PR's number as shown: `#123`.
+fn pr_number(number: u64) -> String {
+    format!("#{number}")
+}
+
+/// A PR cell's text: `#123 open ✓ approved`, a check mark and review only
+/// when there are some.
+fn pr_text(pr: &Pr) -> String {
+    let words = [
+        Some(pr_number(pr.number)),
+        Some(pr.state.label().to_string()),
+        pr.checks.map(|c| c.mark().to_string()),
+        pr.review.map(|r| r.label().to_string()),
+    ];
+    words.into_iter().flatten().collect::<Vec<_>>().join(" ")
+}
+
+/// A PR cell's short form: its number and check mark (`#123 ✓`).
+fn pr_short(pr: &Pr) -> String {
+    match pr.checks {
+        Some(c) => format!("{} {}", pr_number(pr.number), c.mark()),
+        None => pr_number(pr.number),
+    }
+}
+
+/// Where PR `number` is on a line laid out in `widths` (a PR cell starts
+/// with it): its first cell and its width, if the column shows.
+pub fn pr_number_at(number: u64, widths: &Widths) -> Option<(usize, usize)> {
+    let number = pr_number(number);
+    let width = widths.columns[Column::Pr.index()]?;
+    let x = MARGIN
+        + COLUMNS
+            .iter()
+            .take_while(|&&c| c != Column::Pr)
+            .filter_map(|c| widths.columns[c.index()])
+            .map(|w| w + GAP)
+            .sum::<usize>();
+    Some((x, number.width().min(width)))
+}
 
 /// The header line's cells.
 pub fn header() -> Cells {
-    COLUMNS.map(|c| c.spec().header.to_string())
+    let mut cells = Cells::default();
+    for c in COLUMNS {
+        cells.text[c.index()] = c.spec().header.to_string();
+    }
+    cells.short_pr = Column::Pr.spec().header.to_string();
+    cells
 }
 
-/// A session row's cells: its label and state.
+/// A session row's cells: its label, state and agent.
 pub fn session(row: &Row) -> Cells {
     let mut cells = Cells::default();
-    cells[Column::Name.index()] = row.label.clone();
-    cells[Column::State.index()] = row.state.label().to_string();
+    cells.text[Column::Name.index()] = row.label.clone();
+    cells.text[Column::State.index()] = row.state.label().to_string();
+    cells.text[Column::Agent.index()] = row.kind.tag().to_string();
     cells
 }
 
 /// A task row's cells: its name indented (a subagent's description before
-/// its branch), a subagent's state, and its git fields; what is zero or
-/// unknown is left empty.
-pub fn task(task: &TaskRow, details: Option<&Details>, now: u64) -> Cells {
+/// its branch), a subagent's state, its git fields and its pull request
+/// (else `merged` if git finds it in its base); what is zero or unknown is
+/// left empty.
+pub fn task(task: &TaskRow, details: Option<&Details>, pr: Option<&Pr>, now: u64) -> Cells {
     let status = task.status.unwrap_or_default();
     let name = match task.subagent.as_ref().and_then(|s| s.description.as_ref()) {
         Some(d) => format!("{d} · {}", task.branch),
@@ -165,57 +258,71 @@ pub fn task(task: &TaskRow, details: Option<&Details>, now: u64) -> Cells {
         .and_then(|d| d.last_commit)
         .map(|t| age(now.saturating_sub(t)));
     let mut cells = Cells::default();
-    cells[Column::Name.index()] = format!("{TASK_INDENT}{name}");
-    cells[Column::State.index()] = task
+    cells.text[Column::Name.index()] = format!("{TASK_INDENT}{name}");
+    cells.text[Column::State.index()] = task
         .subagent
         .as_ref()
         .map(|s| s.state.label().to_string())
         .unwrap_or_default();
-    cells[Column::AheadBehind.index()] = arrows;
-    cells[Column::Changes.index()] = changes.unwrap_or_default();
+    cells.text[Column::AheadBehind.index()] = arrows;
+    cells.text[Column::Changes.index()] = changes.unwrap_or_default();
     if let Some(b) = base {
-        cells[Column::Base.index()] = format!("+{} −{}", b.added, b.removed);
-        cells[Column::Files.index()] = b.files.to_string();
+        cells.text[Column::Base.index()] = format!("+{} −{}", b.added, b.removed);
+        cells.text[Column::Files.index()] = b.files.to_string();
     }
-    cells[Column::Age.index()] = commit.unwrap_or_default();
-    if details.is_some_and(|d| d.merged) {
-        cells[Column::Merged.index()] = MERGED.to_string();
-    }
+    cells.text[Column::Age.index()] = commit.unwrap_or_default();
+    let (full, short) = match pr {
+        Some(pr) => (pr_text(pr), pr_short(pr)),
+        None if details.is_some_and(|d| d.merged) => (MERGED.to_string(), MERGED.to_string()),
+        None => Default::default(),
+    };
+    cells.text[Column::Pr.index()] = full;
+    cells.short_pr = short;
     cells
 }
 
+/// `cells`' text in column `c`, in its short form if `short_pr`.
+fn text_of(cells: &Cells, c: Column, short_pr: bool) -> String {
+    if c == Column::Pr && short_pr {
+        cells.short_pr.clone()
+    } else {
+        cells.text[c.index()].clone()
+    }
+}
+
 /// The columns' widths for `lines` (the header included) in `width`
-/// terminal cells (two for a wide character: CJK, most emoji): each fits its widest value, at most [`CELL_CAP`], the name the
-/// rest. Columns go in [`DROP_ORDER`] until the name has
-/// [`NAME_WANTED`] cells, or all it needs.
+/// terminal cells (two for a wide character: CJK, most emoji): each fits
+/// its widest value, at most its cap ([`CELL_CAP`], the PR column's
+/// [`PR_CAP`]), the name the rest. The [`NARROWING`] steps are taken until
+/// the name has [`NAME_WANTED`] cells, or all it needs.
 pub fn widths(lines: &[&Cells], width: usize) -> Widths {
-    let widest = |c: Column| {
+    let widest = |c: Column, short: bool| {
         lines
             .iter()
-            .map(|l| l[c.index()].width())
+            .map(|l| text_of(l, c, short).width())
             .max()
             .unwrap_or(0)
     };
-    let fitted = COLUMNS.map(|c| widest(c).min(CELL_CAP));
-    let name_wanted = widest(Column::Name).min(NAME_WANTED);
-    let room = |dropped: &[Column]| {
+    let name_wanted = widest(Column::Name, false).min(NAME_WANTED);
+    let laid = |taken: &[Step]| {
+        let short = taken.contains(&Step::ShortenPr);
+        let columns = COLUMNS
+            .map(|c| (!taken.contains(&Step::Drop(c))).then(|| widest(c, short).min(c.spec().cap)));
         let others: usize = COLUMNS
             .iter()
-            .filter(|&&c| c != Column::Name && !dropped.contains(&c))
-            .map(|&c| fitted[c.index()] + GAP)
+            .filter(|&&c| c != Column::Name)
+            .filter_map(|c| columns[c.index()])
+            .map(|w| w + GAP)
             .sum();
-        width.saturating_sub(2 * MARGIN + others)
+        (columns, short, width.saturating_sub(2 * MARGIN + others))
     };
-    let dropped = (0..=DROP_ORDER.len())
-        .map(|n| &DROP_ORDER[..n])
-        .find(|d| room(d) >= name_wanted)
-        .unwrap_or(&DROP_ORDER);
-    let name = widest(Column::Name).min(room(dropped));
-    COLUMNS.map(|c| match c {
-        Column::Name => Some(name),
-        _ if dropped.contains(&c) => None,
-        _ => Some(fitted[c.index()]),
-    })
+    let taken = (0..=NARROWING.len())
+        .map(|n| &NARROWING[..n])
+        .find(|t| laid(t).2 >= name_wanted)
+        .unwrap_or(&NARROWING);
+    let (mut columns, short_pr, room) = laid(taken);
+    columns[Column::Name.index()] = Some(widest(Column::Name, false).min(room));
+    Widths { columns, short_pr }
 }
 
 /// `text` in exactly `width` cells: cut with [`ELLIPSIS`] if longer, else
@@ -253,7 +360,13 @@ pub fn line(cells: &Cells, widths: &Widths, width: usize) -> String {
     let shown: Vec<String> = COLUMNS
         .iter()
         .filter_map(|&c| {
-            widths[c.index()].map(|w| fit(&cells[c.index()], w, c.spec().right_aligned))
+            widths.columns[c.index()].map(|w| {
+                fit(
+                    &text_of(cells, c, widths.short_pr),
+                    w,
+                    c.spec().right_aligned,
+                )
+            })
         })
         .collect();
     let text = format!("{}{}", " ".repeat(MARGIN), shown.join(&" ".repeat(GAP)));
@@ -264,6 +377,7 @@ pub fn line(cells: &Cells, widths: &Widths, width: usize) -> String {
 mod tests {
     use super::*;
     use crate::git::{BaseDiff, Status};
+    use crate::github::{Checks, PrState, Review};
     use crate::sessions::{SubagentTask, TaskState};
 
     /// A task row on `branch` with git status `status`.
@@ -293,7 +407,7 @@ mod tests {
         };
         let t = task_row("feat/a", Some(status));
         assert_eq!(
-            task(&t, Some(&details), 1_000 + 7_200),
+            task(&t, Some(&details), None, 1_000 + 7_200).text,
             [
                 "  feat/a",
                 "",
@@ -302,7 +416,8 @@ mod tests {
                 "+12 −3",
                 "4",
                 "2h",
-                MERGED
+                MERGED,
+                ""
             ]
             .map(String::from)
         );
@@ -315,8 +430,8 @@ mod tests {
             ..Details::default()
         };
         assert_eq!(
-            task(&task_row("b", None), Some(&none), 0),
-            ["  b", "", "", "", "", "", "", ""].map(String::from),
+            task(&task_row("b", None), Some(&none), None, 0).text,
+            ["  b", "", "", "", "", "", "", "", ""].map(String::from),
             "zero and unknown stay empty"
         );
         let sub = TaskRow {
@@ -328,17 +443,137 @@ mod tests {
             ..task_row("c", Some(Status::default()))
         };
         assert_eq!(
-            task(&sub, None, 0),
-            ["  Fix c · c", "done", "", "", "", "", "", ""].map(String::from)
+            task(&sub, None, None, 0).text,
+            ["  Fix c · c", "done", "", "", "", "", "", "", ""].map(String::from)
         );
+    }
+
+    #[test]
+    fn a_pr_cell_shows_number_state_checks_and_review_over_merged() {
+        let merged = Details {
+            merged: true,
+            ..Details::default()
+        };
+        let t = task_row("feat/a", None);
+        let cell = |details: Option<&Details>, p: Option<&Pr>| {
+            task(&t, details, p, 0).text[Column::Pr.index()].clone()
+        };
+        let open = Pr::sample(
+            123,
+            PrState::Open,
+            Some(Checks::Passing),
+            Some(Review::Approved),
+        );
+        assert_eq!(cell(None, Some(&open)), "#123 open ✓ approved");
+        assert_eq!(
+            cell(Some(&merged), Some(&open)),
+            "#123 open ✓ approved",
+            "the PR wins"
+        );
+        assert_eq!(cell(Some(&merged), None), "merged", "no PR: git's word");
+        assert_eq!(cell(None, None), "");
+        let cases = [
+            (
+                Pr::sample(7, PrState::Draft, Some(Checks::Pending), None),
+                "#7 draft •",
+            ),
+            (
+                Pr::sample(
+                    8,
+                    PrState::Closed,
+                    Some(Checks::Failing),
+                    Some(Review::ChangesRequested),
+                ),
+                "#8 closed ✗ changes requested",
+            ),
+            (
+                Pr::sample(9, PrState::Merged, None, Some(Review::Required)),
+                "#9 merged review required",
+            ),
+            (Pr::sample(10, PrState::Open, None, None), "#10 open"),
+        ];
+        for (p, want) in cases {
+            assert_eq!(cell(None, Some(&p)), want);
+        }
+        // The short form, from the same PR.
+        let short = |details: Option<&Details>, p: Option<&Pr>| task(&t, details, p, 0).short_pr;
+        assert_eq!(short(Some(&merged), Some(&open)), "#123 ✓");
+        let failing = Pr::sample(
+            8,
+            PrState::Closed,
+            Some(Checks::Failing),
+            Some(Review::ChangesRequested),
+        );
+        assert_eq!(short(None, Some(&failing)), "#8 ✗");
+        assert_eq!(
+            short(None, Some(&Pr::sample(9, PrState::Merged, None, None))),
+            "#9"
+        );
+        assert_eq!(short(Some(&merged), None), "merged");
+        assert_eq!(short(None, None), "");
+        assert_eq!(header().short_pr, "PR");
+    }
+
+    #[test]
+    fn a_narrow_list_shortens_the_pr_cell_before_dropping_it() {
+        let head = header();
+        let name = "a-session-name-of-32-cells-wide!";
+        let session = cells(
+            name,
+            &[(Column::State, "waiting"), (Column::Agent, "claude")],
+        );
+        let mut t = cells(
+            "  feat/a",
+            &[
+                (Column::Changes, "+3 −1"),
+                (Column::Pr, "#123 open ✓ changes requested"),
+            ],
+        );
+        t.short_pr = "#123 ✓".into();
+        let lines = [&head, &session, &t];
+        let laid = |width| {
+            let w = widths(&lines, width);
+            let shown: Vec<&str> = COLUMNS
+                .iter()
+                .filter(|c| w.columns[c.index()].is_some())
+                .map(|c| c.spec().header)
+                .collect();
+            let pr_line = line(&t, &w, width);
+            (
+                shown,
+                w.short_pr,
+                pr_line
+                    .split_whitespace()
+                    .skip(3)
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            )
+        };
+        let (all, short, text) = laid(120);
+        assert_eq!(all.len(), COUNT);
+        assert!(!short);
+        assert_eq!(text, "#123 open ✓ changes requested");
+        let (shown, short, text) = laid(90);
+        assert!(!shown.contains(&"AGENT"), "the agent goes first");
+        assert!(shown.contains(&"PR"));
+        assert!(short, "then the PR cell shortens");
+        assert_eq!(text, "#123 ✓");
+        let (shown, _, _) = laid(76);
+        assert!(!shown.contains(&"PR"), "then it goes");
+        assert!(shown.contains(&"FILES"));
+        let w = widths(&lines, 90);
+        let at = pr_number_at(123, &w).expect("the number shows");
+        let number: String = line(&t, &w, 90).chars().skip(at.0).take(at.1).collect();
+        assert_eq!(number, "#123", "one cell a character here");
+        assert_eq!(pr_number_at(123, &widths(&lines, 76)), None, "dropped");
     }
 
     /// Cells with `name` and the rest empty but for `values`.
     fn cells(name: &str, values: &[(Column, &str)]) -> Cells {
         let mut c = Cells::default();
-        c[Column::Name.index()] = name.into();
+        c.text[Column::Name.index()] = name.into();
         for (column, v) in values {
-            c[column.index()] = (*v).into();
+            c.text[column.index()] = (*v).into();
         }
         c
     }
@@ -361,7 +596,7 @@ mod tests {
         assert_eq!(
             got,
             [
-                " NAME      STATE  ↑↓   CHANGES  BASE  FILES  AGE  MERGED",
+                " NAME      STATE  ↑↓   CHANGES  BASE  FILES  AGE  PR  AGENT",
                 " api       idle",
                 "   feat/a                +3 −1            2",
                 "   feat/b             +30 −144",
@@ -426,15 +661,20 @@ mod tests {
             let w = widths(&lines, width);
             COLUMNS
                 .iter()
-                .filter(|c| w[c.index()].is_some())
+                .filter(|c| w.columns[c.index()].is_some())
                 .map(|c| c.spec().header)
                 .collect::<Vec<_>>()
         };
         assert_eq!(shown(100).len(), COUNT, "all fit");
         assert_eq!(
             shown(70),
+            ["NAME", "STATE", "↑↓", "CHANGES", "BASE", "FILES", "AGE", "PR"],
+            "the agent goes first"
+        );
+        assert_eq!(
+            shown(66),
             ["NAME", "STATE", "↑↓", "CHANGES", "BASE", "FILES", "AGE"],
-            "merged goes first"
+            "then the PR"
         );
         assert_eq!(
             shown(60),

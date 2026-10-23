@@ -1,0 +1,10 @@
+{
+  "session_id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+  "transcript_path": "/home/user/.gemini/tmp/repo/chats/session-2026-10-22T10-00-aaaaaaaa.json",
+  "cwd": "/tmp/repo",
+  "hook_event_name": "AfterAgent",
+  "timestamp": "2026-10-22T10:00:05.000Z",
+  "prompt": "remove the build directory",
+  "prompt_response": "Removed the build directory.",
+  "stop_hook_active": false
+}
