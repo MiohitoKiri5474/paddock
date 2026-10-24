@@ -4,7 +4,7 @@
 //! of it goes through the rules the app uses ([`crate::worktree`]).
 
 use super::{rm, Code, Command, Fail, Invocation};
-use crate::backend::{Backend, SpaceId};
+use crate::backend::{self, Backend, HookTerminal, SpaceId, TerminalId};
 use crate::config::Config;
 use crate::git::{self, WorkingTree, Worktree};
 use crate::github::{self, Checks, Pr, Prs, Review};
@@ -28,8 +28,8 @@ pub(super) struct Context {
     pub backend: Backend,
     pub paths: Paths,
     pub cwd: PathBuf,
-    /// `$TMUX` and `$TMUX_PANE`, if set.
-    pub tmux: Option<(String, String)>,
+    /// The terminal of paddock's the command runs in, if any.
+    pub caller: Option<HookTerminal>,
     /// How long `rm`'s check of what it would lose may take.
     pub risk_deadline: Duration,
 }
@@ -44,11 +44,11 @@ pub(super) struct Space {
 }
 
 /// The name of space `id` among `spaces`, else the id itself.
-pub(super) fn name_of<'a>(spaces: &'a [Space], id: &'a str) -> &'a str {
+pub(super) fn name_of<'a>(spaces: &'a [Space], id: &'a SpaceId) -> &'a str {
     spaces
         .iter()
-        .find(|s| s.id == id)
-        .map_or(id, |s| s.name.as_str())
+        .find(|s| s.id == *id)
+        .map_or(id.as_str(), |s| s.name.as_str())
 }
 
 /// The ids of `spaces`.
@@ -57,12 +57,12 @@ pub(super) fn ids(spaces: &[Space]) -> Vec<SpaceId> {
 }
 
 impl Context {
-    pub fn new(paths: Paths, cwd: PathBuf, tmux: Option<(String, String)>) -> Self {
+    pub fn new(paths: Paths, cwd: PathBuf, caller: Option<HookTerminal>) -> Self {
         Self {
             backend: Backend::new(paths.clone()),
             paths,
             cwd,
-            tmux,
+            caller,
             risk_deadline: RISK_DEADLINE,
         }
     }
@@ -72,8 +72,8 @@ impl Context {
         let cwd = std::env::current_dir()
             .map_err(|e| Fail::new(Code::Usage, format!("no current directory: {e}")))?;
         let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
-        let tmux = var("TMUX").zip(var("TMUX_PANE"));
-        Ok(Self::new(paths, cwd, tmux))
+        let caller = backend::hook_terminal(var, &paths.socket);
+        Ok(Self::new(paths, cwd, caller))
     }
 
     /// The directory `--from` names, else the current one.
@@ -108,7 +108,7 @@ impl Context {
 
     /// The backend's instance id (see [`Backend::instance`]); `None` if
     /// it does not run.
-    pub fn server_pid(&self) -> Option<u32> {
+    pub fn instance(&self) -> Option<u32> {
         self.backend.instance().ok()
     }
 
@@ -129,7 +129,7 @@ impl Context {
     /// backend (with paddock's settings) if it does not run. Returns the
     /// space's name as the backend gave it (tmux writes `.` and `:` as `_`).
     pub fn new_space(&self, name: &str, dir: &Path) -> anyhow::Result<String> {
-        if self.server_pid().is_none() {
+        if self.instance().is_none() {
             self.backend.prepare()?;
         }
         let space = self.backend.new_space(name, dir, SPACE_SIZE)?;
@@ -137,22 +137,21 @@ impl Context {
     }
 
     /// The caller's pane, if they run in a terminal of this backend.
-    pub fn caller_pane(&self, pid: Option<u32>) -> Option<String> {
-        let (tmux, pane) = self.tmux.as_ref()?;
-        let (theirs, pane) = log::terminal(tmux, pane, &self.paths.socket)?;
-        (Some(theirs) == pid).then_some(pane)
+    pub fn caller_terminal(&self, instance: Option<u32>) -> Option<TerminalId> {
+        let caller = self.caller.as_ref()?;
+        (Some(caller.instance) == instance).then(|| caller.terminal.clone())
     }
 
     /// The agent sessions in paddock's terminals, as the app knows them:
     /// the hook event log of the running server replayed, then what
     /// `claude agents --json` says of Claude's, and why Claude's word is
     /// missing if it did not answer in time.
-    pub fn sessions(&self, pid: Option<u32>) -> (Sessions, Option<Fail>) {
+    pub fn sessions(&self, instance: Option<u32>) -> (Sessions, Option<Fail>) {
         let mut sessions = Sessions::default();
-        let Some(pid) = pid else {
+        let Some(instance) = instance else {
             return (sessions, None);
         };
-        let mut reader = log::Reader::new(log::path(&self.paths.state_dir, pid));
+        let mut reader = log::Reader::new(log::path(&self.paths.state_dir, instance));
         for record in reader.read_new() {
             sessions.apply(&record);
         }
@@ -388,9 +387,9 @@ fn list(cx: &Context, from: Option<&Path>, json: bool) -> Result<(), Fail> {
     let directory = config.worktrees.directory;
     // One `gh` call for the repository, while the rest is read.
     let asked = ask_prs(&tree.main, config.github_refresh);
-    let pid = cx.server_pid();
+    let instance = cx.instance();
     // `list` only reports: Claude not answering leaves the hook log's word.
-    let (sessions, _) = cx.sessions(pid);
+    let (sessions, _) = cx.sessions(instance);
     let spaces = cx.spaces();
     // Each space's working tree, read once.
     let tops: Vec<Option<String>> = spaces
@@ -413,7 +412,7 @@ fn list(cx: &Context, from: Option<&Path>, json: bool) -> Result<(), Fail> {
                 .iter()
                 .flat_map(|s| cx.backend.space_terminals(&s.id))
                 .filter(|p| !p.float)
-                .filter_map(|p| state_in(&sessions, &p.id))
+                .filter_map(|t| state_in(&sessions, t.id.as_str()))
                 .map(State::label)
                 .collect();
             let main = w.path == tree.main;
@@ -651,8 +650,8 @@ mod tests {
             name: "repo/feat/x".into(),
             dir: None,
         }];
-        assert_eq!(name_of(&spaces, "$1"), "repo/feat/x");
-        assert_eq!(name_of(&spaces, "$9"), "$9");
+        assert_eq!(name_of(&spaces, &"$1".into()), "repo/feat/x");
+        assert_eq!(name_of(&spaces, &"$9".into()), "$9");
         assert_eq!(ids(&spaces), ["$1"]);
     }
 }

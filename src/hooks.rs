@@ -5,9 +5,11 @@
 //! [--agent <kind>] <event>` records one event (no `--agent`: Claude's, as
 //! the hooks installed before kinds existed call it).
 
+use crate::backend;
 use crate::git;
 use crate::paths::Paths;
 use crate::sessions::{self, log, AgentKind};
+use crate::shell;
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Map, Value};
 use std::io::{Read, Write};
@@ -140,9 +142,9 @@ pub fn settings_path(kind: AgentKind, var: impl Fn(&str) -> Option<String>) -> R
 /// `<exe> hook --agent <kind> <event>`.
 fn hook_command(exe: &str, kind: AgentKind, event: &str) -> String {
     match kind {
-        AgentKind::Claude => format!("{} hook {event}", quote(exe)),
+        AgentKind::Claude => format!("{} hook {event}", shell::word(exe)),
         AgentKind::Gemini | AgentKind::Agy => {
-            format!("{} hook --agent {} {event}", quote(exe), kind.tag())
+            format!("{} hook --agent {} {event}", shell::word(exe), kind.tag())
         }
     }
 }
@@ -159,17 +161,6 @@ fn hook_group(exe: &str, kind: AgentKind, event: &str) -> Value {
             {"type": "command", "command": command, "timeout": GEMINI_TIMEOUT_MS}
         ]}),
         AgentKind::Agy => json!({"type": "command", "command": command, "timeout": AGY_TIMEOUT_S}),
-    }
-}
-
-fn quote(s: &str) -> String {
-    let plain = s
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || "/._-+".contains(c));
-    if plain {
-        s.to_string()
-    } else {
-        format!("'{}'", s.replace('\'', r"'\''"))
     }
 }
 
@@ -582,8 +573,11 @@ fn record(args: &[&str]) -> Result<()> {
     let paths = Paths::resolve(var)?;
     // Outside paddock's terminals, an external session: kept by session
     // id, in a log of its own.
-    let (log_path, pane) = match log::terminal(&text("TMUX"), &text("TMUX_PANE"), &paths.socket) {
-        Some((pid, pane)) => (log::path(&paths.state_dir, pid), pane),
+    let (log_path, pane) = match backend::hook_terminal(var, &paths.socket) {
+        Some(t) => (
+            log::path(&paths.state_dir, t.instance),
+            t.terminal.to_string(),
+        ),
         None => (log::external_path(&paths.state_dir), String::new()),
     };
     let mut r = log::record(kind, event, &pane, &payload, now_ms());

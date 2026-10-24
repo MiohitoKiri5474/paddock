@@ -192,7 +192,7 @@ fn handle(
     match event {
         Event::Backend { space, event } => {
             let done = handle_backend(app, &space, event);
-            effects.rows_may_move = done.panes_changed;
+            effects.rows_may_move = done.terminals_changed;
             Ok((done.flow, done.changed))
         }
         Event::Input(input) => handle_input(app, input, screen),
@@ -257,17 +257,17 @@ struct BackendHandled {
     flow: Flow,
     /// Whether the screen may have changed.
     changed: bool,
-    /// Whether the panes changed, which may move rows (see [`EventEffects`]).
-    panes_changed: bool,
+    /// Whether the terminals changed, which may move rows (see [`EventEffects`]).
+    terminals_changed: bool,
 }
 
 impl BackendHandled {
-    /// The panes changed: everything may have.
-    fn panes_changed(flow: Flow) -> Self {
+    /// The terminals changed: everything may have.
+    fn terminals_changed(flow: Flow) -> Self {
         Self {
             flow,
             changed: true,
-            panes_changed: true,
+            terminals_changed: true,
         }
     }
 }
@@ -275,11 +275,8 @@ impl BackendHandled {
 /// An event from space `space`'s connection.
 fn handle_backend(app: &mut App, space: &SpaceId, event: backend::Event) -> BackendHandled {
     match event {
-        backend::Event::Output {
-            terminal: pane,
-            data,
-        } => {
-            let unseen = !app.terminals.contains_key(pane.as_str());
+        backend::Event::Output { terminal, data } => {
+            let unseen = !app.terminals.contains_key(&terminal);
             if unseen {
                 // A terminal made since the last look, maybe from outside
                 // paddock. The refresh may change the tab shown, which
@@ -287,33 +284,33 @@ fn handle_backend(app: &mut App, space: &SpaceId, event: backend::Event) -> Back
                 app.refresh_reported(space);
                 app.track_page();
             }
-            if let Some(t) = app.terminals.get_mut(pane.as_str()) {
+            if let Some(t) = app.terminals.get_mut(&terminal) {
                 t.output(&data);
                 let reports = t.take_reports();
                 if !reports.is_empty() {
-                    app.record_status(&pane, &reports);
+                    app.record_status(&terminal, &reports);
                 }
             }
             BackendHandled {
                 flow: Flow::Continue,
-                changed: app.shows(&pane) || app.shows_in_preview(&pane),
-                panes_changed: unseen,
+                changed: app.shows(&terminal) || app.shows_in_preview(&terminal),
+                terminals_changed: unseen,
             }
         }
         // The space ended: its last terminal exited or was closed.
         backend::Event::Ended if app.space_ended(space) => {
-            BackendHandled::panes_changed(Flow::Continue)
+            BackendHandled::terminals_changed(Flow::Continue)
         }
-        backend::Event::Ended => BackendHandled::panes_changed(Flow::Quit),
+        backend::Event::Ended => BackendHandled::terminals_changed(Flow::Quit),
         // A space came or went: one made outside paddock becomes a space
         // here (one that ended reports its own end).
         backend::Event::SpacesChanged => {
             app.attach_new_spaces();
-            BackendHandled::panes_changed(Flow::Continue)
+            BackendHandled::terminals_changed(Flow::Continue)
         }
         backend::Event::Changed => {
             app.refresh_reported(space);
-            BackendHandled::panes_changed(Flow::Continue)
+            BackendHandled::terminals_changed(Flow::Continue)
         }
     }
 }

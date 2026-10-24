@@ -104,7 +104,7 @@ impl App {
     fn dir_for(&self, pick: Option<&Pick>) -> Result<PathBuf> {
         let dir = match pick {
             Some(Pick::Space(id)) => self.space_dir_now(id),
-            Some(Pick::Agent(pane)) => self.dir_of(pane)?,
+            Some(Pick::Agent(pane)) => self.row_dir(pane)?,
             None => None,
         };
         Ok(dir.unwrap_or_else(|| self.new_dir()))

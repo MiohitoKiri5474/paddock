@@ -366,7 +366,7 @@ mod tests {
     #[test]
     fn a_space_s_directory_is_its_first_tab_s_never_a_float_s() {
         let pane = |float: bool, path: &str| SpaceTerminal {
-            id: crate::backend::TerminalId::from_hook("%1"),
+            id: crate::backend::TerminalId::from("%1"),
             path: path.into(),
             float,
         };

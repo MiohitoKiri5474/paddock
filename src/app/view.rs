@@ -96,24 +96,24 @@ impl App {
     /// Where row `r` runs: its space and tab, `sep` between them.
     pub(super) fn place_of(&self, r: &Row, sep: &str) -> Option<String> {
         let space = self.spaces.iter().find(|i| i.id == r.space)?;
-        let w = space.tabs().iter().find(|w| w.id == r.window)?;
-        Some(format!("{}{sep}{}", space.name(), self.tab_name(w)))
+        let tab = space.tabs().iter().find(|t| t.id == r.tab)?;
+        Some(format!("{}{sep}{}", space.name(), self.tab_name(tab)))
     }
 
     /// A tab's name as shown: the backend's, except that a tab the backend
     /// names (not renamed by the user) whose focused terminal runs an agent
     /// is called after the agent's kind (`claude`), whatever process name
     /// the backend sees.
-    pub(super) fn tab_name(&self, w: &backend::Tab) -> String {
-        let agent = self.session_in(&w.active).filter(|s| {
+    pub(super) fn tab_name(&self, tab: &backend::Tab) -> String {
+        let agent = self.session_in(tab.active.as_str()).filter(|s| {
             matches!(
                 s.state,
                 State::Running | State::Waiting | State::Done | State::Idle
             )
         });
         match agent {
-            Some(s) if w.auto_name => s.kind.tag().to_string(),
-            _ => w.name.clone(),
+            Some(s) if tab.auto_name => s.kind.tag().to_string(),
+            _ => tab.name.clone(),
         }
     }
 
@@ -125,11 +125,11 @@ impl App {
         space
             .tabs()
             .iter()
-            .map(|w| Tab {
-                name: self.tab_name(w),
-                state: most_urgent(rows, |r| r.window == w.id).unwrap_or(State::Unknown),
-                custom: !w.auto_name,
-                zoomed: w.zoomed,
+            .map(|t| Tab {
+                name: self.tab_name(t),
+                state: most_urgent(rows, |r| r.tab == t.id).unwrap_or(State::Unknown),
+                custom: !t.auto_name,
+                zoomed: t.zoomed,
             })
             .collect()
     }
@@ -173,16 +173,17 @@ impl App {
         })
     }
 
-    /// The title of the question before closing `target`: a pane alone in
-    /// its tab closes the tab, and alone in its space's only tab, the space.
+    /// The title of the question before closing `target`: a terminal alone
+    /// in its tab closes the tab, and alone in its space's only tab, the
+    /// space.
     fn close_title(&self, target: &CloseTarget) -> &'static str {
-        let CloseTarget::Pane(pane) = target else {
+        let CloseTarget::Terminal(terminal) = target else {
             // A space, or a worktree space.
             return " Close space ";
         };
         let found = self.spaces.iter().find_map(|s| {
-            let w = s.tabs().iter().find(|w| w.contains(pane))?;
-            Some((s.tabs().len(), w.splits.len()))
+            let tab = s.tabs().iter().find(|t| t.contains(terminal))?;
+            Some((s.tabs().len(), tab.splits.len()))
         });
         match found {
             Some((1, 1)) => " Close space ",
@@ -227,18 +228,17 @@ impl App {
     /// zoomed, as the others are hidden (the backend keeps their old places).
     pub(super) fn pane_rects(&self) -> Vec<(TerminalId, Rect)> {
         let area = self.area();
-        let Some(window) = self.current_space().and_then(|i| i.current_tab()) else {
+        let Some(tab) = self.current_space().and_then(|i| i.current_tab()) else {
             return Vec::new();
         };
-        window
-            .shown_splits()
-            .map(|p| {
+        tab.shown_splits()
+            .map(|s| {
                 let r = Rect {
-                    x: area.x.saturating_add(p.rect.x),
-                    y: area.y.saturating_add(p.rect.y),
-                    ..p.rect
+                    x: area.x.saturating_add(s.rect.x),
+                    y: area.y.saturating_add(s.rect.y),
+                    ..s.rect
                 };
-                (p.id.clone(), r.intersection(area))
+                (s.id.clone(), r.intersection(area))
             })
             .collect()
     }

@@ -1,12 +1,13 @@
-//! The ids the backend gives spaces, tabs and terminals. Their spelling is
-//! the backend's (tmux writes `$N`, `@N` and `%N`); paddock only compares
-//! them, shows them in errors, and keeps a space's in `layout.toml` and a
-//! terminal's in the hook event log, which is why they read back from text.
+//! The ids the backend gives spaces, tabs, floats and terminals. Their
+//! spelling is the backend's (tmux writes `$N`, `@N` and `%N`); paddock
+//! only compares them, shows them in errors, and keeps a space's in
+//! `layout.toml` and a terminal's in the hook event log, which is why they
+//! read back from text. Only the backend makes one; each kind is its own
+//! type, so one never passes for another.
 
 use serde::{Deserialize, Serialize};
 use std::borrow::Borrow;
 use std::fmt;
-use std::ops::Deref;
 
 macro_rules! id {
     ($(#[$doc:meta])* $name:ident) => {
@@ -26,33 +27,6 @@ macro_rules! id {
             }
         }
 
-        impl Deref for $name {
-            type Target = str;
-
-            fn deref(&self) -> &str {
-                &self.0
-            }
-        }
-
-        /// So maps keyed by id answer for the text of one, as stored.
-        impl Borrow<str> for $name {
-            fn borrow(&self) -> &str {
-                &self.0
-            }
-        }
-
-        impl PartialEq<str> for $name {
-            fn eq(&self, other: &str) -> bool {
-                self.0 == other
-            }
-        }
-
-        impl PartialEq<&str> for $name {
-            fn eq(&self, other: &&str) -> bool {
-                self.0 == *other
-            }
-        }
-
         /// Rows keep ids as text (empty for an external session).
         impl PartialEq<String> for $name {
             fn eq(&self, other: &String) -> bool {
@@ -66,9 +40,10 @@ macro_rules! id {
             }
         }
 
-        impl PartialEq<$name> for &str {
-            fn eq(&self, other: &$name) -> bool {
-                *self == other.0
+        #[cfg(test)]
+        impl PartialEq<&str> for $name {
+            fn eq(&self, other: &&str) -> bool {
+                self.0 == *other
             }
         }
 
@@ -92,20 +67,23 @@ id!(
     SpaceId
 );
 id!(
-    /// A tab's or a float's id: both are pages of a space.
+    /// A tab's id, stable while the tab runs.
     TabId
+);
+id!(
+    /// A float's id, stable while its program runs.
+    FloatId
 );
 id!(
     /// A terminal's id, stable while the terminal runs.
     TerminalId
 );
 
-impl TerminalId {
-    /// The terminal a hook named (`$TMUX_PANE`), as the event log, the
-    /// sessions and their rows keep it: the one place a terminal's id is
-    /// read back from text outside the backend.
-    pub fn from_hook(pane: &str) -> Self {
-        Self(pane.to_string())
+/// So a map keyed by terminal answers for a terminal as a session row or a
+/// hook record names it (text).
+impl Borrow<str> for TerminalId {
+    fn borrow(&self) -> &str {
+        &self.0
     }
 }
 
@@ -123,9 +101,9 @@ mod tests {
     }
 
     #[test]
-    fn a_map_keyed_by_terminal_answers_for_the_text_a_hook_gave() {
+    fn a_map_keyed_by_terminal_answers_for_the_text_a_row_keeps() {
         let map = HashMap::from([(TerminalId::new("%3"), 1)]);
         assert_eq!(map.get("%3"), Some(&1));
-        assert_eq!(TerminalId::from_hook("%3"), TerminalId::new("%3"));
+        assert_eq!(TerminalId::new("%3"), "%3".to_string());
     }
 }

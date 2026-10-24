@@ -1,5 +1,5 @@
 //! A window's layout tree as tmux 3.8 writes it (`#{window_layout}`, JSON),
-//! and which pane to resize, and how, to move the border at a given cell.
+//! and which pane to resize, and how, to move the [`Border`] at a given cell.
 //!
 //! tmux keeps a tab's panes in a tree of rows and columns. `resize-pane`
 //! on a pane moves a border of the cell under its nearest row (or column)
@@ -7,6 +7,7 @@
 //! last of that row. So the pane beside a border is not always the one
 //! that moves it; the tree says which one does.
 
+use crate::backend::border::{Anchor, Border};
 use crate::backend::TerminalId;
 use serde::Deserialize;
 
@@ -45,50 +46,6 @@ pub struct Cell {
 struct Layout {
     #[serde(rename = "L")]
     root: Cell,
-}
-
-/// What dragging one border does: `resize-pane -x` (`columns`) or `-y`
-/// on `pane`, with a size worked out from where the border goes.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Border {
-    pub pane: TerminalId,
-    /// A border between columns (dragged sideways), else between rows.
-    pub columns: bool,
-    /// Where the resized cell sits on the border's axis.
-    anchor: Anchor,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Anchor {
-    /// The cell before the border, starting here: the border is its end.
-    Before(u16),
-    /// The last cell of its row, ending (exclusive) here: the border is
-    /// just before its start.
-    After(u16),
-}
-
-impl Border {
-    /// The size to give the pane's cell for the border to sit at `at`
-    /// (window coordinates), at least one cell.
-    pub fn size(&self, at: u16) -> u16 {
-        let size = match self.anchor {
-            Anchor::Before(start) => at.saturating_sub(start),
-            Anchor::After(end) => end.saturating_sub(at).saturating_sub(1),
-        };
-        size.max(1)
-    }
-}
-
-#[cfg(test)]
-impl Border {
-    /// The border at the end of a cell starting at `start`, moved by `pane`.
-    pub fn ending(pane: &str, columns: bool, start: u16) -> Self {
-        Self {
-            pane: TerminalId::new(pane),
-            columns,
-            anchor: Anchor::Before(start),
-        }
-    }
 }
 
 /// Parse `#{window_layout}`; `None` if it is not tmux 3.8's JSON.
@@ -131,11 +88,7 @@ impl Cell {
         let (before, after) = (&self.cells[i], &self.cells[i + 1]);
         let start = |c: &Cell| if columns { c.x } else { c.y };
         let len = |c: &Cell| if columns { c.width } else { c.height };
-        let border = |pane: String, anchor| Border {
-            pane: TerminalId::new(pane),
-            columns,
-            anchor,
-        };
+        let border = |pane: String, anchor| Border::new(TerminalId::new(pane), columns, anchor);
         if let Some(pane) = before.reached(self.kind) {
             return Some(border(pane, Anchor::Before(start(before))));
         }
@@ -183,11 +136,11 @@ mod tests {
     #[test]
     fn the_border_between_two_panes_is_moved_by_the_first() {
         let b = nested().border_at(17, 3).expect("A | B");
-        assert_eq!((b.pane.as_str(), b.columns), ("%0", true));
+        assert_eq!((b.terminal.as_str(), b.columns()), ("%0", true));
         assert_eq!(b.size(20), 20);
         // A reaches the column through its row, so it resizes that row.
         let b = nested().border_at(10, 14).expect("{A B} over C");
-        assert_eq!((b.pane.as_str(), b.columns), ("%0", false));
+        assert_eq!((b.terminal.as_str(), b.columns()), ("%0", false));
         assert_eq!(b.size(10), 10);
         assert_eq!(b.size(0), 1, "never below one row");
     }
@@ -198,7 +151,7 @@ mod tests {
         // it would move A | B. C reaches the outer row through the column.
         for y in [3, 20] {
             let b = nested().border_at(34, y).expect("left column | D");
-            assert_eq!((b.pane.as_str(), b.columns), ("%3", true));
+            assert_eq!((b.terminal.as_str(), b.columns()), ("%3", true));
             assert_eq!(b.size(40), 40);
             assert_eq!(b.size(0), 1);
         }
@@ -218,7 +171,7 @@ mod tests {
                     {"t":"p","w":16,"h":14,"x":18,"y":15,"I":"%3"}]}]},
             {"t":"p","w":34,"h":29,"x":35,"y":0,"I":"%4"}]}}"#;
         let b = parse(text).unwrap().border_at(34, 5).expect("border");
-        assert_eq!((b.pane.as_str(), b.columns), ("%4", true));
+        assert_eq!((b.terminal.as_str(), b.columns()), ("%4", true));
         // D ends at column 69: a border at 40 leaves it 28 wide.
         assert_eq!(b.size(40), 28);
     }

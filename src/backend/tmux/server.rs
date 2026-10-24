@@ -2,9 +2,9 @@
 //! config, and a clean environment. Every tmux process paddock starts goes
 //! through [`Server::command`], so the user's own tmux server is never used.
 
-use super::layout::{self, Border};
+use super::layout;
 use super::structure;
-use crate::backend::{ListedSpace, SpaceId, SpaceTerminal, Structure, TabId, TerminalId};
+use crate::backend::{Border, FloatId, ListedSpace, SpaceId, SpaceTerminal, Structure, TerminalId};
 use crate::input::Direction;
 use crate::paths::Paths;
 use crate::shell::quote;
@@ -239,7 +239,7 @@ impl Server {
     /// its own (`set-option` after `new-window -d` would mark the
     /// current tab), then named after its command as tabs are. If marking
     /// fails, the window is killed by that name, so it never stays as a tab.
-    pub fn new_float(&self, id: &str, cwd: &Path, command: &str, key: &str) -> Result<TabId> {
+    pub fn new_float(&self, id: &str, cwd: &Path, command: &str, key: &str) -> Result<FloatId> {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos());
@@ -277,7 +277,7 @@ impl Server {
             "on",
         ];
         match self.run(&args) {
-            Ok(out) => Ok(TabId::new(out.trim())),
+            Ok(out) => Ok(FloatId::new(out.trim())),
             Err(e) => {
                 // Gone already if `new-window` failed; the error is `e`.
                 let _ = self.run(&["kill-window", "-t", &made]);
@@ -654,7 +654,7 @@ mod tests {
         let dir = tmp.path().canonicalize().unwrap().join("x#{session_id}y");
         std::fs::create_dir(&dir).unwrap();
         let started = server.new_session("t", &dir, (80, 24));
-        let got = started.and_then(|s| server.display(&s, "#{pane_current_path}"));
+        let got = started.and_then(|s| server.display(s.as_str(), "#{pane_current_path}"));
         let socket = server.run(&["display-message", "-p", "#{socket_path}"]);
         let _ = server.run(&["kill-server"]);
         if let Ok(socket) = socket {
@@ -681,7 +681,7 @@ mod tests {
             started
                 .as_ref()
                 .map_err(|e| anyhow::anyhow!("{e:#}"))
-                .and_then(|s| server.display(s, &format))
+                .and_then(|s| server.display(s.as_str(), &format))
         };
         let got: Vec<String> = ["zsh", "-zsh", "bash", "sh", "fish", "ssh", "mosh", "vim"]
             .into_iter()
@@ -732,7 +732,10 @@ mod tests {
         let dir = tmp.path().canonicalize().unwrap();
         let name = |id: &str| server.display(id, "#{session_name}|#{window_name}");
         let run = || -> Result<Vec<String>> {
-            let s = server.new_session("v#S", &dir, (80, 24))?;
+            let s = server
+                .new_session("v#S", &dir, (80, 24))?
+                .as_str()
+                .to_string();
             let started = name(&s)?;
             let window = server.display(&s, "#{window_id}")?;
             server.rename_window(&window, "w#{session_id}#(id)#")?;
@@ -762,10 +765,16 @@ mod tests {
         let dir = tmp.path().canonicalize().unwrap().join("d;");
         std::fs::create_dir(&dir).unwrap();
         let run = || -> Result<(String, String, String)> {
-            let s = server.new_session("s;", &dir, (80, 24))?;
+            let s = server
+                .new_session("s;", &dir, (80, 24))?
+                .as_str()
+                .to_string();
             let started = server.display(&s, "#{session_name}")?;
             server.new_window(&s, &dir)?;
-            let pane = server.split(&server.display(&s, "#{pane_id}")?, true, &dir)?;
+            let pane = server
+                .split(&server.display(&s, "#{pane_id}")?, true, &dir)?
+                .as_str()
+                .to_string();
             let window = server.display(&pane, "#{window_id}")?;
             server.rename_window(&window, "a;")?;
             server.rename_session(&s, "b;")?;
@@ -797,7 +806,10 @@ mod tests {
         });
         server.write_config().unwrap();
         let run = || -> Result<Vec<String>> {
-            let s = server.new_session("t", tmp.path(), (80, 24))?;
+            let s = server
+                .new_session("t", tmp.path(), (80, 24))?
+                .as_str()
+                .to_string();
             server.new_float(&s, tmp.path(), "sleep 30;", ";")?;
             server.new_float(&s, tmp.path(), "sleep 30", "C-;")?;
             // Exits at once: still made, no error.
@@ -832,9 +844,15 @@ mod tests {
         std::fs::create_dir(&dir).unwrap();
         std::fs::create_dir(&other).unwrap();
         let run = || -> Result<Vec<Option<String>>> {
-            let s = server.new_session("t", &dir, (80, 24))?;
+            let s = server
+                .new_session("t", &dir, (80, 24))?
+                .as_str()
+                .to_string();
             // The root goes to the session just made, not the one before.
-            let second = server.new_session("u", &base, (80, 24))?;
+            let second = server
+                .new_session("u", &base, (80, 24))?
+                .as_str()
+                .to_string();
             let made = server.root(&s);
             server.set_root(&s, &other)?;
             let changed = server.root(&s);

@@ -35,8 +35,7 @@ pub fn attach(
     // Read after the resize, so the panes have their final sizes.
     let structure = server.structure(session)?;
     let panes: Vec<_> = structure
-        .all_tabs()
-        .flat_map(|t| &t.splits)
+        .splits()
         .map(|s| (s.id.clone(), (s.rect.width, s.rect.height)))
         .collect();
     let ids: Vec<&str> = panes.iter().map(|(p, _)| p.as_str()).collect();

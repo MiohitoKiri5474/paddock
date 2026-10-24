@@ -1,17 +1,18 @@
-//! The backend seam (ADR 0007): everything paddock asks of whatever hosts
-//! its terminals goes through [`Backend`], and everything a space's
-//! terminals say comes back as an [`Event`] on its [`Connection`]. tmux
-//! (ADR 0001) is the only backend so far, and nothing outside this module
-//! knows it is there: its commands, formats, notifications and ids stay
-//! in [`tmux`].
+//! The backend seam ([ADR 0007](../../docs/adr/0007-native-backend-with-a-server.md)):
+//! everything paddock asks of whatever hosts its terminals goes through
+//! [`Backend`], and everything a space's terminals say comes back as an
+//! [`Event`] on its [`Connection`]. tmux (ADR 0001) is the only backend so
+//! far, and nothing outside this module knows it is there: its commands,
+//! formats, notifications, environment and ids stay in [`tmux`].
 
+mod border;
 mod ids;
 mod structure;
 mod tmux;
 
-pub use ids::{SpaceId, TabId, TerminalId};
+pub use border::Border;
+pub use ids::{FloatId, SpaceId, TabId, TerminalId};
 pub use structure::{Float, Split, Structure, Tab};
-pub use tmux::layout::Border;
 
 use crate::input::Direction;
 use crate::paths::Paths;
@@ -53,11 +54,27 @@ pub struct SpaceTerminal {
 }
 
 /// What a terminal held when its space was attached: the bytes that,
-/// fed to a fresh emulator of `size`, rebuild its screen and history.
+/// fed to a fresh emulator of `size`, rebuild its screen, scrollback,
+/// cursor and modes. Output after them continues the same stream.
 pub struct Replay {
     pub terminal: TerminalId,
     pub size: (u16, u16),
     pub bytes: Vec<u8>,
+}
+
+/// The terminal of paddock's that a process (an agent's hook, `paddock
+/// worktree`) runs in, and the instance id of the backend hosting it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HookTerminal {
+    pub instance: u32,
+    pub terminal: TerminalId,
+}
+
+/// The terminal of paddock's a process runs in, from its environment as
+/// `var` reads it; `None` outside paddock's terminals, or in those of a
+/// backend on another socket than `socket`.
+pub fn hook_terminal(var: impl Fn(&str) -> Option<String>, socket: &str) -> Option<HookTerminal> {
+    tmux::hook_terminal(var, socket)
 }
 
 /// The process that hosts paddock's terminals, which outlive the app.
@@ -103,44 +120,60 @@ impl Backend {
 
     /// Space `space`'s name as the host keeps it.
     pub fn space_name(&self, space: &SpaceId) -> Result<String> {
-        self.tmux.session_name(space)
+        self.tmux.session_name(space.as_str())
     }
 
     pub fn rename_space(&self, space: &SpaceId, name: &str) -> Result<()> {
-        self.tmux.rename_session(space, name)
+        self.tmux.rename_session(space.as_str(), name)
     }
 
     /// End a space and everything running in it.
     pub fn close_space(&self, space: &SpaceId) -> Result<()> {
-        self.tmux.kill_session(space)
+        self.tmux.kill_session(space.as_str())
     }
 
     /// Make `dir` space `space`'s root.
     pub fn set_root(&self, space: &SpaceId, dir: &Path) -> Result<()> {
-        self.tmux.set_root(space, dir)
+        self.tmux.set_root(space.as_str(), dir)
     }
 
     /// Space `space`'s root as stored; `None` if it has none (a space made
     /// before roots) or the host cannot say.
     pub fn root(&self, space: &SpaceId) -> Option<String> {
-        self.tmux.root(space)
+        self.tmux.root(space.as_str())
     }
 
     /// Space `space`'s tabs, splits and floats.
     pub fn structure(&self, space: &SpaceId) -> Result<Structure> {
-        self.tmux.structure(space)
+        self.tmux.structure(space.as_str())
     }
 
     /// Every terminal of space `space`, floats' too, in the host's order;
     /// none if it cannot say.
     pub fn space_terminals(&self, space: &SpaceId) -> Vec<SpaceTerminal> {
-        self.tmux.space_panes(space)
+        self.tmux.space_panes(space.as_str())
     }
 
     /// Open a tab running the user's shell in `cwd` at the end of space
     /// `space`, and make it current. Returns its terminal.
     pub fn new_tab(&self, space: &SpaceId, cwd: &Path) -> Result<TerminalId> {
-        self.tmux.new_window(space, cwd)
+        self.tmux.new_window(space.as_str(), cwd)
+    }
+
+    /// Rename a tab; the host then stops naming it after its command.
+    pub fn rename_tab(&self, tab: &TabId, name: &str) -> Result<()> {
+        self.tmux.rename_window(tab.as_str(), name)
+    }
+
+    /// Make a tab its space's current one, and focus `terminal` in it.
+    pub fn select(&self, tab: &TabId, terminal: Option<&TerminalId>) -> Result<()> {
+        self.tmux
+            .select(tab.as_str(), terminal.map(TerminalId::as_str))
+    }
+
+    /// Swap tab `a` with tab `b` of the same space; `a` stays current.
+    pub fn swap_tabs(&self, a: &TabId, b: &TabId) -> Result<()> {
+        self.tmux.swap_windows(a.as_str(), b.as_str())
     }
 
     /// Open a float on key `key` in space `space`, running `command` in
@@ -151,84 +184,70 @@ impl Backend {
         cwd: &Path,
         command: &str,
         key: &str,
-    ) -> Result<TabId> {
-        self.tmux.new_float(space, cwd, command, key)
+    ) -> Result<FloatId> {
+        self.tmux.new_float(space.as_str(), cwd, command, key)
     }
 
-    /// End a tab or a float and everything running in it.
-    pub fn close_tab(&self, tab: &TabId) -> Result<()> {
-        self.tmux.kill_window(tab)
-    }
-
-    /// Rename a tab; the host then stops naming it after its command.
-    pub fn rename_tab(&self, tab: &TabId, name: &str) -> Result<()> {
-        self.tmux.rename_window(tab, name)
-    }
-
-    /// Make a tab its space's current one, and focus `terminal` in it.
-    pub fn select(&self, tab: &TabId, terminal: Option<&TerminalId>) -> Result<()> {
-        self.tmux.select(tab, terminal.map(TerminalId::as_str))
-    }
-
-    /// Swap tab `a` with tab `b` of the same space; `a` stays current.
-    pub fn swap_tabs(&self, a: &TabId, b: &TabId) -> Result<()> {
-        self.tmux.swap_windows(a, b)
+    /// End a float and the program running in it.
+    pub fn close_float(&self, float: &FloatId) -> Result<()> {
+        self.tmux.kill_window(float.as_str())
     }
 
     /// Split `terminal`: side by side if `columns`, else top and bottom.
     /// The new shell starts in `cwd` and takes the second half and the
     /// focus. Returns it.
     pub fn split(&self, terminal: &TerminalId, columns: bool, cwd: &Path) -> Result<TerminalId> {
-        self.tmux.split(terminal, columns, cwd)
+        self.tmux.split(terminal.as_str(), columns, cwd)
     }
 
     /// End a terminal; its tab goes with its last terminal, and the space
     /// with its last tab.
     pub fn close_terminal(&self, terminal: &TerminalId) -> Result<()> {
-        self.tmux.kill_pane(terminal)
+        self.tmux.kill_pane(terminal.as_str())
     }
 
     /// Focus the terminal next to `terminal` in `dir`, if there is one.
     pub fn focus_towards(&self, terminal: &TerminalId, dir: Direction) -> Result<()> {
-        self.tmux.select_towards(terminal, dir)
+        self.tmux.select_towards(terminal.as_str(), dir)
     }
 
     /// Give `terminal` and the terminals beside it the same size.
     pub fn spread(&self, terminal: &TerminalId) -> Result<()> {
-        self.tmux.spread(terminal)
+        self.tmux.spread(terminal.as_str())
     }
 
     /// Zoom `terminal` to fill its tab, or unzoom its tab.
     pub fn zoom(&self, terminal: &TerminalId) -> Result<()> {
-        self.tmux.zoom(terminal)
+        self.tmux.zoom(terminal.as_str())
     }
 
     /// Move `terminal`'s border in `dir` by `cells`; it stops at the
     /// smallest size without an error, and unzooms the tab first.
     pub fn resize(&self, terminal: &TerminalId, dir: Direction, cells: u16) -> Result<()> {
-        self.tmux.resize(terminal, dir, cells)
-    }
-
-    /// Make `terminal`'s cell `size` columns wide (`columns`) or rows
-    /// high, moving the border a [`Border`] with that terminal names.
-    pub fn resize_to(&self, terminal: &TerminalId, columns: bool, size: u16) -> Result<()> {
-        self.tmux.resize_to(terminal, columns, size)
+        self.tmux.resize(terminal.as_str(), dir, cells)
     }
 
     /// The border between two splits of tab `tab` at `(x, y)` in tab
-    /// coordinates, and how to move it; `None` if there is none.
+    /// coordinates; `None` if there is none.
     pub fn border_at(&self, tab: &TabId, x: u16, y: u16) -> Result<Option<Border>> {
-        self.tmux.border_at(tab, x, y)
+        self.tmux.border_at(tab.as_str(), x, y)
+    }
+
+    /// Move `border` to where its sized cell is `size` cells (see
+    /// [`Border::size`]).
+    pub fn drag_border(&self, border: &Border, size: u16) -> Result<()> {
+        self.tmux
+            .resize_to(border.terminal.as_str(), border.columns(), size)
     }
 
     /// `terminal`'s shell directory; `None` if the host cannot say.
     pub fn terminal_dir(&self, terminal: &TerminalId) -> Option<String> {
-        self.tmux.pane_path(terminal)
+        self.tmux.pane_path(terminal.as_str())
     }
 
     /// The space holding `terminal`; `None` if the host cannot say.
     pub fn space_of(&self, terminal: &TerminalId) -> Option<SpaceId> {
-        self.tmux.pane_session(terminal)
+        self.tmux.pane_session(terminal.as_str())
     }
 
     /// Every terminal's foreground command; `None` if the host cannot say.
@@ -250,7 +269,8 @@ impl Backend {
         size: (u16, u16),
         deliver: impl FnMut(Event) -> bool + Send + 'static,
     ) -> Result<(Connection, Structure, Vec<Replay>)> {
-        let (control, structure, replays) = tmux::attach(&self.tmux, space, size, deliver)?;
+        let (control, structure, replays) =
+            tmux::attach(&self.tmux, space.as_str(), size, deliver)?;
         Ok((Connection { control }, structure, replays))
     }
 
@@ -270,7 +290,7 @@ pub struct Connection {
 impl Connection {
     /// Write raw bytes to `terminal`, as typed.
     pub fn input(&mut self, terminal: &TerminalId, bytes: &[u8]) -> Result<()> {
-        self.control.send_bytes(terminal, bytes)
+        self.control.send_bytes(terminal.as_str(), bytes)
     }
 
     /// Show the space's tabs at `(cols, rows)`.
@@ -279,8 +299,8 @@ impl Connection {
     }
 
     /// Show float `float` at `(cols, rows)`, apart from the tabs' size.
-    pub fn resize_float(&mut self, float: &TabId, (cols, rows): (u16, u16)) -> Result<()> {
-        self.control.resize_window(float, cols, rows)
+    pub fn resize_float(&mut self, float: &FloatId, (cols, rows): (u16, u16)) -> Result<()> {
+        self.control.resize_window(float.as_str(), cols, rows)
     }
 
     /// Leave the space running in the host.

@@ -253,18 +253,18 @@ impl App {
     /// first report may come before its `SessionStart` is folded: the
     /// latest report of a pane with no agy session yet waits for one (see
     /// [`App::retry_status`]).
-    pub(super) fn record_status(&mut self, pane: &str, reports: &[Report]) {
+    pub(super) fn record_status(&mut self, pane: &TerminalId, reports: &[Report]) {
         let ts = now_ms();
         for r in reports {
             if r.app.as_deref() != Some(sessions::AGY_APP) {
                 continue;
             }
-            if self.sessions.agy_live_in(pane) {
+            if self.sessions.agy_live_in(pane.as_str()) {
                 self.pending_status.remove(pane);
-                self.write_status(pane, r.state, ts);
+                self.write_status(pane.as_str(), r.state, ts);
             } else {
                 let pending = PendingStatus { state: r.state, ts };
-                self.pending_status.insert(pane.to_string(), pending);
+                self.pending_status.insert(pane.clone(), pending);
             }
         }
     }
@@ -283,19 +283,19 @@ impl App {
     pub(super) fn retry_status(&mut self) {
         let now = now_ms();
         let pending = std::mem::take(&mut self.pending_status);
-        for (pane, p) in pending {
+        for (terminal, p) in pending {
+            let pane = terminal.as_str();
             let latest_start = p.ts.saturating_add(STATUS_WAIT_MS);
-            if self.sessions.agy_live_by(&pane, latest_start) {
-                if !self.sessions.hook_changed_after(&pane, p.ts) {
+            if self.sessions.agy_live_by(pane, latest_start) {
+                if !self.sessions.hook_changed_after(pane, p.ts) {
                     // Never before a record already folded, so a replay of
                     // the log folds it where it was folded now.
-                    let after = self.sessions.last_heard(&pane).unwrap_or(0);
-                    self.write_status(&pane, p.state, p.ts.max(after));
+                    let after = self.sessions.last_heard(pane).unwrap_or(0);
+                    self.write_status(pane, p.state, p.ts.max(after));
                 }
-            } else if !self.sessions.agy_live_in(&pane)
-                && now.saturating_sub(p.ts) <= STATUS_WAIT_MS
+            } else if !self.sessions.agy_live_in(pane) && now.saturating_sub(p.ts) <= STATUS_WAIT_MS
             {
-                self.pending_status.insert(pane, p);
+                self.pending_status.insert(terminal, p);
             }
         }
     }
@@ -326,7 +326,7 @@ impl App {
     /// `C-a a`: jump to the next session that needs you.
     pub(super) fn next_attention(&mut self) {
         let rows = self.rows();
-        let focused = self.focused_window().map(|w| w.active.as_str());
+        let focused = self.focused_tab().map(|t| t.active.as_str());
         match next_needing(&rows, focused) {
             Some(row) => {
                 self.jump_to(&row.pane);
@@ -344,12 +344,12 @@ impl App {
         if !self.looking_at_tab() {
             return;
         }
-        let Some(window) = self.current_space().and_then(|i| i.current_tab()) else {
+        let Some(tab) = self.current_space().and_then(|i| i.current_tab()) else {
             return;
         };
-        let panes: Vec<TerminalId> = window.shown_splits().map(|p| p.id.clone()).collect();
-        for pane in panes {
-            self.sessions.see(&pane);
+        let shown: Vec<TerminalId> = tab.shown_splits().map(|s| s.id.clone()).collect();
+        for terminal in shown {
+            self.sessions.see(terminal.as_str());
         }
     }
 
@@ -721,7 +721,7 @@ mod tests {
         Row {
             pane: pane.into(),
             space: "$1".into(),
-            window: "@1".into(),
+            tab: "@1".into(),
             label: pane.into(),
             kind: crate::sessions::AgentKind::Claude,
             state,

@@ -61,7 +61,7 @@ mod tests {
     #[test]
     fn a_file_saved_as_item_still_names_the_current_space() {
         let saved: Saved = toml::from_str("item = \"$4\"").unwrap();
-        assert_eq!(saved.space.as_deref(), Some("$4"));
+        assert_eq!(saved.space.as_ref().map(SpaceId::as_str), Some("$4"));
     }
 
     #[test]

@@ -241,21 +241,21 @@ impl App {
             })
             .collect();
         for (line, space) in spaces.iter().zip(&self.spaces) {
-            for w in space.tabs() {
+            for tab in space.tabs() {
                 let claude_branch = rows
                     .iter()
-                    .find(|r| r.pane == w.active)
+                    .find(|r| r.pane == tab.active)
                     .and_then(main_branch);
-                let claude = (self.shown_cwd(&w.active, &home), claude_branch);
+                let claude = (self.shown_cwd(tab.active.as_str(), &home), claude_branch);
                 let (path, branch) = tab_place(claude, line);
                 out.push(FinderRow {
                     kind: Kind::Tab,
-                    name: format!("{} › {}", space.name(), self.tab_name(w)),
+                    name: format!("{} › {}", space.name(), self.tab_name(tab)),
                     detail: place_detail(path.as_deref(), branch.as_deref()),
                     path,
                     branch,
                     state: None,
-                    target: Target::Tab(space.id.clone(), w.id.clone()),
+                    target: Target::Tab(space.id.clone(), tab.id.clone()),
                 });
             }
         }
@@ -347,12 +347,12 @@ impl App {
                     self.select_space(i);
                 }
             }
-            Target::Tab(id, window) => {
+            Target::Tab(id, tab_id) => {
                 let Some(i) = self.spaces.iter().position(|s| s.id == *id) else {
                     return;
                 };
                 self.select_space(i);
-                let tab = self.spaces[i].tabs().iter().position(|w| w.id == *window);
+                let tab = self.spaces[i].tabs().iter().position(|t| t.id == *tab_id);
                 if let Some(tab) = tab {
                     self.report(|app| app.select_tab(tab));
                 }

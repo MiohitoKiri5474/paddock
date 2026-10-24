@@ -131,7 +131,7 @@ impl SplitDrag {
     /// Where screen position `(col, row)` is on the border's axis, in
     /// the coordinates of the window drawn in `area`.
     fn along(&self, area: Rect, (col, row): (u16, u16)) -> u16 {
-        if self.border.columns {
+        if self.border.columns() {
             col.saturating_sub(area.x)
         } else {
             row.saturating_sub(area.y)
@@ -164,12 +164,12 @@ impl App {
         if !area.contains(Position::new(col, row)) {
             return false;
         }
-        let window = match self.current_space().and_then(|s| s.current_tab()) {
-            Some(w) if !w.zoomed && w.splits.len() > 1 => w.id.clone(),
+        let tab = match self.current_space().and_then(|s| s.current_tab()) {
+            Some(t) if !t.zoomed && t.splits.len() > 1 => t.id.clone(),
             _ => return false,
         };
         let (x, y) = (col - area.x, row - area.y);
-        let border = match self.backend.border_at(&window, x, y) {
+        let border = match self.backend.border_at(&tab, x, y) {
             Ok(Some(border)) => border,
             Ok(None) => return false,
             Err(e) => {
@@ -191,14 +191,13 @@ impl App {
         let Some(Press::Split(drag)) = &mut self.press else {
             return false;
         };
-        let columns = drag.border.columns;
         let due = drag.due(area, (m.column, m.row), Instant::now(), released);
-        let pane = drag.border.pane.clone();
+        let border = drag.border.clone();
         if released {
             self.press = None;
         }
         if let Some(size) = due {
-            self.report(|app| app.backend.resize_to(&pane, columns, size));
+            self.report(|app| app.backend.drag_border(&border, size));
         }
         true
     }

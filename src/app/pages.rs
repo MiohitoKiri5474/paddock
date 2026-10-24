@@ -6,11 +6,11 @@
 use super::state::App;
 use crate::backend::{SpaceId, TabId};
 
-/// A page: tab `window` of space `space`.
+/// A page: tab `tab` of space `space`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Page {
     pub space: SpaceId,
-    pub window: TabId,
+    pub tab: TabId,
 }
 
 /// How many pages are remembered.
@@ -65,10 +65,10 @@ impl App {
         let spaces = &self.spaces;
         self.pages.retain(|p| {
             let space = spaces.iter().find(|s| s.id == p.space)?;
-            let tab = space.tab_or_current(&p.window)?;
+            let tab = space.tab_or_current(&p.tab)?;
             Some(Page {
                 space: space.id.clone(),
-                window: space.tabs()[tab].id.clone(),
+                tab: space.tabs()[tab].id.clone(),
             })
         });
     }
@@ -78,7 +78,7 @@ impl App {
         let space = self.current_space()?;
         Some(Page {
             space: space.id.clone(),
-            window: space.current_tab()?.id.clone(),
+            tab: space.current_tab()?.id.clone(),
         })
     }
 
@@ -87,7 +87,7 @@ impl App {
     pub(super) fn last_page(&mut self) {
         let target = self.pages.last().and_then(|page| {
             let i = self.spaces.iter().position(|s| s.id == page.space)?;
-            Some((i, self.spaces[i].tab_or_current(&page.window)?))
+            Some((i, self.spaces[i].tab_or_current(&page.tab)?))
         });
         let Some((space, tab)) = target else {
             self.notice = Some(NO_LAST_PAGE.into());
@@ -105,16 +105,16 @@ const NO_LAST_PAGE: &str = "no last page";
 mod tests {
     use super::*;
 
-    fn page(space: &str, window: &str) -> Page {
+    fn page(space: &str, tab: &str) -> Page {
         Page {
             space: space.into(),
-            window: window.into(),
+            tab: tab.into(),
         }
     }
 
     /// `@2` closed and space `$2` shows `@3` now: what each page is now.
     fn after_closing_at_2(q: &Page) -> Option<Page> {
-        match q.window.as_str() {
+        match q.tab.as_str() {
             "@2" => Some(page("$2", "@3")),
             _ => Some(q.clone()),
         }

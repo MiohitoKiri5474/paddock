@@ -1299,7 +1299,7 @@ mod tests {
             ..agy("SessionStart", 4)
         });
         assert!(s.is_new_status("%1", blocked));
-        let shells = HashMap::from([(TerminalId::from_hook("%1"), "zsh".to_string())]);
+        let shells = HashMap::from([(TerminalId::from("%1"), "zsh".to_string())]);
         s.end_exited(10, &shells);
         assert!(!s.is_new_status("%1", working), "ended");
     }
@@ -1388,7 +1388,7 @@ mod tests {
             ..agy("SessionStart", 2)
         });
         assert!(s.agy_in_terminals());
-        let shells = HashMap::from([(TerminalId::from_hook("%2"), "zsh".to_string())]);
+        let shells = HashMap::from([(TerminalId::from("%2"), "zsh".to_string())]);
         s.end_exited(10, &shells);
         assert!(!s.agy_in_terminals(), "ended");
         let external = log::keyed_external(HookRecord {
@@ -1426,7 +1426,7 @@ mod tests {
 
     #[test]
     fn agy_ends_when_its_terminal_goes_back_to_the_shell() {
-        let commands = |c: &str| HashMap::from([(TerminalId::from_hook("%1"), c.to_string())]);
+        let commands = |c: &str| HashMap::from([(TerminalId::from("%1"), c.to_string())]);
         let mut s = Sessions::default();
         s.apply(&agy("SessionStart", 10));
         assert!(!s.end_exited(20, &commands("agy")), "still running");
@@ -1453,8 +1453,8 @@ mod tests {
     #[test]
     fn only_agy_sessions_end_at_the_shell() {
         let commands = HashMap::from([
-            (TerminalId::from_hook("%1"), "zsh".to_string()),
-            (TerminalId::from_hook("%2"), "zsh".to_string()),
+            (TerminalId::from("%1"), "zsh".to_string()),
+            (TerminalId::from("%2"), "zsh".to_string()),
         ]);
         let mut s = Sessions::default();
         s.apply(&rec("SessionStart", 1));
@@ -1496,7 +1496,7 @@ mod tests {
         assert_eq!(s.externals(3_000, 5_000), [key.as_str()]);
         // No end event and no snapshot: it goes once quiet for the timeout.
         assert!(s.externals(8_000, 5_000).is_empty());
-        let shells = HashMap::from([(TerminalId::from_hook(&key), "zsh".to_string())]);
+        let shells = HashMap::from([(TerminalId::from(key.as_str()), "zsh".to_string())]);
         assert!(!s.end_exited(3_000, &shells), "never a terminal's");
     }
 

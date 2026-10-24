@@ -203,7 +203,7 @@ impl NameTarget {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CloseTarget {
     /// A terminal.
-    Pane(TerminalId),
+    Terminal(TerminalId),
     /// A whole space with all its tabs.
     Space(SpaceId),
     /// A worktree space, whose worktree and branch go with it; `confirmed`
@@ -245,7 +245,7 @@ pub struct App {
     pub(super) agy_running: Arc<AtomicBool>,
     /// Per pane, agy's latest status report (its state and when it came)
     /// waiting for the pane's agy session (see [`App::record_status`]).
-    pub(super) pending_status: HashMap<String, PendingStatus>,
+    pub(super) pending_status: HashMap<TerminalId, PendingStatus>,
     pub(super) sessions: Sessions,
     pub(super) task_status: TaskStatus,
     pub(super) task_details: TaskDetails,
@@ -439,13 +439,13 @@ impl App {
     /// Every open pane with its place, for [`rows`].
     fn placed(&self) -> impl Iterator<Item = Placed<'_>> {
         self.spaces.iter().enumerate().flat_map(|(i, space)| {
-            space.tabs().iter().enumerate().flat_map(move |(w, win)| {
-                win.splits.iter().map(move |p| Placed {
-                    space: &space.id,
-                    window: &win.id,
-                    order: (i, w),
-                    tab_name: (!win.auto_name).then_some(win.name.as_str()),
-                    pane: &p.id,
+            space.tabs().iter().enumerate().flat_map(move |(t, tab)| {
+                tab.splits.iter().map(move |s| Placed {
+                    space: space.id.as_str(),
+                    tab: tab.id.as_str(),
+                    order: (i, t),
+                    tab_name: (!tab.auto_name).then_some(tab.name.as_str()),
+                    terminal: s.id.as_str(),
                 })
             })
         })
@@ -530,15 +530,32 @@ impl App {
         Ok(())
     }
 
-    /// Pane `pane`'s shell directory, if it still exists. An external
-    /// session has none: refused.
-    pub(super) fn dir_of(&self, pane: &str) -> Result<Option<PathBuf>> {
-        pane_only(pane, EXTERNAL_DIR)?;
+    /// The terminal a session row names (the sessions keep it as text),
+    /// if it runs in one of the spaces. An external session has none: it
+    /// is refused, saying `refusal`.
+    pub(super) fn row_terminal(&self, pane: &str, refusal: &str) -> Result<Option<TerminalId>> {
+        pane_only(pane, refusal)?;
         Ok(self
-            .backend
-            .terminal_dir(&TerminalId::from_hook(pane))
+            .spaces
+            .iter()
+            .flat_map(Space::terminals)
+            .find(|t| t.as_str() == pane)
+            .cloned())
+    }
+
+    /// Terminal `terminal`'s shell directory, if it still exists.
+    pub(super) fn dir_of(&self, terminal: &TerminalId) -> Option<PathBuf> {
+        self.backend
+            .terminal_dir(terminal)
             .map(PathBuf::from)
-            .filter(|p| p.is_dir()))
+            .filter(|p| p.is_dir())
+    }
+
+    /// The shell directory of the terminal a session row names, if it
+    /// still exists. An external session has none: refused.
+    pub(super) fn row_dir(&self, pane: &str) -> Result<Option<PathBuf>> {
+        let terminal = self.row_terminal(pane, EXTERNAL_DIR)?;
+        Ok(terminal.and_then(|t| self.dir_of(&t)))
     }
 
     /// Where a new shell starts: the focused pane's directory, else the
@@ -546,7 +563,7 @@ impl App {
     pub(super) fn new_dir(&self) -> PathBuf {
         // The focused terminal is a pane, never an external session.
         self.current_pane()
-            .and_then(|p| self.dir_of(&p).ok().flatten())
+            .and_then(|t| self.dir_of(&t))
             .unwrap_or_else(|| self.start_dir.clone())
     }
 
@@ -578,49 +595,58 @@ impl App {
         self.spaces.get_mut(self.current)
     }
 
-    /// The space holding pane `pane` (in a tab or a float), by index.
-    pub(super) fn space_of(&self, pane: &str) -> Option<usize> {
-        self.spaces.iter().position(|i| i.holds(pane))
+    /// The space holding `terminal` (in a tab or a float), by index.
+    pub(super) fn space_of(&self, terminal: &TerminalId) -> Option<usize> {
+        self.spaces.iter().position(|s| s.holds(terminal))
     }
 
-    /// The current tab: the current space's current window.
-    pub(super) fn focused_window(&self) -> Option<&Tab> {
+    /// The current tab: the current space's current one.
+    pub(super) fn focused_tab(&self) -> Option<&Tab> {
         self.current_space()?.current_tab()
     }
 
     /// The focused pane of the current tab.
     pub fn current_pane(&self) -> Option<TerminalId> {
-        Some(self.focused_window()?.active.clone())
+        Some(self.focused_tab()?.active.clone())
     }
 
     /// Whether pane `pane` is the focused pane of the current tab, whatever
     /// the outer window's focus.
     pub(super) fn is_current_pane(&self, pane: &str) -> bool {
-        self.focused_window().is_some_and(|w| w.active == pane)
+        self.focused_tab()
+            .is_some_and(|t| t.active.as_str() == pane)
     }
 
     /// Send bytes to pane `pane`'s program, returning its view to the live
     /// screen. Every key, paste and mouse report for a pane comes here.
-    pub(super) fn input(&mut self, pane: &str, bytes: &[u8]) -> Result<()> {
-        pane_only(pane, EXTERNAL_TYPE)?;
+    pub(super) fn input(&mut self, pane: &TerminalId, bytes: &[u8]) -> Result<()> {
         self.note_float_input(pane);
         if let Some(t) = self.terminals.get_mut(pane) {
             t.emulator_mut().scroll_to_bottom();
         }
         match self.space_of(pane) {
-            Some(i) => self.spaces[i].input(&TerminalId::from_hook(pane), bytes),
+            Some(i) => self.spaces[i].input(pane, bytes),
+            None => Ok(()),
+        }
+    }
+
+    /// [`Self::input`] to the terminal a session row names. An external
+    /// session cannot be typed into: refused.
+    pub(super) fn input_row(&mut self, pane: &str, bytes: &[u8]) -> Result<()> {
+        match self.row_terminal(pane, EXTERNAL_TYPE)? {
+            Some(terminal) => self.input(&terminal, bytes),
             None => Ok(()),
         }
     }
 
     /// Whether pane `pane` is on screen: in the current tab (and not
     /// hidden by a zoom), or the float shown.
-    pub fn shows(&self, pane: &str) -> bool {
+    pub fn shows(&self, pane: &TerminalId) -> bool {
         let in_tab = self
             .current_space()
             .and_then(Space::current_tab)
-            .is_some_and(|w| w.shows(pane));
-        in_tab || self.float_pane().as_deref() == Some(pane)
+            .is_some_and(|t| t.shows(pane));
+        in_tab || self.float_pane().as_ref() == Some(pane)
     }
 
     pub fn resize(&mut self, screen: (u16, u16)) -> Result<()> {

@@ -3,11 +3,13 @@
 //! pane (ADR 0006).
 
 mod control;
-pub mod layout;
+mod hook;
+mod layout;
 mod protocol;
 mod seed;
 mod server;
 mod structure;
 
 pub use control::{attach, ControlClient};
+pub use hook::terminal as hook_terminal;
 pub use server::Server;

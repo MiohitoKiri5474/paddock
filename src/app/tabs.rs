@@ -2,7 +2,7 @@
 //! asks the backend to change them and reads them back when it reports a
 //! change.
 
-use super::rows::{pane_only, EXTERNAL_CLOSE, EXTERNAL_FORK, EXTERNAL_OPEN};
+use super::rows::{EXTERNAL_CLOSE, EXTERNAL_FORK, EXTERNAL_OPEN};
 use super::space::clamp;
 use super::state::{is_session_id, next_name, App, CloseTarget, Mode, NameTarget, Renamed};
 use super::watch;
@@ -127,21 +127,21 @@ impl App {
         }
         self.remember_float_panes(&structure);
         let mut kept = Vec::new();
-        for pane in structure.all_tabs().flat_map(|w| &w.splits) {
-            let size = clamp((pane.rect.width, pane.rect.height));
+        for split in structure.splits() {
+            let size = clamp((split.rect.width, split.rect.height));
             self.terminals
-                .entry(pane.id.clone())
+                .entry(split.id.clone())
                 .or_insert_with(|| Terminal::new(size))
                 .resize(size);
-            kept.push(&pane.id);
+            kept.push(&split.id);
         }
         let gone: Vec<TerminalId> = self.spaces[i]
             .terminals()
-            .filter(|p| !kept.contains(p))
+            .filter(|t| !kept.contains(t))
             .cloned()
             .collect();
-        for pane in gone {
-            self.terminals.remove(&pane);
+        for terminal in gone {
+            self.terminals.remove(&terminal);
         }
         self.spaces[i].structure = structure;
         self.forget_ended_float_noting_quick_exit();
@@ -154,12 +154,12 @@ impl App {
         let Some(space) = self.current_space_mut() else {
             return Ok(());
         };
-        let Some(window) = space.tabs().get(index).map(|w| w.id.clone()) else {
+        let Some(tab) = space.tabs().get(index).map(|t| t.id.clone()) else {
             return Ok(());
         };
         // Show it at once; the backend confirms with an event.
         space.structure.current = index;
-        self.backend.select(&window, None)
+        self.backend.select(&tab, None)
     }
 
     /// The next (`forward`) or previous tab of the current space, wrapping.
@@ -203,24 +203,27 @@ impl App {
         }
     }
 
-    /// Bring pane `pane` to the screen: its space and tab become current and
-    /// it gets the focus.
+    /// Bring the terminal a session row names to the screen: its space and
+    /// tab become current and it gets the focus.
     pub fn jump_to(&mut self, pane: &str) {
-        if let Err(e) = pane_only(pane, EXTERNAL_OPEN) {
-            self.notice = Some(e.to_string());
-            return;
-        }
-        let Some(i) = self.space_of(pane) else {
+        let terminal = match self.row_terminal(pane, EXTERNAL_OPEN) {
+            Ok(Some(terminal)) => terminal,
+            Ok(None) => return,
+            Err(e) => {
+                self.notice = Some(e.to_string());
+                return;
+            }
+        };
+        let Some(i) = self.space_of(&terminal) else {
             return;
         };
         self.current = i;
         let space = &mut self.spaces[i];
-        let Some(w) = space.tab_of(pane) else {
+        let Some(t) = space.tab_of(&terminal) else {
             return;
         };
-        space.structure.current = w;
-        let terminal = TerminalId::from_hook(pane);
-        let tab = &mut space.structure.tabs[w];
+        space.structure.current = t;
+        let tab = &mut space.structure.tabs[t];
         tab.focus(&terminal);
         let id = tab.id.clone();
         self.report(|app| app.backend.select(&id, Some(&terminal)));
@@ -252,7 +255,7 @@ impl App {
         match what {
             Renamed::Space => self.backend.rename_space(&id, name)?,
             Renamed::Tab => match space.current_tab() {
-                Some(w) => self.backend.rename_tab(&w.id, name)?,
+                Some(tab) => self.backend.rename_tab(&tab.id, name)?,
                 None => return Ok(()),
             },
         }
@@ -266,7 +269,7 @@ impl App {
             return Ok(());
         };
         let (id, name) = (space.id.clone(), space.name().to_string());
-        let Some(dir) = self.dir_of(&pane)? else {
+        let Some(dir) = self.dir_of(&pane) else {
             bail!("the focused terminal's directory is unknown: the space root stays");
         };
         self.backend.set_root(&id, &dir)?;
@@ -287,7 +290,7 @@ impl App {
         match target {
             NameTarget::Rename(Renamed::Space) => space.map(|i| i.name().to_string()),
             NameTarget::Rename(Renamed::Tab) => {
-                space.and_then(|i| i.current_tab()).map(|w| w.name.clone())
+                space.and_then(|i| i.current_tab()).map(|t| t.name.clone())
             }
             NameTarget::NewSpace => Some(self.new_space_name()),
             NameTarget::NewWorktree(_) => None,
@@ -295,18 +298,20 @@ impl App {
         .unwrap_or_default()
     }
 
-    /// End pane `pane`, first asking if an agent there is running or
-    /// waiting.
+    /// End the terminal a session row names, first asking if an agent
+    /// there is running or waiting.
     /// The backend closes its tab with its last terminal, and its space
     /// with its last tab, and reports each.
     pub fn close(&mut self, pane: &str) -> Result<()> {
-        pane_only(pane, EXTERNAL_CLOSE)?;
+        let Some(terminal) = self.row_terminal(pane, EXTERNAL_CLOSE)? else {
+            return Ok(());
+        };
         match self.session_in(pane).map(|s| s.state) {
             Some(state @ (State::Running | State::Waiting)) => {
-                self.ask_close(CloseTarget::Pane(TerminalId::from_hook(pane)), state);
+                self.ask_close(CloseTarget::Terminal(terminal), state);
                 Ok(())
             }
-            _ => self.backend.close_terminal(&TerminalId::from_hook(pane)),
+            _ => self.backend.close_terminal(&terminal),
         }
     }
 
@@ -342,7 +347,7 @@ impl App {
     /// Close what a close question was about, once the user said yes.
     pub(super) fn close_now(&mut self, target: &CloseTarget) -> Result<()> {
         match target {
-            CloseTarget::Pane(pane) => self.backend.close_terminal(pane),
+            CloseTarget::Terminal(terminal) => self.backend.close_terminal(terminal),
             CloseTarget::Space(id) => self.backend.close_space(id),
             CloseTarget::Worktree { target, confirmed } => {
                 self.remove_worktree_space(target, confirmed.as_ref())
@@ -355,7 +360,7 @@ impl App {
     /// --fork-session`, typed into the new shell so the tab stays when
     /// Claude exits.
     pub fn fork(&mut self, pane: &str) -> Result<()> {
-        pane_only(pane, EXTERNAL_FORK)?;
+        let terminal = self.row_terminal(pane, EXTERNAL_FORK)?;
         let session = self.session_in(pane);
         // Only Claude continues a copy of a conversation.
         if session.is_some_and(|s| s.kind != AgentKind::Claude) {
@@ -371,12 +376,14 @@ impl App {
         if !is_session_id(&session_id) {
             bail!("unexpected Claude session id");
         }
-        let Some(i) = self.space_of(pane) else {
+        let Some((i, terminal)) = terminal.and_then(|t| Some((self.space_of(&t)?, t))) else {
             bail!("that terminal is closed");
         };
         let dir = match cwd.map(PathBuf::from).filter(|p| p.is_dir()) {
             Some(dir) => dir,
-            None => self.dir_of(pane)?.unwrap_or_else(|| self.start_dir.clone()),
+            None => self
+                .dir_of(&terminal)
+                .unwrap_or_else(|| self.start_dir.clone()),
         };
         let id = self.spaces[i].id.clone();
         let new = self.open_tab(&id, dir)?;

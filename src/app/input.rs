@@ -115,7 +115,7 @@ impl App {
                 };
                 let bytes = self
                     .terminals
-                    .get(pane.as_str())
+                    .get(&pane)
                     .and_then(|t| encode_key(&key, t.key_modes()));
                 if let Some(bytes) = bytes {
                     self.input(&pane, &bytes)?;
@@ -144,12 +144,12 @@ impl App {
             Command::SetRoot => self.report(|app| app.set_root()),
             Command::Close => {
                 if let Some(pane) = self.current_pane() {
-                    self.report(|app| app.close(&pane));
+                    self.report(|app| app.close(pane.as_str()));
                 }
             }
             Command::Fork => {
                 if let Some(pane) = self.current_pane() {
-                    self.report(|app| app.fork(&pane));
+                    self.report(|app| app.fork(pane.as_str()));
                 }
             }
             Command::NewWorktree => self.start_new_worktree(None),
@@ -261,7 +261,7 @@ impl App {
                 };
                 let bracketed = self
                     .terminals
-                    .get(pane.as_str())
+                    .get(&pane)
                     .is_some_and(|t| t.emulator().modes().bracketed_paste);
                 self.input(&pane, &encode_paste(text, bracketed))?;
             }

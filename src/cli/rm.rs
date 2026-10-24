@@ -6,7 +6,7 @@
 
 use super::worktree::{find, ids, inside, name_of, print_json, state_in, Context, Space};
 use super::{allowed, Code, Discard, Fail};
-use crate::backend::{SpaceId, TerminalId};
+use crate::backend::SpaceId;
 use crate::git::{self, WorkingTree, Worktree};
 use crate::sessions::State;
 use crate::worktree::{self as shared, Risks, WorktreeSpace};
@@ -49,9 +49,9 @@ pub(super) fn rm(
     never_deleted(cx, &found)?;
     let spaces = cx.spaces();
     let closing = shared::spaces_in(&cx.backend, &ids(&spaces), &found.w.path)?;
-    let pid = cx.server_pid();
-    not_the_caller_s(cx, &found, &closing, pid)?;
-    let confirmed = check(cx, &found, &spaces, &closing, pid, discard)?;
+    let instance = cx.instance();
+    not_the_caller_s(cx, &found, &closing, instance)?;
+    let confirmed = check(cx, &found, &spaces, &closing, instance, discard)?;
     let target = WorktreeSpace {
         space: None,
         spaces: closing.clone(),
@@ -114,16 +114,15 @@ fn not_the_caller_s(
     cx: &Context,
     found: &Found,
     closing: &[SpaceId],
-    pid: Option<u32>,
+    instance: Option<u32>,
 ) -> Result<(), Fail> {
     let top = &found.w.path;
     if inside(&cx.cwd.to_string_lossy(), top) {
         return Err(found.refused("holds the current directory: run rm from outside it"));
     }
-    if let Some(pane) = cx.caller_pane(pid) {
-        let pane = TerminalId::from_hook(&pane);
-        let space = cx.backend.space_of(&pane);
-        let path = cx.backend.terminal_dir(&pane);
+    if let Some(terminal) = cx.caller_terminal(instance) {
+        let space = cx.backend.space_of(&terminal);
+        let path = cx.backend.terminal_dir(&terminal);
         let here =
             space.is_some_and(|s| closing.contains(&s)) || path.is_some_and(|p| inside(&p, top));
         if here {
@@ -142,14 +141,14 @@ fn check(
     found: &Found,
     spaces: &[Space],
     closing: &[SpaceId],
-    pid: Option<u32>,
+    instance: Option<u32>,
     discard: Discard,
 ) -> Result<Risks, Fail> {
     let top = found.w.path.as_str();
     let risks = shared::risks_within(top, cx.risk_deadline);
     let detached = found.w.branch.is_none();
     let confirmed = allowed(&found.label, risks.as_ref(), detached, discard)?;
-    let (sessions, late) = cx.sessions(pid);
+    let (sessions, late) = cx.sessions(instance);
     if let Some(late) = late {
         return Err(late);
     }
@@ -163,7 +162,7 @@ fn check(
                 .filter(move |p| closes || inside(&p.path, top))
                 .map(move |p| (s, p.id))
         })
-        .find_map(|(s, pane)| match state_in(&sessions, &pane) {
+        .find_map(|(s, pane)| match state_in(&sessions, pane.as_str()) {
             Some(state @ (State::Running | State::Waiting)) => Some((s, state)),
             _ => None,
         });

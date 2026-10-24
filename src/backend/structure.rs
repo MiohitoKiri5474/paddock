@@ -1,18 +1,18 @@
 //! What a space holds, as paddock shows it (ADR 0006): its tabs in order,
-//! and each tab's terminals (splits) with their place. Floats are kept
-//! apart: they are never tabs.
+//! each tab's terminals (splits) with their place, and its floats, which
+//! are never tabs.
 
-use super::{TabId, TerminalId};
+use super::{FloatId, TabId, TerminalId};
 use ratatui::layout::Rect;
 
-/// One terminal of a tab: its id and where it sits in the tab.
+/// One terminal and where it sits in its tab or float.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Split {
     pub id: TerminalId,
     pub rect: Rect,
 }
 
-/// One tab of a space (a float's page has the same shape).
+/// One tab of a space.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tab {
     pub id: TabId,
@@ -28,14 +28,14 @@ pub struct Tab {
 }
 
 impl Tab {
-    pub fn contains(&self, terminal: &str) -> bool {
-        self.splits.iter().any(|p| p.id == terminal)
+    pub fn contains(&self, terminal: &TerminalId) -> bool {
+        self.splits.iter().any(|s| s.id == *terminal)
     }
 
     /// Whether `terminal` is drawn when the tab is: any of its splits, or
     /// only the focused one while it is zoomed.
-    pub fn shows(&self, terminal: &str) -> bool {
-        self.contains(terminal) && (!self.zoomed || self.active == terminal)
+    pub fn shows(&self, terminal: &TerminalId) -> bool {
+        self.contains(terminal) && (!self.zoomed || self.active == *terminal)
     }
 
     /// Focus `terminal` ahead of the backend's own report, as the backend
@@ -50,17 +50,20 @@ impl Tab {
     /// The splits drawn when the tab is: all of them, or only the focused
     /// one while it is zoomed.
     pub fn shown_splits(&self) -> impl Iterator<Item = &Split> {
-        self.splits.iter().filter(|p| self.shows(&p.id))
+        self.splits.iter().filter(|s| self.shows(&s.id))
     }
 }
 
-/// A float: its key and its page.
+/// A float: a program in a box over the screen, on its key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Float {
+    pub id: FloatId,
     /// The float's key, as written by [`crate::input::keymap::Key::name`].
     pub key: String,
-    /// Its terminals and focus, as for a tab.
-    pub tab: Tab,
+    /// Its terminals (one, unless split from outside paddock).
+    pub splits: Vec<Split>,
+    /// The terminal that has the keyboard while it shows.
+    pub active: TerminalId,
 }
 
 /// A space's name, its tabs in order with the current one's index, and
@@ -73,15 +76,16 @@ pub struct Structure {
     pub current: usize,
     /// The floats, in the backend's order.
     pub floats: Vec<Float>,
-    /// The backend made a float its space's current page (tmux does when
-    /// the current tab closes and the float is next); `current` is then
-    /// the tab before it.
+    /// The backend made a float its space's current page; `current` is
+    /// then the tab before it, which paddock makes current again.
     pub float_active: bool,
 }
 
 impl Structure {
-    /// Every page, the tabs first, then the floats'.
-    pub fn all_tabs(&self) -> impl Iterator<Item = &Tab> {
-        self.tabs.iter().chain(self.floats.iter().map(|f| &f.tab))
+    /// Every terminal of the space with its place, the tabs' first, then
+    /// the floats'.
+    pub fn splits(&self) -> impl Iterator<Item = &Split> {
+        let tabs = self.tabs.iter().flat_map(|t| &t.splits);
+        tabs.chain(self.floats.iter().flat_map(|f| &f.splits))
     }
 }

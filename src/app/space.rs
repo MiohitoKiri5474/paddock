@@ -2,7 +2,7 @@
 //! one connection that carries every terminal's output and input.
 
 use crate::backend::{
-    Backend, Connection, Event, Float, SpaceId, Structure, Tab, TabId, TerminalId,
+    Backend, Connection, Event, Float, FloatId, SpaceId, Structure, Tab, TabId, TerminalId,
 };
 use crate::terminal::Terminal;
 use anyhow::Result;
@@ -71,29 +71,27 @@ impl Space {
     }
 
     /// The index of tab `tab`, else (it closed) of the current one.
-    pub fn tab_or_current(&self, tab: &str) -> Option<usize> {
-        let found = self.structure.tabs.iter().position(|w| w.id == tab);
+    pub fn tab_or_current(&self, tab: &TabId) -> Option<usize> {
+        let found = self.structure.tabs.iter().position(|t| t.id == *tab);
         found.or_else(|| self.current_tab().map(|_| self.structure.current))
     }
 
     /// The index of the tab holding terminal `terminal`.
-    pub fn tab_of(&self, terminal: &str) -> Option<usize> {
+    pub fn tab_of(&self, terminal: &TerminalId) -> Option<usize> {
         self.structure
             .tabs
             .iter()
-            .position(|w| w.contains(terminal))
+            .position(|t| t.contains(terminal))
     }
 
     /// Every terminal of the space, its floats' included.
     pub fn terminals(&self) -> impl Iterator<Item = &TerminalId> {
-        self.structure
-            .all_tabs()
-            .flat_map(|w| w.splits.iter().map(|p| &p.id))
+        self.structure.splits().map(|s| &s.id)
     }
 
     /// Whether terminal `terminal` is in this space, in a tab or a float.
-    pub fn holds(&self, terminal: &str) -> bool {
-        self.terminals().any(|p| p == terminal)
+    pub fn holds(&self, terminal: &TerminalId) -> bool {
+        self.terminals().any(|t| t == terminal)
     }
 
     /// The float on key `key` (as [`crate::input::keymap::Key::name`]
@@ -118,7 +116,7 @@ impl Space {
     }
 
     /// Show float `float` at `size`, apart from the tabs' size.
-    pub fn resize_float(&mut self, float: &TabId, size: (u16, u16)) -> Result<()> {
+    pub fn resize_float(&mut self, float: &FloatId, size: (u16, u16)) -> Result<()> {
         self.connection.resize_float(float, clamp(size))
     }
 

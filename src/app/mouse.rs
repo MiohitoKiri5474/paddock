@@ -27,7 +27,7 @@ pub enum Press {
     /// Reported to the program in this pane.
     Program(TerminalId),
     /// Selecting text in this pane; `dragged` once the pointer moved.
-    Select { pane: TerminalId, dragged: bool },
+    Select { terminal: TerminalId, dragged: bool },
     /// On the sidebar's border, pressed at screen row `row`; `dragged`
     /// once the pointer left the border's column (until then, a release is
     /// a click on that row).
@@ -90,7 +90,7 @@ impl App {
             }
         };
         let at = Position::new(m.column, m.row);
-        let over = self.rect_of(&copy.pane).is_some_and(|r| r.contains(at));
+        let over = self.rect_of(&copy.terminal).is_some_and(|r| r.contains(at));
         if over {
             self.copy_wheel(lines);
         }
@@ -98,8 +98,8 @@ impl App {
     }
 
     fn press(&mut self, m: MouseEvent) -> Result<bool> {
-        if let Some(Press::Select { pane, .. }) = self.press.take() {
-            if let Some(t) = self.terminals.get_mut(pane.as_str()) {
+        if let Some(Press::Select { terminal: pane, .. }) = self.press.take() {
+            if let Some(t) = self.terminals.get_mut(&pane) {
                 t.emulator_mut().clear_selection();
             }
         }
@@ -126,7 +126,7 @@ impl App {
         let Some((pane, rect)) = hit else {
             return Ok(false);
         };
-        let Some(t) = self.terminals.get_mut(pane.as_str()) else {
+        let Some(t) = self.terminals.get_mut(&pane) else {
             return Ok(false);
         };
         let (col, row) = (m.column - rect.x, m.row - rect.y);
@@ -138,7 +138,7 @@ impl App {
             MouseAction::Select => {
                 t.emulator_mut().select(row, col);
                 self.press = Some(Press::Select {
-                    pane,
+                    terminal: pane,
                     dragged: false,
                 });
             }
@@ -202,11 +202,11 @@ impl App {
     /// Focus pane `pane` of the current tab, here at once and in the
     /// backend.
     fn focus_pane(&mut self, pane: &TerminalId) {
-        let Some(window) = self.current_space_mut().and_then(|i| i.current_tab_mut()) else {
+        let Some(tab) = self.current_space_mut().and_then(|i| i.current_tab_mut()) else {
             return;
         };
-        window.active = pane.clone();
-        let id = window.id.clone();
+        tab.active = pane.clone();
+        let id = tab.id.clone();
         self.report(|app| app.backend.select(&id, Some(pane)));
     }
 
@@ -214,7 +214,7 @@ impl App {
     fn held(&mut self, m: MouseEvent) -> Result<bool> {
         let released = matches!(m.kind, MouseEventKind::Up(_));
         let pane = match &self.press {
-            Some(Press::Program(p) | Press::Select { pane: p, .. }) => p.clone(),
+            Some(Press::Program(p) | Press::Select { terminal: p, .. }) => p.clone(),
             Some(Press::Border { row, dragged }) => {
                 let (row, dragged) = (*row, *dragged);
                 return Ok(self.border_held(m, row, dragged));
@@ -222,10 +222,7 @@ impl App {
             Some(Press::Split(_)) => return Ok(self.split_border_held(m)),
             None => return Ok(false),
         };
-        let (Some(rect), true) = (
-            self.rect_of(&pane),
-            self.terminals.contains_key(pane.as_str()),
-        ) else {
+        let (Some(rect), true) = (self.rect_of(&pane), self.terminals.contains_key(&pane)) else {
             self.press = None;
             return Ok(false);
         };
@@ -234,7 +231,7 @@ impl App {
             return Ok(false);
         };
         let (mut copied, mut report) = (None, None);
-        if let Some(t) = self.terminals.get_mut(pane.as_str()) {
+        if let Some(t) = self.terminals.get_mut(&pane) {
             match &mut self.press {
                 Some(Press::Program(_)) => {
                     if let MouseAction::Report(bytes) =
@@ -307,7 +304,7 @@ impl App {
         let Some((pane, rect)) = self.under(m.column, m.row) else {
             return Ok(false);
         };
-        let Some(t) = self.terminals.get_mut(pane.as_str()) else {
+        let Some(t) = self.terminals.get_mut(&pane) else {
             return Ok(false);
         };
         match route_mouse(&m, m.column - rect.x, m.row - rect.y, t.emulator().modes()) {
@@ -335,7 +332,7 @@ impl App {
     }
 
     /// Where pane `pane` is drawn, if the mouse reaches it.
-    fn rect_of(&self, pane: &str) -> Option<Rect> {
+    fn rect_of(&self, pane: &TerminalId) -> Option<Rect> {
         self.mouse_rects()
             .into_iter()
             .find(|(p, r)| p == pane && !r.is_empty())

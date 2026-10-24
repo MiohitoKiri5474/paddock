@@ -32,7 +32,7 @@ const HINTS: &[&str] = &[
 /// A terminal in copy mode.
 pub struct CopyMode {
     /// Its terminal.
-    pub pane: TerminalId,
+    pub terminal: TerminalId,
     pub cursor: Spot,
     /// Where the selection started, while selecting.
     pub anchor: Option<Anchor>,
@@ -116,13 +116,13 @@ impl App {
         let Some(pane) = self.float_pane().or_else(|| self.current_pane()) else {
             return;
         };
-        let Some(t) = self.terminals.get_mut(pane.as_str()) else {
+        let Some(t) = self.terminals.get_mut(&pane) else {
             return;
         };
         t.pause();
         let cursor = t.emulator().copy_start();
         self.mode = Mode::Copy(CopyMode {
-            pane,
+            terminal: pane,
             cursor,
             anchor: None,
             search: None,
@@ -135,7 +135,7 @@ impl App {
     /// view is live again, with the output held back drawn. The caller
     /// sets the mode.
     pub(super) fn leave_copy(&mut self, copy: &CopyMode) {
-        if let Some(t) = self.terminals.get_mut(copy.pane.as_str()) {
+        if let Some(t) = self.terminals.get_mut(&copy.terminal) {
             t.go_on();
             let emu = t.emulator_mut();
             emu.clear_selection();
@@ -158,19 +158,13 @@ impl App {
         let Mode::Copy(copy) = &self.mode else {
             return;
         };
-        let pane = copy.pane.clone();
-        let paused = self
-            .terminals
-            .get(pane.as_str())
-            .is_some_and(|t| t.is_paused());
+        let pane = copy.terminal.clone();
+        let paused = self.terminals.get(&pane).is_some_and(|t| t.is_paused());
         if paused && self.shows(&pane) {
             return;
         }
         self.end_copy();
-        let went_on = self
-            .terminals
-            .get_mut(pane.as_str())
-            .and_then(|t| t.take_went_on());
+        let went_on = self.terminals.get_mut(&pane).and_then(|t| t.take_went_on());
         self.notice = match went_on {
             Some(WentOn::Overflowed) => {
                 Some("copy mode ended: too much output came meanwhile".into())
@@ -209,7 +203,7 @@ impl App {
 
     /// Do `action` in copy mode.
     fn copy_action(&mut self, mut copy: CopyMode, action: CopyAction) -> Flow {
-        let Some(t) = self.terminals.get_mut(copy.pane.as_str()) else {
+        let Some(t) = self.terminals.get_mut(&copy.terminal) else {
             return Flow::Continue;
         };
         let emu = t.emulator_mut();
@@ -260,7 +254,7 @@ impl App {
                 if !query.is_empty() {
                     let found = self
                         .terminals
-                        .get(copy.pane.as_str())
+                        .get(&copy.terminal)
                         .map(|t| t.emulator().find(&query))
                         .unwrap_or_default();
                     copy.search = Some(Search {
@@ -299,7 +293,7 @@ impl App {
 
     /// Show the cursor, and keep the selection running to it.
     fn follow_cursor(&mut self, copy: &CopyMode) {
-        let Some(t) = self.terminals.get_mut(copy.pane.as_str()) else {
+        let Some(t) = self.terminals.get_mut(&copy.terminal) else {
             return;
         };
         let emu = t.emulator_mut();
@@ -314,7 +308,7 @@ impl App {
         let Mode::Copy(copy) = &mut self.mode else {
             return;
         };
-        let Some(t) = self.terminals.get_mut(copy.pane.as_str()) else {
+        let Some(t) = self.terminals.get_mut(&copy.terminal) else {
             return;
         };
         let emu = t.emulator_mut();
@@ -323,11 +317,14 @@ impl App {
     }
 
     /// Copy mode's view for pane `pane`, if it is the one in copy mode.
-    pub(super) fn copy_view(&self, pane: &str) -> Option<CopyView<'_>> {
+    pub(super) fn copy_view(&self, pane: &TerminalId) -> Option<CopyView<'_>> {
         let Mode::Copy(copy) = &self.mode else {
             return None;
         };
-        let t = self.terminals.get(pane).filter(|_| copy.pane == pane)?;
+        let t = self
+            .terminals
+            .get(pane)
+            .filter(|_| copy.terminal == *pane)?;
         Some(copy.view(t.emulator()))
     }
 

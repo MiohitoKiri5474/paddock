@@ -26,7 +26,8 @@ struct Raw {
     pid: Option<u32>,
 }
 
-/// Parse `claude agents --json`, finding each session's pane from its pid.
+/// Parse `claude agents --json`, finding each session's terminal from its
+/// pid. The sessions keep it as text, as hooks give it.
 pub fn parse(
     json: &str,
     parents: &HashMap<u32, u32>,
@@ -36,7 +37,10 @@ pub fn parse(
     Some(
         raw.into_iter()
             .map(|r| Agent {
-                pane: r.pid.and_then(|pid| pane_of(pid, parents, panes)),
+                pane: r
+                    .pid
+                    .and_then(|pid| pane_of(pid, parents, panes))
+                    .map(|t| t.as_str().to_string()),
                 session_id: r.session_id,
                 name: r.name,
                 status: r.status,
@@ -46,15 +50,15 @@ pub fn parse(
     )
 }
 
-/// The pane whose shell `pid` descends from (or is).
+/// The terminal whose shell `pid` descends from (or is).
 pub fn pane_of(
     mut pid: u32,
     parents: &HashMap<u32, u32>,
     panes: &HashMap<u32, TerminalId>,
-) -> Option<String> {
+) -> Option<TerminalId> {
     for _ in 0..MAX_DEPTH {
-        if let Some(pane) = panes.get(&pid) {
-            return Some(pane.to_string());
+        if let Some(terminal) = panes.get(&pid) {
+            return Some(terminal.clone());
         }
         pid = *parents.get(&pid).filter(|&&p| p != pid)?;
     }
@@ -100,7 +104,7 @@ mod tests {
     fn parse_panes(pairs: &[(u32, &str)]) -> HashMap<u32, TerminalId> {
         pairs
             .iter()
-            .map(|&(pid, pane)| (pid, TerminalId::from_hook(pane)))
+            .map(|&(pid, pane)| (pid, TerminalId::from(pane)))
             .collect()
     }
 

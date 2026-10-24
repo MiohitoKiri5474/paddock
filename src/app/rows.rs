@@ -22,7 +22,7 @@ pub struct Row {
     /// The pane's space's id; empty for an external session.
     pub space: String,
     /// The pane's tab's id; empty for an external session.
-    pub window: String,
+    pub tab: String,
     pub label: String,
     /// The session's agent, shown as a tag on its row.
     pub kind: AgentKind,
@@ -110,15 +110,16 @@ pub type TaskDetails = HashMap<(String, String), Details>;
 /// Last known pull request of each task, by `(directory, branch)`.
 pub type TaskPrs = HashMap<(String, String), Pr>;
 
-/// A pane as the rows see it: its space and window, their places in the
-/// sidebar and tab bar, the tab's name if the user gave it one, and its id.
+/// A terminal as the rows see it: its space and tab, their places in the
+/// sidebar and tab bar, the tab's name if the user gave it one, and its
+/// id, as text (rows keep external sessions' keys too).
 pub struct Placed<'a> {
     pub space: &'a str,
-    pub window: &'a str,
-    /// `(space index, window index)`, for sorting.
+    pub tab: &'a str,
+    /// `(space index, tab index)`, for sorting.
     pub order: (usize, usize),
     pub tab_name: Option<&'a str>,
-    pub pane: &'a str,
+    pub terminal: &'a str,
 }
 
 /// Sort order of task rows: waiting, running, done, stopped. A main agent's
@@ -180,11 +181,11 @@ pub fn rows<'a>(
     let mut rows: Vec<((usize, usize), Row)> = panes
         .into_iter()
         .filter_map(|p| {
-            let (s, tasks) = sessions.shown(p.pane)?;
+            let (s, tasks) = sessions.shown(p.terminal)?;
             let row = Row {
-                pane: p.pane.to_string(),
+                pane: p.terminal.to_string(),
                 space: p.space.to_string(),
-                window: p.window.to_string(),
+                tab: p.tab.to_string(),
                 label: sessions::label(s, p.tab_name),
                 kind: s.kind,
                 state: s.state,
@@ -213,7 +214,7 @@ fn external_rows(sessions: &Sessions, status: &TaskStatus, e: Externals) -> Vec<
             Some(Row {
                 pane: key.to_string(),
                 space: String::new(),
-                window: String::new(),
+                tab: String::new(),
                 label: sessions::label(s, None),
                 kind: s.kind,
                 state: s.state,
@@ -242,16 +243,16 @@ mod tests {
 
     fn placed<'a>(
         space: &'a str,
-        window: &'a str,
+        tab: &'a str,
         order: (usize, usize),
-        pane: &'a str,
+        terminal: &'a str,
     ) -> Placed<'a> {
         Placed {
             space,
-            window,
+            tab,
             order,
             tab_name: None,
-            pane,
+            terminal,
         }
     }
 
@@ -364,7 +365,7 @@ mod tests {
         ];
         let got: Vec<(String, String, String, State)> = rows(&s, &TaskStatus::new(), panes, None)
             .into_iter()
-            .map(|r| (r.label, r.space, r.window, r.state))
+            .map(|r| (r.label, r.space, r.tab, r.state))
             .collect();
         // Claude quit in %1, and %7, %9 and %10 were closed: they ended.
         let want = [
@@ -474,7 +475,7 @@ mod tests {
         let row = |space: &str, state| Row {
             pane: "%1".into(),
             space: space.into(),
-            window: "@1".into(),
+            tab: "@1".into(),
             label: String::new(),
             kind: AgentKind::Claude,
             state,
@@ -548,7 +549,7 @@ mod tests {
         let row = |pane: &str, tasks| Row {
             pane: pane.into(),
             space: String::new(),
-            window: String::new(),
+            tab: String::new(),
             label: String::new(),
             kind: AgentKind::Claude,
             state: State::Idle,

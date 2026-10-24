@@ -2,7 +2,7 @@
 //! [`Structure`] paddock shows: windows are tabs, panes are splits, and
 //! windows marked as floats are kept apart.
 
-use crate::backend::{Float, Split, Structure, Tab, TabId, TerminalId};
+use crate::backend::{Float, FloatId, Split, Structure, Tab, TabId, TerminalId};
 use ratatui::layout::Rect;
 
 /// Separates the fields of [`FORMAT`]; never part of a name.
@@ -32,45 +32,53 @@ pub fn parse(out: &str) -> Structure {
         };
         let num = |v: &str| v.parse::<u16>().unwrap_or(0);
         s.name = session.to_string();
-        let new_tab = || Tab {
-            id: TabId::new(window),
-            name: name.to_string(),
-            auto_name: auto == "1",
-            splits: Vec::new(),
-            active: TerminalId::new(pane),
-            zoomed: zoomed == "1",
+        let split = Split {
+            id: TerminalId::new(pane),
+            rect: Rect::new(num(x), num(y), num(w), num(h)),
         };
-        let tab = if float.is_empty() {
-            if s.tabs.last().is_none_or(|l| l.id != window) {
+        // A window's focused pane, as its `active` until one says it is.
+        let (splits, active) = if float.is_empty() {
+            if s.tabs.last().is_none_or(|l| l.id.as_str() != window) {
                 if window_active == "1" {
                     s.current = s.tabs.len();
                 }
-                s.tabs.push(new_tab());
+                s.tabs.push(Tab {
+                    id: TabId::new(window),
+                    name: name.to_string(),
+                    auto_name: auto == "1",
+                    splits: Vec::new(),
+                    active: split.id.clone(),
+                    zoomed: zoomed == "1",
+                });
             }
-            s.tabs.last_mut()
+            let Some(t) = s.tabs.last_mut() else {
+                continue;
+            };
+            (&mut t.splits, &mut t.active)
         } else {
-            if s.floats.last().is_none_or(|l| l.tab.id != window) {
+            // tmux makes a float its session's current window when the
+            // current tab closes and the float is next.
+            if s.floats.last().is_none_or(|l| l.id.as_str() != window) {
                 if window_active == "1" {
                     s.float_active = true;
                     s.current = s.tabs.len().saturating_sub(1);
                 }
                 s.floats.push(Float {
+                    id: FloatId::new(window),
                     key: float.to_string(),
-                    tab: new_tab(),
+                    splits: Vec::new(),
+                    active: split.id.clone(),
                 });
             }
-            s.floats.last_mut().map(|f| &mut f.tab)
-        };
-        let Some(tab) = tab else {
-            continue;
+            let Some(f) = s.floats.last_mut() else {
+                continue;
+            };
+            (&mut f.splits, &mut f.active)
         };
         if pane_active == "1" {
-            tab.active = TerminalId::new(pane);
+            *active = split.id.clone();
         }
-        tab.splits.push(Split {
-            id: TerminalId::new(pane),
-            rect: Rect::new(num(x), num(y), num(w), num(h)),
-        });
+        splits.push(split);
     }
     s
 }
@@ -170,14 +178,14 @@ mod tests {
         let s = parse(&text);
         assert_eq!(s.name, "api");
         assert_eq!(s.current, 1);
-        let ids: Vec<&str> = s.tabs.iter().map(|w| w.id.as_str()).collect();
+        let ids: Vec<&str> = s.tabs.iter().map(|t| t.id.as_str()).collect();
         assert_eq!(ids, ["@1", "@4"]);
         let logs = &s.tabs[1];
         assert_eq!((logs.name.as_str(), logs.auto_name), ("my logs", false));
         assert!(s.tabs[0].auto_name);
         assert_eq!(logs.active, "%5");
         assert_eq!(logs.splits[1].rect, Rect::new(51, 0, 49, 30));
-        assert!(logs.contains("%2") && !logs.contains("%1"));
+        assert!(logs.contains(&"%2".into()) && !logs.contains(&"%1".into()));
         assert!(s.floats.is_empty() && !s.float_active);
     }
 
@@ -206,9 +214,9 @@ mod tests {
         ]));
         assert!(s.tabs[0].zoomed && !s.tabs[1].zoomed);
         assert_eq!(s.tabs[0].active, "%2");
-        assert!(s.tabs[0].shows("%2") && !s.tabs[0].shows("%1"));
-        assert!(s.tabs[1].shows("%3") && !s.tabs[1].shows("%2"));
-        let shown: Vec<&str> = s.tabs[0].shown_splits().map(|p| p.id.as_str()).collect();
+        assert!(s.tabs[0].shows(&"%2".into()) && !s.tabs[0].shows(&"%1".into()));
+        assert!(s.tabs[1].shows(&"%3".into()) && !s.tabs[1].shows(&"%2".into()));
+        let shown: Vec<&str> = s.tabs[0].shown_splits().map(|s| s.id.as_str()).collect();
         assert_eq!(shown, ["%2"]);
         assert_eq!(s.tabs[1].shown_splits().count(), 1);
     }
@@ -235,7 +243,7 @@ mod tests {
         window.focus(&TerminalId::new("%1"));
         assert!(!window.zoomed);
         assert_eq!(window.active, "%1");
-        let shown: Vec<&str> = window.shown_splits().map(|p| p.id.as_str()).collect();
+        let shown: Vec<&str> = window.shown_splits().map(|s| s.id.as_str()).collect();
         assert_eq!(shown, ["%1", "%2"]);
     }
 
@@ -268,16 +276,17 @@ mod tests {
                 ..Line::default()
             },
         ]));
-        let tabs: Vec<&str> = s.tabs.iter().map(|w| w.id.as_str()).collect();
+        let tabs: Vec<&str> = s.tabs.iter().map(|t| t.id.as_str()).collect();
         assert_eq!(tabs, ["@1", "@2"]);
         assert_eq!(s.current, 1);
         assert_eq!(s.floats.len(), 1);
         assert_eq!(s.floats[0].key, "g");
-        assert_eq!(s.floats[0].tab.active, "%9");
-        assert_eq!(s.floats[0].tab.splits[0].rect, Rect::new(0, 0, 80, 24));
+        assert_eq!(s.floats[0].id, "@7");
+        assert_eq!(s.floats[0].active, "%9");
+        assert_eq!(s.floats[0].splits[0].rect, Rect::new(0, 0, 80, 24));
         assert!(!s.float_active);
-        let all: Vec<&str> = s.all_tabs().map(|w| w.id.as_str()).collect();
-        assert_eq!(all, ["@1", "@2", "@7"]);
+        let all: Vec<&str> = s.splits().map(|s| s.id.as_str()).collect();
+        assert_eq!(all, ["%1", "%3", "%9"]);
     }
 
     #[test]
