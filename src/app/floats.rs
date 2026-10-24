@@ -46,7 +46,7 @@ impl App {
     }
 
     /// The shown float's terminal, which has the keyboard.
-    pub fn float_pane(&self) -> Option<TerminalId> {
+    pub fn float_terminal(&self) -> Option<TerminalId> {
         Some(self.shown_float()?.1.active.clone())
     }
 
@@ -58,7 +58,7 @@ impl App {
 
     /// The shown float's pane and where its terminal is drawn.
     pub(super) fn float_rect(&self) -> Option<(TerminalId, Rect)> {
-        Some((self.float_pane()?, float::inner(self.float_area())))
+        Some((self.float_terminal()?, float::inner(self.float_area())))
     }
 
     /// The shown float, ready to draw.
@@ -153,10 +153,10 @@ impl App {
         self.float = None;
     }
 
-    /// Input is about to reach pane `pane`: if that is the shown float's,
+    /// Input is about to reach `terminal`: if that is the shown float's,
     /// its program ran, so it quitting soon after gives no notice.
-    pub(super) fn note_float_input(&mut self, pane: &TerminalId) {
-        if self.float_pane().is_some_and(|p| p == *pane) {
+    pub(super) fn note_float_input(&mut self, terminal: &TerminalId) {
+        if self.float_terminal().is_some_and(|t| t == *terminal) {
             if let Some(shown) = &mut self.float {
                 shown.started = None;
             }

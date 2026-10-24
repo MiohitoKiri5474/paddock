@@ -20,7 +20,7 @@ impl App {
     /// bottom. A new shell takes the second half and the focus.
     pub fn split(&mut self, columns: bool) -> Result<()> {
         let (Some(pane), Some(id)) = (
-            self.current_pane(),
+            self.current_terminal(),
             self.current_space().map(|i| i.id.clone()),
         ) else {
             return Ok(());
@@ -33,7 +33,7 @@ impl App {
     /// Focus the pane next to the focused one in `dir`, if there is one.
     pub fn move_focus(&mut self, dir: Direction) -> Result<()> {
         let (Some(pane), Some(id)) = (
-            self.current_pane(),
+            self.current_terminal(),
             self.current_space().map(|i| i.id.clone()),
         ) else {
             return Ok(());
@@ -46,7 +46,7 @@ impl App {
     /// border after it, or before it for the last pane of a row or column.
     /// The backend keeps the layout, and its change event redraws.
     pub fn resize_split(&mut self, dir: Direction) -> Result<()> {
-        match self.current_pane() {
+        match self.current_terminal() {
             Some(pane) => self.backend.resize(&pane, dir, RESIZE_STEP),
             None => Ok(()),
         }
@@ -54,7 +54,7 @@ impl App {
 
     /// Give the focused pane and the panes beside it the same size.
     pub fn equalise(&mut self) -> Result<()> {
-        match self.current_pane() {
+        match self.current_terminal() {
             Some(pane) => self.backend.spread(&pane),
             None => Ok(()),
         }
@@ -64,7 +64,7 @@ impl App {
     /// others their places back. The backend keeps the zoom; moving focus,
     /// splitting and closing a pane undo it there.
     pub fn zoom(&mut self) -> Result<()> {
-        match self.current_pane() {
+        match self.current_terminal() {
             Some(pane) => self.backend.zoom(&pane),
             None => Ok(()),
         }

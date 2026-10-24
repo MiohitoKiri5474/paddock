@@ -17,6 +17,9 @@ use std::path::PathBuf;
 /// New spaces are named `space-N` until the user renames them.
 const SPACE_STEM: &str = "space-";
 
+/// What acting on a row says when its terminal closed meanwhile.
+const TERMINAL_CLOSED: &str = "that terminal is closed";
+
 impl App {
     /// The name a new space gets unless the user picks one: the first free
     /// `space-N`.
@@ -265,7 +268,7 @@ impl App {
     /// `C-a R`: make the focused terminal's directory the current space's
     /// root, saying so in a notice.
     pub fn set_root(&mut self) -> Result<()> {
-        let (Some(pane), Some(space)) = (self.current_pane(), self.current_space()) else {
+        let (Some(pane), Some(space)) = (self.current_terminal(), self.current_space()) else {
             return Ok(());
         };
         let (id, name) = (space.id.clone(), space.name().to_string());
@@ -304,7 +307,7 @@ impl App {
     /// with its last tab, and reports each.
     pub fn close(&mut self, pane: &str) -> Result<()> {
         let Some(terminal) = self.row_terminal(pane, EXTERNAL_CLOSE)? else {
-            return Ok(());
+            bail!(TERMINAL_CLOSED);
         };
         match self.session_in(pane).map(|s| s.state) {
             Some(state @ (State::Running | State::Waiting)) => {
@@ -377,7 +380,7 @@ impl App {
             bail!("unexpected Claude session id");
         }
         let Some((i, terminal)) = terminal.and_then(|t| Some((self.space_of(&t)?, t))) else {
-            bail!("that terminal is closed");
+            bail!(TERMINAL_CLOSED);
         };
         let dir = match cwd.map(PathBuf::from).filter(|p| p.is_dir()) {
             Some(dir) => dir,

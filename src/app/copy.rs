@@ -113,7 +113,7 @@ impl App {
     /// Copy mode in the terminal typing goes to, the search prompt open if
     /// `search`; the view holds still from here.
     pub(super) fn enter_copy(&mut self, search: bool) {
-        let Some(pane) = self.float_pane().or_else(|| self.current_pane()) else {
+        let Some(pane) = self.float_terminal().or_else(|| self.current_terminal()) else {
             return;
         };
         let Some(t) = self.terminals.get_mut(&pane) else {

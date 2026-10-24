@@ -35,7 +35,7 @@ mod tests {
     }
 
     #[test]
-    fn only_paddocks_socket_counts() {
+    fn a_terminal_counts_only_on_paddocks_socket() {
         let t = "/private/tmp/tmux-501/paddock,4242,0";
         assert_eq!(read(t, "%3"), Some((4242, "%3".into())));
         assert_eq!(read("/tmp/tmux-501/default,1,0", "%3"), None);

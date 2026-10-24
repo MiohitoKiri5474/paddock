@@ -377,13 +377,13 @@ impl App {
     /// Whether you are looking at the terminal with pane `pane`: it is
     /// focused, paddock's window has the focus, and no float is over it.
     fn focused_on(&self, pane: &str) -> bool {
-        self.looking_at_tab() && self.is_current_pane(pane)
+        self.looking_at_tab() && self.is_current_row(pane)
     }
 
     /// Whether you are looking at the current tab: paddock's window has
     /// the focus and no float is shown (the float has the keyboard then).
     fn looking_at_tab(&self) -> bool {
-        self.attention.window_focused && self.float_pane().is_none()
+        self.attention.window_focused && self.float_terminal().is_none()
     }
 
     fn notify(&mut self, pane: &str, alert: Alert) {

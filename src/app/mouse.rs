@@ -104,7 +104,7 @@ impl App {
             }
         }
         let left = m.kind == MouseEventKind::Down(MouseButton::Left);
-        let hit = if self.float_pane().is_some() {
+        let hit = if self.float_terminal().is_some() {
             // While a float is shown, only presses inside it do anything.
             // Its terminal is never focused in the backend: that would
             // make the float its space's current page.
@@ -287,7 +287,7 @@ impl App {
     fn hover(&mut self, m: MouseEvent) -> Result<bool> {
         // While a float is shown, the wheel only reaches it.
         let over_tab_bar = m.row < TAB_BAR_ROWS && m.column >= self.sidebar_width();
-        if over_tab_bar && self.float_pane().is_none() {
+        if over_tab_bar && self.float_terminal().is_none() {
             let step: isize = match m.kind {
                 MouseEventKind::ScrollUp => -1,
                 MouseEventKind::ScrollDown => 1,

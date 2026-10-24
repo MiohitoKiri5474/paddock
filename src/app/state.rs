@@ -562,7 +562,7 @@ impl App {
     /// directory paddock started in.
     pub(super) fn new_dir(&self) -> PathBuf {
         // The focused terminal is a pane, never an external session.
-        self.current_pane()
+        self.current_terminal()
             .and_then(|t| self.dir_of(&t))
             .unwrap_or_else(|| self.start_dir.clone())
     }
@@ -605,27 +605,27 @@ impl App {
         self.current_space()?.current_tab()
     }
 
-    /// The focused pane of the current tab.
-    pub fn current_pane(&self) -> Option<TerminalId> {
+    /// The focused terminal of the current tab.
+    pub fn current_terminal(&self) -> Option<TerminalId> {
         Some(self.focused_tab()?.active.clone())
     }
 
-    /// Whether pane `pane` is the focused pane of the current tab, whatever
-    /// the outer window's focus.
-    pub(super) fn is_current_pane(&self, pane: &str) -> bool {
+    /// Whether the terminal a session row names (text) is the focused one
+    /// of the current tab, whatever the outer window's focus.
+    pub(super) fn is_current_row(&self, pane: &str) -> bool {
         self.focused_tab()
             .is_some_and(|t| t.active.as_str() == pane)
     }
 
-    /// Send bytes to pane `pane`'s program, returning its view to the live
-    /// screen. Every key, paste and mouse report for a pane comes here.
-    pub(super) fn input(&mut self, pane: &TerminalId, bytes: &[u8]) -> Result<()> {
-        self.note_float_input(pane);
-        if let Some(t) = self.terminals.get_mut(pane) {
+    /// Send bytes to `terminal`'s program, returning its view to the live
+    /// screen. Every key, paste and mouse report for a terminal comes here.
+    pub(super) fn input(&mut self, terminal: &TerminalId, bytes: &[u8]) -> Result<()> {
+        self.note_float_input(terminal);
+        if let Some(t) = self.terminals.get_mut(terminal) {
             t.emulator_mut().scroll_to_bottom();
         }
-        match self.space_of(pane) {
-            Some(i) => self.spaces[i].input(pane, bytes),
+        match self.space_of(terminal) {
+            Some(i) => self.spaces[i].input(terminal, bytes),
             None => Ok(()),
         }
     }
@@ -646,7 +646,7 @@ impl App {
             .current_space()
             .and_then(Space::current_tab)
             .is_some_and(|t| t.shows(pane));
-        in_tab || self.float_pane().as_ref() == Some(pane)
+        in_tab || self.float_terminal().as_ref() == Some(pane)
     }
 
     pub fn resize(&mut self, screen: (u16, u16)) -> Result<()> {

@@ -74,7 +74,7 @@ impl App {
                 } else {
                     self.place_of(r, " · ").unwrap_or_default()
                 },
-                current: self.is_current_pane(&r.pane),
+                current: self.is_current_row(&r.pane),
                 external: r.external,
             })
             .collect()

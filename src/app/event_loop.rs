@@ -422,7 +422,7 @@ fn cursor(app: &App, dashboard: Option<Position>, typing: Option<Position>) -> O
 /// The current tab's panes and the borders between them. Returns the
 /// focused pane's cursor.
 fn draw_panes(app: &App, area: Rect, buf: &mut Buffer) -> Option<Position> {
-    let focus = app.current_pane();
+    let focus = app.current_terminal();
     let panes: Vec<(TerminalId, Rect)> = app
         .pane_rects()
         .into_iter()

@@ -134,7 +134,7 @@ impl App {
             SidebarTarget::Spaces => None,
             SidebarTarget::Here => picks
                 .iter()
-                .position(|p| matches!(p, Pick::Agent(pane) if self.is_current_pane(pane))),
+                .position(|p| matches!(p, Pick::Agent(pane) if self.is_current_row(pane))),
         };
         let current = self.current_space().map(|s| Pick::Space(s.id.clone()));
         let index = focused_agent
