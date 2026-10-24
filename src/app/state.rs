@@ -1,6 +1,5 @@
-//! What the running app holds: the spaces (tmux sessions, ADR 0006),
-//! each with its tabs (windows) and splits (panes) as tmux has them, a
-//! terminal per pane, the agent sessions in them, and what the keyboard is
+//! What the running app holds: the spaces (ADR 0006), each with its tabs
+//! and splits as the backend has them, an emulator per terminal, the agent sessions in them, and what the keyboard is
 //! doing (typing into the focused pane, naming, finding, reading help).
 
 use super::attention::{Attention, PendingStatus};
@@ -21,6 +20,7 @@ use super::space::Space;
 use super::watch::Place;
 use super::worktrees::{DeleteQuestion, WorktreeList};
 use super::Event;
+use crate::backend::{Backend, SpaceId, Tab, TerminalId};
 use crate::config::{Config, External, Floats, NewTabDir, Worktrees};
 use crate::git::WorkingTree;
 use crate::hooks::now_ms;
@@ -29,8 +29,6 @@ use crate::input::line::LineEdit;
 use crate::input::PrefixKeys;
 use crate::sessions::{dismissed, Session, Sessions, State};
 use crate::terminal::Terminal;
-use crate::tmux::structure::Window;
-use crate::tmux::Server;
 use crate::ui::tab_bar::TabColors;
 use crate::worktree::{space_root, Risks, WorktreeSpace};
 use anyhow::Result;
@@ -183,9 +181,9 @@ pub enum NameTarget {
 /// What a rename is for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Renamed {
-    /// The current tab (tmux window).
+    /// The current tab.
     Tab,
-    /// The current space (tmux session).
+    /// The current space.
     Space,
 }
 
@@ -204,10 +202,10 @@ impl NameTarget {
 /// What a close question is about.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CloseTarget {
-    /// A pane (`%N`).
-    Pane(String),
-    /// A whole space (`$N`) with all its tabs.
-    Space(String),
+    /// A terminal.
+    Pane(TerminalId),
+    /// A whole space with all its tabs.
+    Space(SpaceId),
     /// A worktree space, whose worktree and branch go with it; `confirmed`
     /// is what the user said yes to losing.
     Worktree {
@@ -217,14 +215,14 @@ pub enum CloseTarget {
 }
 
 pub struct App {
-    pub(super) server: Server,
+    pub(super) backend: Backend,
     pub(super) events: Sender<Event>,
     /// The spaces, oldest first.
     pub(super) spaces: Vec<Space>,
     /// Index of the current space: the one whose tabs are shown.
     pub(super) current: usize,
-    /// Every attached pane's terminal, by pane id.
-    pub(super) terminals: HashMap<String, Terminal>,
+    /// Every attached terminal's emulator, by terminal.
+    pub(super) terminals: HashMap<TerminalId, Terminal>,
     pub(super) prefix: PrefixKeys,
     pub(super) prefix_name: String,
     /// Every key binding, as configured.
@@ -256,8 +254,8 @@ pub struct App {
     /// A `p` is opening a pull request (its `gh` still runs): another
     /// press is ignored meanwhile, so they never stack.
     pub(super) pr_opening: bool,
-    /// Each space's directory and branch, by tmux session id, once read.
-    pub(super) places: HashMap<String, Place>,
+    /// Each space's directory and branch, once read.
+    pub(super) places: HashMap<SpaceId, Place>,
     /// The user hid the sidebar (`C-a b`).
     pub(super) sidebar_hidden: bool,
     /// The configured sidebar width, border included; see
@@ -278,14 +276,14 @@ pub struct App {
     /// The first tab the bar shows when the tabs do not all fit.
     pub(super) tab_first: usize,
     /// The space and tab the bar was last scrolled for.
-    pub(super) tab_shown: Option<(String, usize)>,
+    pub(super) tab_shown: Option<(SpaceId, usize)>,
     /// The floats as configured, and the size of their box.
     pub(super) floats: Floats,
     /// The float shown over the screen, if any; it has the keyboard.
     pub(super) float: Option<Shown>,
     /// Every float pane seen, closed ones included: their late hooks are
     /// left out too.
-    pub(super) float_panes: HashSet<String>,
+    pub(super) float_panes: HashSet<TerminalId>,
     /// Where new worktrees are checked out.
     pub(super) worktrees: Worktrees,
     /// Whether and how long external sessions are listed (`[dashboard]`).
@@ -326,10 +324,10 @@ pub fn next_name<'a>(stem: &str, taken: impl IntoIterator<Item = &'a str> + Clon
 }
 
 impl App {
-    /// Show the spaces already on the hidden server (one per tmux session),
-    /// the saved one current, or start the first one.
+    /// Show the spaces already in the backend, the saved one current, or
+    /// start the first one.
     pub fn start(
-        server: Server,
+        backend: Backend,
         config: &Config,
         screen: (u16, u16),
         events: Sender<Event>,
@@ -337,7 +335,7 @@ impl App {
         state_dir: PathBuf,
     ) -> Result<Self> {
         let mut app = Self {
-            server,
+            backend,
             events,
             spaces: Vec::new(),
             current: 0,
@@ -400,13 +398,13 @@ impl App {
         }
     }
 
-    /// Attach every space on the hidden server and make the saved one
-    /// current, or start the first space.
+    /// Attach every space in the backend and make the saved one current,
+    /// or start the first space.
     fn open_spaces(&mut self) -> Result<()> {
-        let sessions = self.server.sessions();
-        if !sessions.is_empty() {
-            // A server from an older paddock lacks newer options.
-            self.report(|app| app.server.apply_config());
+        let spaces = self.backend.spaces();
+        if !spaces.is_empty() {
+            // A backend from an older paddock lacks newer settings.
+            self.report(|app| app.backend.refresh());
         }
         let saved = saved::load(&self.state_dir)
             .unwrap_or_else(|e| {
@@ -416,7 +414,7 @@ impl App {
             .unwrap_or_default();
         // Before attaching, so the spaces start at their final size.
         self.sidebar_wish = saved.sidebar;
-        for s in &sessions {
+        for s in &spaces {
             // A space that cannot be attached (it just ended) keeps paddock
             // from opening no other.
             self.report(|app| app.attach(&s.id));
@@ -441,19 +439,15 @@ impl App {
     /// Every open pane with its place, for [`rows`].
     fn placed(&self) -> impl Iterator<Item = Placed<'_>> {
         self.spaces.iter().enumerate().flat_map(|(i, space)| {
-            space
-                .windows()
-                .iter()
-                .enumerate()
-                .flat_map(move |(w, win)| {
-                    win.panes.iter().map(move |p| Placed {
-                        space: &space.id,
-                        window: &win.id,
-                        order: (i, w),
-                        tab_name: (!win.auto_name).then_some(win.name.as_str()),
-                        pane: &p.id,
-                    })
+            space.tabs().iter().enumerate().flat_map(move |(w, win)| {
+                win.splits.iter().map(move |p| Placed {
+                    space: &space.id,
+                    window: &win.id,
+                    order: (i, w),
+                    tab_name: (!win.auto_name).then_some(win.name.as_str()),
+                    pane: &p.id,
                 })
+            })
         })
     }
 
@@ -513,20 +507,20 @@ impl App {
         }
     }
 
-    /// Attach tmux session `id` as a new space at the end of the sidebar.
-    pub(super) fn attach(&mut self, id: &str) -> Result<()> {
+    /// Attach space `id` at the end of the sidebar.
+    pub(super) fn attach(&mut self, id: &SpaceId) -> Result<()> {
         let events = self.events.clone();
-        let session = id.to_string();
-        let deliver = move |msg| {
+        let space = id.clone();
+        let deliver = move |event| {
             events
-                .send(Event::Tmux {
-                    session: session.clone(),
-                    msg,
+                .send(Event::Backend {
+                    space: space.clone(),
+                    event,
                 })
                 .is_ok()
         };
         let size = (self.area().width, self.area().height);
-        let (mut space, terminals) = Space::attach(&self.server, id, size, deliver)?;
+        let (mut space, terminals) = Space::attach(&self.backend, id, size, deliver)?;
         self.close_orphan_floats(&mut space.structure);
         self.remember_float_panes(&space.structure);
         // Not the panes of floats just closed.
@@ -541,9 +535,8 @@ impl App {
     pub(super) fn dir_of(&self, pane: &str) -> Result<Option<PathBuf>> {
         pane_only(pane, EXTERNAL_DIR)?;
         Ok(self
-            .server
-            .display(pane, "#{pane_current_path}")
-            .ok()
+            .backend
+            .terminal_dir(&TerminalId::from_hook(pane))
             .map(PathBuf::from)
             .filter(|p| p.is_dir()))
     }
@@ -565,7 +558,7 @@ impl App {
             NewTabDir::Current => None,
             NewTabDir::Root => self
                 .current_space()
-                .and_then(|s| space_root(&self.server, &s.id))
+                .and_then(|s| space_root(&self.backend, &s.id))
                 .map(PathBuf::from)
                 .filter(|p| p.is_dir()),
         };
@@ -591,12 +584,12 @@ impl App {
     }
 
     /// The current tab: the current space's current window.
-    pub(super) fn focused_window(&self) -> Option<&Window> {
-        self.current_space()?.current_window()
+    pub(super) fn focused_window(&self) -> Option<&Tab> {
+        self.current_space()?.current_tab()
     }
 
     /// The focused pane of the current tab.
-    pub fn current_pane(&self) -> Option<String> {
+    pub fn current_pane(&self) -> Option<TerminalId> {
         Some(self.focused_window()?.active.clone())
     }
 
@@ -615,7 +608,7 @@ impl App {
             t.emulator_mut().scroll_to_bottom();
         }
         match self.space_of(pane) {
-            Some(i) => self.spaces[i].input(pane, bytes),
+            Some(i) => self.spaces[i].input(&TerminalId::from_hook(pane), bytes),
             None => Ok(()),
         }
     }
@@ -625,7 +618,7 @@ impl App {
     pub fn shows(&self, pane: &str) -> bool {
         let in_tab = self
             .current_space()
-            .and_then(Space::current_window)
+            .and_then(Space::current_tab)
             .is_some_and(|w| w.shows(pane));
         in_tab || self.float_pane().as_deref() == Some(pane)
     }

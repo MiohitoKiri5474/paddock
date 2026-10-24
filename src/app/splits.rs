@@ -1,29 +1,19 @@
 //! Splitting a tab into several panes, moving focus between them and
 //! zooming one, resizing them by key or by dragging a border, through
-//! tmux, which keeps the layout and the zoom (ADR 0006); and keeping each
+//! the backend, which keeps the layout and the zoom (ADR 0006); and keeping each
 //! space's size and the saved state in step.
 
 use super::mouse::Press;
 use super::saved::{self, Saved};
 use super::space::clamp;
 use super::state::App;
+use crate::backend::Border;
 use crate::input::prefix::RESIZE_STEP;
 use crate::input::Direction;
-use crate::tmux::layout::{self, Border};
 use anyhow::Result;
 use crossterm::event::{MouseEvent, MouseEventKind};
 use ratatui::layout::{Position, Rect};
 use std::time::{Duration, Instant};
-
-/// tmux's flag for `dir` (`select-pane`, `resize-pane`).
-fn flag(dir: Direction) -> &'static str {
-    match dir {
-        Direction::Left => "-L",
-        Direction::Down => "-D",
-        Direction::Up => "-U",
-        Direction::Right => "-R",
-    }
-}
 
 impl App {
     /// Split the focused pane: side by side if `columns`, else top and
@@ -36,7 +26,7 @@ impl App {
             return Ok(());
         };
         let dir = self.tab_dir();
-        self.server.split(&pane, columns, &dir)?;
+        self.backend.split(&pane, columns, &dir)?;
         self.refresh(&id)
     }
 
@@ -48,17 +38,16 @@ impl App {
         ) else {
             return Ok(());
         };
-        self.server.select_towards(&pane, flag(dir))?;
+        self.backend.focus_towards(&pane, dir)?;
         self.refresh(&id)
     }
 
-    /// Move the focused pane's border in `dir` by [`RESIZE_STEP`], as
-    /// tmux's `resize-pane` does: the border after it, or before it for
-    /// the last pane of a row or column. tmux keeps the layout, and its
-    /// `%layout-change` redraws.
+    /// Move the focused pane's border in `dir` by [`RESIZE_STEP`]: the
+    /// border after it, or before it for the last pane of a row or column.
+    /// The backend keeps the layout, and its change event redraws.
     pub fn resize_split(&mut self, dir: Direction) -> Result<()> {
         match self.current_pane() {
-            Some(pane) => self.server.resize(&pane, flag(dir), RESIZE_STEP),
+            Some(pane) => self.backend.resize(&pane, dir, RESIZE_STEP),
             None => Ok(()),
         }
     }
@@ -66,23 +55,23 @@ impl App {
     /// Give the focused pane and the panes beside it the same size.
     pub fn equalise(&mut self) -> Result<()> {
         match self.current_pane() {
-            Some(pane) => self.server.spread(&pane),
+            Some(pane) => self.backend.spread(&pane),
             None => Ok(()),
         }
     }
 
     /// Make the focused pane fill its tab, or, if it does, give the
-    /// others their places back. tmux keeps the zoom; moving focus,
+    /// others their places back. The backend keeps the zoom; moving focus,
     /// splitting and closing a pane undo it there.
     pub fn zoom(&mut self) -> Result<()> {
         match self.current_pane() {
-            Some(pane) => self.server.zoom(&pane),
+            Some(pane) => self.backend.zoom(&pane),
             None => Ok(()),
         }
     }
 
     /// Show every space at the size of the session area, and the float
-    /// shown at the inside of its box; tmux resizes the windows and
+    /// shown at the inside of its box; the backend resizes the tabs and
     /// reports the new layout.
     pub(super) fn relayout(&mut self) -> Result<()> {
         let area = self.area();
@@ -113,7 +102,7 @@ impl App {
     }
 }
 
-/// Least time between two `resize-pane` sent while a split's border is
+/// Least time between two resizes sent while a split's border is
 /// dragged; the last size always goes on release.
 const DRAG_INTERVAL: Duration = Duration::from_millis(40);
 
@@ -121,7 +110,7 @@ const DRAG_INTERVAL: Duration = Duration::from_millis(40);
 #[derive(Debug)]
 pub struct SplitDrag {
     border: Border,
-    /// The size last sent to tmux (at first, the one it has), and when.
+    /// The size last sent to the backend (at first, the one it has), and when.
     size: u16,
     sent: Option<Instant>,
 }
@@ -175,29 +164,27 @@ impl App {
         if !area.contains(Position::new(col, row)) {
             return false;
         }
-        let window = match self.current_space().and_then(|s| s.current_window()) {
-            Some(w) if !w.zoomed && w.panes.len() > 1 => w.id.clone(),
+        let window = match self.current_space().and_then(|s| s.current_tab()) {
+            Some(w) if !w.zoomed && w.splits.len() > 1 => w.id.clone(),
             _ => return false,
         };
-        let text = match self.server.layout(&window) {
-            Ok(text) => text,
+        let (x, y) = (col - area.x, row - area.y);
+        let border = match self.backend.border_at(&window, x, y) {
+            Ok(Some(border)) => border,
+            Ok(None) => return false,
             Err(e) => {
                 self.notice = Some(format!("{e:#}"));
                 return false;
             }
-        };
-        let (x, y) = (col - area.x, row - area.y);
-        let Some(border) = layout::parse(&text).and_then(|l| l.border_at(x, y)) else {
-            return false;
         };
         self.press = Some(Press::Split(SplitDrag::new(border, area, (col, row))));
         true
     }
 
     /// The button held on a split's border moved or let go: the border
-    /// follows the pointer through tmux (`resize-pane -x`/`-y`), at most
-    /// every [`DRAG_INTERVAL`], and its last place goes on release.
-    /// tmux's `%layout-change` redraws.
+    /// follows the pointer through the backend, at most every
+    /// [`DRAG_INTERVAL`], and its last place goes on release. The
+    /// backend's change event redraws.
     pub(super) fn split_border_held(&mut self, m: MouseEvent) -> bool {
         let released = matches!(m.kind, MouseEventKind::Up(_));
         let area = self.area();
@@ -211,7 +198,7 @@ impl App {
             self.press = None;
         }
         if let Some(size) = due {
-            self.report(|app| app.server.resize_to(&pane, columns, size));
+            self.report(|app| app.backend.resize_to(&pane, columns, size));
         }
         true
     }
@@ -223,10 +210,7 @@ mod tests {
 
     /// The border of a 34 | 33 split, pressed.
     fn pressed() -> SplitDrag {
-        let text = r#"{"V":2,"L":{"t":"h","w":68,"h":29,"x":0,"y":0,"c":[
-            {"t":"p","w":34,"h":29,"x":0,"y":0,"I":"%1"},
-            {"t":"p","w":33,"h":29,"x":35,"y":0,"I":"%2"}]}}"#;
-        let border = layout::parse(text).unwrap().border_at(34, 3).unwrap();
+        let border = Border::ending("%1", true, 0);
         SplitDrag::new(border, AREA, (AREA.x + 34, 5))
     }
 
@@ -258,7 +242,7 @@ mod tests {
         let mut drag = pressed();
         assert_eq!(due(&mut drag, 30, t0, false), Some(30));
         assert_eq!(due(&mut drag, 30, t0, true), None);
-        // Back where it was pressed: tmux has another size by now.
+        // Back where it was pressed: the backend has another size by now.
         let mut back = pressed();
         assert_eq!(due(&mut back, 30, t0, false), Some(30));
         assert_eq!(due(&mut back, 34, t0, true), Some(34));

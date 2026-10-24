@@ -1,7 +1,10 @@
-//! A tmux control-mode client (`tmux -C attach`) for one terminal.
+//! A tmux control-mode client (`tmux -C attach`) for one session: it
+//! carries every pane's output and input.
 
-use super::protocol::{Message, Parser};
+use super::protocol::{self, Message, Parser};
+use super::seed;
 use super::server::Server;
+use crate::backend::{Event, Replay, Structure};
 use anyhow::{bail, Context, Result};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Stdio};
@@ -15,6 +18,45 @@ const REPLY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Where the reader thread delivers messages. Returns false once nobody listens.
 type Sink = Box<dyn FnMut(Message) -> bool + Send>;
+
+/// Attach to session `session` at `size` and read every pane's screen and
+/// history, floats' too, so a hidden float's screen survives reopening.
+/// Afterwards every message that means something to paddock goes, in
+/// order, to `deliver` as an [`Event`].
+pub fn attach(
+    server: &Server,
+    session: &str,
+    (cols, rows): (u16, u16),
+    mut deliver: impl FnMut(Event) -> bool + Send + 'static,
+) -> Result<(ControlClient, Structure, Vec<Replay>)> {
+    let (mut control, rx) = ControlClient::attach(server, session)?;
+    control.resize(cols, rows)?;
+    wait_reply(&rx)?;
+    // Read after the resize, so the panes have their final sizes.
+    let structure = server.structure(session)?;
+    let panes: Vec<_> = structure
+        .all_tabs()
+        .flat_map(|t| &t.splits)
+        .map(|s| (s.id.clone(), (s.rect.width, s.rect.height)))
+        .collect();
+    let ids: Vec<&str> = panes.iter().map(|(p, _)| p.as_str()).collect();
+    let seeds = seed::fetch(&mut control, &rx, &ids)?;
+    control.forward(&rx, move |msg| {
+        protocol::event(msg).is_none_or(&mut deliver)
+    });
+    let replays = panes
+        .into_iter()
+        .zip(seeds)
+        .map(|((terminal, size), seed)| {
+            Ok(Replay {
+                terminal,
+                size,
+                bytes: seed::stream(&seed)?,
+            })
+        })
+        .collect::<Result<_>>()?;
+    Ok((control, structure, replays))
+}
 
 pub struct ControlClient {
     child: Child,

@@ -5,14 +5,13 @@
 //! directory and branch.
 
 use super::Event;
+use crate::backend::{Backend, SpaceId};
 use crate::git;
 use crate::hooks::now_ms;
 use crate::paths::HomePaths;
 use crate::sessions::{agents, log, HookRecord};
-use crate::tmux::Server;
 use crate::worktree::space_dir;
-use anyhow::{Context, Result};
-use std::collections::HashMap;
+use anyhow::Result;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
@@ -61,12 +60,12 @@ fn trim_external(path: &Path, reader: &mut log::Reader) -> Vec<HookRecord> {
 pub type Tasks = Vec<(String, String)>;
 
 /// The tasks on screen, whether the dashboard's details are wanted too,
-/// and the spaces (tmux session ids) whose directory and branch to read.
+/// and the spaces whose directory and branch to read.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Watched {
     pub tasks: Tasks,
     pub details: bool,
-    pub spaces: Vec<String>,
+    pub spaces: Vec<SpaceId>,
 }
 
 /// A space's directory, the branch checked out there, and the working
@@ -108,12 +107,12 @@ impl Place {
 }
 
 /// Space `id`'s directory, root and what is checked out in each, read
-/// now; `None` if tmux cannot say.
-pub fn place(server: &Server, id: &str) -> Option<Place> {
-    let path = space_dir(server, id)?;
+/// now; `None` if the backend cannot say.
+pub fn place(backend: &Backend, id: &SpaceId) -> Option<Place> {
+    let path = space_dir(backend, id)?;
     let branch = git::head(&path);
     let tree = git::working_tree(&path);
-    let root = server.root(id);
+    let root = backend.root(id);
     let root_branch = match &root {
         Some(root) => git::head(root),
         None => branch.clone(),
@@ -128,43 +127,16 @@ pub fn place(server: &Server, id: &str) -> Option<Place> {
 }
 
 /// Read each of `spaces`' place.
-fn places(server: &Server, spaces: &[String]) -> Vec<(String, Place)> {
+fn places(backend: &Backend, spaces: &[SpaceId]) -> Vec<(SpaceId, Place)> {
     spaces
         .iter()
-        .filter_map(|id| Some((id.clone(), place(server, id)?)))
+        .filter_map(|id| Some((id.clone(), place(backend, id)?)))
         .collect()
 }
 
-/// The hook event log of `server` (see [`log::path`]).
-pub fn server_log(server: &Server, state_dir: &Path) -> Result<PathBuf> {
-    let pid: u32 = server
-        .run(&["display-message", "-p", "#{pid}"])?
-        .trim()
-        .parse()
-        .context("cannot read the tmux server's pid")?;
-    Ok(log::path(state_dir, pid))
-}
-
-/// Each pane's `pane_current_command`, by pane id; `None` if tmux cannot
-/// say.
-fn pane_commands(server: &Server) -> Option<HashMap<String, String>> {
-    let out = server
-        .run(&[
-            "list-panes",
-            "-a",
-            "-F",
-            "#{pane_id} #{pane_current_command}",
-        ])
-        .ok()?;
-    Some(parse_commands(&out))
-}
-
-/// `list-panes` output of `<pane id> <command>` lines, by pane id.
-fn parse_commands(out: &str) -> HashMap<String, String> {
-    out.lines()
-        .filter_map(|l| l.split_once(' '))
-        .map(|(pane, command)| (pane.to_string(), command.to_string()))
-        .collect()
+/// The hook event log of `backend` (see [`log::path`]).
+pub fn server_log(backend: &Backend, state_dir: &Path) -> Result<PathBuf> {
+    Ok(log::path(state_dir, backend.instance()?))
 }
 
 /// Start the threads, reading the server's hook events from `server_log`
@@ -173,7 +145,7 @@ fn parse_commands(out: &str) -> HashMap<String, String> {
 /// goes away. Returns where to send the tasks on screen: each list is read
 /// at once, then every [`GIT_POLL`] until the next one.
 pub fn start(
-    server: &Server,
+    backend: &Backend,
     server_log: PathBuf,
     agy_running: Arc<AtomicBool>,
     state_dir: &Path,
@@ -205,7 +177,7 @@ pub fn start(
         }
     });
 
-    let agents_server = server.clone();
+    let agents_backend = backend.clone();
     let events = tx.clone();
     std::thread::spawn(move || loop {
         // Whether Antigravity quit back to the shell (see
@@ -213,7 +185,7 @@ pub fn start(
         let taken = now_ms();
         let commands = agy_running
             .load(Ordering::Relaxed)
-            .then(|| pane_commands(&agents_server))
+            .then(|| agents_backend.terminal_commands())
             .flatten();
         if let Some(commands) = commands {
             if events.send(Event::Commands(taken, commands)).is_err() {
@@ -221,7 +193,7 @@ pub fn start(
             }
         }
         let taken = now_ms();
-        if let Some(list) = agents::fetch(&agents_server) {
+        if let Some(list) = agents::fetch(&agents_backend) {
             if events.send(Event::Agents(taken, list)).is_err() {
                 break;
             }
@@ -231,7 +203,7 @@ pub fn start(
 
     let (tasks_tx, tasks_rx) = mpsc::channel::<Watched>();
     let events = tx.clone();
-    let server = server.clone();
+    let backend = backend.clone();
     std::thread::spawn(move || {
         let mut watched = Watched::default();
         loop {
@@ -241,7 +213,7 @@ pub fn start(
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => break,
             }
-            if !read_watched(&server, &watched, &events) {
+            if !read_watched(&backend, &watched, &events) {
                 break;
             }
         }
@@ -251,8 +223,8 @@ pub fn start(
 
 /// Read what `watched` asks for (spaces' places, tasks' git status, and
 /// their details if wanted) and send it. Returns false once nobody listens.
-fn read_watched(server: &Server, watched: &Watched, events: &Sender<Event>) -> bool {
-    let read = places(server, &watched.spaces);
+fn read_watched(backend: &Backend, watched: &Watched, events: &Sender<Event>) -> bool {
+    let read = places(backend, &watched.spaces);
     if !read.is_empty() && events.send(Event::Spaces(read)).is_err() {
         return false;
     }
@@ -280,15 +252,6 @@ fn read_watched(server: &Server, watched: &Watched, events: &Sender<Event>) -> b
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn pane_commands_are_read_by_pane() {
-        let got = parse_commands("%1 agy\n%2 -zsh\n%3 my tool\n\n%4\n");
-        assert_eq!(got.len(), 3);
-        assert_eq!(got["%1"], "agy");
-        assert_eq!(got["%2"], "-zsh");
-        assert_eq!(got["%3"], "my tool", "a name with a space");
-    }
 
     #[test]
     fn a_space_shows_its_root_as_stored_with_what_is_checked_out_there() {

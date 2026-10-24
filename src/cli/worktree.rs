@@ -4,13 +4,13 @@
 //! of it goes through the rules the app uses ([`crate::worktree`]).
 
 use super::{rm, Code, Command, Fail, Invocation};
+use crate::backend::{Backend, SpaceId};
 use crate::config::Config;
 use crate::git::{self, WorkingTree, Worktree};
 use crate::github::{self, Checks, Pr, Prs, Review};
 use crate::hooks::now_ms;
 use crate::paths::{HomePaths, Paths};
 use crate::sessions::{agents, log, Agent, Sessions, State};
-use crate::tmux::Server;
 use crate::worktree::{self as shared, RISK_DEADLINE};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -22,10 +22,10 @@ const SPACE_SIZE: (u16, u16) = (80, 24);
 /// How long `claude agents --json` may take before it counts as late.
 const AGENTS_DEADLINE: Duration = Duration::from_secs(5);
 
-/// Where the command runs: the hidden server, paddock's paths, and who
-/// called it (their directory, and their tmux pane if they run in one).
+/// Where the command runs: the backend, paddock's paths, and who called
+/// it (their directory, and their terminal if they run in one).
 pub(super) struct Context {
-    pub server: Server,
+    pub backend: Backend,
     pub paths: Paths,
     pub cwd: PathBuf,
     /// `$TMUX` and `$TMUX_PANE`, if set.
@@ -34,11 +34,11 @@ pub(super) struct Context {
     pub risk_deadline: Duration,
 }
 
-/// A space on the hidden server: its tmux session id and name, and its
-/// directory ([`shared::space_dir`]).
+/// A space in the backend: its id and name, and its directory
+/// ([`shared::space_dir`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Space {
-    pub id: String,
+    pub id: SpaceId,
     pub name: String,
     pub dir: Option<String>,
 }
@@ -52,14 +52,14 @@ pub(super) fn name_of<'a>(spaces: &'a [Space], id: &'a str) -> &'a str {
 }
 
 /// The ids of `spaces`.
-pub(super) fn ids(spaces: &[Space]) -> Vec<String> {
+pub(super) fn ids(spaces: &[Space]) -> Vec<SpaceId> {
     spaces.iter().map(|s| s.id.clone()).collect()
 }
 
 impl Context {
     pub fn new(paths: Paths, cwd: PathBuf, tmux: Option<(String, String)>) -> Self {
         Self {
-            server: Server::new(paths.clone()),
+            backend: Backend::new(paths.clone()),
             paths,
             cwd,
             tmux,
@@ -106,23 +106,19 @@ impl Context {
         self.config().map(|c| c.worktrees.directory)
     }
 
-    /// The hidden server's pid; `None` if it does not run.
+    /// The backend's instance id (see [`Backend::instance`]); `None` if
+    /// it does not run.
     pub fn server_pid(&self) -> Option<u32> {
-        self.server
-            .run(&["display-message", "-p", "#{pid}"])
-            .ok()?
-            .trim()
-            .parse()
-            .ok()
+        self.backend.instance().ok()
     }
 
-    /// Every space on the hidden server, oldest first.
+    /// Every space in the backend, oldest first.
     pub fn spaces(&self) -> Vec<Space> {
-        self.server
-            .sessions()
+        self.backend
+            .spaces()
             .into_iter()
             .map(|s| Space {
-                dir: shared::space_dir(&self.server, &s.id),
+                dir: shared::space_dir(&self.backend, &s.id),
                 id: s.id,
                 name: s.name,
             })
@@ -130,17 +126,17 @@ impl Context {
     }
 
     /// Start a shell in a new space named `name` in `dir`, starting the
-    /// server (with paddock's config) if it does not run. Returns the
-    /// space's name as tmux gave it (it writes `.` and `:` as `_`).
+    /// backend (with paddock's settings) if it does not run. Returns the
+    /// space's name as the backend gave it (tmux writes `.` and `:` as `_`).
     pub fn new_space(&self, name: &str, dir: &Path) -> anyhow::Result<String> {
         if self.server_pid().is_none() {
-            self.server.write_config()?;
+            self.backend.prepare()?;
         }
-        let session = self.server.new_session(name, dir, SPACE_SIZE)?;
-        self.server.display(&session.id, "#{session_name}")
+        let space = self.backend.new_space(name, dir, SPACE_SIZE)?;
+        self.backend.space_name(&space)
     }
 
-    /// The caller's pane, if they run in a terminal of this server.
+    /// The caller's pane, if they run in a terminal of this backend.
     pub fn caller_pane(&self, pid: Option<u32>) -> Option<String> {
         let (tmux, pane) = self.tmux.as_ref()?;
         let (theirs, pane) = log::terminal(tmux, pane, &self.paths.socket)?;
@@ -161,7 +157,7 @@ impl Context {
             sessions.apply(&record);
         }
         let taken = now_ms();
-        match fetch_agents(&self.server, AGENTS_DEADLINE) {
+        match fetch_agents(&self.backend, AGENTS_DEADLINE) {
             Ok(Some(list)) => sessions.reconcile(taken, &list),
             Ok(None) => {}
             Err(late) => return (sessions, Some(late)),
@@ -172,12 +168,12 @@ impl Context {
 
 /// `claude agents --json` (see [`agents::fetch`]), waiting at most
 /// `limit`; `Ok(None)` if Claude could not tell (not installed, say).
-fn fetch_agents(server: &Server, limit: Duration) -> Result<Option<Vec<Agent>>, Fail> {
+fn fetch_agents(backend: &Backend, limit: Duration) -> Result<Option<Vec<Agent>>, Fail> {
     let (tx, rx) = mpsc::channel();
-    let server = server.clone();
+    let backend = backend.clone();
     // Left to finish on its own if late.
     std::thread::spawn(move || {
-        let _ = tx.send(agents::fetch(&server));
+        let _ = tx.send(agents::fetch(&backend));
     });
     rx.recv_timeout(limit).map_err(|_| {
         Fail::new(
@@ -298,7 +294,7 @@ fn open(cx: &Context, from: Option<&Path>, target: &str, json: bool) -> Result<(
     let tree = cx.tree(from)?;
     let w = find(&tree, cx.base(from), target)?;
     let spaces = cx.spaces();
-    let open = shared::spaces_in(&cx.server, &ids(&spaces), &w.path)?;
+    let open = shared::spaces_in(&cx.backend, &ids(&spaces), &w.path)?;
     let repo = tree.repo();
     let space = match open.first() {
         Some(id) => {
@@ -415,7 +411,7 @@ fn list(cx: &Context, from: Option<&Path>, json: bool) -> Result<(), Fail> {
             // As the sidebar: paddock does not follow an agent in a float.
             let agents = mine
                 .iter()
-                .flat_map(|s| shared::panes(&cx.server, &s.id))
+                .flat_map(|s| cx.backend.space_terminals(&s.id))
                 .filter(|p| !p.float)
                 .filter_map(|p| state_in(&sessions, &p.id))
                 .map(State::label)

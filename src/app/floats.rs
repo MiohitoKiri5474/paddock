@@ -1,13 +1,12 @@
 //! Floats (`[floats]`): a program in a box over the screen, shown and
 //! hidden by the prefix and its key. Each space has its own float per
-//! key: a tmux window of the space's session marked with
-//! [`FLOAT_OPTION`](crate::tmux::structure::FLOAT_OPTION), so it keeps
-//! running while hidden and after detaching, but is never a tab. Hiding
-//! keeps the program; when it exits, its window and the float close.
+//! key: a page of the space that the backend marks as a float, so it
+//! keeps running while hidden and after detaching, but is never a tab.
+//! Hiding keeps the program; when it exits, the float closes.
 
 use super::state::App;
+use crate::backend::{SpaceId, Structure, Tab, TerminalId};
 use crate::config::Float;
-use crate::tmux::structure::{Structure, Window};
 use crate::ui::float::{self, Float as FloatView};
 use anyhow::Result;
 use ratatui::layout::Rect;
@@ -20,8 +19,8 @@ const QUICK_EXIT: Duration = Duration::from_secs(2);
 /// The float shown: space `space`'s float for `[floats]` entry `index`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Shown {
-    /// The tmux session id (`$N`) of its space.
-    pub space: String,
+    /// Its space.
+    pub space: SpaceId,
     /// Its place in `[floats]`.
     pub index: usize,
     /// When paddock started its program, if this showing did and no
@@ -31,24 +30,24 @@ pub struct Shown {
 
 impl Shown {
     /// Whether this is space `space`'s float for entry `index`.
-    fn is(&self, space: &str, index: usize) -> bool {
-        self.space == space && self.index == index
+    fn is(&self, space: &SpaceId, index: usize) -> bool {
+        self.space == *space && self.index == index
     }
 }
 
 impl App {
-    /// The float shown now, with its window: only over its own space,
+    /// The float shown now, with its page: only over its own space,
     /// and only while its program runs.
-    pub(super) fn shown_float(&self) -> Option<(&Float, &Window)> {
+    pub(super) fn shown_float(&self) -> Option<(&Float, &Tab)> {
         let shown = self.float.as_ref()?;
         let space = self.current_space().filter(|s| s.id == shown.space)?;
         let float = self.floats.list.get(shown.index)?;
-        let window = space.float(&float.key.name())?;
-        Some((float, &window.window))
+        let shown = space.float(&float.key.name())?;
+        Some((float, &shown.tab))
     }
 
     /// The shown float's pane, which has the keyboard.
-    pub fn float_pane(&self) -> Option<String> {
+    pub fn float_pane(&self) -> Option<TerminalId> {
         Some(self.shown_float()?.1.active.clone())
     }
 
@@ -59,7 +58,7 @@ impl App {
     }
 
     /// The shown float's pane and where its terminal is drawn.
-    pub(super) fn float_rect(&self) -> Option<(String, Rect)> {
+    pub(super) fn float_rect(&self) -> Option<(TerminalId, Rect)> {
         Some((self.float_pane()?, float::inner(self.float_area())))
     }
 
@@ -103,7 +102,7 @@ impl App {
         if space.float(&key).is_none() {
             let command = float.command.clone();
             let dir = self.new_dir();
-            self.server.new_float(&shown.space, &dir, &command, &key)?;
+            self.backend.new_float(&shown.space, &dir, &command, &key)?;
             shown.started = Some(Instant::now());
             let id = shown.space.clone();
             self.float = Some(shown);
@@ -116,8 +115,8 @@ impl App {
         self.resize_float()
     }
 
-    /// Give the shown float's pane the inside of its box; tmux keeps that
-    /// size for its window apart from the tabs'.
+    /// Give the shown float's terminal the inside of its box; the backend
+    /// keeps that size for it apart from the tabs'.
     pub(super) fn resize_float(&mut self) -> Result<()> {
         let Some(window) = self.shown_float().map(|(_, w)| w.id.clone()) else {
             return Ok(());
@@ -158,7 +157,7 @@ impl App {
     /// Input is about to reach pane `pane`: if that is the shown float's,
     /// its program ran, so it quitting soon after gives no notice.
     pub(super) fn note_float_input(&mut self, pane: &str) {
-        if self.float_pane().as_deref() == Some(pane) {
+        if self.float_pane().is_some_and(|p| p == pane) {
             if let Some(shown) = &mut self.float {
                 shown.started = None;
             }
@@ -175,10 +174,10 @@ impl App {
     /// Remember the panes of the floats in `structure`, for
     /// [`is_float_pane`](Self::is_float_pane).
     // ponytail: never pruned, so it grows by one id per float started
-    // while paddock runs. Harmless unless the tmux server restarts under
-    // a running paddock and reuses a `%N` id for a tab's pane.
+    // while paddock runs. Harmless unless the backend restarts under a
+    // running paddock and reuses a terminal id for a tab's.
     pub(super) fn remember_float_panes(&mut self, structure: &Structure) {
-        let panes = structure.floats.iter().flat_map(|f| &f.window.panes);
+        let panes = structure.floats.iter().flat_map(|f| &f.tab.splits);
         self.float_panes.extend(panes.map(|p| p.id.clone()));
     }
 
@@ -192,7 +191,7 @@ impl App {
             .partition(|f| keys.contains(&f.key));
         structure.floats = kept;
         for orphan in orphans {
-            self.report(|app| app.server.kill_window(&orphan.window.id));
+            self.report(|app| app.backend.close_tab(&orphan.tab.id));
         }
     }
 }

@@ -4,9 +4,9 @@
 use super::rows::{most_urgent, Row};
 use super::state::{App, CloseTarget, Mode};
 use super::worktrees::SpaceEntry;
+use crate::backend::{self, TerminalId};
 use crate::paths::HomePaths;
 use crate::sessions::State;
-use crate::tmux::structure::Window;
 use crate::ui::prompt::{self, Body, Prompt};
 use crate::ui::sidebar::{AgentLine, Entry, SpaceLine};
 use crate::ui::tab_bar::{self, Tab, TabBar};
@@ -96,14 +96,15 @@ impl App {
     /// Where row `r` runs: its space and tab, `sep` between them.
     pub(super) fn place_of(&self, r: &Row, sep: &str) -> Option<String> {
         let space = self.spaces.iter().find(|i| i.id == r.space)?;
-        let w = space.windows().iter().find(|w| w.id == r.window)?;
+        let w = space.tabs().iter().find(|w| w.id == r.window)?;
         Some(format!("{}{sep}{}", space.name(), self.tab_name(w)))
     }
 
-    /// A tab's name as shown: tmux's, except that a tab tmux names (not
-    /// renamed by the user) whose focused pane runs an agent is called after
-    /// the agent's kind (`claude`), whatever process name tmux sees.
-    pub(super) fn tab_name(&self, w: &Window) -> String {
+    /// A tab's name as shown: the backend's, except that a tab the backend
+    /// names (not renamed by the user) whose focused terminal runs an agent
+    /// is called after the agent's kind (`claude`), whatever process name
+    /// the backend sees.
+    pub(super) fn tab_name(&self, w: &backend::Tab) -> String {
         let agent = self.session_in(&w.active).filter(|s| {
             matches!(
                 s.state,
@@ -122,7 +123,7 @@ impl App {
             return Vec::new();
         };
         space
-            .windows()
+            .tabs()
             .iter()
             .map(|w| Tab {
                 name: self.tab_name(w),
@@ -180,8 +181,8 @@ impl App {
             return " Close space ";
         };
         let found = self.spaces.iter().find_map(|s| {
-            let w = s.windows().iter().find(|w| w.contains(pane))?;
-            Some((s.windows().len(), w.panes.len()))
+            let w = s.tabs().iter().find(|w| w.contains(pane))?;
+            Some((s.tabs().len(), w.splits.len()))
         });
         match found {
             Some((1, 1)) => " Close space ",
@@ -223,14 +224,14 @@ impl App {
 
     /// The current tab's panes and where they are drawn on the screen,
     /// clipped to the session area: only the focused one while it is
-    /// zoomed, as the others are hidden (tmux keeps their old places).
-    pub(super) fn pane_rects(&self) -> Vec<(String, Rect)> {
+    /// zoomed, as the others are hidden (the backend keeps their old places).
+    pub(super) fn pane_rects(&self) -> Vec<(TerminalId, Rect)> {
         let area = self.area();
-        let Some(window) = self.current_space().and_then(|i| i.current_window()) else {
+        let Some(window) = self.current_space().and_then(|i| i.current_tab()) else {
             return Vec::new();
         };
         window
-            .shown_panes()
+            .shown_splits()
             .map(|p| {
                 let r = Rect {
                     x: area.x.saturating_add(p.rect.x),

@@ -6,6 +6,7 @@
 
 use super::worktree::{find, ids, inside, name_of, print_json, state_in, Context, Space};
 use super::{allowed, Code, Discard, Fail};
+use crate::backend::{SpaceId, TerminalId};
 use crate::git::{self, WorkingTree, Worktree};
 use crate::sessions::State;
 use crate::worktree::{self as shared, Risks, WorktreeSpace};
@@ -47,7 +48,7 @@ pub(super) fn rm(
     let found = resolve(cx, from, target)?;
     never_deleted(cx, &found)?;
     let spaces = cx.spaces();
-    let closing = shared::spaces_in(&cx.server, &ids(&spaces), &found.w.path)?;
+    let closing = shared::spaces_in(&cx.backend, &ids(&spaces), &found.w.path)?;
     let pid = cx.server_pid();
     not_the_caller_s(cx, &found, &closing, pid)?;
     let confirmed = check(cx, &found, &spaces, &closing, pid, discard)?;
@@ -58,7 +59,7 @@ pub(super) fn rm(
         branch: found.w.branch.clone(),
         main: found.tree.main.clone(),
     };
-    let removal = shared::remove(&cx.server, &target, Some(&confirmed))?;
+    let removal = shared::remove(&cx.backend, &target, Some(&confirmed))?;
     if let Some(notice) = &removal.notice {
         eprintln!("paddock: {notice}");
     }
@@ -112,7 +113,7 @@ fn never_deleted(cx: &Context, found: &Found) -> Result<(), Fail> {
 fn not_the_caller_s(
     cx: &Context,
     found: &Found,
-    closing: &[String],
+    closing: &[SpaceId],
     pid: Option<u32>,
 ) -> Result<(), Fail> {
     let top = &found.w.path;
@@ -120,8 +121,9 @@ fn not_the_caller_s(
         return Err(found.refused("holds the current directory: run rm from outside it"));
     }
     if let Some(pane) = cx.caller_pane(pid) {
-        let space = cx.server.display(&pane, "#{session_id}").ok();
-        let path = cx.server.display(&pane, "#{pane_current_path}").ok();
+        let pane = TerminalId::from_hook(&pane);
+        let space = cx.backend.space_of(&pane);
+        let path = cx.backend.terminal_dir(&pane);
         let here =
             space.is_some_and(|s| closing.contains(&s)) || path.is_some_and(|p| inside(&p, top));
         if here {
@@ -139,7 +141,7 @@ fn check(
     cx: &Context,
     found: &Found,
     spaces: &[Space],
-    closing: &[String],
+    closing: &[SpaceId],
     pid: Option<u32>,
     discard: Discard,
 ) -> Result<Risks, Fail> {
@@ -155,7 +157,8 @@ fn check(
         .iter()
         .flat_map(|s| {
             let closes = closing.contains(&s.id);
-            shared::panes(&cx.server, &s.id)
+            cx.backend
+                .space_terminals(&s.id)
                 .into_iter()
                 .filter(move |p| closes || inside(&p.path, top))
                 .map(move |p| (s, p.id))
@@ -228,12 +231,8 @@ mod tests {
             .as_ref()
             .ok()
             .map(|_| rm(&cx, Some(&repo), "feat/t", Discard::default(), false));
-        let names: Vec<String> = cx.server.sessions().into_iter().map(|s| s.name).collect();
-        let socket = cx.server.run(&["display-message", "-p", "#{socket_path}"]);
-        let _ = cx.server.run(&["kill-server"]);
-        if let Ok(socket) = socket {
-            let _ = std::fs::remove_file(socket.trim());
-        }
+        let names: Vec<String> = cx.backend.spaces().into_iter().map(|s| s.name).collect();
+        cx.backend.stop();
 
         let (path, _) = made.unwrap();
         let err = got.unwrap().unwrap_err();

@@ -9,6 +9,7 @@
 
 use super::splits::SplitDrag;
 use super::state::{App, Mode, TAB_BAR_ROWS};
+use crate::backend::TerminalId;
 use crate::input::mouse::WHEEL_LINES;
 use crate::input::{route_mouse, MouseAction};
 use crate::terminal::emulator::Emulator;
@@ -24,9 +25,9 @@ use std::process::{Command, Stdio};
 /// go the same way, even outside that pane.
 pub enum Press {
     /// Reported to the program in this pane.
-    Program(String),
+    Program(TerminalId),
     /// Selecting text in this pane; `dragged` once the pointer moved.
-    Select { pane: String, dragged: bool },
+    Select { pane: TerminalId, dragged: bool },
     /// On the sidebar's border, pressed at screen row `row`; `dragged`
     /// once the pointer left the border's column (until then, a release is
     /// a click on that row).
@@ -98,15 +99,15 @@ impl App {
 
     fn press(&mut self, m: MouseEvent) -> Result<bool> {
         if let Some(Press::Select { pane, .. }) = self.press.take() {
-            if let Some(t) = self.terminals.get_mut(&pane) {
+            if let Some(t) = self.terminals.get_mut(pane.as_str()) {
                 t.emulator_mut().clear_selection();
             }
         }
         let left = m.kind == MouseEventKind::Down(MouseButton::Left);
         let hit = if self.float_pane().is_some() {
             // While a float is shown, only presses inside it do anything.
-            // Its pane is never focused in tmux: that would make its
-            // window the session's current one.
+            // Its terminal is never focused in the backend: that would
+            // make the float its space's current page.
             self.under(m.column, m.row)
         } else {
             if let Some(changed) = self.press_outside_panes(m, left) {
@@ -125,7 +126,7 @@ impl App {
         let Some((pane, rect)) = hit else {
             return Ok(false);
         };
-        let Some(t) = self.terminals.get_mut(&pane) else {
+        let Some(t) = self.terminals.get_mut(pane.as_str()) else {
             return Ok(false);
         };
         let (col, row) = (m.column - rect.x, m.row - rect.y);
@@ -198,17 +199,15 @@ impl App {
         self.settle()
     }
 
-    /// Focus pane `pane` of the current tab, here at once and in tmux.
-    fn focus_pane(&mut self, pane: &str) {
-        let Some(window) = self
-            .current_space_mut()
-            .and_then(|i| i.current_window_mut())
-        else {
+    /// Focus pane `pane` of the current tab, here at once and in the
+    /// backend.
+    fn focus_pane(&mut self, pane: &TerminalId) {
+        let Some(window) = self.current_space_mut().and_then(|i| i.current_tab_mut()) else {
             return;
         };
-        window.active = pane.to_string();
+        window.active = pane.clone();
         let id = window.id.clone();
-        self.report(|app| app.server.select(&id, Some(pane)));
+        self.report(|app| app.backend.select(&id, Some(pane)));
     }
 
     /// A drag or release: it goes where its press went, clamped to that pane.
@@ -223,7 +222,10 @@ impl App {
             Some(Press::Split(_)) => return Ok(self.split_border_held(m)),
             None => return Ok(false),
         };
-        let (Some(rect), true) = (self.rect_of(&pane), self.terminals.contains_key(&pane)) else {
+        let (Some(rect), true) = (
+            self.rect_of(&pane),
+            self.terminals.contains_key(pane.as_str()),
+        ) else {
             self.press = None;
             return Ok(false);
         };
@@ -232,7 +234,7 @@ impl App {
             return Ok(false);
         };
         let (mut copied, mut report) = (None, None);
-        if let Some(t) = self.terminals.get_mut(&pane) {
+        if let Some(t) = self.terminals.get_mut(pane.as_str()) {
             match &mut self.press {
                 Some(Press::Program(_)) => {
                     if let MouseAction::Report(bytes) =
@@ -305,7 +307,7 @@ impl App {
         let Some((pane, rect)) = self.under(m.column, m.row) else {
             return Ok(false);
         };
-        let Some(t) = self.terminals.get_mut(&pane) else {
+        let Some(t) = self.terminals.get_mut(pane.as_str()) else {
             return Ok(false);
         };
         match route_mouse(&m, m.column - rect.x, m.row - rect.y, t.emulator().modes()) {
@@ -318,7 +320,7 @@ impl App {
 
     /// The panes the mouse reaches, and where they are drawn: the float
     /// shown alone, else the current tab's.
-    fn mouse_rects(&self) -> Vec<(String, Rect)> {
+    fn mouse_rects(&self) -> Vec<(TerminalId, Rect)> {
         match self.float_rect() {
             Some(float) => vec![float],
             None => self.pane_rects(),
@@ -326,7 +328,7 @@ impl App {
     }
 
     /// The pane at a screen position, and where it is drawn.
-    fn under(&self, col: u16, row: u16) -> Option<(String, Rect)> {
+    fn under(&self, col: u16, row: u16) -> Option<(TerminalId, Rect)> {
         self.mouse_rects()
             .into_iter()
             .find(|(_, r)| r.contains(Position::new(col, row)))

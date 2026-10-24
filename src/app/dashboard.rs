@@ -288,7 +288,7 @@ impl App {
         };
         let bytes = self
             .terminals
-            .get(&pane)
+            .get(pane.as_str())
             .and_then(|t| encode_key(&key, t.key_modes()));
         if let Some(bytes) = bytes {
             self.report(|app| app.input(&pane, &bytes));
@@ -438,7 +438,7 @@ impl App {
         };
         let bracketed = self
             .terminals
-            .get(&row.pane)
+            .get(row.pane.as_str())
             .is_some_and(|t| t.emulator().modes().bracketed_paste);
         self.input(&row.pane, &encode_paste(text, bracketed))
     }

@@ -2,6 +2,7 @@
 
 use super::sidebar::SidebarTarget;
 use super::state::{App, Mode, NameTarget, Panel, Renamed};
+use crate::backend::TerminalId;
 use crate::input::line::LineEdit;
 use crate::input::{encode_key, encode_paste, Command, KeyAction};
 use anyhow::Result;
@@ -94,7 +95,7 @@ impl App {
     }
 
     /// The pane typing goes to: the float shown, else the focused pane.
-    fn typing_pane(&self) -> Option<String> {
+    fn typing_pane(&self) -> Option<TerminalId> {
         self.float_pane().or_else(|| self.current_pane())
     }
 
@@ -114,7 +115,7 @@ impl App {
                 };
                 let bytes = self
                     .terminals
-                    .get(&pane)
+                    .get(pane.as_str())
                     .and_then(|t| encode_key(&key, t.key_modes()));
                 if let Some(bytes) = bytes {
                     self.input(&pane, &bytes)?;
@@ -260,7 +261,7 @@ impl App {
                 };
                 let bracketed = self
                     .terminals
-                    .get(&pane)
+                    .get(pane.as_str())
                     .is_some_and(|t| t.emulator().modes().bracketed_paste);
                 self.input(&pane, &encode_paste(text, bracketed))?;
             }

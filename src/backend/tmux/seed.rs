@@ -7,7 +7,8 @@
 //! their replies: output before the last reply is already in the captures,
 //! output after it is new (ADR 0005).
 
-use crate::tmux::{wait_reply, ControlClient, Message};
+use super::control::{wait_reply, ControlClient};
+use super::protocol::Message;
 use anyhow::{bail, Result};
 use std::sync::mpsc::Receiver;
 

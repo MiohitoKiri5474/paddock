@@ -22,6 +22,7 @@ pub use external::{external_key, is_external};
 pub use kind::AgentKind;
 pub use program_state::ProgramState;
 
+use crate::backend::TerminalId;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
@@ -829,10 +830,11 @@ impl Sessions {
     /// quits; a terminal that closed has no row anyway. A list read before
     /// the session's last event may be from before agy started, and is
     /// ignored. Returns whether any ended.
-    pub fn end_exited(&mut self, taken: u64, commands: &HashMap<String, String>) -> bool {
+    pub fn end_exited(&mut self, taken: u64, commands: &HashMap<TerminalId, String>) -> bool {
         let mut ended = false;
         for (pane, s) in &mut self.by_pane {
-            let quit = !is_external(pane) && commands.get(pane).is_some_and(|c| is_shell(c));
+            let quit =
+                !is_external(pane) && commands.get(pane.as_str()).is_some_and(|c| is_shell(c));
             if s.kind == AgentKind::Agy && !s.ended() && quit && s.alive < taken {
                 s.state = State::Stopped;
                 s.updated = taken;
@@ -1297,7 +1299,7 @@ mod tests {
             ..agy("SessionStart", 4)
         });
         assert!(s.is_new_status("%1", blocked));
-        let shells = HashMap::from([("%1".to_string(), "zsh".to_string())]);
+        let shells = HashMap::from([(TerminalId::from_hook("%1"), "zsh".to_string())]);
         s.end_exited(10, &shells);
         assert!(!s.is_new_status("%1", working), "ended");
     }
@@ -1386,7 +1388,7 @@ mod tests {
             ..agy("SessionStart", 2)
         });
         assert!(s.agy_in_terminals());
-        let shells = HashMap::from([("%2".to_string(), "zsh".to_string())]);
+        let shells = HashMap::from([(TerminalId::from_hook("%2"), "zsh".to_string())]);
         s.end_exited(10, &shells);
         assert!(!s.agy_in_terminals(), "ended");
         let external = log::keyed_external(HookRecord {
@@ -1424,7 +1426,7 @@ mod tests {
 
     #[test]
     fn agy_ends_when_its_terminal_goes_back_to_the_shell() {
-        let commands = |c: &str| HashMap::from([("%1".to_string(), c.to_string())]);
+        let commands = |c: &str| HashMap::from([(TerminalId::from_hook("%1"), c.to_string())]);
         let mut s = Sessions::default();
         s.apply(&agy("SessionStart", 10));
         assert!(!s.end_exited(20, &commands("agy")), "still running");
@@ -1451,8 +1453,8 @@ mod tests {
     #[test]
     fn only_agy_sessions_end_at_the_shell() {
         let commands = HashMap::from([
-            ("%1".to_string(), "zsh".to_string()),
-            ("%2".to_string(), "zsh".to_string()),
+            (TerminalId::from_hook("%1"), "zsh".to_string()),
+            (TerminalId::from_hook("%2"), "zsh".to_string()),
         ]);
         let mut s = Sessions::default();
         s.apply(&rec("SessionStart", 1));
@@ -1494,7 +1496,7 @@ mod tests {
         assert_eq!(s.externals(3_000, 5_000), [key.as_str()]);
         // No end event and no snapshot: it goes once quiet for the timeout.
         assert!(s.externals(8_000, 5_000).is_empty());
-        let shells = HashMap::from([(key.clone(), "zsh".to_string())]);
+        let shells = HashMap::from([(TerminalId::from_hook(&key), "zsh".to_string())]);
         assert!(!s.end_exited(3_000, &shells), "never a terminal's");
     }
 

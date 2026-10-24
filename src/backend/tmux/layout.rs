@@ -7,6 +7,7 @@
 //! last of that row. So the pane beside a border is not always the one
 //! that moves it; the tree says which one does.
 
+use crate::backend::TerminalId;
 use serde::Deserialize;
 
 /// What a cell of the layout is (`t`).
@@ -50,7 +51,7 @@ struct Layout {
 /// on `pane`, with a size worked out from where the border goes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Border {
-    pub pane: String,
+    pub pane: TerminalId,
     /// A border between columns (dragged sideways), else between rows.
     pub columns: bool,
     /// Where the resized cell sits on the border's axis.
@@ -75,6 +76,18 @@ impl Border {
             Anchor::After(end) => end.saturating_sub(at).saturating_sub(1),
         };
         size.max(1)
+    }
+}
+
+#[cfg(test)]
+impl Border {
+    /// The border at the end of a cell starting at `start`, moved by `pane`.
+    pub fn ending(pane: &str, columns: bool, start: u16) -> Self {
+        Self {
+            pane: TerminalId::new(pane),
+            columns,
+            anchor: Anchor::Before(start),
+        }
     }
 }
 
@@ -119,7 +132,7 @@ impl Cell {
         let start = |c: &Cell| if columns { c.x } else { c.y };
         let len = |c: &Cell| if columns { c.width } else { c.height };
         let border = |pane: String, anchor| Border {
-            pane,
+            pane: TerminalId::new(pane),
             columns,
             anchor,
         };

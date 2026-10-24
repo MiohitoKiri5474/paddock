@@ -4,12 +4,13 @@
 //! closes, `C-a Tab` falls back to its space's current tab or an older page.
 
 use super::state::App;
+use crate::backend::{SpaceId, TabId};
 
-/// A page: a tab (tmux window `window`) of a space (tmux session `space`).
+/// A page: tab `window` of space `space`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Page {
-    pub space: String,
-    pub window: String,
+    pub space: SpaceId,
+    pub window: TabId,
 }
 
 /// How many pages are remembered.
@@ -67,7 +68,7 @@ impl App {
             let tab = space.tab_or_current(&p.window)?;
             Some(Page {
                 space: space.id.clone(),
-                window: space.windows()[tab].id.clone(),
+                window: space.tabs()[tab].id.clone(),
             })
         });
     }
@@ -77,7 +78,7 @@ impl App {
         let space = self.current_space()?;
         Some(Page {
             space: space.id.clone(),
-            window: space.current_window()?.id.clone(),
+            window: space.current_tab()?.id.clone(),
         })
     }
 

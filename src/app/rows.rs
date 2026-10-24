@@ -19,9 +19,9 @@ pub struct Row {
     /// The pane's id; an external session's key (see
     /// [`sessions::external_key`]).
     pub pane: String,
-    /// The pane's space (tmux session id); empty for an external session.
+    /// The pane's space's id; empty for an external session.
     pub space: String,
-    /// The pane's tab (tmux window id); empty for an external session.
+    /// The pane's tab's id; empty for an external session.
     pub window: String,
     pub label: String,
     /// The session's agent, shown as a tag on its row.

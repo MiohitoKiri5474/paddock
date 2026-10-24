@@ -9,6 +9,7 @@ use super::rows::Row;
 use super::sidebar::Pick;
 use super::state::{App, Mode};
 use super::Event;
+use crate::backend::TerminalId;
 use crate::config::Notify;
 use crate::hooks::now_ms;
 use crate::sessions::{self, is_external, log, state_after, HookRecord, ProgramState, State};
@@ -343,10 +344,10 @@ impl App {
         if !self.looking_at_tab() {
             return;
         }
-        let Some(window) = self.current_space().and_then(|i| i.current_window()) else {
+        let Some(window) = self.current_space().and_then(|i| i.current_tab()) else {
             return;
         };
-        let panes: Vec<String> = window.shown_panes().map(|p| p.id.clone()).collect();
+        let panes: Vec<TerminalId> = window.shown_splits().map(|p| p.id.clone()).collect();
         for pane in panes {
             self.sessions.see(&pane);
         }

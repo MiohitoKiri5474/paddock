@@ -9,6 +9,7 @@
 
 use super::sidebar::Pick;
 use super::state::{App, CloseTarget, Mode, NameTarget, Panel};
+use crate::backend::SpaceId;
 use crate::git::{self, WorkingTree};
 use crate::paths::HomePaths;
 use crate::sessions::State;
@@ -112,14 +113,14 @@ impl App {
     /// Space `id`'s directory, read now (the sidebar's may be seconds
     /// old), as [`shared::space_dir`] reads it for every decision about
     /// worktrees; `None` if it is gone.
-    fn space_dir_now(&self, id: &str) -> Option<PathBuf> {
-        shared::space_dir(&self.server, id)
+    fn space_dir_now(&self, id: &SpaceId) -> Option<PathBuf> {
+        shared::space_dir(&self.backend, id)
             .map(PathBuf::from)
             .filter(|p| p.is_dir())
     }
 
     /// Space `id`'s working tree, read now.
-    fn tree_now(&self, id: &str) -> Option<WorkingTree> {
+    fn tree_now(&self, id: &SpaceId) -> Option<WorkingTree> {
         git::working_tree(&self.space_dir_now(id)?.to_string_lossy())
     }
 
@@ -231,14 +232,14 @@ impl App {
     /// directory is in a linked worktree paddock made (see [`shared::is_ours`]).
     /// The main checkout, and worktrees elsewhere (Claude's own), never
     /// are.
-    pub(super) fn worktree_space(&self, id: &str) -> Option<WorktreeSpace> {
+    pub(super) fn worktree_space(&self, id: &SpaceId) -> Option<WorktreeSpace> {
         let tree = self.tree_now(id)?;
         if !tree.is_linked() || !shared::is_ours(&self.worktrees.directory, &tree) {
             return None;
         }
         Some(WorktreeSpace {
-            space: Some(id.to_string()),
-            spaces: vec![id.to_string()],
+            space: Some(id.clone()),
+            spaces: vec![id.clone()],
             branch: git::current_branch(&tree.top),
             path: tree.top,
             main: tree.main,
@@ -247,14 +248,14 @@ impl App {
 
     /// Every space whose working tree is the one at `top`, read now (see
     /// [`shared::spaces_in`]).
-    fn spaces_in(&self, top: &str) -> Result<Vec<String>> {
-        let ids: Vec<String> = self.spaces.iter().map(|s| s.id.clone()).collect();
-        Ok(shared::spaces_in(&self.server, &ids, top)?)
+    fn spaces_in(&self, top: &str) -> Result<Vec<SpaceId>> {
+        let ids: Vec<SpaceId> = self.spaces.iter().map(|s| s.id.clone()).collect();
+        Ok(shared::spaces_in(&self.backend, &ids, top)?)
     }
 
     /// `delete_worktree`: ask before deleting space `id` with its worktree
     /// and branch, if it is a worktree space; else say why not.
-    pub(super) fn delete_worktree(&mut self, id: &str) -> Result<()> {
+    pub(super) fn delete_worktree(&mut self, id: &SpaceId) -> Result<()> {
         match self.worktree_space(id) {
             Some(target) => {
                 self.ask_delete(target);
@@ -312,7 +313,7 @@ impl App {
         let busy = self
             .rows()
             .into_iter()
-            .filter(|r| target.spaces.contains(&r.space))
+            .filter(|r| target.spaces.iter().any(|s| *s == r.space))
             .map(|r| r.state)
             .find(|s| matches!(s, State::Running | State::Waiting));
         match busy {
@@ -335,7 +336,7 @@ impl App {
         target: &WorktreeSpace,
         confirmed: Option<&Risks>,
     ) -> Result<()> {
-        if let Some(notice) = shared::remove(&self.server, target, confirmed)?.notice {
+        if let Some(notice) = shared::remove(&self.backend, target, confirmed)?.notice {
             self.notice = Some(notice);
         }
         Ok(())

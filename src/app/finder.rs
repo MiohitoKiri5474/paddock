@@ -7,6 +7,7 @@
 
 use super::rows::Row;
 use super::state::{App, Mode, Panel};
+use crate::backend::{SpaceId, TabId};
 use crate::fuzzy;
 use crate::input::line::LineEdit;
 use crate::paths::HomePaths;
@@ -19,11 +20,11 @@ use ratatui::layout::{Position, Rect};
 /// What a finder row stands for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Target {
-    /// A space, by tmux session id (`$N`).
-    Space(String),
-    /// A tab: its space's id and its window id (`@N`).
-    Tab(String, String),
-    /// An agent's pane (`%N`).
+    /// A space.
+    Space(SpaceId),
+    /// A tab: its space's id and its own.
+    Tab(SpaceId, TabId),
+    /// An agent's terminal, as its row names it.
     Pane(String),
 }
 
@@ -182,7 +183,7 @@ fn place_detail(path: Option<&str>, branch: Option<&str>) -> String {
 
 /// A tab's directory and branch, taken as a pair from one place: the
 /// agent's in its focused pane (`claude`) when its directory is known,
-/// else its space's (the first tab's), which needs no round trip to tmux.
+/// else its space's (the first tab's), which needs no round trip to the backend.
 /// A branch is never paired with another place's directory.
 fn tab_place(
     claude: (Option<String>, Option<String>),
@@ -240,7 +241,7 @@ impl App {
             })
             .collect();
         for (line, space) in spaces.iter().zip(&self.spaces) {
-            for w in space.windows() {
+            for w in space.tabs() {
                 let claude_branch = rows
                     .iter()
                     .find(|r| r.pane == w.active)
@@ -351,10 +352,7 @@ impl App {
                     return;
                 };
                 self.select_space(i);
-                let tab = self.spaces[i]
-                    .windows()
-                    .iter()
-                    .position(|w| w.id == *window);
+                let tab = self.spaces[i].tabs().iter().position(|w| w.id == *window);
                 if let Some(tab) = tab {
                     self.report(|app| app.select_tab(tab));
                 }

@@ -7,6 +7,7 @@
 use super::input::Flow;
 use super::mouse::copy as to_clipboard;
 use super::state::{App, Mode};
+use crate::backend::TerminalId;
 use crate::input::keymap::CopyAction;
 use crate::input::line::LineEdit;
 use crate::input::{Command, KeyAction};
@@ -30,8 +31,8 @@ const HINTS: &[&str] = &[
 
 /// A terminal in copy mode.
 pub struct CopyMode {
-    /// Its pane.
-    pub pane: String,
+    /// Its terminal.
+    pub pane: TerminalId,
     pub cursor: Spot,
     /// Where the selection started, while selecting.
     pub anchor: Option<Anchor>,
@@ -115,7 +116,7 @@ impl App {
         let Some(pane) = self.float_pane().or_else(|| self.current_pane()) else {
             return;
         };
-        let Some(t) = self.terminals.get_mut(&pane) else {
+        let Some(t) = self.terminals.get_mut(pane.as_str()) else {
             return;
         };
         t.pause();
@@ -134,7 +135,7 @@ impl App {
     /// view is live again, with the output held back drawn. The caller
     /// sets the mode.
     pub(super) fn leave_copy(&mut self, copy: &CopyMode) {
-        if let Some(t) = self.terminals.get_mut(&copy.pane) {
+        if let Some(t) = self.terminals.get_mut(copy.pane.as_str()) {
             t.go_on();
             let emu = t.emulator_mut();
             emu.clear_selection();
@@ -158,12 +159,18 @@ impl App {
             return;
         };
         let pane = copy.pane.clone();
-        let paused = self.terminals.get(&pane).is_some_and(|t| t.is_paused());
+        let paused = self
+            .terminals
+            .get(pane.as_str())
+            .is_some_and(|t| t.is_paused());
         if paused && self.shows(&pane) {
             return;
         }
         self.end_copy();
-        let went_on = self.terminals.get_mut(&pane).and_then(|t| t.take_went_on());
+        let went_on = self
+            .terminals
+            .get_mut(pane.as_str())
+            .and_then(|t| t.take_went_on());
         self.notice = match went_on {
             Some(WentOn::Overflowed) => {
                 Some("copy mode ended: too much output came meanwhile".into())
@@ -202,7 +209,7 @@ impl App {
 
     /// Do `action` in copy mode.
     fn copy_action(&mut self, mut copy: CopyMode, action: CopyAction) -> Flow {
-        let Some(t) = self.terminals.get_mut(&copy.pane) else {
+        let Some(t) = self.terminals.get_mut(copy.pane.as_str()) else {
             return Flow::Continue;
         };
         let emu = t.emulator_mut();
@@ -253,7 +260,7 @@ impl App {
                 if !query.is_empty() {
                     let found = self
                         .terminals
-                        .get(&copy.pane)
+                        .get(copy.pane.as_str())
                         .map(|t| t.emulator().find(&query))
                         .unwrap_or_default();
                     copy.search = Some(Search {
@@ -292,7 +299,7 @@ impl App {
 
     /// Show the cursor, and keep the selection running to it.
     fn follow_cursor(&mut self, copy: &CopyMode) {
-        let Some(t) = self.terminals.get_mut(&copy.pane) else {
+        let Some(t) = self.terminals.get_mut(copy.pane.as_str()) else {
             return;
         };
         let emu = t.emulator_mut();
@@ -307,7 +314,7 @@ impl App {
         let Mode::Copy(copy) = &mut self.mode else {
             return;
         };
-        let Some(t) = self.terminals.get_mut(&copy.pane) else {
+        let Some(t) = self.terminals.get_mut(copy.pane.as_str()) else {
             return;
         };
         let emu = t.emulator_mut();

@@ -1,8 +1,9 @@
-//! What paddock keeps in the state directory (`layout.toml`) that tmux cannot
-//! hold: which space was current. Tabs, splits, sizes and focus live
-//! in tmux (ADR 0006). A file from before, with its `current` tab and `tabs`
+//! What paddock keeps in the state directory (`layout.toml`) that the
+//! backend does not hold: which space was current. Tabs, splits, sizes and
+//! focus live in the backend (ADR 0006). A file from before, with its `current` tab and `tabs`
 //! layouts, still reads: those fields are ignored.
 
+use crate::backend::SpaceId;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -11,10 +12,10 @@ pub const FILE_NAME: &str = "layout.toml";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Saved {
-    /// The current space's tmux session id (`$N`).
+    /// The current space's id, as the backend spells it (tmux: `$N`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[serde(alias = "item")]
-    pub space: Option<String>,
+    pub space: Option<SpaceId>,
     /// The sidebar's width when last changed (`C-a {`, `C-a }`, dragging).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sidebar: Option<u16>,
