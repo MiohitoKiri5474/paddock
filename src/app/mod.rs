@@ -1,6 +1,5 @@
-//! The running app: connect to the hidden server, show its sessions as
-//! spaces with their windows as tabs, and pass input to the focused
-//! pane until the user detaches.
+//! The running app: connect to the backend, show its spaces and their
+//! tabs, and pass input to the focused terminal until the user detaches.
 
 mod attention;
 mod copy;
@@ -27,11 +26,11 @@ mod worktrees;
 pub use dashboard::DashboardFilter;
 pub use rows::{Row, RowId, TaskDetails, TaskPrs, TaskRow};
 
+use crate::backend::{self, Backend, SpaceId, TerminalId};
 use crate::config::Config;
 use crate::git::{Details, Status};
 use crate::paths::Paths;
 use crate::sessions::{Agent, HookRecord};
-use crate::tmux::{Message, Server};
 use anyhow::{Context, Result};
 use crossterm::event as ct;
 use signal_hook::consts::SIGTERM;
@@ -39,12 +38,13 @@ use signal_hook::iterator::Signals;
 use std::collections::HashMap;
 use std::sync::{mpsc, Arc};
 
-/// Everything the event loop waits on, from tmux and from the outer terminal.
+/// Everything the event loop waits on, from the backend and from the outer
+/// terminal.
 pub enum Event {
-    /// A control message from the client of space (tmux session) `session` (`$N`).
-    Tmux {
-        session: String,
-        msg: Message,
+    /// What space `space`'s connection reported.
+    Backend {
+        space: SpaceId,
+        event: backend::Event,
     },
     Input(ct::Event),
     /// Asked to detach (SIGTERM), e.g. by a second launch taking over.
@@ -53,15 +53,14 @@ pub enum Event {
     Hooks(Vec<HookRecord>),
     /// A `claude agents --json` snapshot and when it was taken (ms).
     Agents(u64, Vec<Agent>),
-    /// Each pane's `pane_current_command`, by pane id, and when it was
-    /// read (ms).
-    Commands(u64, HashMap<String, String>),
+    /// Each terminal's foreground command, and when it was read (ms).
+    Commands(u64, HashMap<TerminalId, String>),
     /// Git status just read for tasks, by `(directory, branch)`.
     Git(Vec<((String, String), Status)>),
     /// Dashboard details just read for tasks, by `(directory, branch)`.
     Details(Vec<((String, String), Details)>),
-    /// Each space's directory and branch just read, by tmux session id.
-    Spaces(Vec<(String, watch::Place)>),
+    /// Each space's directory and branch just read.
+    Spaces(Vec<(SpaceId, watch::Place)>),
     /// Pull requests just read for the dashboard's tasks, by
     /// `(directory, branch)`; `None` for none.
     Prs(prs::PrUpdate),
@@ -79,8 +78,8 @@ pub fn run() -> Result<()> {
         return Ok(());
     };
     let state_dir = paths.state_dir.clone();
-    let server = Server::new(paths);
-    server.write_config()?;
+    let backend = Backend::new(paths);
+    backend.prepare()?;
     let start_dir = std::env::current_dir().context("no current directory")?;
 
     let (tx, rx) = mpsc::channel();
@@ -96,17 +95,17 @@ pub fn run() -> Result<()> {
     let (screen_guard, mut screen) = screen::ScreenGuard::enter()?;
     let size = screen.size().context("cannot read the terminal size")?;
     let mut app = state::App::start(
-        server,
+        backend,
         &config,
         (size.width, size.height),
         tx.clone(),
         start_dir,
         state_dir.clone(),
     )?;
-    let events_log = watch::server_log(&app.server, &state_dir)?;
+    let events_log = watch::server_log(&app.backend, &state_dir)?;
     app.events_log = Some(events_log.clone());
     let git = watch::start(
-        &app.server,
+        &app.backend,
         events_log,
         Arc::clone(&app.agy_running),
         &state_dir,

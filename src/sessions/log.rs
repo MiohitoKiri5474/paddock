@@ -123,19 +123,6 @@ fn records(bytes: &[u8]) -> Vec<HookRecord> {
         .collect()
 }
 
-/// The terminal a hook runs in, from `$TMUX` (`socket,pid,index`) and
-/// `$TMUX_PANE`: `(server pid, pane id)`, or `None` unless the socket is
-/// paddock's (`socket` is its name).
-pub fn terminal(tmux: &str, pane: &str, socket: &str) -> Option<(u32, String)> {
-    let mut parts = tmux.rsplitn(3, ',');
-    let _index = parts.next()?;
-    let pid = parts.next()?.parse().ok()?;
-    let path = parts.next()?;
-    let ours = Path::new(path).file_name()? == socket;
-    let pane_ok = pane.starts_with('%') && pane.len() > 1;
-    (ours && pane_ok).then(|| (pid, pane.to_string()))
-}
-
 /// The record for agent `kind`'s hook payload (JSON on stdin). An
 /// unreadable payload still records the event, without its details.
 pub fn record(kind: AgentKind, event: &str, pane: &str, payload: &str, ts: u64) -> HookRecord {
@@ -319,16 +306,6 @@ mod tests {
     use super::*;
 
     const CLAUDE: AgentKind = AgentKind::Claude;
-
-    #[test]
-    fn only_paddocks_socket_counts() {
-        let t = "/private/tmp/tmux-501/paddock,4242,0";
-        assert_eq!(terminal(t, "%3", "paddock"), Some((4242, "%3".into())));
-        assert_eq!(terminal("/tmp/tmux-501/default,1,0", "%3", "paddock"), None);
-        assert_eq!(terminal(t, "", "paddock"), None);
-        assert_eq!(terminal("", "%3", "paddock"), None);
-        assert_eq!(terminal("garbage", "%3", "paddock"), None);
-    }
 
     #[test]
     fn an_external_record_has_no_pane_and_is_keyed_by_its_session_once_read() {

@@ -2,6 +2,7 @@
 //! Gemini CLI).
 
 mod app;
+mod backend;
 mod cli;
 mod config;
 mod fuzzy;
@@ -12,8 +13,8 @@ mod input;
 mod instance;
 mod paths;
 mod sessions;
+mod shell;
 mod terminal;
-mod tmux;
 mod ui;
 mod worktree;
 

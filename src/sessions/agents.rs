@@ -4,7 +4,7 @@
 //! it to Claude sessions only.
 
 use super::Agent;
-use crate::tmux::Server;
+use crate::backend::{Backend, TerminalId};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::process::{Command, Stdio};
@@ -26,17 +26,21 @@ struct Raw {
     pid: Option<u32>,
 }
 
-/// Parse `claude agents --json`, finding each session's pane from its pid.
+/// Parse `claude agents --json`, finding each session's terminal from its
+/// pid. The sessions keep it as text, as hooks give it.
 pub fn parse(
     json: &str,
     parents: &HashMap<u32, u32>,
-    panes: &HashMap<u32, String>,
+    panes: &HashMap<u32, TerminalId>,
 ) -> Option<Vec<Agent>> {
     let raw: Vec<Raw> = serde_json::from_str(json).ok()?;
     Some(
         raw.into_iter()
             .map(|r| Agent {
-                pane: r.pid.and_then(|pid| pane_of(pid, parents, panes)),
+                pane: r
+                    .pid
+                    .and_then(|pid| pane_of(pid, parents, panes))
+                    .map(|t| t.as_str().to_string()),
                 session_id: r.session_id,
                 name: r.name,
                 status: r.status,
@@ -46,15 +50,15 @@ pub fn parse(
     )
 }
 
-/// The pane whose shell `pid` descends from (or is).
+/// The terminal whose shell `pid` descends from (or is).
 pub fn pane_of(
     mut pid: u32,
     parents: &HashMap<u32, u32>,
-    panes: &HashMap<u32, String>,
-) -> Option<String> {
+    panes: &HashMap<u32, TerminalId>,
+) -> Option<TerminalId> {
     for _ in 0..MAX_DEPTH {
-        if let Some(pane) = panes.get(&pid) {
-            return Some(pane.clone());
+        if let Some(terminal) = panes.get(&pid) {
+            return Some(terminal.clone());
         }
         pid = *parents.get(&pid).filter(|&&p| p != pid)?;
     }
@@ -71,16 +75,6 @@ pub fn parse_pairs(out: &str) -> HashMap<u32, u32> {
         .collect()
 }
 
-/// `pane_pid pane_id` lines from tmux.
-pub fn parse_panes(out: &str) -> HashMap<u32, String> {
-    out.lines()
-        .filter_map(|l| {
-            let (pid, pane) = l.split_once(' ')?;
-            Some((pid.parse().ok()?, pane.to_string()))
-        })
-        .collect()
-}
-
 fn output(cmd: &mut Command) -> Option<String> {
     let out = cmd
         .stdin(Stdio::null())
@@ -93,15 +87,12 @@ fn output(cmd: &mut Command) -> Option<String> {
 }
 
 /// Ask Claude for its sessions. `None` if that failed: nothing is known then.
-pub fn fetch(server: &Server) -> Option<Vec<Agent>> {
+pub fn fetch(backend: &Backend) -> Option<Vec<Agent>> {
     let json = output(Command::new("claude").args(["agents", "--json"]))?;
     let parents = output(Command::new("ps").args(["-A", "-o", "pid=,ppid="]))
         .map(|o| parse_pairs(&o))
         .unwrap_or_default();
-    let panes = server
-        .run(&["list-panes", "-a", "-F", "#{pane_pid} #{pane_id}"])
-        .map(|o| parse_panes(&o))
-        .unwrap_or_default();
+    let panes = backend.terminal_pids();
     parse(&json, &parents, &panes)
 }
 
@@ -109,10 +100,18 @@ pub fn fetch(server: &Server) -> Option<Vec<Agent>> {
 mod tests {
     use super::*;
 
+    /// Terminals by the pid of their shell.
+    fn parse_panes(pairs: &[(u32, &str)]) -> HashMap<u32, TerminalId> {
+        pairs
+            .iter()
+            .map(|&(pid, pane)| (pid, TerminalId::from(pane)))
+            .collect()
+    }
+
     #[test]
     fn finds_the_pane_through_parent_processes() {
         let parents = parse_pairs("  300   200\n200 100\n100 1\n 1 0\n");
-        let panes = parse_panes("100 %4\n500 %5\n");
+        let panes = parse_panes(&[(100, "%4"), (500, "%5")]);
         assert_eq!(pane_of(300, &parents, &panes), Some("%4".into()));
         assert_eq!(pane_of(100, &parents, &panes), Some("%4".into()));
         assert_eq!(pane_of(999, &parents, &panes), None);
@@ -126,7 +125,7 @@ mod tests {
             "sessionId":"s1","name":"fix-login","status":"busy"},
             {"sessionId":"s2","status":"idle"}]"#;
         let parents = parse_pairs("300 100\n");
-        let panes = parse_panes("100 %4\n");
+        let panes = parse_panes(&[(100, "%4")]);
         let got = parse(json, &parents, &panes).unwrap();
         assert_eq!(
             got[0],

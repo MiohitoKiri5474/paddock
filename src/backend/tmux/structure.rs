@@ -1,7 +1,8 @@
-//! What a tmux session holds, as paddock shows it (ADR 0006): its windows
-//! (tabs) in order, and each window's panes (splits) with their place.
-//! Windows marked as floats are kept apart: they are never tabs.
+//! A tmux session's windows and panes (ADR 0006), read into the
+//! [`Structure`] paddock shows: windows are tabs, panes are splits, and
+//! windows marked as floats are kept apart.
 
+use crate::backend::{Float, FloatId, Split, Structure, Tab, TabId, TerminalId};
 use ratatui::layout::Rect;
 
 /// Separates the fields of [`FORMAT`]; never part of a name.
@@ -19,90 +20,6 @@ pub const FORMAT: &str = "#{window_id}\x1f#{window_active}\x1f#{automatic-rename
 /// Fields per line of [`FORMAT`].
 const FIELDS: usize = 13;
 
-/// One pane: its id (`%N`) and where it sits in its window.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Pane {
-    pub id: String,
-    pub rect: Rect,
-}
-
-/// One window of a session: a tab.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Window {
-    pub id: String,
-    pub name: String,
-    /// tmux still names it (the user has not renamed it).
-    pub auto_name: bool,
-    pub panes: Vec<Pane>,
-    /// The focused pane's id.
-    pub active: String,
-    /// The focused pane fills the window (`resize-pane -Z`); the others
-    /// are hidden but keep running.
-    pub zoomed: bool,
-}
-
-impl Window {
-    pub fn contains(&self, pane: &str) -> bool {
-        self.panes.iter().any(|p| p.id == pane)
-    }
-
-    /// Whether `pane` is drawn when the window is: any of its panes, or
-    /// only the focused one while it is zoomed.
-    pub fn shows(&self, pane: &str) -> bool {
-        self.contains(pane) && (!self.zoomed || self.active == pane)
-    }
-
-    /// Focus `pane` ahead of tmux's own report, as tmux's `select-pane`
-    /// does: focusing another pane than the zoomed one unzooms.
-    pub fn focus(&mut self, pane: &str) {
-        if self.active != pane {
-            self.zoomed = false;
-        }
-        self.active = pane.to_string();
-    }
-
-    /// The panes drawn when the window is: all of them, or only the
-    /// focused one while it is zoomed.
-    pub fn shown_panes(&self) -> impl Iterator<Item = &Pane> {
-        self.panes.iter().filter(|p| self.shows(&p.id))
-    }
-}
-
-/// A window marked as a float: its key and the window itself.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FloatWindow {
-    /// The float's key, as stored in [`FLOAT_OPTION`].
-    pub key: String,
-    /// The window, its panes and focus as for a tab.
-    pub window: Window,
-}
-
-/// A session's name, its tabs in order with the current one's index, and
-/// its floats.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Structure {
-    pub name: String,
-    /// The tabs: every window but the floats.
-    pub windows: Vec<Window>,
-    /// Index of the current tab in `windows`.
-    pub current: usize,
-    /// The windows marked as floats, in tmux's order.
-    pub floats: Vec<FloatWindow>,
-    /// tmux made a float its session's current window (it does when the
-    /// current tab closes and the float is next); `current` is then the
-    /// tab before it.
-    pub float_active: bool,
-}
-
-impl Structure {
-    /// Every window, the tabs first, then the floats.
-    pub fn all_windows(&self) -> impl Iterator<Item = &Window> {
-        self.windows
-            .iter()
-            .chain(self.floats.iter().map(|f| &f.window))
-    }
-}
-
 /// Parse `list-panes -s -F FORMAT` output (panes come by window, in order).
 pub fn parse(out: &str) -> Structure {
     let mut s = Structure::default();
@@ -115,45 +32,53 @@ pub fn parse(out: &str) -> Structure {
         };
         let num = |v: &str| v.parse::<u16>().unwrap_or(0);
         s.name = session.to_string();
-        let new_window = || Window {
-            id: window.to_string(),
-            name: name.to_string(),
-            auto_name: auto == "1",
-            panes: Vec::new(),
-            active: pane.to_string(),
-            zoomed: zoomed == "1",
+        let split = Split {
+            id: TerminalId::new(pane),
+            rect: Rect::new(num(x), num(y), num(w), num(h)),
         };
-        let win = if float.is_empty() {
-            if s.windows.last().is_none_or(|l| l.id != window) {
+        // A window's focused pane, as its `active` until one says it is.
+        let (splits, active) = if float.is_empty() {
+            if s.tabs.last().is_none_or(|l| l.id.as_str() != window) {
                 if window_active == "1" {
-                    s.current = s.windows.len();
+                    s.current = s.tabs.len();
                 }
-                s.windows.push(new_window());
-            }
-            s.windows.last_mut()
-        } else {
-            if s.floats.last().is_none_or(|l| l.window.id != window) {
-                if window_active == "1" {
-                    s.float_active = true;
-                    s.current = s.windows.len().saturating_sub(1);
-                }
-                s.floats.push(FloatWindow {
-                    key: float.to_string(),
-                    window: new_window(),
+                s.tabs.push(Tab {
+                    id: TabId::new(window),
+                    name: name.to_string(),
+                    auto_name: auto == "1",
+                    splits: Vec::new(),
+                    active: split.id.clone(),
+                    zoomed: zoomed == "1",
                 });
             }
-            s.floats.last_mut().map(|f| &mut f.window)
-        };
-        let Some(win) = win else {
-            continue;
+            let Some(t) = s.tabs.last_mut() else {
+                continue;
+            };
+            (&mut t.splits, &mut t.active)
+        } else {
+            // tmux makes a float its session's current window when the
+            // current tab closes and the float is next.
+            if s.floats.last().is_none_or(|l| l.id.as_str() != window) {
+                if window_active == "1" {
+                    s.float_active = true;
+                    s.current = s.tabs.len().saturating_sub(1);
+                }
+                s.floats.push(Float {
+                    id: FloatId::new(window),
+                    key: float.to_string(),
+                    splits: Vec::new(),
+                    active: split.id.clone(),
+                });
+            }
+            let Some(f) = s.floats.last_mut() else {
+                continue;
+            };
+            (&mut f.splits, &mut f.active)
         };
         if pane_active == "1" {
-            win.active = pane.to_string();
+            *active = split.id.clone();
         }
-        win.panes.push(Pane {
-            id: pane.to_string(),
-            rect: Rect::new(num(x), num(y), num(w), num(h)),
-        });
+        splits.push(split);
     }
     s
 }
@@ -253,14 +178,14 @@ mod tests {
         let s = parse(&text);
         assert_eq!(s.name, "api");
         assert_eq!(s.current, 1);
-        let ids: Vec<&str> = s.windows.iter().map(|w| w.id.as_str()).collect();
+        let ids: Vec<&str> = s.tabs.iter().map(|t| t.id.as_str()).collect();
         assert_eq!(ids, ["@1", "@4"]);
-        let logs = &s.windows[1];
+        let logs = &s.tabs[1];
         assert_eq!((logs.name.as_str(), logs.auto_name), ("my logs", false));
-        assert!(s.windows[0].auto_name);
+        assert!(s.tabs[0].auto_name);
         assert_eq!(logs.active, "%5");
-        assert_eq!(logs.panes[1].rect, Rect::new(51, 0, 49, 30));
-        assert!(logs.contains("%2") && !logs.contains("%1"));
+        assert_eq!(logs.splits[1].rect, Rect::new(51, 0, 49, 30));
+        assert!(logs.contains(&"%2".into()) && !logs.contains(&"%1".into()));
         assert!(s.floats.is_empty() && !s.float_active);
     }
 
@@ -287,13 +212,13 @@ mod tests {
                 ..Line::default()
             },
         ]));
-        assert!(s.windows[0].zoomed && !s.windows[1].zoomed);
-        assert_eq!(s.windows[0].active, "%2");
-        assert!(s.windows[0].shows("%2") && !s.windows[0].shows("%1"));
-        assert!(s.windows[1].shows("%3") && !s.windows[1].shows("%2"));
-        let shown: Vec<&str> = s.windows[0].shown_panes().map(|p| p.id.as_str()).collect();
+        assert!(s.tabs[0].zoomed && !s.tabs[1].zoomed);
+        assert_eq!(s.tabs[0].active, "%2");
+        assert!(s.tabs[0].shows(&"%2".into()) && !s.tabs[0].shows(&"%1".into()));
+        assert!(s.tabs[1].shows(&"%3".into()) && !s.tabs[1].shows(&"%2".into()));
+        let shown: Vec<&str> = s.tabs[0].shown_splits().map(|s| s.id.as_str()).collect();
         assert_eq!(shown, ["%2"]);
-        assert_eq!(s.windows[1].shown_panes().count(), 1);
+        assert_eq!(s.tabs[1].shown_splits().count(), 1);
     }
 
     #[test]
@@ -312,13 +237,13 @@ mod tests {
                 ..zoomed
             },
         ]);
-        let mut window = parse(&text).windows.remove(0);
-        window.focus("%2");
+        let mut window = parse(&text).tabs.remove(0);
+        window.focus(&TerminalId::new("%2"));
         assert!(window.zoomed, "the zoomed pane itself");
-        window.focus("%1");
+        window.focus(&TerminalId::new("%1"));
         assert!(!window.zoomed);
         assert_eq!(window.active, "%1");
-        let shown: Vec<&str> = window.shown_panes().map(|p| p.id.as_str()).collect();
+        let shown: Vec<&str> = window.shown_splits().map(|s| s.id.as_str()).collect();
         assert_eq!(shown, ["%1", "%2"]);
     }
 
@@ -329,10 +254,7 @@ mod tests {
             name: "x:y",
             ..Line::default()
         }]));
-        assert_eq!(
-            (s.name.as_str(), s.windows[0].name.as_str()),
-            ("a b", "x:y")
-        );
+        assert_eq!((s.name.as_str(), s.tabs[0].name.as_str()), ("a b", "x:y"));
     }
 
     #[test]
@@ -354,16 +276,17 @@ mod tests {
                 ..Line::default()
             },
         ]));
-        let tabs: Vec<&str> = s.windows.iter().map(|w| w.id.as_str()).collect();
+        let tabs: Vec<&str> = s.tabs.iter().map(|t| t.id.as_str()).collect();
         assert_eq!(tabs, ["@1", "@2"]);
         assert_eq!(s.current, 1);
         assert_eq!(s.floats.len(), 1);
         assert_eq!(s.floats[0].key, "g");
-        assert_eq!(s.floats[0].window.active, "%9");
-        assert_eq!(s.floats[0].window.panes[0].rect, Rect::new(0, 0, 80, 24));
+        assert_eq!(s.floats[0].id, "@7");
+        assert_eq!(s.floats[0].active, "%9");
+        assert_eq!(s.floats[0].splits[0].rect, Rect::new(0, 0, 80, 24));
         assert!(!s.float_active);
-        let all: Vec<&str> = s.all_windows().map(|w| w.id.as_str()).collect();
-        assert_eq!(all, ["@1", "@2", "@7"]);
+        let all: Vec<&str> = s.splits().map(|s| s.id.as_str()).collect();
+        assert_eq!(all, ["%1", "%3", "%9"]);
     }
 
     #[test]

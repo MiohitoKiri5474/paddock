@@ -10,7 +10,7 @@ fn row(label: &str, state: State, tasks: Vec<TaskRow>) -> Row {
     Row {
         pane: format!("%{label}"),
         space: "$1".into(),
-        window: "@1".into(),
+        tab: "@1".into(),
         label: label.into(),
         kind: crate::sessions::AgentKind::Claude,
         state,
@@ -26,7 +26,7 @@ fn external_sessions_come_dim_under_their_line_with_no_screen() {
     let ext = Row {
         pane: "ext:e1".into(),
         space: String::new(),
-        window: String::new(),
+        tab: String::new(),
         external: true,
         ..row("web", State::Waiting, vec![task("feat/x", None)])
     };

@@ -1,13 +1,12 @@
 //! Floats (`[floats]`): a program in a box over the screen, shown and
 //! hidden by the prefix and its key. Each space has its own float per
-//! key: a tmux window of the space's session marked with
-//! [`FLOAT_OPTION`](crate::tmux::structure::FLOAT_OPTION), so it keeps
-//! running while hidden and after detaching, but is never a tab. Hiding
-//! keeps the program; when it exits, its window and the float close.
+//! key, kept by the backend apart from the tabs, so it keeps running
+//! while hidden and after detaching, but is never a tab.
+//! Hiding keeps the program; when it exits, the float closes.
 
 use super::state::App;
+use crate::backend::{self, SpaceId, Structure, TerminalId};
 use crate::config::Float;
-use crate::tmux::structure::{Structure, Window};
 use crate::ui::float::{self, Float as FloatView};
 use anyhow::Result;
 use ratatui::layout::Rect;
@@ -20,8 +19,8 @@ const QUICK_EXIT: Duration = Duration::from_secs(2);
 /// The float shown: space `space`'s float for `[floats]` entry `index`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Shown {
-    /// The tmux session id (`$N`) of its space.
-    pub space: String,
+    /// Its space.
+    pub space: SpaceId,
     /// Its place in `[floats]`.
     pub index: usize,
     /// When paddock started its program, if this showing did and no
@@ -31,24 +30,23 @@ pub struct Shown {
 
 impl Shown {
     /// Whether this is space `space`'s float for entry `index`.
-    fn is(&self, space: &str, index: usize) -> bool {
-        self.space == space && self.index == index
+    fn is(&self, space: &SpaceId, index: usize) -> bool {
+        self.space == *space && self.index == index
     }
 }
 
 impl App {
-    /// The float shown now, with its window: only over its own space,
-    /// and only while its program runs.
-    pub(super) fn shown_float(&self) -> Option<(&Float, &Window)> {
+    /// The float shown now, as configured and as the backend runs it:
+    /// only over its own space, and only while its program runs.
+    pub(super) fn shown_float(&self) -> Option<(&Float, &backend::Float)> {
         let shown = self.float.as_ref()?;
         let space = self.current_space().filter(|s| s.id == shown.space)?;
         let float = self.floats.list.get(shown.index)?;
-        let window = space.float(&float.key.name())?;
-        Some((float, &window.window))
+        Some((float, space.float(&float.key.name())?))
     }
 
-    /// The shown float's pane, which has the keyboard.
-    pub fn float_pane(&self) -> Option<String> {
+    /// The shown float's terminal, which has the keyboard.
+    pub fn float_terminal(&self) -> Option<TerminalId> {
         Some(self.shown_float()?.1.active.clone())
     }
 
@@ -59,19 +57,19 @@ impl App {
     }
 
     /// The shown float's pane and where its terminal is drawn.
-    pub(super) fn float_rect(&self) -> Option<(String, Rect)> {
-        Some((self.float_pane()?, float::inner(self.float_area())))
+    pub(super) fn float_rect(&self) -> Option<(TerminalId, Rect)> {
+        Some((self.float_terminal()?, float::inner(self.float_area())))
     }
 
     /// The shown float, ready to draw.
     pub(super) fn float_view(&self) -> Option<FloatView<'_>> {
-        let (float, window) = self.shown_float()?;
-        let terminal = self.terminals.get(&window.active)?;
+        let (float, running) = self.shown_float()?;
+        let terminal = self.terminals.get(&running.active)?;
         Some(FloatView {
             title: &float.command,
             accent: self.tab_colors.current,
             emulator: terminal.emulator(),
-            copy: self.copy_view(&window.active),
+            copy: self.copy_view(&running.active),
         })
     }
 
@@ -103,7 +101,7 @@ impl App {
         if space.float(&key).is_none() {
             let command = float.command.clone();
             let dir = self.new_dir();
-            self.server.new_float(&shown.space, &dir, &command, &key)?;
+            self.backend.new_float(&shown.space, &dir, &command, &key)?;
             shown.started = Some(Instant::now());
             let id = shown.space.clone();
             self.float = Some(shown);
@@ -116,15 +114,15 @@ impl App {
         self.resize_float()
     }
 
-    /// Give the shown float's pane the inside of its box; tmux keeps that
-    /// size for its window apart from the tabs'.
+    /// Give the shown float's terminal the inside of its box; the backend
+    /// keeps that size for it apart from the tabs'.
     pub(super) fn resize_float(&mut self) -> Result<()> {
-        let Some(window) = self.shown_float().map(|(_, w)| w.id.clone()) else {
+        let Some(id) = self.shown_float().map(|(_, f)| f.id.clone()) else {
             return Ok(());
         };
         let inside = float::inner(self.float_area());
         match self.current_space_mut() {
-            Some(space) => space.resize_float(&window, (inside.width, inside.height)),
+            Some(space) => space.resize_float(&id, (inside.width, inside.height)),
             None => Ok(()),
         }
     }
@@ -155,10 +153,10 @@ impl App {
         self.float = None;
     }
 
-    /// Input is about to reach pane `pane`: if that is the shown float's,
+    /// Input is about to reach `terminal`: if that is the shown float's,
     /// its program ran, so it quitting soon after gives no notice.
-    pub(super) fn note_float_input(&mut self, pane: &str) {
-        if self.float_pane().as_deref() == Some(pane) {
+    pub(super) fn note_float_input(&mut self, terminal: &TerminalId) {
+        if self.float_terminal().is_some_and(|t| t == *terminal) {
             if let Some(shown) = &mut self.float {
                 shown.started = None;
             }
@@ -175,11 +173,11 @@ impl App {
     /// Remember the panes of the floats in `structure`, for
     /// [`is_float_pane`](Self::is_float_pane).
     // ponytail: never pruned, so it grows by one id per float started
-    // while paddock runs. Harmless unless the tmux server restarts under
-    // a running paddock and reuses a `%N` id for a tab's pane.
+    // while paddock runs. Harmless unless the backend restarts under a
+    // running paddock and reuses a terminal id for a tab's.
     pub(super) fn remember_float_panes(&mut self, structure: &Structure) {
-        let panes = structure.floats.iter().flat_map(|f| &f.window.panes);
-        self.float_panes.extend(panes.map(|p| p.id.clone()));
+        let splits = structure.floats.iter().flat_map(|f| &f.splits);
+        self.float_panes.extend(splits.map(|s| s.id.clone()));
     }
 
     /// At attach: kill the floats in `structure` whose key is no longer
@@ -192,7 +190,7 @@ impl App {
             .partition(|f| keys.contains(&f.key));
         structure.floats = kept;
         for orphan in orphans {
-            self.report(|app| app.server.kill_window(&orphan.window.id));
+            self.report(|app| app.backend.close_float(&orphan.id));
         }
     }
 }
