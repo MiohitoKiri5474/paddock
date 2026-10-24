@@ -37,7 +37,7 @@ pub enum Event {
 
 /// A space as listed: its id and its current name.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SpaceEntry {
+pub struct ListedSpace {
     pub id: SpaceId,
     pub name: String,
 }
@@ -91,7 +91,7 @@ impl Backend {
     }
 
     /// The spaces, oldest first; none if the host does not run.
-    pub fn spaces(&self) -> Vec<SpaceEntry> {
+    pub fn spaces(&self) -> Vec<ListedSpace> {
         self.tmux.sessions()
     }
 
@@ -218,8 +218,7 @@ impl Backend {
     /// The border between two splits of tab `tab` at `(x, y)` in tab
     /// coordinates, and how to move it; `None` if there is none.
     pub fn border_at(&self, tab: &TabId, x: u16, y: u16) -> Result<Option<Border>> {
-        let text = self.tmux.layout(tab)?;
-        Ok(tmux::layout::parse(&text).and_then(|l| l.border_at(x, y)))
+        self.tmux.border_at(tab, x, y)
     }
 
     /// `terminal`'s shell directory; `None` if the host cannot say.

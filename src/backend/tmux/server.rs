@@ -2,8 +2,9 @@
 //! config, and a clean environment. Every tmux process paddock starts goes
 //! through [`Server::command`], so the user's own tmux server is never used.
 
+use super::layout::{self, Border};
 use super::structure;
-use crate::backend::{SpaceEntry, SpaceId, SpaceTerminal, Structure, TabId, TerminalId};
+use crate::backend::{ListedSpace, SpaceId, SpaceTerminal, Structure, TabId, TerminalId};
 use crate::input::Direction;
 use crate::paths::Paths;
 use crate::shell::quote;
@@ -143,7 +144,7 @@ impl Server {
     }
 
     /// The tmux sessions on the server, oldest first; empty if no server runs.
-    pub fn sessions(&self) -> Vec<SpaceEntry> {
+    pub fn sessions(&self) -> Vec<ListedSpace> {
         let format = "#{session_created} #{session_id} #{session_name}";
         self.run(&["list-sessions", "-F", format])
             .map(|out| parse_sessions(&out))
@@ -368,10 +369,11 @@ impl Server {
             .map(drop)
     }
 
-    /// Window `window`'s layout as tmux writes it (`#{window_layout}`).
-    pub fn layout(&self, window: &str) -> Result<String> {
+    /// The border at `(x, y)` of window `window`, read from its layout as
+    /// tmux writes it (`#{window_layout}`); `None` if there is none.
+    pub fn border_at(&self, window: &str, x: u16, y: u16) -> Result<Option<Border>> {
         let out = self.run(&["display-message", "-p", "-t", window, "#{window_layout}"])?;
-        Ok(out.trim_end().to_string())
+        Ok(layout::parse(out.trim_end()).and_then(|l| l.border_at(x, y)))
     }
 
     pub fn rename_session(&self, id: &str, name: &str) -> Result<()> {
@@ -525,8 +527,8 @@ fn literal(arg: &str) -> String {
 }
 
 /// `list-sessions` output, oldest first: tmux's session ids are `$N`.
-fn parse_sessions(out: &str) -> Vec<SpaceEntry> {
-    let mut rows: Vec<(u64, u64, SpaceEntry)> = out
+fn parse_sessions(out: &str) -> Vec<ListedSpace> {
+    let mut rows: Vec<(u64, u64, ListedSpace)> = out
         .lines()
         .filter_map(|l| {
             let mut parts = l.splitn(3, ' ');
@@ -535,7 +537,7 @@ fn parse_sessions(out: &str) -> Vec<SpaceEntry> {
             let name = parts.next().unwrap_or_default().to_string();
             let number = id.trim_start_matches('$').parse().unwrap_or(u64::MAX);
             let id = SpaceId::new(id);
-            Some((created, number, SpaceEntry { id, name }))
+            Some((created, number, ListedSpace { id, name }))
         })
         .collect();
     rows.sort_by_key(|(created, number, _)| (*created, *number));
