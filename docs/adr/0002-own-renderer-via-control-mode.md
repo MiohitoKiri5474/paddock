@@ -1,5 +1,7 @@
 # paddock draws every terminal itself, fed by tmux control mode
 
+> The control-mode feed is superseded by [ADR 0007](0007-native-backend-with-a-server.md): the app is a client of paddock's own server. paddock still draws every terminal itself.
+
 paddock's frontend is its own: a sidebar, workspaces, tabs and splits, with scrollback, selection and search that behave the same in any terminal app. So paddock connects to its tmux server as a control-mode client, feeds each tmux pane's raw output into its own terminal-emulator instance, and draws the result with ratatui, instead of showing a real tmux client.
 
 ## Considered options

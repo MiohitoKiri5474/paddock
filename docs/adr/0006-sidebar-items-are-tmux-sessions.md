@@ -1,5 +1,7 @@
 # Sidebar items are tmux sessions, tabs their windows, splits their panes
 
+> Superseded by [ADR 0007](0007-native-backend-with-a-server.md): paddock hosts its own terminals in a server. This stays true for the `tmux` backend until v0.2.
+
 Supersedes the "one tmux session per terminal" part of [ADR 0001](0001-tmux-as-hidden-backend.md). The hidden server, its own config and the clean environment stay.
 
 After a day with v1, the sidebar lists spaces (herdr-like) instead of Claude session and task rows; a second section lists every main agent across spaces with its space and tab. Each **sidebar item is a tmux session** on the hidden server. Its **tabs are that session's windows**, and its **splits are panes** in a window. `tmux -L paddock attach` therefore shows the same structure as paddock. Layout, split sizes, the current tab of each item and the focused pane of each tab all live in tmux. paddock keeps only the current item in `layout.toml`.
