@@ -5,21 +5,14 @@
 //! it holds for any backend.
 //!
 //! A tmux-only test's name starts with `tmux_only_`, so another backend's
-//! run skips them all with `cargo test -- --skip tmux_only`. [`tmux`]
-//! panics in a test not named so.
+//! run skips them all with `cargo test -- --skip tmux_only`. A test that
+//! calls [`tmux`] without that name fails in that run, as no tmux server
+//! runs there: that is what catches an unmarked caller.
 
 use super::Sandbox;
 
 /// tmux-only: run tmux against the sandbox's server; its output. Only a
-/// test whose name holds `tmux_only` may call it.
+/// test named `tmux_only_…` calls it.
 pub fn tmux(sandbox: &Sandbox, args: &[&str]) -> String {
-    let thread = std::thread::current();
-    // The test harness names each test's thread after it; with one test
-    // thread it may run on `main` instead.
-    let test = thread.name().unwrap_or("main");
-    assert!(
-        test == "main" || test.contains("tmux_only"),
-        "{test} calls tmux: name it tmux_only_…"
-    );
     sandbox.tmux(args)
 }

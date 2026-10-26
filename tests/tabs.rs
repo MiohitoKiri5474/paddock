@@ -80,7 +80,7 @@ fn the_sidebar_shows_the_first_space_and_the_tab_bar_its_tab() {
 }
 
 #[test]
-fn c_opens_a_new_tab_as_a_window_of_the_current_space() {
+fn c_opens_a_new_tab_in_the_current_space() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
 
@@ -313,7 +313,7 @@ fn renaming_can_be_cancelled_and_does_not_reach_the_shell() {
 }
 
 #[test]
-fn x_closes_the_tab_with_its_last_pane() {
+fn x_closes_the_tab_with_its_last_split() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     new_tab(&mut paddock, &["1:home", "2:home"]);
@@ -342,7 +342,7 @@ fn closing_a_spaces_last_tab_closes_the_space() {
 }
 
 #[test]
-fn closing_the_last_pane_quits_paddock() {
+fn closing_the_last_terminal_quits_paddock() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
 
@@ -713,8 +713,13 @@ fn c_a_tab_skips_a_closed_page_for_an_older_one() {
     paddock.wait_for("space-1 current", |_| {
         paddock.colors(1, 5).1 == CURRENT_ITEM
     });
-    paddock.type_line("echo back-in-a1");
-    paddock.wait_for_text("back-in-a1\n");
-    // Shown is space-1's one tab (A1), current there too.
-    assert_eq!(sandbox.space("space-1").current, 0);
+    // What is typed now reaches A1: its shell moves to a directory of its
+    // own, and space-2's stays put.
+    let a1 = sandbox.path("home/a1");
+    std::fs::create_dir(&a1).unwrap();
+    let a1 = std::fs::canonicalize(a1).unwrap();
+    paddock.type_line(&format!("cd '{}'", a1.display()));
+    let dir = |space: &str| sandbox.terminal(space).dir.map(std::path::PathBuf::from);
+    paddock.wait_for("A1 in a1", |_| dir("space-1").as_ref() == Some(&a1));
+    assert_ne!(dir("space-2").as_ref(), Some(&a1));
 }

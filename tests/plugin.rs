@@ -151,9 +151,16 @@ fn events_of(commands: &[(String, String)]) -> Vec<String> {
 /// inside one of its terminals.
 struct Sandbox {
     base: harness::Sandbox,
-    /// The hook variables of paddock's first terminal, as the backend
-    /// gives them, and the backend's instance id.
-    terminal: OnceCell<(Vec<(String, String)>, u32)>,
+    /// paddock's first terminal, once a command ran inside it.
+    terminal: OnceCell<Terminal>,
+}
+
+/// A terminal of paddock's, as a hook in it sees it.
+struct Terminal {
+    /// Its hook variables, as the backend gives them.
+    hook_env: Vec<(String, String)>,
+    /// The backend's instance id, which names its event log.
+    instance: u32,
 }
 
 impl Sandbox {
@@ -182,25 +189,26 @@ impl Sandbox {
         std::os::unix::fs::symlink(PADDOCK, self.path("plugin-bin/paddock")).unwrap();
     }
 
-    /// paddock's first terminal and the backend's instance id; paddock
-    /// runs once to start them, then detaches.
-    fn terminal(&self) -> &(Vec<(String, String)>, u32) {
+    /// paddock's first terminal; the first call runs paddock to start it,
+    /// then detaches.
+    fn terminal(&self) -> &Terminal {
         self.terminal.get_or_init(|| {
             let mut paddock = self.base.launch();
             paddock.wait_for_text(harness::PROMPT);
             let state = self.base.state();
             let instance = state.instance.expect("the backend's instance id");
             let first = state.terminal("space-1").expect("paddock's terminal");
-            let env = first.hook_env.clone().into_iter().collect();
+            let hook_env = first.hook_env.clone().into_iter().collect();
             paddock.detach_keys();
             assert!(paddock.wait_exit());
-            (env, instance)
+            Terminal { hook_env, instance }
         })
     }
 
-    /// `program args`, with `stdin`, as if in a terminal of paddock's server.
+    /// `program args`, with `stdin`, outside paddock's terminals (as from
+    /// the user's own shell): paddock is not started for it.
     fn run(&self, program: &str, args: &[&str], stdin: &str) -> std::process::Output {
-        self.run_where(true, program, args, stdin)
+        self.run_where(false, program, args, stdin)
     }
 
     /// [`Self::run`], in a terminal of paddock's server if `inside`, else
@@ -217,12 +225,13 @@ impl Sandbox {
         let mut cmd = std::process::Command::new(program);
         cmd.args(args).env_clear().envs(self.base.backend_env());
         if inside {
-            cmd.envs(self.terminal().0.iter().cloned());
+            cmd.envs(self.terminal().hook_env.iter().cloned());
         }
         let mut child = cmd
             .env("HOME", self.path("home"))
             .env("PATH", path)
-            .env("XDG_CONFIG_HOME", self.path("home/.config"))
+            // The config of the paddock the hooks talk to.
+            .env("XDG_CONFIG_HOME", self.path("config"))
             .current_dir(self.path("work"))
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
@@ -252,8 +261,13 @@ impl Sandbox {
     }
 
     /// The events recorded, in order.
+    /// None while no command ran inside paddock's terminal: paddock never
+    /// started.
     fn events(&self) -> Vec<String> {
-        self.events_in(&format!("{}.jsonl", self.terminal().1))
+        match self.terminal.get() {
+            Some(t) => self.events_in(&format!("{}.jsonl", t.instance)),
+            None => Vec::new(),
+        }
     }
 
     /// The events recorded in the log named `name`, in order.
@@ -440,14 +454,14 @@ fn hooks_install_refuses_an_unknown_agent_and_touches_nothing() {
 fn a_hook_naming_claude_records_as_claudes_and_an_unknown_one_stays_silent() {
     let sandbox = Sandbox::new();
     let run = |args: &[&str]| {
-        let out = sandbox.run(PADDOCK, args, PAYLOAD);
+        let out = sandbox.run_where(true, PADDOCK, args, PAYLOAD);
         assert!(out.status.success(), "{args:?}: {out:?}");
         assert!(out.stdout.is_empty() && out.stderr.is_empty(), "{out:?}");
     };
     run(&["hook", "--agent", "claude", "Stop"]);
     run(&["hook", "SessionEnd"]);
     assert_eq!(sandbox.events(), ["Stop", "SessionEnd"]);
-    let log = format!("state/paddock/events/{}.jsonl", sandbox.terminal().1);
+    let log = format!("state/paddock/events/{}.jsonl", sandbox.terminal().instance);
     let log = sandbox.path(&log);
     let log = std::fs::read_to_string(log).unwrap();
     assert!(!log.contains("kind"), "Claude's lines as before: {log}");

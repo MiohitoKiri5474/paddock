@@ -124,8 +124,10 @@ impl Sandbox {
     }
 
     /// The sandbox's variables a process in paddock's terminals has from
-    /// the backend's clean environment: its state directory and the
-    /// backend's socket.
+    /// the backend's clean environment: its state directory and where the
+    /// backend listens. tmux-bound until ticket 40: the socket is tmux's
+    /// (`PADDOCK_TMUX_SOCKET`, `TMUX_TMPDIR`), and the native backend's
+    /// variables join them there.
     pub fn backend_env(&self) -> Vec<(String, String)> {
         let kept = ["XDG_STATE_HOME", "PADDOCK_TMUX_SOCKET", "TMUX_TMPDIR"];
         let env = self.env().into_iter();
