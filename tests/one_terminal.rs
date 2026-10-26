@@ -2,19 +2,15 @@
 
 mod harness;
 
-use harness::{Sandbox, PROMPT};
+use harness::{tmux_only, Sandbox, PROMPT};
 
-/// The session's single pane, as `pane_id pane_pid pane_dead`.
-fn pane(sandbox: &Sandbox) -> String {
-    sandbox
-        .tmux(&[
-            "list-panes",
-            "-a",
-            "-F",
-            "#{pane_id} #{pane_pid} #{pane_dead}",
-        ])
-        .trim()
-        .to_string()
+/// Whether process `pid` runs.
+fn alive(pid: &str) -> bool {
+    let status = std::process::Command::new("kill")
+        .args(["-0", pid])
+        .status()
+        .expect("run kill");
+    status.success()
 }
 
 #[test]
@@ -26,8 +22,7 @@ fn launching_shows_a_working_shell() {
     paddock.type_line("echo $((6 * 7))");
 
     paddock.wait_for("command output", |s| s.lines().any(|l| l.trim() == "42"));
-    let sessions = sandbox.tmux(&["list-sessions", "-F", "#{session_name}"]);
-    assert_eq!(sessions.trim(), "space-1");
+    assert_eq!(sandbox.session_names(), ["space-1"]);
 }
 
 #[test]
@@ -62,13 +57,15 @@ fn typed_text_and_utf8_reach_the_shell() {
     paddock.wait_for_text("漢字-OK");
 }
 
+/// tmux-only: the tmux server's environment and options, and the
+/// variables tmux sets in its panes.
 #[test]
 fn hidden_server_has_a_clean_environment_and_its_own_config() {
     let sandbox = Sandbox::new();
     let mut paddock = sandbox.launch();
     paddock.wait_for_text(PROMPT);
 
-    let global_env = sandbox.tmux(&["show-environment", "-g"]);
+    let global_env = tmux_only::tmux(&sandbox, &["show-environment", "-g"]);
     assert!(!global_env.contains("SUPACODE_"), "{global_env}");
     assert!(!global_env.contains("TERM_PROGRAM"), "{global_env}");
 
@@ -93,14 +90,14 @@ fn hidden_server_has_a_clean_environment_and_its_own_config() {
         paddock.screen()
     );
 
-    let options = sandbox.tmux(&["show-options", "-g"]);
+    let options = tmux_only::tmux(&sandbox, &["show-options", "-g"]);
     for expected in ["status off", "prefix None"] {
         assert!(
             options.lines().any(|l| l == expected),
             "missing {expected:?}:\n{options}"
         );
     }
-    let server_options = sandbox.tmux(&["show-options", "-s"]);
+    let server_options = tmux_only::tmux(&sandbox, &["show-options", "-s"]);
     assert!(
         server_options.lines().any(|l| l == "escape-time 0"),
         "{server_options}"
@@ -111,6 +108,7 @@ fn hidden_server_has_a_clean_environment_and_its_own_config() {
     );
 }
 
+/// tmux-only: the sockets in the sandbox's `TMUX_TMPDIR`.
 #[test]
 fn only_the_paddock_socket_is_used() {
     let sandbox = Sandbox::new();
@@ -120,7 +118,10 @@ fn only_the_paddock_socket_is_used() {
     assert!(paddock.wait_exit());
 
     // Both paddock and its shell ran with this TMUX_TMPDIR: no "default" socket appeared.
-    assert_eq!(sandbox.sockets(), vec!["paddock-test".to_string()]);
+    assert_eq!(
+        tmux_only::sockets(&sandbox),
+        vec!["paddock-test".to_string()]
+    );
 }
 
 #[test]
@@ -148,13 +149,6 @@ fn mouse_wheel_scrolls_the_terminal_history() {
         !rows.iter().any(|r| r.starts_with(PROMPT)),
         "prompt still visible"
     );
-    // tmux itself did not scroll: paddock keeps its own scrollback.
-    assert_eq!(
-        sandbox
-            .tmux(&["display-message", "-p", "-t", "space-1", "#{pane_in_mode}"])
-            .trim(),
-        "0"
-    );
 
     for _ in 0..10 {
         paddock.wheel(false, 10, 10);
@@ -162,6 +156,25 @@ fn mouse_wheel_scrolls_the_terminal_history() {
     paddock.wait_for("back at the bottom", |s| {
         !s.contains("[") && s.contains(PROMPT)
     });
+}
+
+/// tmux-only: the wheel scrolls paddock's own scrollback, never tmux's
+/// copy mode.
+#[test]
+fn the_wheel_leaves_tmux_out_of_copy_mode() {
+    let sandbox = Sandbox::new();
+    let mut paddock = sandbox.launch();
+    paddock.wait_for_text(PROMPT);
+    paddock.type_line("seq 1 200");
+    paddock.wait_for("seq to finish", |s| s.lines().any(|l| l.trim() == "200"));
+
+    for _ in 0..10 {
+        paddock.wheel(true, 10, 10);
+    }
+
+    paddock.wait_for("scrolled view", |s| s.contains("[30/"));
+    let in_mode = ["display-message", "-p", "-t", "space-1", "#{pane_in_mode}"];
+    assert_eq!(tmux_only::tmux(&sandbox, &in_mode).trim(), "0");
 }
 
 #[test]
@@ -204,22 +217,18 @@ fn detaching_keeps_the_shell_and_relaunching_restores_history() {
     paddock.wait_for_text(PROMPT);
     paddock.type_line("echo marker-before-detach; seq 1 300");
     paddock.wait_for("seq", |s| s.lines().any(|l| l.trim() == "300"));
-    let before = pane(&sandbox);
+    let before = sandbox.shells();
 
     paddock.detach_keys();
 
     assert!(paddock.wait_exit(), "paddock should exit cleanly on C-a d");
-    assert_eq!(pane(&sandbox), before, "the same shell is still running");
-    assert!(before.ends_with(" 0"), "pane is alive: {before}");
+    assert_eq!(sandbox.shells(), before, "the same shell is still running");
+    let pid = before[0].rsplit(' ').next().unwrap_or_default();
+    assert!(alive(pid), "the shell is alive: {before:?}");
 
     let mut again = sandbox.launch();
     again.wait_for("restored screen", |s| s.lines().any(|l| l.trim() == "300"));
-    assert_eq!(
-        sandbox
-            .tmux(&["list-sessions", "-F", "#{session_name}"])
-            .trim(),
-        "space-1"
-    );
+    assert_eq!(sandbox.session_names(), ["space-1"]);
 
     // Scroll back to the very first line of the restored history.
     for _ in 0..120 {
@@ -235,6 +244,7 @@ fn detaching_keeps_the_shell_and_relaunching_restores_history() {
     again.wait_for_text("after-reattach\n");
 }
 
+/// tmux-only: the generated `tmux.conf`.
 #[test]
 fn config_and_state_follow_the_xdg_overrides() {
     let sandbox = Sandbox::new();
@@ -259,7 +269,7 @@ fn exiting_the_shell_quits_paddock_and_the_next_launch_starts_a_new_one() {
     paddock.type_line("exit");
 
     assert!(paddock.wait_exit());
-    assert_eq!(sandbox.tmux(&["list-sessions"]).trim(), "");
+    assert!(sandbox.session_names().is_empty());
     let mut again = sandbox.launch();
     again.wait_for_text(PROMPT);
     again.type_line("echo fresh");
@@ -273,17 +283,9 @@ fn resizing_the_outer_terminal_resizes_the_terminal() {
     paddock.wait_for_text(PROMPT);
 
     paddock.resize(80, 20);
-    let size = || {
-        sandbox.tmux(&[
-            "display-message",
-            "-p",
-            "-t",
-            "space-1",
-            "#{pane_width}x#{pane_height}",
-        ])
-    };
+    let size = || sandbox.terminal("space-1").size();
     let start = std::time::Instant::now();
-    while size().trim() != "48x19" {
+    while size() != "48x19" {
         assert!(start.elapsed() < harness::TIMEOUT, "pane is {}", size());
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
@@ -299,14 +301,14 @@ fn kitty_encoded_prefix_detaches_too() {
     paddock.wait_for_text(PROMPT);
     paddock.type_line("echo kitty-marker");
     paddock.wait_for_text("kitty-marker\n");
-    let before = pane(&sandbox);
+    let before = sandbox.shells();
 
     // paddock asks for kitty key disambiguation, so Ghostty sends C-a as CSI 97;5u.
     paddock.send(b"\x1b[97;5u");
     paddock.send(b"d");
 
     assert!(paddock.wait_exit());
-    assert_eq!(pane(&sandbox), before);
+    assert_eq!(sandbox.shells(), before);
     let again = sandbox.launch();
     again.wait_for_text("kitty-marker\n");
 }

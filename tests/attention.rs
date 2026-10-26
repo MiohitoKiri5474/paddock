@@ -220,16 +220,15 @@ fn c_a_a_focuses_the_split_running_the_session() {
     paddock.command(b"a");
     paddock.type_line("echo typed-into-the-split");
 
-    let capture = || sandbox.tmux(&["capture-pane", "-p", "-t", "space-1:0.1"]);
-    let start = std::time::Instant::now();
-    while !capture().contains("typed-into-the-split\n") {
-        assert!(
-            start.elapsed() < harness::TIMEOUT,
-            "split got:\n{}",
-            capture()
-        );
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
+    // The right split (columns 35-67) got it, the left (0-33) did not.
+    harness::wait_in_region(&paddock, "typed-into-the-split", (1, 30), (35, 68));
+    assert!(!harness::in_region(
+        &paddock,
+        "typed-into-the-split",
+        (1, 30),
+        (0, 34)
+    ));
+    assert!(sandbox.terminal("space-1:0.1").focused);
 }
 
 #[test]
@@ -284,7 +283,7 @@ fn c_a_a_to_a_split_hidden_by_a_zoom_gives_the_layout_back_focused_there() {
     paddock.command(b"a");
 
     harness::wait_for_pane_sizes(&sandbox, &["0.0 34x29", "0.1 33x29"]);
-    assert_eq!(sandbox.display("space-1:0", "#{window_zoomed_flag}"), "0");
+    assert!(!sandbox.space("space-1").tabs[0].zoomed);
     paddock.wait_for("the border back", |_| {
         harness::cols(&paddock.rows()[1], 34, 35) == "│"
     });

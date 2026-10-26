@@ -15,13 +15,9 @@ fn ready(sandbox: &Sandbox) -> Paddock {
     paddock
 }
 
-/// Window names of space-1, in order.
+/// Tab names of space-1, in order.
 fn windows(sandbox: &Sandbox) -> Vec<String> {
-    sandbox
-        .tmux(&["list-windows", "-t", "space-1", "-F", "#{window_name}"])
-        .lines()
-        .map(str::to_string)
-        .collect()
+    sandbox.space("space-1").tab_names()
 }
 
 fn wait_for_sessions(paddock: &Paddock, sandbox: &Sandbox, want: &[&str]) {

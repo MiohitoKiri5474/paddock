@@ -28,7 +28,7 @@ fn payload(name: &str, session: &str, cwd: &str) -> String {
         .replace("\"/tmp/repo\"", &format!("\"{cwd}\""))
 }
 
-/// Report `event` for a Claude session in the pane tmux target `terminal` names.
+/// Report `event` for a Claude session in the terminal `terminal` names.
 fn claude(sandbox: &Sandbox, terminal: &str, event: &str, session: &str) {
     sandbox.hook(terminal, event, &payload(event, session, "/w/repo"));
 }
@@ -48,12 +48,9 @@ fn two_tabs(sandbox: &Sandbox) -> Paddock {
     paddock
 }
 
-/// Window count of space-1.
+/// Tab count of space-1.
 fn tabs(sandbox: &Sandbox) -> usize {
-    sandbox
-        .tmux(&["list-windows", "-t", "space-1"])
-        .lines()
-        .count()
+    sandbox.space("space-1").tabs.len()
 }
 
 fn wait_for_tab_count(paddock: &Paddock, sandbox: &Sandbox, want: usize) {

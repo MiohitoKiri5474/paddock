@@ -101,15 +101,17 @@ fn made(sandbox: &Sandbox, dir: &Path, branch: &str) -> PathBuf {
     PathBuf::from(stdout(&out).trim())
 }
 
-/// The tmux session id (`$N`) of session `name`.
-fn session_id(sandbox: &Sandbox, name: &str) -> String {
-    sandbox
-        .tmux(&["list-sessions", "-F", "#{session_id}\t#{session_name}"])
-        .lines()
-        .filter_map(|l| l.split_once('\t'))
-        .find(|(_, n)| *n == name)
-        .map(|(id, _)| id.to_string())
-        .unwrap_or_else(|| panic!("no session {name}"))
+/// Leave a space named `name` running, made by paddock (its first space,
+/// renamed with `C-a $`), with paddock closed again.
+fn space_named(sandbox: &Sandbox, name: &str) {
+    let mut paddock = sandbox.launch();
+    paddock.wait_for_text(PROMPT);
+    paddock.command(b"$");
+    paddock.wait_for_popup("Rename space", "space-1");
+    paddock.send(format!("\x15{name}\r").as_bytes()); // C-u clears the old name
+    paddock.wait_for("the space renamed", |_| sandbox.session_names() == [name]);
+    paddock.detach_keys();
+    assert!(paddock.wait_exit());
 }
 
 /// Report Claude as running in the terminal of session `name`, whose
@@ -118,7 +120,7 @@ fn claude_runs_in(sandbox: &Sandbox, name: &str, cwd: &Path) {
     let payload = std::fs::read_to_string(format!("{SPIKE}/UserPromptSubmit.json"))
         .unwrap()
         .replace("\"/tmp/repo\"", &format!("{:?}", cwd.display()));
-    sandbox.hook(&session_id(sandbox, name), "UserPromptSubmit", &payload);
+    sandbox.hook(name, "UserPromptSubmit", &payload);
 }
 
 #[test]
@@ -146,7 +148,7 @@ fn new_makes_a_worktree_and_a_space_that_a_running_paddock_shows() {
     );
     assert_eq!(git(&path, &["branch", "--show-current"]), "feat/x");
     assert_eq!(sandbox.session_names(), ["space-1", "repo/feat/x"]);
-    let pane_dir = sandbox.display("repo/feat/x", "#{pane_current_path}");
+    let pane_dir = sandbox.terminal("repo/feat/x").dir.unwrap_or_default();
     assert_eq!(PathBuf::from(pane_dir), path);
     paddock.wait_for("the new space in the sidebar", |_| {
         paddock.sidebar().iter().any(|r| r.trim() == "repo/feat/x")
@@ -219,7 +221,7 @@ fn an_existing_branch_is_checked_out_and_failures_make_nothing() {
 
     // The space cannot be made (its name is taken): the worktree and the
     // branch made for it go again.
-    sandbox.tmux(&["new-session", "-d", "-s", "repo/feat/z"]);
+    space_named(&sandbox, "repo/feat/z");
     let out = cli(&sandbox, &dir, &["new", "feat/z"]);
     exits(&out, 2, "duplicate session");
     assert!(!worktree(&sandbox, "feat/z").exists());
@@ -528,15 +530,8 @@ fn rm_never_deletes_the_tree_its_caller_or_a_busy_claude_is_in() {
     );
 
     // Run from its space's terminal, with the directory elsewhere.
-    let id = session_id(&sandbox, "repo/feat/c");
-    let tmux = sandbox.display(&id, "#{socket_path},#{pid},0");
-    let pane = sandbox.display(&id, "#{pane_id}");
-    let out = sandbox.run_in(
-        &dir,
-        &["worktree", "rm", "feat/c"],
-        &[("TMUX", &tmux), ("TMUX_PANE", &pane)],
-        "",
-    );
+    let terminal = sandbox.terminal("repo/feat/c");
+    let out = sandbox.run_in(&dir, &["worktree", "rm", "feat/c"], &terminal.env(), "");
     exits(&out, 3, "calling terminal");
 
     // A Claude running in its space.
@@ -621,22 +616,17 @@ fn rm_counts_a_busy_claude_in_a_float_and_list_leaves_floats_out() {
     let out = cli(&sandbox, &dir, &["new", "feat/f"]);
     exits(&out, 0, "");
     let path = real(&worktree(&sandbox, "feat/f"));
-    // A float of the space, marked as paddock marks one.
-    let id = session_id(&sandbox, "repo/feat/f");
-    let target = format!("{id}:");
-    let path_arg = path.to_string_lossy();
-    sandbox.tmux(&[
-        "new-window",
-        "-d",
-        "-n",
-        "fl",
-        "-t",
-        &target,
-        "-c",
-        &path_arg,
-    ]);
-    let float = format!("{id}:fl");
-    sandbox.tmux(&["set-option", "-w", "-t", &float, "@paddock-float", "G"]);
+    // A float of the space, opened in paddock, which then closes.
+    sandbox.write_config("[floats]\nG = \"cat\"\n");
+    let mut paddock = sandbox.launch();
+    paddock.wait_for_text(PROMPT);
+    paddock.command(b"G");
+    paddock.wait_for("the float in the space", |_| {
+        !sandbox.space("repo/feat/f").floats.is_empty()
+    });
+    paddock.detach_keys();
+    assert!(paddock.wait_exit());
+    let float = sandbox.space("repo/feat/f").floats[0].splits[0].id.clone();
     let payload = std::fs::read_to_string(format!("{SPIKE}/UserPromptSubmit.json"))
         .unwrap()
         .replace("\"/tmp/repo\"", &format!("{:?}", path.display()));

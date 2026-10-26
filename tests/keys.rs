@@ -17,14 +17,14 @@ fn ready(sandbox: &Sandbox) -> Paddock {
     paddock
 }
 
-/// Windows on the hidden server, in every space.
+/// Tabs and floats, in every space.
 fn window_count(sandbox: &Sandbox) -> usize {
-    sandbox.tmux(&["list-windows", "-a"]).lines().count()
+    sandbox.tabs_and_floats()
 }
 
-/// Panes on the hidden server, in every space.
+/// Terminals, in every space.
 fn pane_count(sandbox: &Sandbox) -> usize {
-    sandbox.tmux(&["list-panes", "-a"]).lines().count()
+    sandbox.state().terminals().count()
 }
 
 /// Wait until space-1's current tab has `n` panes.
@@ -35,7 +35,9 @@ fn wait_for_panes(paddock: &Paddock, sandbox: &Sandbox, n: usize) {
 /// Wait until the pane at `index` of space-1's current tab has the focus.
 fn wait_for_focus(paddock: &Paddock, sandbox: &Sandbox, index: &str) {
     paddock.wait_for(&format!("pane {index} focused"), |_| {
-        sandbox.display("space-1", "#{pane_index}") == index
+        let space = sandbox.space("space-1");
+        let focused = space.current_tab().splits.iter().position(|s| s.focused);
+        focused == index.parse().ok()
     });
 }
 
@@ -159,7 +161,7 @@ fn paddock_keys_prints_the_defaults_as_toml() {
     ] {
         assert!(text.contains(line), "lacks {line:?}:\n{text}");
     }
-    assert!(sandbox.sockets().is_empty(), "no tmux server was started");
+    assert_eq!(sandbox.state().instance, None, "no backend was started");
 }
 
 #[test]

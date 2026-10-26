@@ -4,7 +4,7 @@
 
 mod harness;
 
-use harness::{Paddock, Sandbox, CURRENT_ITEM, PROMPT};
+use harness::{tmux_only, Paddock, Sandbox, CURRENT_ITEM, PROMPT};
 
 /// A launched paddock with its first shell ready.
 fn ready(sandbox: &Sandbox) -> Paddock {
@@ -21,13 +21,9 @@ fn new_tab(paddock: &mut Paddock, labels: &[&str]) {
     paddock.wait_for_text(PROMPT);
 }
 
-/// Window names of tmux session `session`, in order.
-fn windows(sandbox: &Sandbox, session: &str) -> Vec<String> {
-    sandbox
-        .tmux(&["list-windows", "-t", session, "-F", "#{window_name}"])
-        .lines()
-        .map(str::to_string)
-        .collect()
+/// Tab names of space `space`, in order, as the backend has them.
+fn windows(sandbox: &Sandbox, space: &str) -> Vec<String> {
+    sandbox.space(space).tab_names()
 }
 
 /// Wait until the sidebar lists exactly these spaces, all in the test
@@ -95,8 +91,8 @@ fn c_opens_a_new_tab_as_a_window_of_the_current_space() {
     wait_for_spaces(&paddock, &["space-1"]);
     paddock.type_line("echo in-second-tab");
     paddock.wait_for_text("in-second-tab\n");
-    let active = sandbox.display("space-1", "#{window_index}");
-    assert_eq!(active, "1", "tmux shows the same current tab");
+    let current = sandbox.space("space-1").current;
+    assert_eq!(current, 1, "the backend has the same current tab");
 }
 
 #[test]
@@ -417,7 +413,7 @@ fn prefix_twice_sends_a_literal_prefix() {
 }
 
 #[test]
-fn reattaching_shows_every_space_and_tab_as_tmux_has_them() {
+fn reattaching_shows_every_space_and_tab_as_the_backend_has_them() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     new_tab(&mut paddock, &["1:home", "2:home"]);
@@ -439,13 +435,14 @@ fn reattaching_shows_every_space_and_tab_as_tmux_has_them() {
     again.wait_for_text("third-tab-marker\n");
 }
 
+/// tmux-only: an older paddock's server is a tmux server.
 #[test]
 fn sessions_of_an_older_paddock_open_as_one_space_each() {
     let sandbox = Sandbox::new();
     // As v1 left the server: one session per terminal, and none of the
     // options paddock added since.
     for name in ["terminal-1", "api"] {
-        sandbox.tmux(&["new-session", "-d", "-s", name, "-c", "/"]);
+        tmux_only::tmux(&sandbox, &["new-session", "-d", "-s", name, "-c", "/"]);
     }
     std::fs::create_dir_all(sandbox.path("state/paddock")).unwrap();
     std::fs::write(
@@ -499,28 +496,30 @@ fn an_invalid_prefix_stops_paddock_with_a_clear_message() {
     );
 }
 
-/// Run `seq`-like output in pane `target` for about two seconds, then
-/// reattach paddock while it still streams, and check nothing was lost.
-fn reattach_while_streaming(sandbox: &Sandbox, paddock: Paddock, target: &str) -> Paddock {
-    sandbox.tmux(&[
-        "send-keys",
-        "-t",
-        target,
-        "for i in {1..4000}; do echo stream-$i; (( i % 100 )) || sleep 0.05; done; echo stream-done",
-        "Enter",
-    ]);
-    let capture = || sandbox.tmux(&["capture-pane", "-p", "-t", target]);
-    let start = std::time::Instant::now();
-    while !capture().contains("stream-1") {
-        assert!(start.elapsed() < harness::TIMEOUT, "never started");
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-    let mut paddock = paddock;
+/// Lines the stream prints before `stream-done`.
+const STREAM_LINES: usize = 4000;
+
+/// Start `seq`-like output in the focused terminal for about two seconds;
+/// it makes `streamed` in the sandbox once done.
+fn start_stream(sandbox: &Sandbox, paddock: &mut Paddock) {
+    let done = sandbox.path("streamed");
+    paddock.type_line(&format!(
+        "for i in {{1..{STREAM_LINES}}}; do echo stream-$i; (( i % 100 )) || sleep 0.05; done; \
+         echo stream-done; : > '{}'",
+        done.display()
+    ));
+    paddock.wait_for("the stream started", |s| {
+        s.lines().any(|l| l.starts_with("stream-"))
+    });
+}
+
+/// Reattach paddock while the stream still runs.
+fn reattach_while_streaming(sandbox: &Sandbox, mut paddock: Paddock) -> Paddock {
     paddock.detach_keys();
     assert!(paddock.wait_exit());
     let again = ready(sandbox);
     assert!(
-        !capture().contains("stream-done"),
+        !sandbox.path("streamed").exists(),
         "precondition: still streaming after the attach"
     );
     again
@@ -531,10 +530,13 @@ fn reattaching_while_a_background_tab_streams_loses_nothing() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     new_tab(&mut paddock, &["1:home", "2:home"]);
+    paddock.command(b"1");
+    paddock.wait_for_current_tab("1:home");
+    start_stream(&sandbox, &mut paddock);
     paddock.command(b"2");
     paddock.wait_for_current_tab("2:home");
 
-    let mut again = reattach_while_streaming(&sandbox, paddock, "space-1:0");
+    let mut again = reattach_while_streaming(&sandbox, paddock);
 
     again.command(b"1");
     again.wait_for_current_tab("1:home");
@@ -547,15 +549,17 @@ fn reattaching_a_split_tab_while_one_pane_streams_loses_nothing() {
     let mut paddock = ready(&sandbox);
     paddock.command(b"-");
     paddock.wait_for("two prompts", |s| s.matches(PROMPT).count() == 2);
-    let top = sandbox.tmux(&["display-message", "-p", "-t", "space-1:0.0", "#{pane_id}"]);
+    paddock.command(b"k"); // the top pane
+    start_stream(&sandbox, &mut paddock);
 
-    let mut again = reattach_while_streaming(&sandbox, paddock, top.trim());
+    let mut again = reattach_while_streaming(&sandbox, paddock);
 
-    check_stream(&sandbox, &mut again, top.trim(), 0);
+    check_stream(&sandbox, &mut again, "space-1:0.0", 0);
 }
 
-/// Wait for the stream in pane `target` (drawn from row 1, column `col`) to
-/// end, then compare what paddock drew and its history with tmux's.
+/// Wait for the stream in terminal `target` (drawn from row 1, column
+/// `col`) to end, then check what paddock drew ends with every last line
+/// of it, and that its history is as long as the backend's.
 fn check_stream(sandbox: &Sandbox, paddock: &mut Paddock, target: &str, col: u16) {
     paddock.wait_for("stream-done and the prompt", |s| {
         let lines: Vec<&str> = s.lines().map(str::trim_end).collect();
@@ -563,15 +567,8 @@ fn check_stream(sandbox: &Sandbox, paddock: &mut Paddock, target: &str, col: u16
             .windows(2)
             .any(|w| w[0] == "stream-done" && w[1].starts_with(PROMPT))
     });
-    let height: usize = sandbox
-        .display(target, "#{pane_height}")
-        .parse()
-        .expect("height");
-    let tmux_rows: Vec<String> = sandbox
-        .tmux(&["capture-pane", "-p", "-t", target])
-        .lines()
-        .map(|l| l.trim_end().to_string())
-        .collect();
+    let terminal = sandbox.terminal(target);
+    let height = usize::from(terminal.height);
     let ours: Vec<String> = paddock
         .rows()
         .into_iter()
@@ -579,13 +576,13 @@ fn check_stream(sandbox: &Sandbox, paddock: &mut Paddock, target: &str, col: u16
         .take(height)
         .map(|r| r.trim_end().to_string())
         .collect();
-    assert_eq!(
-        ours[..tmux_rows.len().min(height)],
-        tmux_rows[..tmux_rows.len().min(height)],
-        "drawn pane differs from tmux"
-    );
+    // The last rows: the stream's tail, `stream-done`, then the prompt.
+    let tail = (STREAM_LINES + 3 - height..=STREAM_LINES).map(|i| format!("stream-{i}"));
+    let want: Vec<String> = tail.chain(["stream-done".to_string()]).collect();
+    assert_eq!(ours[..height - 1], want, "drawn terminal");
+    assert!(ours[height - 1].starts_with(PROMPT), "{ours:?}");
     // Lost output would show up as missing history: compare history sizes.
-    let history = sandbox.display(target, "#{history_size}");
+    let history = terminal.history.expect("the terminal's history");
     paddock.wheel(true, col + 2, 2);
     paddock.wait_for_text(&format!("[3/{history}]"));
 }
@@ -622,8 +619,11 @@ fn c_a_angle_brackets_move_the_tab_left_and_right() {
     let mut paddock = ready(&sandbox);
     new_tab(&mut paddock, &["1:home", "2:home"]);
     new_tab(&mut paddock, &["1:home", "2:home", "3:home"]);
-    for (i, name) in ["a", "b", "c"].iter().enumerate() {
-        sandbox.tmux(&["rename-window", "-t", &format!("space-1:{i}"), name]);
+    for (key, name) in [(b"1", "a"), (b"2", "b"), (b"3", "c")] {
+        paddock.command(key);
+        paddock.command(b",");
+        paddock.wait_for_popup("Rename tab", "home");
+        paddock.send(format!("\x15{name}\r").as_bytes()); // C-u clears the old name
     }
     paddock.wait_for_tabs(&["1:a", "2:b", "3:c"]);
 
@@ -663,8 +663,8 @@ fn c_a_tab_goes_back_to_the_last_page_across_spaces() {
     paddock.wait_for_current_tab("2:home");
     paddock.type_line("echo where-$((2))");
     paddock.wait_for_text("where-2\n");
-    let capture = sandbox.tmux(&["capture-pane", "-p", "-t", "space-1:1"]);
-    assert!(capture.contains("where-2"), "{capture}");
+    // Shown is space-1's (space-2 has one tab), and current there too.
+    assert_eq!(sandbox.space("space-1").current, 1);
 }
 
 #[test]
@@ -688,6 +688,4 @@ fn c_a_tab_skips_a_closed_page_for_an_older_one() {
     });
     paddock.type_line("echo back-in-a1");
     paddock.wait_for_text("back-in-a1\n");
-    let capture = sandbox.tmux(&["capture-pane", "-p", "-t", "space-1:0"]);
-    assert!(capture.contains("back-in-a1"), "{capture}");
 }

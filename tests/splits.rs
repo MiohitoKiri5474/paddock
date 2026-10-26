@@ -185,7 +185,7 @@ fn splits_and_focus_come_back_after_detach_and_relaunch() {
 }
 
 #[test]
-fn the_layout_lives_in_tmux_not_in_the_state_file() {
+fn the_layout_lives_in_the_backend_not_in_the_state_file() {
     let sandbox = Sandbox::new();
     let mut p = ready(&sandbox);
     split_side_by_side(&mut p);

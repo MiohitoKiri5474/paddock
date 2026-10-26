@@ -1,18 +1,19 @@
-//! Splits as tests see them: every pane's size as tmux has it, and text
-//! in a region of the drawn screen.
+//! Splits as tests see them: every split's size as the backend has it,
+//! and text in a region of the drawn screen.
 
 use super::{Paddock, Sandbox, TIMEOUT};
 use std::time::{Duration, Instant};
 
-/// Every pane's size as tmux has it, as `window.pane WxH`, in order.
+/// Every tab's splits' sizes as the backend has them, as `tab.split WxH`
+/// (counting from 0), space by space, in order.
 pub fn pane_sizes(sandbox: &Sandbox) -> Vec<String> {
-    let out = sandbox.tmux(&[
-        "list-panes",
-        "-a",
-        "-F",
-        "#{window_index}.#{pane_index} #{pane_width}x#{pane_height}",
-    ]);
-    out.lines().map(str::to_string).collect()
+    let state = sandbox.state();
+    let tabs = state.spaces.iter().flat_map(|s| s.tabs.iter().enumerate());
+    tabs.flat_map(|(i, t)| {
+        let splits = t.splits.iter().enumerate();
+        splits.map(move |(j, s)| format!("{i}.{j} {}", s.size()))
+    })
+    .collect()
 }
 
 /// Wait until [`pane_sizes`] is `expected`.
@@ -24,7 +25,7 @@ pub fn wait_for_pane_sizes(sandbox: &Sandbox, expected: &[&str]) {
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    assert_eq!(pane_sizes(sandbox), expected, "pane sizes in tmux");
+    assert_eq!(pane_sizes(sandbox), expected, "split sizes");
 }
 
 /// The part of a drawn row from column `from` (inclusive) to `to` (exclusive).

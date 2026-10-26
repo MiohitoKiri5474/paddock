@@ -28,7 +28,7 @@ fn payload(name: &str, session: &str, cwd: &str) -> String {
         .replace("\"/tmp/repo\"", &format!("\"{cwd}\""))
 }
 
-/// Report `event` for a Claude session in the pane tmux target `terminal`
+/// Report `event` for a Claude session in the terminal `terminal`
 /// names, working in `cwd`.
 fn claude(sandbox: &Sandbox, terminal: &str, event: &str, session: &str, cwd: &str) {
     sandbox.hook(terminal, event, &payload(event, session, cwd));

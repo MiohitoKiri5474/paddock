@@ -16,15 +16,9 @@ const SPIKE: &str = concat!(
     "/spikes/02-subagent-worktree/fixtures"
 );
 
-/// The tmux session id (`$N`) of session `name`.
+/// The id of space `name`.
 fn session_id(sandbox: &Sandbox, name: &str) -> String {
-    sandbox
-        .tmux(&["list-sessions", "-F", "#{session_id}\t#{session_name}"])
-        .lines()
-        .filter_map(|l| l.split_once('\t'))
-        .find(|(_, n)| *n == name)
-        .map(|(id, _)| id.to_string())
-        .unwrap_or_else(|| panic!("no session {name}"))
+    sandbox.space(name).id
 }
 
 /// Run git in `dir`, ignoring the user's own git configuration.
@@ -90,18 +84,11 @@ fn wait_for_sessions(paddock: &Paddock, sandbox: &Sandbox, want: &[&str]) {
     });
 }
 
-/// The directory of session `name`'s first pane, links resolved.
+/// The directory of space `name`'s first terminal; `None` without it.
 fn session_dir(sandbox: &Sandbox, name: &str) -> Option<PathBuf> {
-    let out = sandbox.tmux(&[
-        "list-panes",
-        "-a",
-        "-F",
-        "#{session_name}\t#{pane_current_path}",
-    ]);
-    out.lines()
-        .filter_map(|l| l.split_once('\t'))
-        .find(|(s, _)| *s == name)
-        .map(|(_, p)| PathBuf::from(p))
+    let state = sandbox.state();
+    let first = state.space(name)?.terminals().next()?.dir.clone();
+    first.map(PathBuf::from)
 }
 
 fn real(p: &Path) -> PathBuf {

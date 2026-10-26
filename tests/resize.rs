@@ -194,14 +194,14 @@ fn the_sidebar_border_still_resizes_the_sidebar_beside_splits() {
     p.drag_screen(10, 31, 39);
 
     p.wait_for("the sidebar 8 columns wider", |_| {
-        sandbox.display("space-1:0", "#{window_width}") == "60"
+        sandbox.space("space-1").tabs[0].width() == 60
     });
     assert_eq!(sandbox.clipboard(), None);
 }
 
-/// Whether the first tab is zoomed, as tmux has it.
+/// Whether the first tab is zoomed, as the backend has it.
 fn zoomed(sandbox: &Sandbox) -> bool {
-    sandbox.display("space-1:0", "#{window_zoomed_flag}") == "1"
+    sandbox.space("space-1").tabs[0].zoomed
 }
 
 /// `C-a z` on the right pane of a split, and wait until it fills the tab.

@@ -24,29 +24,36 @@ fn ready(sandbox: &Sandbox) -> Paddock {
     paddock
 }
 
-/// Float panes on the server, as `(space name, pane id, key)`.
+/// Floats' terminals in the backend, as `(space name, terminal id, key)`.
 fn floats(sandbox: &Sandbox) -> Vec<(String, String, String)> {
-    let format = "#{session_name} #{pane_id} #{@paddock-float}";
-    sandbox
-        .tmux(&["list-panes", "-a", "-F", format])
-        .lines()
-        .filter_map(|l| {
-            let mut f = l.split(' ');
-            let (space, pane, key) = (f.next()?, f.next()?, f.next()?);
-            (!key.is_empty()).then(|| (space.into(), pane.into(), key.into()))
+    let state = sandbox.state();
+    let floats = state
+        .spaces
+        .iter()
+        .flat_map(|s| s.floats.iter().map(move |f| (s, f)));
+    floats
+        .flat_map(|(s, f)| {
+            let splits = f.splits.iter();
+            splits.map(move |t| (s.name.clone(), t.id.clone(), f.key.clone()))
         })
         .collect()
 }
 
-/// The panes of space `space` that are not floats.
+/// The terminals of space `space`'s tabs (not its floats').
 fn tab_panes(sandbox: &Sandbox, space: &str) -> Vec<String> {
-    let format = "#{pane_id} #{@paddock-float}";
-    sandbox
-        .tmux(&["list-panes", "-s", "-t", space, "-F", format])
-        .lines()
-        .filter(|l| l.trim_end().split(' ').nth(1).is_none_or(str::is_empty))
-        .map(|l| l.trim_end().to_string())
-        .collect()
+    let tabs = sandbox.space(space).tabs;
+    let splits = tabs.iter().flat_map(|t| &t.splits);
+    splits.map(|s| s.id.clone()).collect()
+}
+
+/// Hide the float shown (its key again) and check the terminal under it
+/// never got `text`.
+fn not_under_it(paddock: &mut Paddock, text: &str) {
+    paddock.command(b"G");
+    wait_hidden(paddock);
+    paddock.wait_for_text(PROMPT);
+    let screen = paddock.full_screen();
+    assert!(!screen.contains(text), "{screen}");
 }
 
 /// The one float pane on the server, once it runs.
@@ -86,10 +93,10 @@ fn the_key_shows_a_float_over_everything_and_hides_it_with_its_program_kept() {
     let corner = paddock.full_rows()[CORNER.1].chars().nth(CORNER.0);
     assert_eq!(corner, Some('╭'), "{}", paddock.full_screen());
     paddock.wait_for("the float's pane sized to its box", |_| {
-        sandbox.display(&pane, "#{pane_width}x#{pane_height}") == INSIDE
+        sandbox.terminal(&pane).size() == INSIDE
     });
     // Started where the focused terminal is.
-    let dir = sandbox.display(&pane, "#{pane_current_path}");
+    let dir = sandbox.terminal(&pane).dir.unwrap_or_default();
     assert_eq!(
         std::fs::canonicalize(dir).unwrap(),
         std::fs::canonicalize(&work).unwrap()
@@ -115,21 +122,14 @@ fn the_key_shows_a_float_over_everything_and_hides_it_with_its_program_kept() {
 fn keys_go_to_the_float_and_not_to_the_terminal_under_it() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
-    let shell = tab_panes(&sandbox, "space-1").remove(0);
 
     paddock.command(b"G");
     wait_shown(&paddock);
-    let pane = wait_for_float(&paddock, &sandbox);
+    wait_for_float(&paddock, &sandbox);
     paddock.type_line("typed-into-the-float");
     wait_for_full_text(&paddock, "typed-into-the-float");
 
-    let float_screen = sandbox.tmux(&["capture-pane", "-p", "-t", &pane]);
-    assert!(
-        float_screen.contains("typed-into-the-float"),
-        "{float_screen}"
-    );
-    let shell_screen = sandbox.tmux(&["capture-pane", "-p", "-t", &shell]);
-    assert!(!shell_screen.contains("typed-into"), "{shell_screen}");
+    not_under_it(&mut paddock, "typed-into");
 }
 
 #[test]
@@ -143,7 +143,9 @@ fn when_its_program_exits_the_float_closes_and_the_next_toggle_starts_it_again()
     // `C-d` on an empty line ends `cat`.
     paddock.send(b"\x04");
     wait_hidden(&paddock);
-    paddock.wait_for("the float gone from tmux", |_| floats(&sandbox).is_empty());
+    paddock.wait_for("the float gone from the backend", |_| {
+        floats(&sandbox).is_empty()
+    });
     paddock.type_line("echo back-in-the-shell");
     paddock.wait_for_text("back-in-the-shell\n");
     paddock.wait_for_tabs(&["1:home"]);
@@ -224,18 +226,14 @@ fn closing_the_last_tab_closes_its_space_with_the_float() {
 fn pasted_text_goes_to_the_float() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
-    let shell = tab_panes(&sandbox, "space-1").remove(0);
 
     paddock.command(b"G");
     wait_shown(&paddock);
-    let pane = wait_for_float(&paddock, &sandbox);
+    wait_for_float(&paddock, &sandbox);
     paddock.send(b"\x1b[200~pasted-in\n\x1b[201~");
     wait_for_full_text(&paddock, "pasted-in");
 
-    let float_screen = sandbox.tmux(&["capture-pane", "-p", "-t", &pane]);
-    assert!(float_screen.contains("pasted-in"), "{float_screen}");
-    let shell_screen = sandbox.tmux(&["capture-pane", "-p", "-t", &shell]);
-    assert!(!shell_screen.contains("pasted-in"), "{shell_screen}");
+    not_under_it(&mut paddock, "pasted-in");
 }
 
 #[test]
@@ -341,21 +339,20 @@ fn hooks_from_a_float_that_has_closed_are_still_left_out() {
     paddock.command(b"G");
     wait_shown(&paddock);
     let pane = wait_for_float(&paddock, &sandbox);
+    let float = sandbox.terminal(&pane);
     // `C-d` ends `cat`: the float closes before Claude's last hooks land.
     paddock.send(b"\x04");
     wait_hidden(&paddock);
-    paddock.wait_for("the float gone from tmux", |_| floats(&sandbox).is_empty());
+    paddock.wait_for("the float gone from the backend", |_| {
+        floats(&sandbox).is_empty()
+    });
     // Looking at another tab, so that the first one's wait notifies.
     paddock.command(b"c");
     paddock.wait_for_current_tab("2:home");
 
-    let tmux = sandbox.display(&shell, "#{socket_path},#{pid},0");
+    // The float's terminal as a hook in it saw it, read while it ran.
     let in_float = waiting("aaaaaaaa-2222-4333-8444-555555555555", "/w/floaty");
-    let out = sandbox.run(
-        &["hook", "PermissionRequest"],
-        &[("TMUX", &tmux), ("TMUX_PANE", &pane)],
-        &in_float,
-    );
+    let out = sandbox.run(&["hook", "PermissionRequest"], &float.env(), &in_float);
     assert!(out.status.success(), "hook failed: {out:?}");
     let in_tab = waiting("bbbbbbbb-2222-4333-8444-555555555555", "/w/tabby");
     sandbox.hook(&shell, "PermissionRequest", &in_tab);
@@ -416,21 +413,19 @@ fn clicks_and_the_wheel_inside_the_float_reach_its_pane() {
     sandbox.write_config(MOUSE_CONFIG);
     let mut paddock = sandbox.launch();
     paddock.wait_for_text(PROMPT);
-    let shell = tab_panes(&sandbox, "space-1").remove(0);
 
     paddock.command(b"G");
-    let pane = wait_for_float(&paddock, &sandbox);
+    wait_for_float(&paddock, &sandbox);
     wait_for_full_text(&paddock, "ready-for-mouse");
     // Cell (5, 2) inside the box: 1-based (6, 3) in the float's pane.
     let (col, row) = (CORNER.0 as u16 + 1 + 5, CORNER.1 as u16 + 1 + 2);
     paddock.click_screen(col, row);
     paddock.send(format!("\x1b[<64;{};{}M", col + 1, row + 1).as_bytes());
     paddock.wait_for("the reports in the float", |_| {
-        let screen = sandbox.tmux(&["capture-pane", "-p", "-t", &pane]);
+        let screen = paddock.full_screen();
         screen.contains("<0;6;3M") && screen.contains("<64;6;3M")
     });
-    let shell_screen = sandbox.tmux(&["capture-pane", "-p", "-t", &shell]);
-    assert!(!shell_screen.contains(";6;3"), "{shell_screen}");
+    not_under_it(&mut paddock, ";6;3");
 }
 
 #[test]
