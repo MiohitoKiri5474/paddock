@@ -516,7 +516,7 @@ fn parse_details(out: &str) -> Vec<TerminalDetails> {
     out.lines()
         .filter_map(|l| {
             let f: Vec<&str> = l.splitn(8, '\x1f').collect();
-            let [pane, pid, tty, history, socket, server, command, dir] = f[..] else {
+            let [pane, pid, tty, scrollback, socket, server, command, dir] = f[..] else {
                 return None;
             };
             let id = TerminalId::new(pane);
@@ -527,7 +527,7 @@ fn parse_details(out: &str) -> Vec<TerminalDetails> {
                 command: command.to_string(),
                 pid: pid.parse().ok()?,
                 tty: tty.to_string(),
-                history: history.parse().ok()?,
+                scrollback: scrollback.parse().ok()?,
             })
         })
         .collect()
@@ -674,7 +674,10 @@ mod tests {
         assert_eq!(got.len(), 1, "a line without a pid is skipped");
         let d = &got[0];
         assert_eq!(d.id, "%4");
-        assert_eq!((d.pid, d.tty.as_str(), d.history), (100, "/dev/ttys004", 7));
+        assert_eq!(
+            (d.pid, d.tty.as_str(), d.scrollback),
+            (100, "/dev/ttys004", 7)
+        );
         assert_eq!((d.command.as_str(), d.dir.as_str()), ("zsh", "/w/a b"));
         assert_eq!(d.hook_env, hook::env("/tmp/tmux-501/p", 42, &d.id));
     }

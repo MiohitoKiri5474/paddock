@@ -66,7 +66,7 @@ pub struct TerminalDetails {
     /// The path of its tty.
     pub tty: String,
     /// Lines of its scrollback, above its screen.
-    pub history: u32,
+    pub scrollback: u32,
     /// The variables that tell a process (an agent's hook) it runs in this
     /// terminal: what [`hook_terminal`] reads.
     pub hook_env: Vec<(String, String)>,

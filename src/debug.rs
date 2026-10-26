@@ -10,11 +10,12 @@ use anyhow::Result;
 use serde::Serialize;
 use std::collections::BTreeMap;
 
-/// The version of the JSON's shape.
+/// The version of the JSON's shape; `VERSION` in `tests/harness/state.rs`
+/// reads it and changes with it.
 pub const VERSION: u32 = 1;
 
 /// One space as read from the backend.
-pub struct SpaceRead {
+pub struct SpaceSnapshot {
     pub id: SpaceId,
     pub root: Option<String>,
     pub structure: Structure,
@@ -73,7 +74,7 @@ struct SplitState<'a> {
     command: Option<&'a str>,
     pid: Option<u32>,
     tty: Option<&'a str>,
-    history: Option<u32>,
+    scrollback: Option<u32>,
     hook_env: BTreeMap<&'a str, &'a str>,
 }
 
@@ -81,7 +82,7 @@ struct SplitState<'a> {
 /// every terminal's `terminals` details.
 pub fn state_json(
     instance: Option<u32>,
-    spaces: &[SpaceRead],
+    spaces: &[SpaceSnapshot],
     terminals: &[TerminalDetails],
 ) -> Result<serde_json::Value> {
     let state = State {
@@ -92,7 +93,7 @@ pub fn state_json(
     Ok(serde_json::to_value(state)?)
 }
 
-fn space<'a>(s: &'a SpaceRead, terminals: &'a [TerminalDetails]) -> SpaceState<'a> {
+fn space<'a>(s: &'a SpaceSnapshot, terminals: &'a [TerminalDetails]) -> SpaceState<'a> {
     let tab = |t: &'a Tab| TabState {
         id: t.id.as_str(),
         name: &t.name,
@@ -136,7 +137,7 @@ fn splits<'a>(
                 command: d.map(|d| d.command.as_str()),
                 pid: d.map(|d| d.pid),
                 tty: d.map(|d| d.tty.as_str()),
-                history: d.map(|d| d.history),
+                scrollback: d.map(|d| d.scrollback),
                 hook_env: d
                     .iter()
                     .flat_map(|d| &d.hook_env)
@@ -153,13 +154,13 @@ pub fn print_state() -> Result<()> {
     let backend = Backend::new(Paths::from_env()?);
     let instance = backend.instance().ok();
     // A space that ends between the list and its read is left out.
-    let spaces: Vec<SpaceRead> = backend
+    let spaces: Vec<SpaceSnapshot> = backend
         .spaces()
         .into_iter()
         .filter_map(|s| {
             let structure = backend.structure(&s.id).ok()?;
             let root = backend.root(&s.id);
-            Some(SpaceRead {
+            Some(SpaceSnapshot {
                 id: s.id,
                 root,
                 structure,
@@ -215,7 +216,7 @@ mod tests {
             }],
             float_active: false,
         };
-        let spaces = [SpaceRead {
+        let spaces = [SpaceSnapshot {
             id: "$1".into(),
             root: Some("/w/api".into()),
             structure,
@@ -226,7 +227,7 @@ mod tests {
             command: "zsh".into(),
             pid: 100,
             tty: "/dev/ttys001".into(),
-            history: 12,
+            scrollback: 12,
             hook_env: vec![("TMUX_PANE".into(), "%1".into())],
         }];
         // `%2`-`%4` ended between the reads: nothing known of them.
@@ -234,7 +235,7 @@ mod tests {
             json!({
                 "id": id, "x": x, "y": 0, "width": width, "height": 29,
                 "focused": focused, "dir": null, "command": null, "pid": null,
-                "tty": null, "history": null, "hook_env": {}
+                "tty": null, "scrollback": null, "hook_env": {}
             })
         };
         assert_eq!(
@@ -254,7 +255,7 @@ mod tests {
                                 {
                                     "id": "%1", "x": 0, "y": 0, "width": 34, "height": 29,
                                     "focused": false, "dir": "/w/api", "command": "zsh",
-                                    "pid": 100, "tty": "/dev/ttys001", "history": 12,
+                                    "pid": 100, "tty": "/dev/ttys001", "scrollback": 12,
                                     "hook_env": {"TMUX_PANE": "%1"}
                                 },
                                 unknown("%2", 35, 33, true),
