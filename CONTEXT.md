@@ -32,6 +32,14 @@ _Avoid_: maximise, fullscreen
 One shell inside paddock, shown in a tab, alone or with others. It is a tmux pane and keeps running when paddock is closed.
 _Avoid_: tmux session
 
+**Server**:
+paddock's own background process that holds every terminal and the layout while the app is closed, with the native backend. The app is its client.
+_Avoid_: daemon (in user-facing text), hidden server (that is tmux's)
+
+**Backend**:
+What hosts the terminals: paddock's own server (the native backend), or the hidden tmux server (the tmux backend).
+_Avoid_: engine, runtime
+
 **Sidebar**:
 The panel on the left, which can be shown or hidden: SPACES, two lines per space with a dot for the most urgent state of its agents, then its directory and branch and that branch's PR mark (`#123 ✓`) where it fits, then AGENTS, two lines per main agent in any space with its state, space and tab, and its agent kind's tag where it fits, external sessions last.
 

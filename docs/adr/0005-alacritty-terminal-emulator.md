@@ -1,5 +1,7 @@
 # alacritty_terminal emulates each terminal, and paddock encodes every key itself
 
+> Seeding the emulator on reattach and storing key modes are superseded by [ADR 0007](0007-native-backend-with-a-server.md) for the native backend: the server's attach snapshot carries the screen, scrollback and key modes. The rest stands.
+
 Spike 01 ran Claude Code on the hidden server through control mode. It tested alacritty_terminal 0.26, its `yas-alacritty-terminal` fork, and vt100 0.18 ([results](../../spikes/01-control-mode/RESULTS.md)). All three drew Claude's screen cell for cell like tmux, and every acceptance check passed except emoji widths.
 
 paddock uses alacritty_terminal, with the fork's small VS16 width fix:
