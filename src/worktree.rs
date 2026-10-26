@@ -5,9 +5,9 @@
 //! nothing left half-done. Each failure says what kind it is, so the
 //! command can give it an exit code; the app shows it as a notice.
 
+use crate::backend::{Backend, SpaceId, SpaceTerminal};
 use crate::git::{self, WorkingTree, Worktree};
 use crate::paths::HomePaths;
-use crate::tmux::Server;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -29,8 +29,8 @@ pub enum Failure {
     Late(String),
     /// What would be lost, or who would be hit, was not agreed to.
     Refused(String),
-    /// tmux refused (the space could not be made or closed).
-    Tmux(String),
+    /// The backend refused (the space could not be made or closed).
+    Backend(String),
 }
 
 impl Failure {
@@ -47,26 +47,28 @@ impl Failure {
 impl fmt::Display for Failure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Invalid(m) | Self::Git(m) | Self::Late(m) | Self::Refused(m) | Self::Tmux(m) => {
-                f.write_str(m)
-            }
+            Self::Invalid(m)
+            | Self::Git(m)
+            | Self::Late(m)
+            | Self::Refused(m)
+            | Self::Backend(m) => f.write_str(m),
         }
     }
 }
 
 impl std::error::Error for Failure {}
 
-/// A worktree space, as deleting it needs: its tmux session, every space
+/// A worktree space, as deleting it needs: its space, every space
 /// in that worktree (it first, read again before deleting), its
 /// worktree's directory and branch (`None` if detached), and the
 /// repository's main checkout, where git runs once the worktree is gone.
-// ponytail: paths are `String` here and in `git` (as tmux and git print
+// ponytail: paths are `String` here and in `git` (as the backend and git print
 // them) but `PathBuf` in config and `worktree_path`; one type would do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorktreeSpace {
     /// The space asked about (`x` on it); none from the command.
-    pub space: Option<String>,
-    pub spaces: Vec<String>,
+    pub space: Option<SpaceId>,
+    pub spaces: Vec<SpaceId>,
     pub path: String,
     pub branch: Option<String>,
     pub main: String,
@@ -186,61 +188,28 @@ pub fn create<T>(
             if created {
                 let _ = git::delete_branch(&tree.main, branch);
             }
-            Err(Failure::Tmux(format!("{e:#}")))
+            Err(Failure::Backend(format!("{e:#}")))
         }
     }
 }
 
-/// `list-panes` format of a pane as [`parse_panes`] reads it.
-const PANE_FORMAT: &str = "#{@paddock-float}\x1f#{pane_id}\x1f#{pane_current_path}";
-
-/// One pane of a space, floats' included.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Pane {
-    pub id: String,
-    /// Its shell's directory.
-    pub path: String,
-    /// It is a float's, not a tab's.
-    pub float: bool,
+/// Space `id`'s directory, read now: its first tab's first terminal's (a
+/// float is never the first tab, even when the backend lists it first).
+/// The directory may have been deleted since; `None` if the backend
+/// cannot say.
+pub fn space_dir(backend: &Backend, id: &SpaceId) -> Option<String> {
+    first_tab_dir(&backend.space_terminals(id))
 }
 
-/// `list-panes` output in [`PANE_FORMAT`], in tmux's order.
-fn parse_panes(out: &str) -> Vec<Pane> {
-    out.lines()
-        .filter_map(|l| {
-            let mut parts = l.splitn(3, '\x1f');
-            let float = !parts.next()?.is_empty();
-            let id = parts.next()?.to_string();
-            let path = parts.next()?.to_string();
-            Some(Pane { id, path, float })
-        })
-        .collect()
+/// Space `id`'s root, read now: as stored in the backend, else (a space
+/// made before roots) its directory ([`space_dir`]). It may have been
+/// deleted since; `None` if the backend cannot say.
+pub fn space_root(backend: &Backend, id: &SpaceId) -> Option<String> {
+    backend.root(id).or_else(|| space_dir(backend, id))
 }
 
-/// Every pane of space `id`, floats' too; none if tmux cannot say.
-pub fn panes(server: &Server, id: &str) -> Vec<Pane> {
-    server
-        .run(&["list-panes", "-s", "-t", id, "-F", PANE_FORMAT])
-        .map(|out| parse_panes(&out))
-        .unwrap_or_default()
-}
-
-/// Space `id`'s directory, read now: its first tab's first pane's (a
-/// float is never the first tab, even when tmux lists it first). The
-/// directory may have been deleted since; `None` if tmux cannot say.
-pub fn space_dir(server: &Server, id: &str) -> Option<String> {
-    first_tab_dir(&panes(server, id))
-}
-
-/// Space `id`'s root, read now: as stored in tmux, else (a space made
-/// before roots) its directory ([`space_dir`]). It may have been deleted
-/// since; `None` if tmux cannot say.
-pub fn space_root(server: &Server, id: &str) -> Option<String> {
-    server.root(id).or_else(|| space_dir(server, id))
-}
-
-/// The directory of the first pane in `panes` that is not a float's.
-fn first_tab_dir(panes: &[Pane]) -> Option<String> {
+/// The directory of the first terminal in `panes` that is not a float's.
+fn first_tab_dir(panes: &[SpaceTerminal]) -> Option<String> {
     panes
         .iter()
         .find(|p| !p.float)
@@ -253,10 +222,10 @@ fn first_tab_dir(panes: &[Pane]) -> Option<String> {
 /// without a directory, or whose directory is gone, is in none. If git does not answer in time for
 /// any space, it fails: a space is never skipped unread.
 // ponytail: a space whose other panes are in the worktree is missed.
-pub fn spaces_in(server: &Server, ids: &[String], top: &str) -> Result<Vec<String>, Failure> {
+pub fn spaces_in(backend: &Backend, ids: &[SpaceId], top: &str) -> Result<Vec<SpaceId>, Failure> {
     let mut found = Vec::new();
     for id in ids {
-        let Some(dir) = space_dir(server, id) else {
+        let Some(dir) = space_dir(backend, id) else {
             continue;
         };
         let tree = git::working_tree_in_time(&dir).map_err(|_| {
@@ -294,7 +263,7 @@ pub struct Removal {
 /// everything as it is. A branch `branch -d` finds unmerged is kept,
 /// with a notice.
 pub fn remove(
-    server: &Server,
+    backend: &Backend,
     target: &WorktreeSpace,
     confirmed: Option<&Risks>,
 ) -> Result<Removal, Failure> {
@@ -312,12 +281,12 @@ pub fn remove(
             "{label} has commits not in its base now: nothing deleted"
         )));
     }
-    let alive: Vec<String> = server.sessions().into_iter().map(|s| s.id).collect();
+    let alive: Vec<SpaceId> = backend.spaces().into_iter().map(|s| s.id).collect();
     let mut closed = false;
     for space in target.spaces.iter().filter(|s| alive.contains(s)) {
-        server
-            .kill_session(space)
-            .map_err(|e| Failure::Tmux(format!("{e:#}")))?;
+        backend
+            .close_space(space)
+            .map_err(|e| Failure::Backend(format!("{e:#}")))?;
         closed = true;
     }
     // git's reason first, then what is left.
@@ -396,17 +365,19 @@ mod tests {
 
     #[test]
     fn a_space_s_directory_is_its_first_tab_s_never_a_float_s() {
-        let out = "g\x1f%1\x1f/w/float\n\x1f%2\x1f/w/tab\n\x1f%3\x1f/w/second\n";
-        let panes = parse_panes(out);
-        let floats: Vec<bool> = panes.iter().map(|p| p.float).collect();
-        assert_eq!(floats, [true, false, false]);
-        assert_eq!(panes[1].id, "%2");
+        let pane = |float: bool, path: &str| SpaceTerminal {
+            id: crate::backend::TerminalId::from("%1"),
+            path: path.into(),
+            float,
+        };
+        let panes = [
+            pane(true, "/w/float"),
+            pane(false, "/w/tab"),
+            pane(false, "/w/second"),
+        ];
         assert_eq!(first_tab_dir(&panes).as_deref(), Some("/w/tab"));
-        assert_eq!(first_tab_dir(&parse_panes("g\x1f%1\x1f/w/float\n")), None);
-        assert_eq!(first_tab_dir(&parse_panes("\x1f%1\x1f\n")), None);
-        // The format reads the float marker paddock sets.
-        let marker = format!("#{{{}}}\x1f", crate::tmux::structure::FLOAT_OPTION);
-        assert!(PANE_FORMAT.starts_with(&marker), "{PANE_FORMAT}");
+        assert_eq!(first_tab_dir(&[pane(true, "/w/float")]), None);
+        assert_eq!(first_tab_dir(&[pane(false, "")]), None);
     }
 
     #[test]

@@ -4,6 +4,7 @@
 use super::space::MIN_SIZE;
 use super::state::{App, Mode, Panel};
 use super::worktrees::SpaceEntry;
+use crate::backend::SpaceId;
 use crate::input::keymap::SidebarAction;
 use crate::sessions::is_external;
 use crossterm::event::KeyEvent;
@@ -42,9 +43,9 @@ pub enum SidebarTarget {
 /// What a sidebar line stands for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Pick {
-    /// A space, by tmux session id (`$N`).
-    Space(String),
-    /// An agent, by the pane it runs in (`%N`), or an external session's
+    /// A space.
+    Space(SpaceId),
+    /// An agent, by the terminal it runs in, or an external session's
     /// key.
     Agent(String),
 }
@@ -133,7 +134,7 @@ impl App {
             SidebarTarget::Spaces => None,
             SidebarTarget::Here => picks
                 .iter()
-                .position(|p| matches!(p, Pick::Agent(pane) if self.is_current_pane(pane))),
+                .position(|p| matches!(p, Pick::Agent(pane) if self.is_current_row(pane))),
         };
         let current = self.current_space().map(|s| Pick::Space(s.id.clone()));
         let index = focused_agent

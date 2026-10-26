@@ -2,6 +2,7 @@
 
 use super::sidebar::SidebarTarget;
 use super::state::{App, Mode, NameTarget, Panel, Renamed};
+use crate::backend::TerminalId;
 use crate::input::line::LineEdit;
 use crate::input::{encode_key, encode_paste, Command, KeyAction};
 use anyhow::Result;
@@ -94,8 +95,8 @@ impl App {
     }
 
     /// The pane typing goes to: the float shown, else the focused pane.
-    fn typing_pane(&self) -> Option<String> {
-        self.float_pane().or_else(|| self.current_pane())
+    fn typing_pane(&self) -> Option<TerminalId> {
+        self.float_terminal().or_else(|| self.current_terminal())
     }
 
     /// A key while the focused pane (or the float shown) has the keyboard:
@@ -104,7 +105,7 @@ impl App {
     fn normal_key(&mut self, key: KeyEvent) -> Result<Flow> {
         match self.prefix.handle(key) {
             KeyAction::Forward(key) => {
-                if self.float_pane().is_none() {
+                if self.float_terminal().is_none() {
                     if let Some(c) = self.prefix.direct(&key) {
                         return self.command(c);
                     }
@@ -142,13 +143,13 @@ impl App {
             Command::RenameSpace => self.start_naming(NameTarget::Rename(Renamed::Space)),
             Command::SetRoot => self.report(|app| app.set_root()),
             Command::Close => {
-                if let Some(pane) = self.current_pane() {
-                    self.report(|app| app.close(&pane));
+                if let Some(pane) = self.current_terminal() {
+                    self.report(|app| app.close(pane.as_str()));
                 }
             }
             Command::Fork => {
-                if let Some(pane) = self.current_pane() {
-                    self.report(|app| app.fork(&pane));
+                if let Some(pane) = self.current_terminal() {
+                    self.report(|app| app.fork(pane.as_str()));
                 }
             }
             Command::NewWorktree => self.start_new_worktree(None),
