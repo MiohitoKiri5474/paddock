@@ -10,7 +10,8 @@
 use serde::Deserialize;
 use std::collections::BTreeMap;
 
-/// The version of the JSON's shape these types read.
+/// The version of the JSON's shape these types read: `VERSION` in
+/// `src/debug.rs`, which writes it.
 const VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -64,7 +65,7 @@ pub struct Split {
     pub pid: Option<u32>,
     pub tty: Option<String>,
     /// Lines of its scrollback, above its screen.
-    pub history: Option<u32>,
+    pub scrollback: Option<u32>,
     /// The variables that tell `paddock hook` it runs in this terminal.
     pub hook_env: BTreeMap<String, String>,
 }

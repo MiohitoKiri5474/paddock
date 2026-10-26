@@ -148,7 +148,7 @@ type Case<'a> = (&'a str, &'a [(&'a str, &'a str)], &'a str);
 /// tmux-only: the variables a hook outside paddock's terminals may see are
 /// tmux's (another server's `TMUX`, or paddock's without `TMUX_PANE`).
 #[test]
-fn hooks_outside_paddock_say_nothing_and_go_to_the_external_log() {
+fn tmux_only_hooks_outside_paddock_say_nothing_and_go_to_the_external_log() {
     let sandbox = Sandbox::new();
     let _paddock = ready(&sandbox);
     let pid = sandbox.state().instance.expect("the instance id");
@@ -462,7 +462,7 @@ fn x_on_an_agent_row_closes_its_pane() {
     paddock.wait_for("its tab closed", |_| {
         sandbox.space("space-1").tabs.len() == 1
     });
-    assert_eq!(sandbox.session_names(), ["space-1", "space-2"]);
+    assert_eq!(sandbox.space_names(), ["space-1", "space-2"]);
 }
 
 /// Wait until space-1's terminal is `cols` wide in the backend.

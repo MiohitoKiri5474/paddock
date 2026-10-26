@@ -7,7 +7,7 @@
 mod harness;
 
 use harness::{
-    cols, in_region, tmux_only, wait_for_pane_sizes, wait_in_region, Paddock, Sandbox, PROMPT,
+    cols, in_region, tmux_only, wait_for_split_sizes, wait_in_region, Paddock, Sandbox, PROMPT,
 };
 
 /// Column of the border after one side-by-side split.
@@ -17,7 +17,7 @@ const WIDTH: usize = 68;
 const ALL_ROWS: (usize, usize) = (1, 30);
 const LEFT: (usize, usize) = (0, V_BORDER);
 const RIGHT: (usize, usize) = (V_BORDER + 1, WIDTH);
-/// The panes of one side-by-side split, as [`harness::pane_sizes`] lists them.
+/// The panes of one side-by-side split, as [`harness::split_sizes`] lists them.
 const SPLIT: [&str; 2] = ["0.0 34x29", "0.1 33x29"];
 
 fn ready(sandbox: &Sandbox) -> Paddock {
@@ -43,14 +43,14 @@ fn split(sandbox: &Sandbox) -> Paddock {
     wait_in_region(&p, "left-pane", ALL_ROWS, LEFT);
     p.command(b"|");
     wait_in_region(&p, PROMPT, ALL_ROWS, RIGHT);
-    wait_for_pane_sizes(sandbox, &SPLIT);
+    wait_for_split_sizes(sandbox, &SPLIT);
     p
 }
 
 /// `C-a z` and wait until the right pane fills the tab, alone.
 fn zoom(sandbox: &Sandbox, p: &mut Paddock) {
     p.command(b"z");
-    wait_for_pane_sizes(sandbox, &["0.0 34x29", "0.1 68x29"]);
+    wait_for_split_sizes(sandbox, &["0.0 34x29", "0.1 68x29"]);
     p.wait_for_tabs(&["1:home Z"]);
     p.wait_for("the left pane hidden", |_| {
         !in_region(p, "left-pane", ALL_ROWS, (0, WIDTH)) && !border_shown(p)
@@ -69,7 +69,7 @@ fn z_zooms_the_focused_split_and_again_gives_the_layout_back() {
 
     p.command(b"z");
 
-    wait_for_pane_sizes(&sandbox, &SPLIT);
+    wait_for_split_sizes(&sandbox, &SPLIT);
     p.wait_for_tabs(&["1:home"]);
     p.wait_for("the border back", |_| border_shown(&p));
     wait_in_region(&p, "left-pane", ALL_ROWS, LEFT);
@@ -101,7 +101,7 @@ fn moving_focus_while_zoomed_unzooms_then_moves() {
 
     p.command(b"h");
 
-    wait_for_pane_sizes(&sandbox, &SPLIT);
+    wait_for_split_sizes(&sandbox, &SPLIT);
     p.wait_for_tabs(&["1:home"]);
     p.type_line("echo went-left");
     wait_in_region(&p, "went-left", ALL_ROWS, LEFT);
@@ -109,7 +109,7 @@ fn moving_focus_while_zoomed_unzooms_then_moves() {
     // The direct chord too: `C-l` from the left pane, zoomed.
     zoom_left(&sandbox, &mut p);
     p.send(b"\x0c");
-    wait_for_pane_sizes(&sandbox, &SPLIT);
+    wait_for_split_sizes(&sandbox, &SPLIT);
     p.wait_for_tabs(&["1:home"]);
     p.type_line("echo went-right");
     wait_in_region(&p, "went-right", ALL_ROWS, RIGHT);
@@ -118,7 +118,7 @@ fn moving_focus_while_zoomed_unzooms_then_moves() {
 /// `C-a z` with the left pane focused.
 fn zoom_left(sandbox: &Sandbox, p: &mut Paddock) {
     p.command(b"z");
-    wait_for_pane_sizes(sandbox, &["0.0 68x29", "0.1 33x29"]);
+    wait_for_split_sizes(sandbox, &["0.0 68x29", "0.1 33x29"]);
     p.wait_for_tabs(&["1:home Z"]);
 }
 
@@ -130,7 +130,7 @@ fn splitting_while_zoomed_unzooms() {
 
     p.command(b"-");
 
-    wait_for_pane_sizes(&sandbox, &["0.0 34x29", "0.1 33x14", "0.2 33x14"]);
+    wait_for_split_sizes(&sandbox, &["0.0 34x29", "0.1 33x14", "0.2 33x14"]);
     p.wait_for_tabs(&["1:home"]);
     assert!(!zoomed(&sandbox));
     wait_in_region(&p, "left-pane", ALL_ROWS, LEFT);
@@ -141,14 +141,14 @@ fn evening_out_while_zoomed_unzooms_then_evens_out() {
     let sandbox = Sandbox::new();
     let mut p = split(&sandbox);
     p.command(b"|");
-    wait_for_pane_sizes(&sandbox, &["0.0 34x29", "0.1 16x29", "0.2 16x29"]);
+    wait_for_split_sizes(&sandbox, &["0.0 34x29", "0.1 16x29", "0.2 16x29"]);
     p.command(b"z");
-    wait_for_pane_sizes(&sandbox, &["0.0 34x29", "0.1 16x29", "0.2 68x29"]);
+    wait_for_split_sizes(&sandbox, &["0.0 34x29", "0.1 16x29", "0.2 68x29"]);
     p.wait_for_tabs(&["1:home Z"]);
 
     p.command(b"=");
 
-    wait_for_pane_sizes(&sandbox, &["0.0 22x29", "0.1 22x29", "0.2 22x29"]);
+    wait_for_split_sizes(&sandbox, &["0.0 22x29", "0.1 22x29", "0.2 22x29"]);
     p.wait_for_tabs(&["1:home"]);
     assert!(!zoomed(&sandbox));
     wait_in_region(&p, "left-pane", ALL_ROWS, (0, 22));
@@ -159,14 +159,14 @@ fn closing_the_zoomed_split_unzooms() {
     let sandbox = Sandbox::new();
     let mut p = split(&sandbox);
     p.command(b"|");
-    wait_for_pane_sizes(&sandbox, &["0.0 34x29", "0.1 16x29", "0.2 16x29"]);
+    wait_for_split_sizes(&sandbox, &["0.0 34x29", "0.1 16x29", "0.2 16x29"]);
     p.command(b"z");
-    wait_for_pane_sizes(&sandbox, &["0.0 34x29", "0.1 16x29", "0.2 68x29"]);
+    wait_for_split_sizes(&sandbox, &["0.0 34x29", "0.1 16x29", "0.2 68x29"]);
     p.wait_for_tabs(&["1:home Z"]);
 
     p.command(b"x");
 
-    wait_for_pane_sizes(&sandbox, &["0.0 34x29", "0.1 33x29"]);
+    wait_for_split_sizes(&sandbox, &["0.0 34x29", "0.1 33x29"]);
     p.wait_for_tabs(&["1:home"]);
     assert!(!zoomed(&sandbox));
     p.wait_for("the border back", |_| border_shown(&p));
@@ -175,14 +175,14 @@ fn closing_the_zoomed_split_unzooms() {
 
 /// tmux-only: a zoom made by tmux itself, outside paddock.
 #[test]
-fn a_zoom_made_outside_paddock_shows() {
+fn tmux_only_a_zoom_made_outside_paddock_shows() {
     let sandbox = Sandbox::new();
     let mut p = split(&sandbox);
 
     tmux_only::tmux(&sandbox, &["resize-pane", "-Z", "-t", "space-1:0.0"]);
 
     p.wait_for_tabs(&["1:home Z"]);
-    wait_for_pane_sizes(&sandbox, &["0.0 68x29", "0.1 33x29"]);
+    wait_for_split_sizes(&sandbox, &["0.0 68x29", "0.1 33x29"]);
     p.type_line("echo outside-zoom");
     wait_in_region(&p, "outside-zoom", ALL_ROWS, LEFT);
     assert!(!border_shown(&p));
@@ -207,6 +207,6 @@ fn a_zoom_survives_detach_and_relaunch() {
     assert!(zoomed(&sandbox));
     assert!(!in_region(&again, "left-pane", ALL_ROWS, (0, WIDTH)));
     again.command(b"z");
-    wait_for_pane_sizes(&sandbox, &SPLIT);
+    wait_for_split_sizes(&sandbox, &SPLIT);
     again.wait_for_tabs(&["1:home"]);
 }

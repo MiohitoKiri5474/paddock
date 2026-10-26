@@ -136,10 +136,7 @@ fn a_key_bound_twice_stops_paddock_with_a_clear_message() {
     assert!(!paddock.wait_exit(), "paddock should fail");
     paddock.wait_for_text("config.toml");
     paddock.wait_for_text("[keys.commands] \"n\" is bound to both new_tab and next_tab");
-    assert!(
-        sandbox.session_names().is_empty(),
-        "no terminal was started"
-    );
+    assert!(sandbox.space_names().is_empty(), "no terminal was started");
 }
 
 #[test]
@@ -161,7 +158,8 @@ fn paddock_keys_prints_the_defaults_as_toml() {
     ] {
         assert!(text.contains(line), "lacks {line:?}:\n{text}");
     }
-    assert_eq!(sandbox.state().instance, None, "no backend was started");
+    assert!(sandbox.sockets().is_empty(), "no backend was ever started");
+    assert_eq!(sandbox.state().instance, None, "no backend runs");
 }
 
 #[test]

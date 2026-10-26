@@ -9,8 +9,8 @@
 //! The payloads in `tests/fixtures/hooks/agy/` are shaped from agy's hook
 //! docs, not recorded from a live run. The `agy` in the terminals is a
 //! copy of paddock under that name (`agy hook` waits on its input), so
-//! the backend sees `agy` run; its status reports are written to the terminal as
-//! agy 1.4.3 wrote them in a real run.
+//! the backend sees `agy` run; its status reports are written to the
+//! terminal as agy 1.4.3 wrote them in a real run.
 
 mod harness;
 

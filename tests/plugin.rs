@@ -4,7 +4,10 @@
 //! frontmatter with a name and a description. Ticket 27: the plugin's hooks
 //! run silently, and with `paddock hooks install`'s record each event once.
 
+mod harness;
+
 use serde_json::Value;
+use std::cell::OnceCell;
 use std::path::{Path, PathBuf};
 
 const ROOT: &str = env!("CARGO_MANIFEST_DIR");
@@ -112,8 +115,6 @@ fn the_marketplace_lists_the_paddock_plugin_and_every_skill_has_frontmatter() {
 // `paddock hooks install` writes; these run its commands as Claude would.
 
 const PADDOCK: &str = env!("CARGO_BIN_EXE_paddock");
-const SOCKET: &str = "paddock-plugin-test";
-const SERVER_PID: &str = "4242";
 const PAYLOAD: &str = r#"{"session_id":"s1"}"#;
 
 fn plugin_hooks() -> Value {
@@ -145,22 +146,31 @@ fn events_of(commands: &[(String, String)]) -> Vec<String> {
     commands.iter().map(|(e, _)| e.clone()).collect()
 }
 
-/// HOME, state and PATH of their own, never the user's.
+/// HOME, state and PATH of their own, never the user's, in a harness
+/// sandbox, whose paddock and backend start the first time a command runs
+/// inside one of its terminals.
 struct Sandbox {
-    dir: tempfile::TempDir,
+    base: harness::Sandbox,
+    /// The hook variables of paddock's first terminal, as the backend
+    /// gives them, and the backend's instance id.
+    terminal: OnceCell<(Vec<(String, String)>, u32)>,
 }
 
 impl Sandbox {
     fn new() -> Self {
-        let dir = tempfile::tempdir().unwrap();
-        for d in ["home", "state", "bin", "work"] {
-            std::fs::create_dir(dir.path().join(d)).unwrap();
+        let base = harness::Sandbox::new();
+        // `bin` holds the harness's stubs: the hooks' PATH is `plugin-bin`.
+        for d in ["plugin-bin", "work"] {
+            std::fs::create_dir(base.path(d)).unwrap();
         }
-        Self { dir }
+        Self {
+            base,
+            terminal: OnceCell::new(),
+        }
     }
 
     fn path(&self, name: &str) -> PathBuf {
-        self.dir.path().join(name)
+        self.base.path(name)
     }
 
     fn settings(&self) -> PathBuf {
@@ -169,7 +179,23 @@ impl Sandbox {
 
     /// Put `paddock` on the sandbox's PATH.
     fn add_paddock(&self) {
-        std::os::unix::fs::symlink(PADDOCK, self.path("bin/paddock")).unwrap();
+        std::os::unix::fs::symlink(PADDOCK, self.path("plugin-bin/paddock")).unwrap();
+    }
+
+    /// paddock's first terminal and the backend's instance id; paddock
+    /// runs once to start them, then detaches.
+    fn terminal(&self) -> &(Vec<(String, String)>, u32) {
+        self.terminal.get_or_init(|| {
+            let mut paddock = self.base.launch();
+            paddock.wait_for_text(harness::PROMPT);
+            let state = self.base.state();
+            let instance = state.instance.expect("the backend's instance id");
+            let first = state.terminal("space-1").expect("paddock's terminal");
+            let env = first.hook_env.clone().into_iter().collect();
+            paddock.detach_keys();
+            assert!(paddock.wait_exit());
+            (env, instance)
+        })
     }
 
     /// `program args`, with `stdin`, as if in a terminal of paddock's server.
@@ -178,7 +204,7 @@ impl Sandbox {
     }
 
     /// [`Self::run`], in a terminal of paddock's server if `inside`, else
-    /// outside any tmux (an external session).
+    /// outside paddock's terminals (an external session).
     fn run_where(
         &self,
         inside: bool,
@@ -187,19 +213,16 @@ impl Sandbox {
         stdin: &str,
     ) -> std::process::Output {
         use std::io::Write;
-        let path = format!("{}:/usr/bin:/bin", self.path("bin").display());
+        let path = format!("{}:/usr/bin:/bin", self.path("plugin-bin").display());
         let mut cmd = std::process::Command::new(program);
-        cmd.args(args).env_clear();
+        cmd.args(args).env_clear().envs(self.base.backend_env());
         if inside {
-            cmd.env("TMUX", format!("/nowhere/{SOCKET},{SERVER_PID},0"))
-                .env("TMUX_PANE", "%7");
+            cmd.envs(self.terminal().0.iter().cloned());
         }
         let mut child = cmd
             .env("HOME", self.path("home"))
             .env("PATH", path)
-            .env("XDG_STATE_HOME", self.path("state"))
             .env("XDG_CONFIG_HOME", self.path("home/.config"))
-            .env("PADDOCK_TMUX_SOCKET", SOCKET)
             .current_dir(self.path("work"))
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
@@ -230,7 +253,7 @@ impl Sandbox {
 
     /// The events recorded, in order.
     fn events(&self) -> Vec<String> {
-        self.events_in(&format!("{SERVER_PID}.jsonl"))
+        self.events_in(&format!("{}.jsonl", self.terminal().1))
     }
 
     /// The events recorded in the log named `name`, in order.
@@ -424,7 +447,8 @@ fn a_hook_naming_claude_records_as_claudes_and_an_unknown_one_stays_silent() {
     run(&["hook", "--agent", "claude", "Stop"]);
     run(&["hook", "SessionEnd"]);
     assert_eq!(sandbox.events(), ["Stop", "SessionEnd"]);
-    let log = sandbox.path(&format!("state/paddock/events/{SERVER_PID}.jsonl"));
+    let log = format!("state/paddock/events/{}.jsonl", sandbox.terminal().1);
+    let log = sandbox.path(&log);
     let log = std::fs::read_to_string(log).unwrap();
     assert!(!log.contains("kind"), "Claude's lines as before: {log}");
 

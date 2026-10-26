@@ -282,7 +282,7 @@ fn c_a_a_to_a_split_hidden_by_a_zoom_gives_the_layout_back_focused_there() {
 
     paddock.command(b"a");
 
-    harness::wait_for_pane_sizes(&sandbox, &["0.0 34x29", "0.1 33x29"]);
+    harness::wait_for_split_sizes(&sandbox, &["0.0 34x29", "0.1 33x29"]);
     assert!(!sandbox.space("space-1").tabs[0].zoomed);
     paddock.wait_for("the border back", |_| {
         harness::cols(&paddock.rows()[1], 34, 35) == "│"

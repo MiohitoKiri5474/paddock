@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 /// Every tab's splits' sizes as the backend has them, as `tab.split WxH`
 /// (counting from 0), space by space, in order.
-pub fn pane_sizes(sandbox: &Sandbox) -> Vec<String> {
+pub fn split_sizes(sandbox: &Sandbox) -> Vec<String> {
     let state = sandbox.state();
     let tabs = state.spaces.iter().flat_map(|s| s.tabs.iter().enumerate());
     tabs.flat_map(|(i, t)| {
@@ -16,16 +16,16 @@ pub fn pane_sizes(sandbox: &Sandbox) -> Vec<String> {
     .collect()
 }
 
-/// Wait until [`pane_sizes`] is `expected`.
-pub fn wait_for_pane_sizes(sandbox: &Sandbox, expected: &[&str]) {
+/// Wait until [`split_sizes`] is `expected`.
+pub fn wait_for_split_sizes(sandbox: &Sandbox, expected: &[&str]) {
     let start = Instant::now();
     while start.elapsed() < TIMEOUT {
-        if pane_sizes(sandbox) == expected {
+        if split_sizes(sandbox) == expected {
             return;
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    assert_eq!(pane_sizes(sandbox), expected, "split sizes");
+    assert_eq!(split_sizes(sandbox), expected, "split sizes");
 }
 
 /// The part of a drawn row from column `from` (inclusive) to `to` (exclusive).

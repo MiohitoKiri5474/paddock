@@ -195,7 +195,7 @@ fn each_space_has_its_own_float() {
     paddock.wait_for_popup("New space", "space-2");
     paddock.send(b"\r");
     paddock.wait_for("space-2 shown", |_| {
-        sandbox.session_names() == ["space-1", "space-2"]
+        sandbox.space_names() == ["space-1", "space-2"]
     });
     paddock.wait_for_text(PROMPT);
     paddock.command(b"G");
@@ -219,7 +219,7 @@ fn closing_the_last_tab_closes_its_space_with_the_float() {
     // The only tab's shell exits: paddock has nothing left and quits.
     paddock.type_line("exit");
     assert!(paddock.wait_exit());
-    assert!(sandbox.session_names().is_empty(), "the float went too");
+    assert!(sandbox.space_names().is_empty(), "the float went too");
 }
 
 #[test]

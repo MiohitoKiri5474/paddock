@@ -8,7 +8,8 @@
 //!
 //! Tests ask paddock what runs where (`paddock debug state`, see
 //! [`State`]), so they hold for any backend; only tests of tmux-only
-//! behaviour call tmux, through [`tmux_only`].
+//! behaviour call tmux, through [`tmux_only`]. Their names start with
+//! `tmux_only_`: `cargo test -- --skip tmux_only` leaves them out.
 
 #![allow(dead_code)] // Each test binary uses a different part of the harness.
 
@@ -17,7 +18,7 @@ mod state;
 pub mod tmux_only;
 
 #[allow(unused_imports)] // Each test binary uses a different part of them.
-pub use panes::{cols, in_region, pane_sizes, wait_for_pane_sizes, wait_in_region};
+pub use panes::{cols, in_region, split_sizes, wait_for_split_sizes, wait_in_region};
 #[allow(unused_imports)]
 pub use state::{Space, Split, State, Tab};
 
@@ -97,8 +98,38 @@ impl Sandbox {
         self.root.path().join(name)
     }
 
-    pub fn tmux_tmpdir(&self) -> PathBuf {
+    fn tmux_tmpdir(&self) -> PathBuf {
         self.path("tmux")
+    }
+
+    /// Names of the socket files anywhere in the sandbox: a backend that
+    /// ran left its socket there.
+    pub fn sockets(&self) -> Vec<String> {
+        use std::os::unix::fs::FileTypeExt;
+        let mut found = Vec::new();
+        let mut dirs = vec![self.root.path().to_path_buf()];
+        while let Some(dir) = dirs.pop() {
+            for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+                let Ok(kind) = entry.file_type() else {
+                    continue;
+                };
+                if kind.is_dir() {
+                    dirs.push(entry.path());
+                } else if kind.is_socket() {
+                    found.push(entry.file_name().to_string_lossy().into_owned());
+                }
+            }
+        }
+        found
+    }
+
+    /// The sandbox's variables a process in paddock's terminals has from
+    /// the backend's clean environment: its state directory and the
+    /// backend's socket.
+    pub fn backend_env(&self) -> Vec<(String, String)> {
+        let kept = ["XDG_STATE_HOME", "PADDOCK_TMUX_SOCKET", "TMUX_TMPDIR"];
+        let env = self.env().into_iter();
+        env.filter(|(k, _)| kept.contains(&k.as_str())).collect()
     }
 
     /// Variables paddock runs with, including ones that must not leak.
@@ -260,7 +291,7 @@ impl Sandbox {
     }
 
     /// Space names, oldest first.
-    pub fn session_names(&self) -> Vec<String> {
+    pub fn space_names(&self) -> Vec<String> {
         self.state().names()
     }
 
@@ -385,8 +416,9 @@ impl Sandbox {
     }
 
     /// `paddock hook --agent <agent> <event>` with `payload` on stdin, as
-    /// that agent's hooks run it inside the terminal `terminal` names. It prints nothing, but `{}` for Antigravity (`agy`),
-    /// which reads a reply.
+    /// that agent's hooks run it inside the terminal `terminal` names. It
+    /// prints nothing, but `{}` for Antigravity (`agy`), which reads a
+    /// reply.
     pub fn agent_hook(
         &self,
         terminal: &str,

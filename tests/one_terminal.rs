@@ -22,7 +22,7 @@ fn launching_shows_a_working_shell() {
     paddock.type_line("echo $((6 * 7))");
 
     paddock.wait_for("command output", |s| s.lines().any(|l| l.trim() == "42"));
-    assert_eq!(sandbox.session_names(), ["space-1"]);
+    assert_eq!(sandbox.space_names(), ["space-1"]);
 }
 
 #[test]
@@ -60,7 +60,7 @@ fn typed_text_and_utf8_reach_the_shell() {
 /// tmux-only: the tmux server's environment and options, and the
 /// variables tmux sets in its panes.
 #[test]
-fn hidden_server_has_a_clean_environment_and_its_own_config() {
+fn tmux_only_hidden_server_has_a_clean_environment_and_its_own_config() {
     let sandbox = Sandbox::new();
     let mut paddock = sandbox.launch();
     paddock.wait_for_text(PROMPT);
@@ -110,7 +110,7 @@ fn hidden_server_has_a_clean_environment_and_its_own_config() {
 
 /// tmux-only: the sockets in the sandbox's `TMUX_TMPDIR`.
 #[test]
-fn only_the_paddock_socket_is_used() {
+fn tmux_only_only_the_paddock_socket_is_used() {
     let sandbox = Sandbox::new();
     let mut paddock = sandbox.launch();
     paddock.wait_for_text(PROMPT);
@@ -118,10 +118,7 @@ fn only_the_paddock_socket_is_used() {
     assert!(paddock.wait_exit());
 
     // Both paddock and its shell ran with this TMUX_TMPDIR: no "default" socket appeared.
-    assert_eq!(
-        tmux_only::sockets(&sandbox),
-        vec!["paddock-test".to_string()]
-    );
+    assert_eq!(sandbox.sockets(), vec!["paddock-test".to_string()]);
 }
 
 #[test]
@@ -161,7 +158,7 @@ fn mouse_wheel_scrolls_the_terminal_history() {
 /// tmux-only: the wheel scrolls paddock's own scrollback, never tmux's
 /// copy mode.
 #[test]
-fn the_wheel_leaves_tmux_out_of_copy_mode() {
+fn tmux_only_the_wheel_leaves_tmux_out_of_copy_mode() {
     let sandbox = Sandbox::new();
     let mut paddock = sandbox.launch();
     paddock.wait_for_text(PROMPT);
@@ -228,7 +225,7 @@ fn detaching_keeps_the_shell_and_relaunching_restores_history() {
 
     let mut again = sandbox.launch();
     again.wait_for("restored screen", |s| s.lines().any(|l| l.trim() == "300"));
-    assert_eq!(sandbox.session_names(), ["space-1"]);
+    assert_eq!(sandbox.space_names(), ["space-1"]);
 
     // Scroll back to the very first line of the restored history.
     for _ in 0..120 {
@@ -246,7 +243,7 @@ fn detaching_keeps_the_shell_and_relaunching_restores_history() {
 
 /// tmux-only: the generated `tmux.conf`.
 #[test]
-fn config_and_state_follow_the_xdg_overrides() {
+fn tmux_only_config_and_state_follow_the_xdg_overrides() {
     let sandbox = Sandbox::new();
     let paddock = sandbox.launch();
     paddock.wait_for_text(PROMPT);
@@ -269,7 +266,7 @@ fn exiting_the_shell_quits_paddock_and_the_next_launch_starts_a_new_one() {
     paddock.type_line("exit");
 
     assert!(paddock.wait_exit());
-    assert!(sandbox.session_names().is_empty());
+    assert!(sandbox.space_names().is_empty());
     let mut again = sandbox.launch();
     again.wait_for_text(PROMPT);
     again.type_line("echo fresh");
@@ -314,14 +311,28 @@ fn kitty_encoded_prefix_detaches_too() {
 }
 
 #[test]
-fn terminals_know_paddocks_socket_and_state_dir_for_hooks() {
+fn terminals_know_paddocks_state_dir_for_hooks() {
     let sandbox = Sandbox::new();
     let mut paddock = sandbox.launch();
     paddock.wait_for_text(PROMPT);
 
-    paddock.type_line("echo \"pane-$PADDOCK_TMUX_SOCKET\" \"$XDG_STATE_HOME\"");
+    paddock.type_line("echo \"state-$XDG_STATE_HOME\"");
 
     let state = sandbox.path("state").to_string_lossy().into_owned();
-    let want = format!("pane-paddock-test {state}");
-    paddock.wait_for("the variables", |s| s.lines().any(|l| l.trim() == want));
+    let want = format!("state-{state}");
+    paddock.wait_for("the variable", |s| s.lines().any(|l| l.trim() == want));
+}
+
+/// tmux-only: hooks find the tmux server by `PADDOCK_TMUX_SOCKET`.
+#[test]
+fn tmux_only_terminals_know_paddocks_socket_for_hooks() {
+    let sandbox = Sandbox::new();
+    let mut paddock = sandbox.launch();
+    paddock.wait_for_text(PROMPT);
+
+    paddock.type_line("echo \"pane-$PADDOCK_TMUX_SOCKET\"");
+
+    paddock.wait_for("the variable", |s| {
+        s.lines().any(|l| l.trim() == "pane-paddock-test")
+    });
 }

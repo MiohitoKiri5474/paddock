@@ -103,7 +103,7 @@ fn the_first_space_and_c_a_c_take_the_focused_directory_as_root() {
     paddock.command(b"C");
     paddock.wait_for_popup("New space", "space-2");
     paddock.send(b"\r");
-    paddock.wait_for("space-2", |_| sandbox.session_names().len() == 2);
+    paddock.wait_for("space-2", |_| sandbox.space_names().len() == 2);
 
     assert_eq!(root(&sandbox, "space-2"), a.to_string_lossy());
     // space-1's root stays where it was made.
@@ -125,7 +125,7 @@ fn a_worktree_space_s_root_is_its_worktree_from_the_keys_and_the_command() {
     paddock.send(b"feat/keys\r");
     paddock.wait_for("the worktree space", |_| {
         sandbox
-            .session_names()
+            .space_names()
             .contains(&"repo/feat/keys".to_string())
     });
     let made = sandbox.path("home/.paddock/worktrees/repo/feat-keys");
@@ -207,7 +207,7 @@ fn c_a_r_makes_the_focused_directory_the_root_with_a_notice() {
 /// tmux-only: a space made before roots is a tmux session without the
 /// option.
 #[test]
-fn a_space_without_a_root_falls_back_to_its_first_tab_s_directory() {
+fn tmux_only_a_space_without_a_root_falls_back_to_its_first_tab_s_directory() {
     let sandbox = Sandbox::new();
     sandbox.write_config(ROOT_MODE);
     let mut paddock = ready(&sandbox);

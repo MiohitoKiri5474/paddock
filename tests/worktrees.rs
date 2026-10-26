@@ -80,7 +80,7 @@ fn in_repo(sandbox: &Sandbox, dir: &Path) -> Paddock {
 
 fn wait_for_sessions(paddock: &Paddock, sandbox: &Sandbox, want: &[&str]) {
     paddock.wait_for(&format!("sessions {want:?}"), |_| {
-        sandbox.session_names() == want
+        sandbox.space_names() == want
     });
 }
 
@@ -165,7 +165,7 @@ fn an_existing_branch_is_checked_out_and_bad_names_or_git_errors_make_nothing() 
     });
     assert!(!worktree(&sandbox, "main").exists());
     std::thread::sleep(Duration::from_millis(200));
-    assert_eq!(sandbox.session_names(), ["space-1", "repo/feat/y"]);
+    assert_eq!(sandbox.space_names(), ["space-1", "repo/feat/y"]);
 }
 
 #[test]
@@ -246,7 +246,7 @@ fn x_on_a_clean_merged_worktree_space_deletes_it_after_one_yes() {
     paddock.wait_for_no_popup();
     std::thread::sleep(Duration::from_millis(200));
     assert!(path.is_dir() && has_branch(&dir, "feat/d"), "kept");
-    assert_eq!(sandbox.session_names(), ["space-1", "repo/feat/d"]);
+    assert_eq!(sandbox.space_names(), ["space-1", "repo/feat/d"]);
 
     x_on_current_space(&mut paddock);
     paddock.wait_for_popup("Delete worktree", "delete feat/d");
@@ -340,7 +340,7 @@ fn commits_made_after_the_question_are_never_lost() {
 
     paddock.wait_for_text("has commits not in its base now");
     assert!(path.join("loose.txt").is_file());
-    assert_eq!(sandbox.session_names(), ["space-1", "repo/feat/c"]);
+    assert_eq!(sandbox.space_names(), ["space-1", "repo/feat/c"]);
 }
 
 #[test]
@@ -399,7 +399,7 @@ fn changes_made_after_the_question_are_never_forced_away() {
 
     paddock.wait_for_text("feat/r has uncommitted changes now: nothing deleted");
     assert!(path.join("late.txt").is_file());
-    assert_eq!(sandbox.session_names(), ["space-1", "repo/feat/r"]);
+    assert_eq!(sandbox.space_names(), ["space-1", "repo/feat/r"]);
 }
 
 #[test]
@@ -466,7 +466,7 @@ fn the_main_checkout_is_never_deleted() {
     paddock.command(b"X");
     paddock.wait_for_text("not a worktree space");
     std::thread::sleep(Duration::from_millis(200));
-    assert_eq!(sandbox.session_names(), ["space-1"]);
+    assert_eq!(sandbox.space_names(), ["space-1"]);
     assert!(!paddock.full_screen().contains(" Delete worktree "));
 
     // Sidebar `x` on a space in the main checkout closes it, as before.
