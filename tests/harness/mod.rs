@@ -223,17 +223,28 @@ impl Sandbox {
         }
     }
 
-    /// Run tmux against the sandbox's paddock server: only to stop it, and
-    /// for tmux-only tests (see [`tmux_only`]).
+    /// Run tmux against the sandbox's paddock server, for tmux-only tests
+    /// (see [`tmux_only`]); it fails the test if tmux fails.
     fn tmux(&self, args: &[&str]) -> String {
-        let out = Command::new("tmux")
+        let out = self.tmux_tolerant(args);
+        assert!(
+            out.status.success(),
+            "tmux {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    /// [`Self::tmux`] that may fail (as `kill-server` with no server
+    /// running): its whole output.
+    fn tmux_tolerant(&self, args: &[&str]) -> std::process::Output {
+        Command::new("tmux")
             .env("TMUX_TMPDIR", self.tmux_tmpdir())
             .env_remove("TMUX")
             .args(["-L", SOCKET])
             .args(args)
             .output()
-            .expect("run tmux");
-        String::from_utf8_lossy(&out.stdout).into_owned()
+            .expect("run tmux")
     }
 
     /// Write paddock's `config.toml`.
@@ -513,7 +524,7 @@ fn write_gh_stub(root: &std::path::Path) {
 
 impl Drop for Sandbox {
     fn drop(&mut self) {
-        self.tmux(&["kill-server"]);
+        self.tmux_tolerant(&["kill-server"]);
         // Shells may still be exiting and writing into the sandbox; retry
         // until the whole tree is gone (TempDir's own cleanup is then a no-op).
         let start = Instant::now();

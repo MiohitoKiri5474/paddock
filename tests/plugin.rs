@@ -261,7 +261,8 @@ impl Sandbox {
     }
 
     /// The events recorded, in order.
-    /// None while no command ran inside paddock's terminal: paddock never
+    ///
+    /// Empty while no command ran inside paddock's terminal: paddock never
     /// started.
     fn events(&self) -> Vec<String> {
         match self.terminal.get() {
@@ -299,7 +300,7 @@ fn a_failing_paddock_on_path_never_reaches_claude() {
     let sandbox = Sandbox::new();
     // Some other `paddock`, or a broken one: prints, and exits 2, which
     // would block `Stop`.
-    let fake = sandbox.path("bin/paddock");
+    let fake = sandbox.path("plugin-bin/paddock");
     std::fs::write(&fake, "#!/bin/sh\necho out\necho err >&2\nexit 2\n").unwrap();
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -362,6 +363,8 @@ fn external_events_are_recorded_once_with_both_sources_installed() {
     assert!(out.status.success(), "{out:?}");
     let from_settings = hook_commands(&read_json(&sandbox.settings()));
     let from_plugin = hook_commands(&plugin_hooks());
+    // A running server, whose log must stay empty.
+    sandbox.terminal();
     for ((_, s), (_, p)) in from_settings.iter().zip(&from_plugin) {
         sandbox.fire_where(false, p);
         sandbox.fire_where(false, s);
