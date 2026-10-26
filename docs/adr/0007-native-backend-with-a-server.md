@@ -6,7 +6,7 @@ tmux gave paddock terminals that outlive the app. It also brought format-expande
 
 - **Lifetime.** The first `paddock` starts the server, and the server exits when no terminal is left. Closing the app detaches as before.
 - **One client at a time.** A second launch still offers to take over from the first.
-- **Attach.** The server sends each terminal's screen, scrollback, cursor and key modes as a snapshot, then streams its raw output. The app keeps its own emulator, so rendering, selection, copy mode and search do not change. The snapshot replaces `capture-pane` seeding and the key-mode workaround in ADR 0005.
+- **Attach.** The server sends each terminal's screen, scrollback, cursor and key modes as a snapshot, then streams its raw output. The app keeps its own emulator, so rendering, selection, copy mode and search do not change.
 - **Clean environment.** Shells start with the same allowlisted environment the tmux server used, so variables from whichever terminal app launched paddock do not leak in.
 - **Agent hooks.** Each terminal gets `PADDOCK_PANE` and `PADDOCK_SOCKET`, plus `AGY_CLI_OSC7501=on`. `paddock hook` reads them first and falls back to `TMUX` and `TMUX_PANE`. The event log is keyed by the server's instance id instead of the tmux server's pid.
 - **Upgrades.** Client and server exchange a protocol version on connect. If the running server speaks another version (older, or newer after a downgrade), paddock says so and offers to restart it. Restarting ends the running programs; the layout comes back ([ADR 0008](0008-layout-saved-and-restored.md)).

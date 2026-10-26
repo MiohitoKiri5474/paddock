@@ -37,7 +37,7 @@ paddock's own background process that holds every terminal and the layout while 
 _Avoid_: daemon (in user-facing text), hidden server (that is tmux's)
 
 **Backend**:
-What hosts the terminals: paddock's own server, or the hidden tmux server.
+What hosts the terminals: paddock's own server (the native backend), or the hidden tmux server (the tmux backend).
 _Avoid_: engine, runtime
 
 **Sidebar**:

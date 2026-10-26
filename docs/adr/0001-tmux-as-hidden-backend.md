@@ -1,6 +1,6 @@
 # tmux hosts every terminal, hidden behind paddock
 
-> tmux as the host is superseded by [ADR 0007](0007-native-backend-with-a-server.md): paddock hosts its own terminals in a server, and tmux stays only as the `tmux` backend until v0.2. One tmux session per terminal was already superseded by [ADR 0006](0006-sidebar-items-are-tmux-sessions.md). The clean environment stands.
+> tmux as the host is superseded by [ADR 0007](0007-native-backend-with-a-server.md): paddock hosts its own terminals in a server, and tmux stays only as the `tmux` backend until it is removed (planned for v0.2). One tmux session per terminal was already superseded by [ADR 0006](0006-sidebar-items-are-tmux-sessions.md). The clean environment stands.
 
 paddock runs each terminal in its own session on a private tmux server (`tmux -L paddock`) that the user never sees, so terminals survive closing paddock or the terminal app without paddock hosting processes itself. The server uses paddock's own minimal config and starts with a clean environment, so neither the user's tmux setup nor variables from whichever terminal app launched it (for example `SUPACODE_*`) leak into paddock's shells.
 

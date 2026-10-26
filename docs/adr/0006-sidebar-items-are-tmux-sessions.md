@@ -1,6 +1,6 @@
 # Sidebar items are tmux sessions, tabs their windows, splits their panes
 
-> Superseded by [ADR 0007](0007-native-backend-with-a-server.md): paddock hosts its own terminals in a server. This stays true for the `tmux` backend until v0.2.
+> Superseded by [ADR 0007](0007-native-backend-with-a-server.md): paddock hosts its own terminals in a server. This stays true for the `tmux` backend until it is removed (planned for v0.2).
 
 Supersedes the "one tmux session per terminal" part of [ADR 0001](0001-tmux-as-hidden-backend.md). The hidden server, its own config and the clean environment stay.
 
