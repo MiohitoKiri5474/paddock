@@ -53,6 +53,25 @@ pub struct SpaceTerminal {
     pub float: bool,
 }
 
+/// What the host knows of one terminal, for `paddock debug state`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TerminalDetails {
+    pub id: TerminalId,
+    /// Its shell's directory.
+    pub dir: String,
+    /// Its foreground command.
+    pub command: String,
+    /// The pid of its shell.
+    pub pid: u32,
+    /// The path of its tty.
+    pub tty: String,
+    /// Lines of its scrollback, above its screen.
+    pub history: u32,
+    /// The variables that tell a process (an agent's hook) it runs in this
+    /// terminal: what [`hook_terminal`] reads.
+    pub hook_env: Vec<(String, String)>,
+}
+
 /// What a terminal held when its space was attached: the bytes that,
 /// fed to a fresh emulator of `size`, rebuild its screen, scrollback,
 /// cursor and modes. Output after them continues the same stream.
@@ -258,6 +277,12 @@ impl Backend {
     /// Every terminal by the pid of its shell; none if the host cannot say.
     pub fn terminal_pids(&self) -> HashMap<u32, TerminalId> {
         self.tmux.pane_pids()
+    }
+
+    /// Every terminal, floats' too, with what the host knows of it; none
+    /// if the host does not run.
+    pub fn terminal_details(&self) -> Vec<TerminalDetails> {
+        self.tmux.pane_details()
     }
 
     /// Connect to space `space` shown at `size`, and read what each of its

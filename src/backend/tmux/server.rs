@@ -2,9 +2,12 @@
 //! config, and a clean environment. Every tmux process paddock starts goes
 //! through [`Server::command`], so the user's own tmux server is never used.
 
+use super::hook;
 use super::layout;
 use super::structure;
-use crate::backend::{Border, FloatId, ListedSpace, SpaceId, SpaceTerminal, Structure, TerminalId};
+use crate::backend::{
+    Border, FloatId, ListedSpace, SpaceId, SpaceTerminal, Structure, TerminalDetails, TerminalId,
+};
 use crate::input::Direction;
 use crate::paths::Paths;
 use crate::shell::quote;
@@ -439,6 +442,14 @@ impl Server {
             .unwrap_or_default()
     }
 
+    /// Every pane on the server with what tmux knows of it; none if tmux
+    /// cannot say.
+    pub fn pane_details(&self) -> Vec<TerminalDetails> {
+        self.run(&["list-panes", "-a", "-F", DETAILS_FORMAT])
+            .map(|out| parse_details(&out))
+            .unwrap_or_default()
+    }
+
     /// End the server and remove its socket.
     #[cfg(test)]
     pub fn kill_server(&self) {
@@ -490,6 +501,34 @@ fn parse_panes(out: &str) -> Vec<SpaceTerminal> {
             let id = TerminalId::new(parts.next()?);
             let path = parts.next()?.to_string();
             Some(SpaceTerminal { id, path, float })
+        })
+        .collect()
+}
+
+/// `list-panes` format of a pane as [`parse_details`] reads it: its
+/// directory last, as the one field that may hold anything.
+const DETAILS_FORMAT: &str =
+    "#{pane_id}\x1f#{pane_pid}\x1f#{pane_tty}\x1f#{history_size}\x1f#{socket_path}\x1f#{pid}\x1f\
+#{pane_current_command}\x1f#{pane_current_path}";
+
+/// `list-panes` output in [`DETAILS_FORMAT`], in tmux's order.
+fn parse_details(out: &str) -> Vec<TerminalDetails> {
+    out.lines()
+        .filter_map(|l| {
+            let f: Vec<&str> = l.splitn(8, '\x1f').collect();
+            let [pane, pid, tty, history, socket, server, command, dir] = f[..] else {
+                return None;
+            };
+            let id = TerminalId::new(pane);
+            Some(TerminalDetails {
+                hook_env: hook::env(socket, server.parse().ok()?, &id),
+                id,
+                dir: dir.to_string(),
+                command: command.to_string(),
+                pid: pid.parse().ok()?,
+                tty: tty.to_string(),
+                history: history.parse().ok()?,
+            })
         })
         .collect()
 }
@@ -625,6 +664,19 @@ mod tests {
         assert_eq!(got.len(), 2);
         assert_eq!(got[&100], "%4");
         assert_eq!(got[&500], "%5");
+    }
+
+    #[test]
+    fn pane_details_hold_what_a_hook_in_the_pane_would_see() {
+        let out = "%4\x1f100\x1f/dev/ttys004\x1f7\x1f/tmp/tmux-501/p\x1f42\x1fzsh\x1f/w/a b\n\
+                   %5\x1fx\x1f/dev/ttys005\x1f0\x1f/tmp/tmux-501/p\x1f42\x1fzsh\x1f/w\n";
+        let got = parse_details(out);
+        assert_eq!(got.len(), 1, "a line without a pid is skipped");
+        let d = &got[0];
+        assert_eq!(d.id, "%4");
+        assert_eq!((d.pid, d.tty.as_str(), d.history), (100, "/dev/ttys004", 7));
+        assert_eq!((d.command.as_str(), d.dir.as_str()), ("zsh", "/w/a b"));
+        assert_eq!(d.hook_env, hook::env("/tmp/tmux-501/p", 42, &d.id));
     }
 
     #[test]

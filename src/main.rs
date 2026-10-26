@@ -5,6 +5,7 @@ mod app;
 mod backend;
 mod cli;
 mod config;
+mod debug;
 mod fuzzy;
 mod git;
 mod github;
@@ -59,13 +60,15 @@ fn main() -> anyhow::Result<()> {
         ["hook", ..] => hooks::hook(&argv[1..]),
         ["hooks", ..] => hooks::command(&argv[1..]),
         ["worktree", ..] => std::process::exit(cli::run(&args[1..])),
+        // Hidden from the usage: for tests and bug reports.
+        ["debug", "state", "--json"] => debug::print_state(),
         _ => anyhow::bail!("{}", USAGE.trim_end()),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::version;
+    use super::{version, USAGE};
 
     #[test]
     fn version_prints_the_cargo_version() {
@@ -82,5 +85,10 @@ mod tests {
         assert_eq!(version(&["version", "x"]), None);
         assert_eq!(version(&["--version", "x"]), None);
         assert_eq!(version(&["keys", "--version"]), None);
+    }
+
+    #[test]
+    fn the_debug_command_is_not_in_the_usage() {
+        assert!(!USAGE.contains("debug"), "{USAGE}");
     }
 }

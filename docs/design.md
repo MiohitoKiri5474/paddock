@@ -194,7 +194,7 @@ Each step leaves something usable.
 
 Test-first with at least 80% coverage:
 
-- **App-level harness**: the real `paddock` binary runs in a PTY against a tmux server on a temporary socket, fed recorded hook payloads, with `osascript` stubbed.
+- **App-level harness**: the real `paddock` binary runs in a PTY against a tmux server on a temporary socket, fed recorded hook payloads, with `osascript` stubbed. Tests read the backend's state through `paddock debug state --json` (hidden from `paddock help`; versioned by its `version` field): spaces oldest first with their root and current tab, tabs with their name, whether it is automatic and zoom, splits with their terminal, place, size and focus, floats with their key, and each terminal's directory, foreground command, shell pid, tty, scrollback length and the variables a hook in it sees. Only tests of tmux-only behaviour call tmux, through `tests/harness/tmux_only.rs`.
 - **Pure-function tests** for turning hook events into the task tree.
 
 ## Facts checked during design (Claude Code 2.1.303, tmux 3.8)
