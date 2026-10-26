@@ -184,11 +184,7 @@ fn keys_on_an_external_row_are_refused_and_d_dismisses_it() {
         paddock.wait_for_text(OPEN);
         assert!(!paddock.full_screen().contains("typing into"));
     }
-    assert_eq!(
-        sandbox.tmux(&["list-windows", "-a"]).lines().count(),
-        1,
-        "nothing closed or forked"
-    );
+    assert_eq!(sandbox.tabs_and_floats(), 1, "nothing closed or forked");
 
     paddock.send(b"D");
     paddock.wait_for_text("no agent sessions yet");
@@ -220,7 +216,7 @@ fn the_sidebar_refuses_to_open_an_external_agent() {
     let y = row_of(&paddock, &agent("web", "idle"));
     paddock.click_screen(5, y);
     wait_anywhere(&paddock, "external: open it in its own terminal");
-    assert_eq!(sandbox.tmux(&["list-windows", "-a"]).lines().count(), 1);
+    assert_eq!(sandbox.tabs_and_floats(), 1);
 }
 
 #[test]

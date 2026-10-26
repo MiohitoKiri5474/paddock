@@ -5,13 +5,22 @@
 //! Isolation: every [`Sandbox`] has its own `TMUX_TMPDIR`, so even a bug that
 //! ignored `PADDOCK_TMUX_SOCKET` could not reach the user's tmux server. The
 //! sandbox kills its tmux server when dropped.
+//!
+//! Tests ask paddock what runs where (`paddock debug state`, see
+//! [`State`]), so they hold for any backend; only tests of tmux-only
+//! behaviour call tmux, through [`tmux_only`]. Their names start with
+//! `tmux_only_`: `cargo test -- --skip tmux_only` leaves them out.
 
 #![allow(dead_code)] // Each test binary uses a different part of the harness.
 
 mod panes;
+mod state;
+pub mod tmux_only;
 
 #[allow(unused_imports)] // Each test binary uses a different part of them.
-pub use panes::{cols, in_region, pane_sizes, wait_for_pane_sizes, wait_in_region};
+pub use panes::{cols, in_region, split_sizes, wait_for_split_sizes, wait_in_region};
+#[allow(unused_imports)]
+pub use state::{Space, Split, State, Tab};
 
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use std::io::{Read, Write};
@@ -89,8 +98,40 @@ impl Sandbox {
         self.root.path().join(name)
     }
 
-    pub fn tmux_tmpdir(&self) -> PathBuf {
+    fn tmux_tmpdir(&self) -> PathBuf {
         self.path("tmux")
+    }
+
+    /// Names of the socket files anywhere in the sandbox: a backend that
+    /// ran left its socket there.
+    pub fn sockets(&self) -> Vec<String> {
+        use std::os::unix::fs::FileTypeExt;
+        let mut found = Vec::new();
+        let mut dirs = vec![self.root.path().to_path_buf()];
+        while let Some(dir) = dirs.pop() {
+            for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+                let Ok(kind) = entry.file_type() else {
+                    continue;
+                };
+                if kind.is_dir() {
+                    dirs.push(entry.path());
+                } else if kind.is_socket() {
+                    found.push(entry.file_name().to_string_lossy().into_owned());
+                }
+            }
+        }
+        found
+    }
+
+    /// The sandbox's variables a process in paddock's terminals has from
+    /// the backend's clean environment: its state directory and where the
+    /// backend listens. tmux-bound until ticket 40: the socket is tmux's
+    /// (`PADDOCK_TMUX_SOCKET`, `TMUX_TMPDIR`), and the native backend's
+    /// variables join them there.
+    pub fn backend_env(&self) -> Vec<(String, String)> {
+        let kept = ["XDG_STATE_HOME", "PADDOCK_TMUX_SOCKET", "TMUX_TMPDIR"];
+        let env = self.env().into_iter();
+        env.filter(|(k, _)| kept.contains(&k.as_str())).collect()
     }
 
     /// Variables paddock runs with, including ones that must not leak.
@@ -182,29 +223,28 @@ impl Sandbox {
         }
     }
 
-    /// Run tmux against the sandbox's paddock server.
-    pub fn tmux(&self, args: &[&str]) -> String {
-        let out = Command::new("tmux")
+    /// Run tmux against the sandbox's paddock server, for tmux-only tests
+    /// (see [`tmux_only`]); it fails the test if tmux fails.
+    fn tmux(&self, args: &[&str]) -> String {
+        let out = self.tmux_tolerant(args);
+        assert!(
+            out.status.success(),
+            "tmux {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    /// [`Self::tmux`] that may fail (as `kill-server` with no server
+    /// running): its whole output.
+    fn tmux_tolerant(&self, args: &[&str]) -> std::process::Output {
+        Command::new("tmux")
             .env("TMUX_TMPDIR", self.tmux_tmpdir())
             .env_remove("TMUX")
             .args(["-L", SOCKET])
             .args(args)
             .output()
-            .expect("run tmux");
-        String::from_utf8_lossy(&out.stdout).into_owned()
-    }
-
-    /// Socket files tmux created in the sandbox.
-    pub fn sockets(&self) -> Vec<String> {
-        let Ok(dirs) = std::fs::read_dir(self.tmux_tmpdir()) else {
-            return vec![];
-        };
-        dirs.flatten()
-            .filter_map(|d| std::fs::read_dir(d.path()).ok())
-            .flatten()
-            .flatten()
-            .map(|e| e.file_name().to_string_lossy().into_owned())
-            .collect()
+            .expect("run tmux")
     }
 
     /// Write paddock's `config.toml`.
@@ -214,24 +254,58 @@ impl Sandbox {
         std::fs::write(dir.join("config.toml"), text).expect("write config");
     }
 
-    /// Session names on the hidden server, oldest first.
-    pub fn session_names(&self) -> Vec<String> {
-        let out = self.tmux(&[
-            "list-sessions",
-            "-F",
-            "#{session_created} #{session_id} #{session_name}",
-        ]);
-        let mut rows: Vec<(u64, u64, String)> = out
-            .lines()
-            .filter_map(|l| {
-                let mut p = l.splitn(3, ' ');
-                let created = p.next()?.parse().ok()?;
-                let id = p.next()?.trim_start_matches('$').parse().ok()?;
-                Some((created, id, p.next()?.to_string()))
-            })
-            .collect();
-        rows.sort();
-        rows.into_iter().map(|(_, _, n)| n).collect()
+    /// The backend's state, as `paddock debug state --json` prints it.
+    pub fn state(&self) -> State {
+        let out = self.run(&["debug", "state", "--json"], &[], "");
+        assert!(out.status.success(), "debug state failed: {out:?}");
+        State::parse(&String::from_utf8_lossy(&out.stdout))
+    }
+
+    /// The terminal `target` names (see [`State::terminal`]).
+    pub fn terminal(&self, target: &str) -> Split {
+        let state = self.state();
+        let terminal = state.terminal(target).cloned();
+        terminal.unwrap_or_else(|| panic!("no terminal {target:?} in {state:#?}"))
+    }
+
+    /// The space named, or with the id, `space`.
+    pub fn space(&self, space: &str) -> Space {
+        let state = self.state();
+        let found = state.space(space).cloned();
+        found.unwrap_or_else(|| panic!("no space {space:?} in {state:#?}"))
+    }
+
+    /// Every terminal, as `<id> <shell pid>`: the same while the same
+    /// shells run.
+    pub fn shells(&self) -> Vec<String> {
+        let state = self.state();
+        let terminals = state.terminals();
+        terminals
+            .map(|t| format!("{} {}", t.id, t.pid.unwrap_or_default()))
+            .collect()
+    }
+
+    /// Tabs and floats, in every space.
+    pub fn tabs_and_floats(&self) -> usize {
+        let spaces = self.state().spaces;
+        spaces.iter().map(|s| s.tabs.len() + s.floats.len()).sum()
+    }
+
+    /// End the terminal `target` names from outside paddock, as a crash
+    /// would: its shell is killed.
+    pub fn end_terminal(&self, target: &str) {
+        let terminal = self.terminal(target);
+        let pid = terminal.pid.expect("the terminal's shell pid");
+        let status = Command::new("kill")
+            .args(["-KILL", &pid.to_string()])
+            .status()
+            .expect("run kill");
+        assert!(status.success(), "kill {pid}: {status}");
+    }
+
+    /// Space names, oldest first.
+    pub fn space_names(&self) -> Vec<String> {
+        self.state().names()
     }
 
     pub fn launch(&self) -> Paddock {
@@ -310,13 +384,6 @@ impl Sandbox {
         self.notifications()
     }
 
-    /// A format evaluated by the sandbox's tmux server, trimmed.
-    pub fn display(&self, target: &str, format: &str) -> String {
-        self.tmux(&["display-message", "-p", "-t", target, format])
-            .trim()
-            .to_string()
-    }
-
     /// Run the paddock binary with these arguments, environment and stdin,
     /// outside any terminal (as Claude Code runs a hook).
     pub fn run(&self, args: &[&str], env: &[(&str, &str)], stdin: &str) -> std::process::Output {
@@ -354,7 +421,7 @@ impl Sandbox {
     }
 
     /// `paddock hook <event>` with `payload` on stdin, as Claude Code would
-    /// run it inside the terminal of tmux session `terminal`.
+    /// run it inside the terminal `terminal` names (see [`State::terminal`]).
     pub fn hook(&self, terminal: &str, event: &str, payload: &str) -> std::process::Output {
         let out = self.hook_args(terminal, &[event], payload);
         assert!(out.stdout.is_empty(), "a hook prints nothing: {out:?}");
@@ -362,9 +429,9 @@ impl Sandbox {
     }
 
     /// `paddock hook --agent <agent> <event>` with `payload` on stdin, as
-    /// that agent's hooks run it inside the terminal of tmux session
-    /// `terminal`. It prints nothing, but `{}` for Antigravity (`agy`),
-    /// which reads a reply.
+    /// that agent's hooks run it inside the terminal `terminal` names. It
+    /// prints nothing, but `{}` for Antigravity (`agy`), which reads a
+    /// reply.
     pub fn agent_hook(
         &self,
         terminal: &str,
@@ -378,14 +445,14 @@ impl Sandbox {
         out
     }
 
-    /// `paddock hook <args>` inside the terminal of tmux session `terminal`.
+    /// `paddock hook <args>` inside the terminal `terminal` names, with the
+    /// variables the backend says a process there sees.
     fn hook_args(&self, terminal: &str, args: &[&str], payload: &str) -> std::process::Output {
-        let tmux = self.display(terminal, "#{socket_path},#{pid},0");
-        let pane = self.display(terminal, "#{pane_id}");
+        let terminal = self.terminal(terminal);
         let args: Vec<&str> = std::iter::once("hook")
             .chain(args.iter().copied())
             .collect();
-        let out = self.run(&args, &[("TMUX", &tmux), ("TMUX_PANE", &pane)], payload);
+        let out = self.run(&args, &terminal.env(), payload);
         assert!(out.status.success(), "hook failed: {out:?}");
         out
     }
@@ -457,7 +524,7 @@ fn write_gh_stub(root: &std::path::Path) {
 
 impl Drop for Sandbox {
     fn drop(&mut self) {
-        self.tmux(&["kill-server"]);
+        self.tmux_tolerant(&["kill-server"]);
         // Shells may still be exiting and writing into the sandbox; retry
         // until the whole tree is gone (TempDir's own cleanup is then a no-op).
         let start = Instant::now();

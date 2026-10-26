@@ -9,8 +9,8 @@
 //! The payloads in `tests/fixtures/hooks/agy/` are shaped from agy's hook
 //! docs, not recorded from a live run. The `agy` in the terminals is a
 //! copy of paddock under that name (`agy hook` waits on its input), so
-//! tmux sees `agy` run; its status reports are written to the terminal as
-//! agy 1.4.3 wrote them in a real run.
+//! the backend sees `agy` run; its status reports are written to the
+//! terminal as agy 1.4.3 wrote them in a real run.
 
 mod harness;
 
@@ -42,7 +42,7 @@ fn status(state: &str, kind: Option<&str>) -> Vec<u8> {
 
 /// Write `bytes` to `terminal` as the program in it would: to its tty.
 fn write_to(sandbox: &Sandbox, terminal: &str, bytes: &[u8]) {
-    let tty = sandbox.display(terminal, "#{pane_tty}");
+    let tty = sandbox.terminal(terminal).tty.expect("the terminal's tty");
     let mut f = std::fs::OpenOptions::new()
         .write(true)
         .open(&tty)
@@ -58,13 +58,34 @@ fn stub_agy(sandbox: &Sandbox) {
     std::fs::copy(env!("CARGO_BIN_EXE_paddock"), sandbox.path("bin/agy")).unwrap();
 }
 
-/// Start the stand-in `agy` in `terminal` and wait until tmux sees it.
-fn start_agy(sandbox: &Sandbox, paddock: &Paddock, terminal: &str) {
+/// Start the stand-in `agy` in the focused terminal, `terminal`, and wait
+/// until the backend sees it run there.
+fn start_agy(sandbox: &Sandbox, paddock: &mut Paddock, terminal: &str) {
     // `paddock hook` reads its input to the end first, so this waits.
-    sandbox.tmux(&["send-keys", "-t", terminal, "agy hook", "Enter"]);
+    paddock.type_line("agy hook");
     paddock.wait_for("agy to run", |_| {
-        sandbox.display(terminal, "#{pane_current_command}") == "agy"
+        sandbox.terminal(terminal).command.as_deref() == Some("agy")
     });
+}
+
+/// Interrupt the stand-in `agy` in `terminal`, as `C-c` there would: its
+/// shell is back at the prompt.
+fn quit_agy(sandbox: &Sandbox, terminal: &str) {
+    let tty = sandbox.terminal(terminal).tty.expect("the terminal's tty");
+    let ps = std::process::Command::new("ps")
+        .args(["-t", tty.trim_start_matches("/dev/"), "-o", "pid=,comm="])
+        .output()
+        .expect("run ps");
+    let ps = String::from_utf8_lossy(&ps.stdout);
+    let pid = ps
+        .lines()
+        .find_map(|l| l.trim().strip_suffix(" agy"))
+        .unwrap_or_else(|| panic!("no agy on {tty}: {ps}"));
+    let status = std::process::Command::new("kill")
+        .args(["-INT", pid.trim()])
+        .status()
+        .expect("run kill");
+    assert!(status.success(), "kill -INT {pid}");
 }
 
 fn ready(sandbox: &Sandbox) -> Paddock {
@@ -92,10 +113,10 @@ fn an_agy_session_goes_idle_working_waiting_done_then_ends_at_the_shell() {
     let mut paddock = ready(&sandbox);
     // agy runs in the first tab; the second is the one looked at, so its
     // alerts notify.
+    start_agy(&sandbox, &mut paddock, "space-1:0");
     paddock.command(b"c");
     paddock.wait_for_current_tab("2:home");
     paddock.wait_for_text(PROMPT);
-    start_agy(&sandbox, &paddock, "space-1:0");
 
     agy(&sandbox, "space-1:0", &["SessionStart"]);
     wait_row(&paddock, "idle at start", &["● repo", "idle"]);
@@ -144,7 +165,7 @@ fn an_agy_session_goes_idle_working_waiting_done_then_ends_at_the_shell() {
     // agy quits: the terminal is back at the shell, and agy's last report
     // does not keep the session.
     write_to(&sandbox, "space-1:0", &status("idle", None));
-    sandbox.tmux(&["send-keys", "-t", "space-1:0", "C-c"]);
+    quit_agy(&sandbox, "space-1:0");
     paddock.wait_for("the session left", |_| {
         !paddock.full_screen().contains("● repo")
     });
@@ -159,7 +180,7 @@ fn an_agy_session_ends_when_its_terminal_closes() {
     paddock.wait_for_text(PROMPT);
     agy(&sandbox, "space-1:1", &["SessionStart", "PreInvocation"]);
     wait_row(&paddock, "working", &["● repo", "running"]);
-    sandbox.tmux(&["kill-pane", "-t", "space-1:1"]);
+    sandbox.end_terminal("space-1:1");
     paddock.wait_for("the session left", |_| {
         !paddock.full_screen().contains("● repo")
     });
@@ -169,6 +190,8 @@ fn an_agy_session_ends_when_its_terminal_closes() {
 fn reports_from_other_programs_or_without_a_session_change_nothing() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
+    stub_agy(&sandbox);
+    start_agy(&sandbox, &mut paddock, "space-1:0");
     // The second tab is the one looked at, so the first one's alerts would
     // notify.
     paddock.command(b"c");
@@ -176,11 +199,9 @@ fn reports_from_other_programs_or_without_a_session_change_nothing() {
     paddock.wait_for_text(PROMPT);
     // An agy session that ended: agy started again reports its sign-in
     // screen before any hook, which neither brings it back nor alerts.
-    stub_agy(&sandbox);
-    start_agy(&sandbox, &paddock, "space-1:0");
     agy(&sandbox, "space-1:0", &["SessionStart"]);
     wait_row(&paddock, "idle", &["● repo", "idle"]);
-    sandbox.tmux(&["send-keys", "-t", "space-1:0", "C-c"]);
+    quit_agy(&sandbox, "space-1:0");
     paddock.wait_for("the session left", |_| {
         !paddock.full_screen().contains("● repo")
     });
@@ -189,8 +210,13 @@ fn reports_from_other_programs_or_without_a_session_change_nothing() {
     std::thread::sleep(std::time::Duration::from_millis(1_500));
     assert!(sandbox.notifications().is_empty());
     assert!(!paddock.full_screen().contains("● repo"));
-    // agy started again on the same conversation (a resume).
-    start_agy(&sandbox, &paddock, "space-1:0");
+    // agy started again on the same conversation (a resume), typed in the
+    // first tab, then back on the second.
+    paddock.command(b"1");
+    paddock.wait_for_current_tab("1:home");
+    start_agy(&sandbox, &mut paddock, "space-1:0");
+    paddock.command(b"2");
+    paddock.wait_for_current_tab("2:home");
     agy(&sandbox, "space-1:0", &["SessionStart"]);
     wait_row(&paddock, "idle", &["● repo", "idle"]);
     // Another program's report says nothing of agy's session.
@@ -221,8 +247,8 @@ fn server_log(sandbox: &Sandbox) -> String {
 fn the_same_report_after_a_hook_shows_again() {
     let sandbox = Sandbox::new();
     stub_agy(&sandbox);
-    let paddock = ready(&sandbox);
-    start_agy(&sandbox, &paddock, "space-1:0");
+    let mut paddock = ready(&sandbox);
+    start_agy(&sandbox, &mut paddock, "space-1:0");
     agy(&sandbox, "space-1:0", &["SessionStart"]);
     wait_row(&paddock, "idle", &["● repo", "idle"]);
     write_to(
@@ -245,8 +271,8 @@ fn the_same_report_after_a_hook_shows_again() {
 fn a_report_right_after_the_start_hook_waits_for_its_session() {
     let sandbox = Sandbox::new();
     stub_agy(&sandbox);
-    let paddock = ready(&sandbox);
-    start_agy(&sandbox, &paddock, "space-1:0");
+    let mut paddock = ready(&sandbox);
+    start_agy(&sandbox, &mut paddock, "space-1:0");
     // The hook is in the log, but paddock has not read it yet when the
     // report comes.
     agy(&sandbox, "space-1:0", &["SessionStart"]);
@@ -289,8 +315,8 @@ fn reopen_and_wait(sandbox: &Sandbox, mut paddock: Paddock, state: &str) {
 fn a_report_just_before_its_session_starts_belongs_to_it_live_and_on_replay() {
     let sandbox = Sandbox::new();
     stub_agy(&sandbox);
-    let paddock = ready(&sandbox);
-    start_agy(&sandbox, &paddock, "space-1:0");
+    let mut paddock = ready(&sandbox);
+    start_agy(&sandbox, &mut paddock, "space-1:0");
     // The report comes before agy's first hook, within the 1 s it may.
     write_to(&sandbox, "space-1:0", &status("blocked", Some("auth")));
     agy(&sandbox, "space-1:0", &["SessionStart"]);
@@ -305,8 +331,8 @@ fn a_report_just_before_its_session_starts_belongs_to_it_live_and_on_replay() {
 fn a_report_older_than_a_later_hook_is_dropped() {
     let sandbox = Sandbox::new();
     stub_agy(&sandbox);
-    let paddock = ready(&sandbox);
-    start_agy(&sandbox, &paddock, "space-1:0");
+    let mut paddock = ready(&sandbox);
+    start_agy(&sandbox, &mut paddock, "space-1:0");
     // agy reported idle, then started and ran a prompt before paddock read
     // the hooks: the prompt is the news, live and on replay.
     write_to(&sandbox, "space-1:0", &status("idle", None));
@@ -337,16 +363,16 @@ fn agy_quitting_without_a_prompt_does_not_notify() {
     let sandbox = Sandbox::new();
     stub_agy(&sandbox);
     let mut paddock = ready(&sandbox);
+    start_agy(&sandbox, &mut paddock, "space-1:0");
     paddock.command(b"c");
     paddock.wait_for_current_tab("2:home");
     paddock.wait_for_text(PROMPT);
-    start_agy(&sandbox, &paddock, "space-1:0");
     agy(&sandbox, "space-1:0", &["SessionStart"]);
     wait_row(&paddock, "idle", &["● repo", "idle"]);
     // What agy writes as it quits, twice over: the second is not recorded.
     write_to(&sandbox, "space-1:0", &status("idle", None));
     write_to(&sandbox, "space-1:0", &status("idle", None));
-    sandbox.tmux(&["send-keys", "-t", "space-1:0", "C-c"]);
+    quit_agy(&sandbox, "space-1:0");
     paddock.wait_for("the session left", |_| {
         !paddock.full_screen().contains("● repo")
     });
@@ -358,14 +384,8 @@ fn agy_quitting_without_a_prompt_does_not_notify() {
 #[test]
 fn paddocks_terminals_ask_agy_for_its_status_reports() {
     let sandbox = Sandbox::new();
-    let paddock = ready(&sandbox);
-    sandbox.tmux(&[
-        "send-keys",
-        "-t",
-        "space-1:0",
-        "echo agy-$AGY_CLI_OSC7501",
-        "Enter",
-    ]);
+    let mut paddock = ready(&sandbox);
+    paddock.type_line("echo agy-$AGY_CLI_OSC7501");
     paddock.wait_for_text("agy-on");
 }
 

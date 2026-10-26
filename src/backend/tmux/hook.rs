@@ -1,5 +1,5 @@
 //! Which of paddock's terminals a process runs in, from the variables tmux
-//! sets in every pane.
+//! sets in every pane, and those variables for a pane.
 
 use crate::backend::{HookTerminal, TerminalId};
 use std::path::Path;
@@ -19,6 +19,15 @@ pub fn terminal(var: impl Fn(&str) -> Option<String>, socket: &str) -> Option<Ho
         instance,
         terminal: TerminalId::new(pane),
     })
+}
+
+/// The variables tmux sets in pane `pane` of the server whose socket is
+/// `socket_path` and whose pid is `instance`: what [`terminal`] reads.
+pub fn env(socket_path: &str, instance: u32, pane: &TerminalId) -> Vec<(String, String)> {
+    vec![
+        ("TMUX".into(), format!("{socket_path},{instance},0")),
+        ("TMUX_PANE".into(), pane.as_str().into()),
+    ]
 }
 
 #[cfg(test)]
@@ -43,5 +52,14 @@ mod tests {
         assert_eq!(read("", "%3"), None);
         assert_eq!(read("garbage", "%3"), None);
         assert_eq!(terminal(|_| None, "paddock"), None, "outside tmux");
+    }
+
+    #[test]
+    fn a_panes_variables_read_back_as_that_pane() {
+        let pane = TerminalId::new("%7");
+        let vars = env("/private/tmp/tmux-501/paddock", 4242, &pane);
+        let var = |k: &str| vars.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
+        let t = terminal(var, "paddock").expect("a paddock terminal");
+        assert_eq!((t.instance, t.terminal), (4242, pane));
     }
 }

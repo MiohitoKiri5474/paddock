@@ -15,18 +15,14 @@ fn ready(sandbox: &Sandbox) -> Paddock {
     paddock
 }
 
-/// Window names of space-1, in order.
-fn windows(sandbox: &Sandbox) -> Vec<String> {
-    sandbox
-        .tmux(&["list-windows", "-t", "space-1", "-F", "#{window_name}"])
-        .lines()
-        .map(str::to_string)
-        .collect()
+/// Tab names of space-1, in order.
+fn tab_names(sandbox: &Sandbox) -> Vec<String> {
+    sandbox.space("space-1").tab_names()
 }
 
 fn wait_for_sessions(paddock: &Paddock, sandbox: &Sandbox, want: &[&str]) {
     paddock.wait_for(&format!("sessions {want:?}"), |_| {
-        sandbox.session_names() == want
+        sandbox.space_names() == want
     });
 }
 
@@ -37,7 +33,7 @@ fn a_new_space_asks_for_its_name_and_enter_keeps_the_default() {
 
     paddock.command(b"C");
     paddock.wait_for_popup("New space", "space-2");
-    assert_eq!(sandbox.session_names(), ["space-1"], "nothing before Enter");
+    assert_eq!(sandbox.space_names(), ["space-1"], "nothing before Enter");
     paddock.send(b"\r");
 
     wait_for_sessions(&paddock, &sandbox, &["space-1", "space-2"]);
@@ -54,7 +50,7 @@ fn a_new_space_takes_the_name_typed_and_esc_makes_none() {
     paddock.send(b"\x1b");
     paddock.wait_for_no_popup();
     std::thread::sleep(Duration::from_millis(200));
-    assert_eq!(sandbox.session_names(), ["space-1"]);
+    assert_eq!(sandbox.space_names(), ["space-1"]);
 
     paddock.command(b"C");
     paddock.wait_for_popup("New space", "space-2");
@@ -82,7 +78,7 @@ fn the_name_is_edited_with_arrows_home_end_delete_and_c_w() {
     paddock.send(b"\r");
 
     paddock.wait_for_tabs(&["1:build logs"]);
-    assert_eq!(windows(&sandbox), ["build logs"]);
+    assert_eq!(tab_names(&sandbox), ["build logs"]);
 }
 
 #[test]
@@ -116,7 +112,7 @@ fn a_click_outside_the_popup_cancels_it_and_one_inside_does_not() {
     paddock.click_screen(80, 25);
 
     paddock.wait_for_no_popup();
-    assert_eq!(windows(&sandbox), ["home"]);
+    assert_eq!(tab_names(&sandbox), ["home"]);
     paddock.type_line("echo after-click");
     paddock.wait_for_text("after-click\n");
 }
@@ -136,7 +132,7 @@ fn a_new_space_with_a_taken_name_shows_a_notice_after_the_popup_closes() {
     paddock.wait_for("error notice", |s| {
         s.lines().next().unwrap_or("").contains("duplicate session")
     });
-    assert_eq!(sandbox.session_names(), ["space-1"]);
+    assert_eq!(sandbox.space_names(), ["space-1"]);
 }
 
 #[test]

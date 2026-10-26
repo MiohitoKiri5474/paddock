@@ -148,10 +148,7 @@ fn task(branch: &str, fields: &str) -> String {
 
 /// Tab count of space-1.
 fn tabs(sandbox: &Sandbox) -> usize {
-    sandbox
-        .tmux(&["list-windows", "-t", "space-1"])
-        .lines()
-        .count()
+    sandbox.space("space-1").tabs.len()
 }
 
 #[test]
@@ -443,7 +440,7 @@ fn a_session_that_ends_while_paddock_is_closed_is_gone_with_its_tasks_on_reopen(
     wait_for_list(&mut again, &[&session("idle")]);
 }
 
-/// Another session, in the terminal tmux target `terminal` names, that
+/// Another session, in the terminal `terminal` names, that
 /// starts and goes idle in `dir`, which must be on its default branch, so
 /// without tasks. Hooked last while paddock is closed, its row on reopen
 /// shows the whole event log has been read.
@@ -457,7 +454,7 @@ fn witness(sandbox: &Sandbox, terminal: &str, dir: &Path) {
 // Ticket 10: rows stay, across new conversations and reopening, until
 // dismissed with `D` or until their session ends (ticket 20).
 
-/// Main-agent events in the pane tmux target `terminal` names: it starts in `dir`, then a
+/// Main-agent events in the terminal `terminal` names: it starts in `dir`, then a
 /// shell command leaves it on each of `branches` in turn, then it stops.
 fn work_on(sandbox: &Sandbox, terminal: &str, dir: &Path, branches: &[&str]) {
     sandbox.hook(

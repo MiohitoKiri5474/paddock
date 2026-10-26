@@ -201,18 +201,7 @@ fn a_command_or_the_pane_closing_leaves_copy_mode() {
     p.wait_for("two prompts", |s| s.matches(PROMPT).count() == 2);
     enter_copy_mode(&mut p);
     // The focused (right) terminal closes under copy mode.
-    let focused = sandbox
-        .tmux(&[
-            "list-panes",
-            "-a",
-            "-F",
-            "#{pane_active} #{window_active} #{pane_id}",
-        ])
-        .lines()
-        .find(|l| l.starts_with("1 1 "))
-        .map(|l| l[4..].to_string())
-        .expect("the focused pane");
-    sandbox.tmux(&["kill-pane", "-t", &focused]);
+    sandbox.end_terminal("space-1");
     wait_left(&p);
     p.wait_for("one prompt", |s| s.matches(PROMPT).count() == 1);
     p.type_line("echo after-$((3+4))");
