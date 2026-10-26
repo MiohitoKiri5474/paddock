@@ -33,11 +33,12 @@ One shell inside paddock, shown in a tab, alone or with others. It is a tmux pan
 _Avoid_: tmux session
 
 **Server**:
-paddock's background process that holds every terminal and the layout while the app is closed. The app is its client.
-_Avoid_: daemon (in user-facing text), tmux server
+paddock's own background process that holds every terminal and the layout while the app is closed, with the native backend. The app is its client.
+_Avoid_: daemon (in user-facing text), hidden server (that is tmux's)
 
 **Backend**:
-What hosts the terminals: paddock's own server (`native`) or the hidden tmux server (`tmux`, until v0.2).
+What hosts the terminals: paddock's own server, or the hidden tmux server.
+_Avoid_: engine, runtime
 
 **Sidebar**:
 The panel on the left, which can be shown or hidden: SPACES, two lines per space with a dot for the most urgent state of its agents, then its directory and branch and that branch's PR mark (`#123 ✓`) where it fits, then AGENTS, two lines per main agent in any space with its state, space and tab, and its agent kind's tag where it fits, external sessions last.
