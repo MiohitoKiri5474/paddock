@@ -8,15 +8,15 @@
 //!   the attached space's connection. Starts the server when needed.
 //! - [`server`]: the server process: its socket, lock and lifetime.
 //! - [`state`]: the spaces it holds and what it answers about them.
-//! - [`host`] and [`pty`]: one terminal, its shell and its emulator.
+//! - [`terminal`] and [`pty`]: one terminal, its shell and its emulator.
 //! - [`protocol`]: the frames between them.
 
 mod client;
-mod host;
 mod protocol;
 mod pty;
 mod server;
 mod state;
+mod terminal;
 
 pub use client::{Attached, Client};
 pub use server::serve;

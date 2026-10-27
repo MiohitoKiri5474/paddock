@@ -3,8 +3,8 @@
 //! every request that only reads or renames; making and ending terminals
 //! is the server's ([`super::server`]), as it starts their threads.
 
-use super::host::Host;
 use super::protocol::{Answer, Frame, Message, Notice, Request};
+use super::terminal::HostedTerminal;
 use super::unsupported;
 use crate::backend::{
     ListedSpace, SpaceId, SpaceTerminal, Split, Structure, Tab, TabId, TerminalDetails, TerminalId,
@@ -23,7 +23,7 @@ pub struct Space {
     /// The tab is named after its directory, not by the user.
     pub auto_name: bool,
     /// Its terminals: one so far.
-    pub hosts: Vec<Host>,
+    pub terminals: Vec<HostedTerminal>,
 }
 
 /// The attached client: frames for it go through `tx`, in order, to a
@@ -70,14 +70,14 @@ impl State {
     }
 
     /// Every terminal, with its space.
-    pub fn hosts(&self) -> impl Iterator<Item = (&Space, &Host)> {
+    pub fn terminals(&self) -> impl Iterator<Item = (&Space, &HostedTerminal)> {
         self.spaces
             .iter()
-            .flat_map(|s| s.hosts.iter().map(move |h| (s, h)))
+            .flat_map(|s| s.terminals.iter().map(move |h| (s, h)))
     }
 
-    fn host(&self, terminal: &TerminalId) -> Result<(&Space, &Host)> {
-        let found = self.hosts().find(|(_, h)| h.id == *terminal);
+    fn terminal(&self, terminal: &TerminalId) -> Result<(&Space, &HostedTerminal)> {
+        let found = self.terminals().find(|(_, h)| h.id == *terminal);
         found.ok_or_else(|| anyhow!("no terminal {terminal}"))
     }
 
@@ -100,20 +100,20 @@ impl State {
     /// Space `id`'s tab with its terminal, filling it.
     pub fn structure(&self, id: &SpaceId) -> Result<Structure> {
         let space = self.space(id)?;
-        let host = space
-            .hosts
+        let term = space
+            .terminals
             .first()
             .ok_or_else(|| anyhow!("{id} is empty"))?;
-        let (cols, rows) = host.size;
+        let (cols, rows) = term.size;
         let tab = Tab {
             id: space.tab.clone(),
             name: space.tab_name.clone(),
             auto_name: space.auto_name,
             splits: vec![Split {
-                id: host.id.clone(),
+                id: term.id.clone(),
                 rect: Rect::new(0, 0, cols, rows),
             }],
-            active: host.id.clone(),
+            active: term.id.clone(),
             zoomed: false,
         };
         Ok(Structure {
@@ -151,7 +151,7 @@ impl State {
             Request::Structure(id) => Answer::Structure(self.structure(&id)?),
             Request::SpaceTerminals(id) => Answer::Terminals(
                 self.space(&id)?
-                    .hosts
+                    .terminals
                     .iter()
                     .map(|h| SpaceTerminal {
                         id: h.id.clone(),
@@ -169,30 +169,34 @@ impl State {
                 Answer::Done
             }
             Request::Select(tab, terminal) => {
-                let (_, host) = self
-                    .hosts()
+                let (_, term) = self
+                    .terminals()
                     .find(|(s, _)| s.tab == tab)
                     .ok_or_else(|| anyhow!("no tab {tab}"))?;
-                if terminal.is_some_and(|t| t != host.id) {
+                if terminal.is_some_and(|t| t != term.id) {
                     bail!(unsupported("more than one terminal in a tab"));
                 }
                 Answer::Done
             }
-            Request::TerminalDir(t) => Answer::Text(self.host(&t).ok().and_then(|(_, h)| h.dir())),
-            Request::SpaceOf(t) => match self.host(&t) {
+            Request::TerminalDir(t) => {
+                Answer::Text(self.terminal(&t).ok().and_then(|(_, h)| h.dir()))
+            }
+            Request::SpaceOf(t) => match self.terminal(&t) {
                 Ok((space, _)) => Answer::Space(space.id.clone()),
                 Err(_) => Answer::Text(None),
             },
             Request::TerminalCommands => Answer::Commands(
-                self.hosts()
+                self.terminals()
                     .filter_map(|(_, h)| Some((h.id.clone(), h.command()?)))
                     .collect(),
             ),
-            Request::TerminalPids => {
-                Answer::Pids(self.hosts().map(|(_, h)| (h.pid, h.id.clone())).collect())
-            }
+            Request::TerminalPids => Answer::Pids(
+                self.terminals()
+                    .map(|(_, h)| (h.pid, h.id.clone()))
+                    .collect(),
+            ),
             Request::TerminalDetails => Answer::Details(
-                self.hosts()
+                self.terminals()
                     .map(|(_, h)| TerminalDetails {
                         id: h.id.clone(),
                         dir: h.dir().unwrap_or_default(),

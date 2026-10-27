@@ -9,9 +9,9 @@
 //! exactly the output before it, and everything after it reaches the
 //! client after the snapshot: no byte lost or doubled.
 
-use super::host::Host;
 use super::protocol::{self, Answer, Frame, Message, Notice, Request};
 use super::state::{Space, State, Subscriber};
+use super::terminal::HostedTerminal;
 use super::{lock, pty, socket_path, unsupported, LOG};
 use crate::backend::env::{clean_env, AGY_STATUS_VAR};
 use crate::backend::{SpaceId, TabId, TerminalId};
@@ -148,8 +148,8 @@ fn shut_down(shared: &Shared) -> ! {
     let attached = {
         let mut state = shared.lock();
         close(shared, &mut state);
-        for (_, host) in state.hosts() {
-            hang_up(host.pid);
+        for (_, term) in state.terminals() {
+            hang_up(term.pid);
         }
         state.attached.take()
     };
@@ -242,9 +242,9 @@ fn reply(answer: Result<Answer>) -> Frame {
 /// Write `data` to `terminal`'s program, after what came before it.
 fn input(shared: &Shared, terminal: &TerminalId, data: Vec<u8>) {
     let state = shared.lock();
-    let host = state.hosts().find(|(_, h)| h.id == *terminal);
-    if let Some((_, host)) = host {
-        let _ = host.input.send(data);
+    let term = state.terminals().find(|(_, h)| h.id == *terminal);
+    if let Some((_, term)) = term {
+        let _ = term.input.send(data);
     }
 }
 
@@ -260,13 +260,13 @@ fn attach(
 ) -> Result<()> {
     let out = stream.try_clone()?;
     let mut state = shared.lock();
-    let hosts = &mut state.space_mut(space)?.hosts;
-    for host in hosts.iter_mut() {
-        host.resize(size)?;
+    let hosted = &mut state.space_mut(space)?.terminals;
+    for term in hosted.iter_mut() {
+        term.resize(size)?;
     }
     let (tx, rx) = mpsc::channel();
-    let terminals = hosts.iter().map(|h| (h.id.clone(), h.size)).collect();
-    let snapshots: Vec<Frame> = hosts
+    let terminals = hosted.iter().map(|h| (h.id.clone(), h.size)).collect();
+    let snapshots: Vec<Frame> = hosted
         .iter_mut()
         .map(|h| Frame::Bytes {
             terminal: h.id.clone(),
@@ -314,8 +314,8 @@ fn resize(shared: &Shared, conn: u64, size: (u16, u16)) {
     let Ok(s) = state.space_mut(&space) else {
         return;
     };
-    for host in &mut s.hosts {
-        if let Err(e) = host.resize(size) {
+    for term in &mut s.terminals {
+        if let Err(e) = term.resize(size) {
             eprintln!("paddock server: {e:#}");
         }
     }
@@ -334,7 +334,7 @@ fn new_space(shared: &Arc<Shared>, name: &str, cwd: &Path, size: (u16, u16)) -> 
     let space = SpaceId::new(format!("${}", state.next()));
     let tab = TabId::new(format!("@{}", state.next()));
     let terminal = TerminalId::new(format!("%{}", state.next()));
-    let host = start_terminal(shared, &space, terminal, cwd, size)?;
+    let term = start_terminal(shared, &space, terminal, cwd, size)?;
     let tab_name = cwd
         .file_name()
         .map_or_else(|| cwd.to_string_lossy(), |n| n.to_string_lossy())
@@ -346,7 +346,7 @@ fn new_space(shared: &Arc<Shared>, name: &str, cwd: &Path, size: (u16, u16)) -> 
         tab,
         tab_name,
         auto_name: true,
-        hosts: vec![host],
+        terminals: vec![term],
     });
     state.started = true;
     state.notify_spaces();
@@ -361,7 +361,7 @@ fn start_terminal(
     id: TerminalId,
     cwd: &Path,
     size: (u16, u16),
-) -> Result<Host> {
+) -> Result<HostedTerminal> {
     let pty = pty::spawn(&shared.shell, cwd, &shared.home, size, &shared.env)?;
     let (tx, rx) = mpsc::channel::<Vec<u8>>();
     let mut writer = pty.master.try_clone()?;
@@ -372,14 +372,14 @@ fn start_terminal(
             }
         }
     });
-    let host = Host::new(id.clone(), &pty, tx, size)?;
+    let term = HostedTerminal::new(id.clone(), &pty, tx, size)?;
     let reader = pty.master.try_clone()?;
     let (s, sp, t) = (Arc::clone(shared), space.clone(), id.clone());
     std::thread::spawn(move || read_output(&s, &sp, &t, reader));
     let (s, sp) = (Arc::clone(shared), space.clone());
     let child = pty.child;
     std::thread::spawn(move || wait_for_exit(&s, &sp, &id, child));
-    Ok(host)
+    Ok(term)
 }
 
 /// Feed terminal `id`'s output to its emulator and the attached client,
@@ -392,15 +392,15 @@ fn read_output(shared: &Shared, space: &SpaceId, id: &TerminalId, mut master: st
             Ok(n) => n,
         };
         let mut state = shared.lock();
-        let Some(host) = state
+        let Some(term) = state
             .spaces
             .iter_mut()
-            .flat_map(|s| s.hosts.iter_mut())
+            .flat_map(|s| s.terminals.iter_mut())
             .find(|h| h.id == *id)
         else {
             return;
         };
-        host.output(&buf[..n]);
+        term.output(&buf[..n]);
         if let Some(s) = state.attached.as_ref().filter(|s| s.space == *space) {
             let _ = s.tx.send(Frame::Bytes {
                 terminal: id.clone(),
@@ -417,8 +417,8 @@ fn wait_for_exit(shared: &Shared, space: &SpaceId, id: &TerminalId, mut child: C
     let mut state = shared.lock();
     let mut ended = None;
     if let Ok(s) = state.space_mut(space) {
-        s.hosts.retain(|h| h.id != *id);
-        if s.hosts.is_empty() {
+        s.terminals.retain(|h| h.id != *id);
+        if s.terminals.is_empty() {
             state.spaces.retain(|s| s.id != *space);
             state.notify(space, Notice::Ended);
             // Nothing follows its end.
@@ -443,18 +443,18 @@ fn wait_for_exit(shared: &Shared, space: &SpaceId, id: &TerminalId, mut child: C
 
 fn close_space(shared: &Shared, space: &SpaceId) -> Result<Answer> {
     let state = shared.lock();
-    for host in &state.space(space)?.hosts {
-        hang_up(host.pid);
+    for term in &state.space(space)?.terminals {
+        hang_up(term.pid);
     }
     Ok(Answer::Done)
 }
 
 fn close_terminal(shared: &Shared, terminal: &TerminalId) -> Result<Answer> {
     let state = shared.lock();
-    let Some((_, host)) = state.hosts().find(|(_, h)| h.id == *terminal) else {
+    let Some((_, term)) = state.terminals().find(|(_, h)| h.id == *terminal) else {
         bail!("no terminal {terminal}");
     };
-    hang_up(host.pid);
+    hang_up(term.pid);
     Ok(Answer::Done)
 }
 

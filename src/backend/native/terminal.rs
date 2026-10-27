@@ -15,7 +15,7 @@ use std::sync::mpsc::Sender;
 /// How the server names itself to XTVERSION.
 const NAME: &str = concat!("paddock ", env!("CARGO_PKG_VERSION"));
 
-pub struct Host {
+pub struct HostedTerminal {
     pub id: TerminalId,
     /// The pid of its shell.
     pub pid: u32,
@@ -32,7 +32,7 @@ pub struct Host {
     queries: QueryScanner,
 }
 
-impl Host {
+impl HostedTerminal {
     pub fn new(
         id: TerminalId,
         pty: &Pty,
