@@ -12,7 +12,7 @@
 use super::protocol::{self, Answer, Ending, Frame, Message, Notice, Refusal, Request};
 use super::state::{Space, State, Subscriber};
 use super::terminal::{HostedTerminal, Input, Sent, INPUT_MAX};
-use super::{hook, lock, pty, socket_path, unsupported, LOG};
+use super::{lock, pty, socket_path, unsupported, LOG};
 use crate::backend::env::{clean_env, AGY_STATUS_VAR};
 use crate::backend::{SpaceId, TabId, TerminalId};
 use crate::paths::Paths;
@@ -66,14 +66,13 @@ pub fn serve() -> Result<()> {
     let Some(_lock) = wait_for_lock(&paths.state_dir)? else {
         return Ok(());
     };
-    forget_old_events(&paths.state_dir);
     let listener = bind(&socket)?;
     let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
     let mut env = clean_env(std::env::vars());
     env.push(("COLORTERM".into(), "truecolor".into()));
     env.push((AGY_STATUS_VAR.into(), "on".into()));
     let shared = Arc::new(Shared {
-        state: Mutex::default(),
+        state: Mutex::new(State::new(socket.clone(), new_instance())),
         socket,
         shell: var("SHELL").unwrap_or_else(|| "/bin/sh".into()),
         home: var("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from),
@@ -103,16 +102,16 @@ pub fn serve() -> Result<()> {
     Ok(())
 }
 
-/// Remove the hook event log named by this server's instance id (its
-/// pid), left by an earlier server (native or tmux) that had the same pid:
-/// its records name terminals of that server, not of this one. No hook
-/// writes to it before this server's first terminal starts.
-fn forget_old_events(state_dir: &Path) {
-    let log = crate::sessions::log::path(state_dir, std::process::id());
-    match std::fs::remove_file(&log) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => eprintln!("paddock server: cannot remove {}: {e}", log.display()),
+/// A new instance id: random, so no earlier server's (whose hook event
+/// log, and agents still writing to it, may be left) has it but by a
+/// one in four billion chance. Never 0, which a client's hello sends.
+fn new_instance() -> u32 {
+    loop {
+        // SAFETY: arc4random has no preconditions.
+        let id = unsafe { libc::arc4random() };
+        if id != 0 {
+            return id;
+        }
     }
 }
 
@@ -201,7 +200,8 @@ fn hang_up(pid: u32) {
 }
 
 fn serve_connection(shared: &Arc<Shared>, conn: u64, mut stream: UnixStream) -> Result<()> {
-    protocol::hello(&mut stream, false)?;
+    let instance = shared.lock().instance;
+    protocol::hello(&mut stream, false, instance)?;
     let mut attached = false;
     // An input whose last parts have not come yet. Left so when the
     // connection ends, it is discarded whole.
@@ -415,7 +415,7 @@ fn new_space(shared: &Arc<Shared>, name: &str, cwd: &Path, size: (u16, u16)) -> 
     let space = SpaceId::new(format!("${}", state.next()));
     let tab = TabId::new(format!("@{}", state.next()));
     let terminal = TerminalId::new(format!("%{}", state.next()));
-    let term = start_terminal(shared, &space, terminal, cwd, size)?;
+    let term = start_terminal(shared, &state, &space, terminal, cwd, size)?;
     let tab_name = cwd
         .file_name()
         .map_or_else(|| cwd.to_string_lossy(), |n| n.to_string_lossy())
@@ -434,23 +434,30 @@ fn new_space(shared: &Arc<Shared>, name: &str, cwd: &Path, size: (u16, u16)) -> 
     Ok(Answer::Space(space))
 }
 
-/// A shell on a new PTY in `cwd`, and its threads. Called with the state
-/// locked, so its reader waits until the terminal is in it (and no other
-/// shell starts meanwhile, see [`pty::spawn`]).
+/// A shell on a new PTY in `cwd`, with the hook variables of terminal
+/// `id`, and its threads. Called with the state locked (`state`), so its
+/// reader waits until the terminal is in it (and no other shell starts
+/// meanwhile, see [`pty::spawn`]).
 fn start_terminal(
     shared: &Arc<Shared>,
+    state: &State,
     space: &SpaceId,
     id: TerminalId,
     cwd: &Path,
     size: (u16, u16),
 ) -> Result<HostedTerminal> {
-    let hook_env = hook::env(&shared.socket, std::process::id(), &id);
-    let env: Vec<_> = shared.env.iter().chain(&hook_env).cloned().collect();
+    // Its hook variables: they tell an agent's hook which terminal it runs in.
+    let env: Vec<_> = shared
+        .env
+        .iter()
+        .cloned()
+        .chain(state.hook_env(&id))
+        .collect();
     let mut pty = pty::spawn(&shared.shell, cwd, &shared.home, size, &env)?;
     let ready = (|| {
         let input = Input::start(&id, pty.master.try_clone()?);
         let reader = pty.master.try_clone()?;
-        let term = HostedTerminal::new(id.clone(), &pty, hook_env, input, size)?;
+        let term = HostedTerminal::new(id.clone(), &pty, input, size)?;
         anyhow::Ok((reader, term))
     })();
     let (reader, term) = match ready {

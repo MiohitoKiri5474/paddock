@@ -48,9 +48,9 @@ pub fn unsupported(what: &str) -> anyhow::Error {
     anyhow::anyhow!("not on the native backend yet: {what}")
 }
 
-/// The terminal of this backend's a process runs in, from its
-/// environment as `var` reads it (see [`hook::terminal`]); `None` outside
-/// the terminals of the server under `paths`.
+/// The native terminal a process runs in, from its environment as `var`
+/// reads it (see [`hook::terminal`]); `None` outside the terminals of the
+/// server under `paths`.
 pub fn hook_terminal(
     var: impl Fn(&str) -> Option<String>,
     paths: &Paths,

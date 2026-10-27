@@ -1,8 +1,10 @@
-//! The hook event log: `<state>/events/<instance>.jsonl`, named by the
-//! backend's instance id (the tmux server's pid, or the native server's),
-//! one JSON record per line. Hooks append with a single `write` each, so
-//! parallel hooks never interleave. One file per server, because a backend
-//! reuses terminal ids after its server restarts.
+//! The hook event log: `<state>/events/<id>.jsonl` for a tmux server (its
+//! pid), `<state>/events/native-<id>.jsonl` for a native one (a random id
+//! per start), one JSON record per line. Hooks append with a single
+//! `write` each, so parallel hooks never interleave. One file per server,
+//! because a backend reuses terminal ids after its server restarts, and
+//! apart by backend, as a tmux server's pid may equal a native server's
+//! id.
 //!
 //! Events of external sessions (agents outside paddock's terminals) have no
 //! server: they go to `<state>/events/external.jsonl`, without a pane. The
@@ -10,13 +12,21 @@
 //! agent on the machine appends to it.
 
 use super::{external_key, AgentKind, HookRecord};
+use crate::backend::Instance;
+use crate::config::BackendKind;
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
-pub fn path(state_dir: &Path, instance: u32) -> PathBuf {
-    state_dir.join("events").join(format!("{instance}.jsonl"))
+/// The log of backend instance `instance`.
+pub fn path(state_dir: &Path, instance: Instance) -> PathBuf {
+    let id = instance.id;
+    let name = match instance.kind {
+        BackendKind::Tmux => format!("{id}.jsonl"),
+        BackendKind::Native => format!("native-{id}.jsonl"),
+    };
+    state_dir.join("events").join(name)
 }
 
 /// The log of external sessions' events.
@@ -566,10 +576,23 @@ mod tests {
         assert_eq!(meta_description("/no/transcript", "a1"), None);
     }
 
+    fn instance(kind: BackendKind, id: u32) -> Instance {
+        Instance { kind, id }
+    }
+
+    #[test]
+    fn each_backends_logs_are_apart_even_with_the_same_id() {
+        let dir = Path::new("/s");
+        let tmux = path(dir, instance(BackendKind::Tmux, 42));
+        let native = path(dir, instance(BackendKind::Native, 42));
+        assert_eq!(tmux, Path::new("/s/events/42.jsonl"), "as before");
+        assert_eq!(native, Path::new("/s/events/native-42.jsonl"));
+    }
+
     #[test]
     fn the_reader_returns_new_complete_lines_only() {
         let dir = tempfile::tempdir().unwrap();
-        let p = path(dir.path(), 9);
+        let p = path(dir.path(), instance(BackendKind::Tmux, 9));
         let mut reader = Reader::new(p.clone());
         assert!(reader.read_new().is_empty(), "no file yet");
         append(&p, &record(CLAUDE, "Stop", "%1", "{}", 1)).unwrap();

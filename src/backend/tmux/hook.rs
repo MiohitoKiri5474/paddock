@@ -1,22 +1,26 @@
 //! Which of paddock's terminals a process runs in, from the variables tmux
 //! sets in every pane, and those variables for a pane.
 
-use crate::backend::{HookTerminal, TerminalId};
+use crate::backend::{HookTerminal, Instance, TerminalId};
+use crate::config::BackendKind;
 use std::path::Path;
 
 /// The terminal a process runs in, from `$TMUX` (`socket,pid,index`) and
 /// `$TMUX_PANE`, as `var` reads them: `None` unless the socket is paddock's
-/// (`socket` is its name). The server's pid is its instance id.
+/// (`socket` is its name). The server's pid is its instance's id.
 pub fn terminal(var: impl Fn(&str) -> Option<String>, socket: &str) -> Option<HookTerminal> {
     let (tmux, pane) = (var("TMUX")?, var("TMUX_PANE")?);
     let mut parts = tmux.rsplitn(3, ',');
     let _index = parts.next()?;
-    let instance = parts.next()?.parse().ok()?;
+    let id = parts.next()?.parse().ok()?;
     let path = parts.next()?;
     let ours = Path::new(path).file_name()? == socket;
     let pane_ok = pane.starts_with('%') && pane.len() > 1;
     (ours && pane_ok).then(|| HookTerminal {
-        instance,
+        instance: Instance {
+            kind: BackendKind::Tmux,
+            id,
+        },
         terminal: TerminalId::new(pane),
     })
 }
@@ -33,14 +37,11 @@ pub fn env(socket_path: &str, instance: u32, pane: &TerminalId) -> Vec<(String, 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::test_vars as vars;
 
     fn read(tmux: &str, pane: &str) -> Option<(u32, String)> {
-        let var = |k: &str| match k {
-            "TMUX" => Some(tmux.to_string()),
-            "TMUX_PANE" => Some(pane.to_string()),
-            _ => None,
-        };
-        terminal(var, "paddock").map(|t| (t.instance, t.terminal.as_str().to_string()))
+        let var = vars(&[("TMUX", tmux), ("TMUX_PANE", pane)]);
+        terminal(var, "paddock").map(|t| (t.instance.id, t.terminal.as_str().to_string()))
     }
 
     #[test]
@@ -57,9 +58,8 @@ mod tests {
     #[test]
     fn a_panes_variables_read_back_as_that_pane() {
         let pane = TerminalId::new("%7");
-        let vars = env("/private/tmp/tmux-501/paddock", 4242, &pane);
-        let var = |k: &str| vars.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
+        let var = vars(&env("/private/tmp/tmux-501/paddock", 4242, &pane));
         let t = terminal(var, "paddock").expect("a paddock terminal");
-        assert_eq!((t.instance, t.terminal), (4242, pane));
+        assert_eq!((t.instance.id, t.terminal), (4242, pane));
     }
 }

@@ -4,7 +4,7 @@
 //! of it goes through the rules the app uses ([`crate::worktree`]).
 
 use super::{rm, Code, Command, Fail, Invocation};
-use crate::backend::{self, Backend, HookTerminal, SpaceId, TerminalId};
+use crate::backend::{self, Backend, HookTerminal, Instance, SpaceId, TerminalId};
 use crate::config::Config;
 use crate::git::{self, WorkingTree, Worktree};
 use crate::github::{self, Checks, Pr, Prs, Review};
@@ -115,7 +115,7 @@ impl Context {
 
     /// The backend's instance id (see [`Backend::instance`]); `None` if
     /// it does not run.
-    pub fn instance(&self) -> Option<u32> {
+    pub fn instance(&self) -> Option<Instance> {
         self.backend.instance().ok()
     }
 
@@ -144,7 +144,7 @@ impl Context {
     }
 
     /// The caller's pane, if they run in a terminal of this backend.
-    pub fn caller_terminal(&self, instance: Option<u32>) -> Option<TerminalId> {
+    pub fn caller_terminal(&self, instance: Option<Instance>) -> Option<TerminalId> {
         let caller = self.caller.as_ref()?;
         (Some(caller.instance) == instance).then(|| caller.terminal.clone())
     }
@@ -153,7 +153,7 @@ impl Context {
     /// the hook event log of the running server replayed, then what
     /// `claude agents --json` says of Claude's, and why Claude's word is
     /// missing if it did not answer in time.
-    pub fn sessions(&self, instance: Option<u32>) -> (Sessions, Option<Fail>) {
+    pub fn sessions(&self, instance: Option<Instance>) -> (Sessions, Option<Fail>) {
         let mut sessions = Sessions::default();
         let Some(instance) = instance else {
             return (sessions, None);

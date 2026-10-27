@@ -1,8 +1,9 @@
 //! Which of paddock's terminals a process runs in, from the variables the
 //! native server sets in every terminal, and those variables for one.
 
-use crate::backend::{HookTerminal, TerminalId};
-use std::path::Path;
+use crate::backend::{HookTerminal, Instance, TerminalId};
+use crate::config::BackendKind;
+use std::path::{Path, PathBuf};
 
 /// The terminal's id.
 const PANE: &str = "PADDOCK_PANE";
@@ -13,15 +14,39 @@ const INSTANCE: &str = "PADDOCK_INSTANCE";
 
 /// The terminal a process runs in, from `$PADDOCK_PANE`, `$PADDOCK_SOCKET`
 /// and `$PADDOCK_INSTANCE` as `var` reads them: `None` unless all are set
-/// and the socket is `socket`, the server's under paddock's state dir.
+/// and well formed (a terminal id `%N`, an instance id above 0 in plain
+/// digits), and the socket is `socket`, the server's under paddock's state
+/// dir, written either way (symlinks resolved or not).
 pub fn terminal(var: impl Fn(&str) -> Option<String>, socket: &Path) -> Option<HookTerminal> {
-    let set = |k: &str| var(k).filter(|v| !v.is_empty());
-    let (pane, path) = (set(PANE)?, set(SOCKET)?);
-    let instance = set(INSTANCE)?.parse().ok()?;
-    (Path::new(&path) == socket).then(|| HookTerminal {
-        instance,
+    let (pane, path) = (var(PANE)?, var(SOCKET)?);
+    let id = digits(&var(INSTANCE)?).filter(|&id| id > 0)?;
+    let pane_ok = pane.strip_prefix('%').and_then(digits).is_some();
+    (pane_ok && same_socket(Path::new(&path), socket)).then(|| HookTerminal {
+        instance: Instance {
+            kind: BackendKind::Native,
+            id,
+        },
         terminal: TerminalId::new(pane),
     })
+}
+
+/// `text` as a number, if it is only ASCII digits (no sign, no spaces).
+fn digits(text: &str) -> Option<u32> {
+    let plain = !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit());
+    plain.then(|| text.parse().ok()).flatten()
+}
+
+/// Whether `a` and `b` name the same socket: as written (no system call:
+/// the usual case), else with the symlinks in their directories resolved
+/// (`/var` and `/private/var`).
+fn same_socket(a: &Path, b: &Path) -> bool {
+    a == b || resolved(a).is_some_and(|a| resolved(b) == Some(a))
+}
+
+/// `path` with its directory's symlinks resolved; `None` if that fails.
+fn resolved(path: &Path) -> Option<PathBuf> {
+    let dir = path.parent()?.canonicalize().ok()?;
+    Some(dir.join(path.file_name()?))
 }
 
 /// The variables of terminal `terminal` in the server listening on
@@ -37,40 +62,58 @@ pub fn env(socket: &Path, instance: u32, terminal: &TerminalId) -> Vec<(String, 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::test_vars as vars;
 
     const SOCK: &str = "/Users/me/.local/state/paddock/server.sock";
 
-    fn read(vars: &[(&str, &str)]) -> Option<(u32, String)> {
-        let var = |k: &str| {
-            vars.iter()
-                .find(|(n, _)| *n == k)
-                .map(|(_, v)| v.to_string())
-        };
-        terminal(var, Path::new(SOCK)).map(|t| (t.instance, t.terminal.as_str().to_string()))
+    fn read(pairs: &[(&str, &str)]) -> Option<(u32, String)> {
+        let t = terminal(vars(pairs), Path::new(SOCK))?;
+        assert_eq!(t.instance.kind, BackendKind::Native);
+        Some((t.instance.id, t.terminal.as_str().to_string()))
+    }
+
+    fn with(pane: &str, socket: &str, instance: &str) -> Option<(u32, String)> {
+        read(&[(PANE, pane), (SOCKET, socket), (INSTANCE, instance)])
     }
 
     #[test]
     fn a_terminal_counts_only_on_paddocks_socket_with_every_variable() {
-        let ours = [(PANE, "%3"), (SOCKET, SOCK), (INSTANCE, "77")];
-        assert_eq!(read(&ours), Some((77, "%3".into())));
-        let other = [
-            (PANE, "%3"),
-            (SOCKET, "/tmp/x/server.sock"),
-            (INSTANCE, "77"),
-        ];
-        assert_eq!(read(&other), None, "another server");
-        assert_eq!(read(&[(PANE, ""), (SOCKET, SOCK), (INSTANCE, "77")]), None);
-        assert_eq!(read(&[(PANE, "%3"), (SOCKET, SOCK), (INSTANCE, "x")]), None);
+        assert_eq!(with("%3", SOCK, "77"), Some((77, "%3".into())));
+        assert_eq!(with("%3", "/tmp/x/server.sock", "77"), None, "another");
         assert_eq!(read(&[(PANE, "%3"), (SOCKET, SOCK)]), None, "no instance");
         assert_eq!(read(&[]), None, "outside paddock");
     }
 
     #[test]
+    fn a_malformed_terminal_or_instance_id_counts_as_none() {
+        for pane in ["", "%", "3", "%x", "%3 ", "%-3"] {
+            assert_eq!(with(pane, SOCK, "77"), None, "pane {pane:?}");
+        }
+        for instance in ["", "0", "+77", "-77", " 77", "77x", "99999999999"] {
+            assert_eq!(with("%3", SOCK, instance), None, "instance {instance:?}");
+        }
+    }
+
+    #[test]
+    fn a_socket_path_through_a_symlink_is_the_same_socket() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let ours = link.join("server.sock");
+        let seen = real.join("server.sock").to_string_lossy().into_owned();
+        let var = vars(&[(PANE, "%3"), (SOCKET, &seen), (INSTANCE, "77")]);
+        assert!(terminal(&var, &ours).is_some(), "the link's target");
+        let other = dir.path().join("other.sock");
+        assert!(terminal(&var, &other).is_none(), "another socket there");
+    }
+
+    #[test]
     fn a_terminals_variables_read_back_as_that_terminal() {
         let id = TerminalId::new("%9");
-        let vars = env(Path::new(SOCK), 4242, &id);
-        let var = |k: &str| vars.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
+        let var = vars(&env(Path::new(SOCK), 4242, &id));
         let t = terminal(var, Path::new(SOCK)).expect("a paddock terminal");
-        assert_eq!((t.instance, t.terminal), (4242, id));
+        assert_eq!((t.instance.id, t.terminal), (4242, id));
     }
 }

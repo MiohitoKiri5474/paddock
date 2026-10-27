@@ -53,7 +53,10 @@ fn the_server_hosts_the_shell_in_the_sandbox_and_answers_debug_state() {
         "only the server's socket"
     );
     let state = sandbox.state();
-    assert_eq!(state.instance, Some(u32::try_from(pid).unwrap()));
+    let instance = state.instance.expect("the server's instance id");
+    let log = format!("events/native-{instance}.jsonl");
+    let log = sandbox.state_dir().join(log).to_string_lossy().into_owned();
+    assert_eq!(state.event_log, Some(log), "apart from tmux's logs");
     let terminal = sandbox.terminal("space-1");
     assert!(terminal
         .tty

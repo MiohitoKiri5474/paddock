@@ -4,7 +4,9 @@
 //! running and says so ([`NotRunning`]), or, if it only asks, has nothing
 //! for an answer. A server this paddock cannot talk to is an error.
 
-use super::protocol::{self, Answer, Closed, Ending, Frame, Message, Notice, Refusal, Request};
+use super::protocol::{
+    self, Answer, Closed, Ending, Frame, Message, Notice, Peer, Refusal, Request,
+};
 use super::server::log_path;
 use super::socket_path;
 use crate::backend::env::clean_env;
@@ -82,11 +84,11 @@ impl Client {
 
     /// A connection to the running server, past the hello; an error if
     /// none runs or it speaks another protocol version.
-    fn connect(&self) -> Result<(UnixStream, u32)> {
+    fn connect(&self) -> Result<(UnixStream, Peer)> {
         let socket = socket_path(&self.paths)?;
         let mut stream = UnixStream::connect(&socket).context(NotRunning)?;
-        let pid = protocol::hello(&mut stream, true)?;
-        Ok((stream, pid))
+        let server = protocol::hello(&mut stream, true, 0)?;
+        Ok((stream, server))
     }
 
     fn request(&self, request: Request) -> Result<Answer> {
@@ -102,13 +104,13 @@ impl Client {
         match UnixStream::connect(socket) {
             // None runs (a socket left behind refuses).
             Err(_) => Ok(()),
-            Ok(mut stream) => protocol::hello(&mut stream, true).map(drop),
+            Ok(mut stream) => protocol::hello(&mut stream, true, 0).map(drop),
         }
     }
 
-    /// The server's instance id: its pid.
+    /// The server's instance id, new each time a server starts.
     pub fn instance(&self) -> Result<u32> {
-        self.connect().map(|(_, pid)| pid)
+        self.connect().map(|(_, server)| server.instance)
     }
 
     /// Start the server unless one runs, and wait until it listens.

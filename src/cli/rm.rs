@@ -6,7 +6,7 @@
 
 use super::worktree::{find, ids, inside, name_of, print_json, state_in, Context, Space};
 use super::{allowed, Code, Discard, Fail};
-use crate::backend::SpaceId;
+use crate::backend::{Instance, SpaceId};
 use crate::git::{self, WorkingTree, Worktree};
 use crate::sessions::State;
 use crate::worktree::{self as shared, Risks, WorktreeSpace};
@@ -114,7 +114,7 @@ fn not_the_caller_s(
     cx: &Context,
     found: &Found,
     closing: &[SpaceId],
-    instance: Option<u32>,
+    instance: Option<Instance>,
 ) -> Result<(), Fail> {
     let top = &found.w.path;
     if inside(&cx.cwd.to_string_lossy(), top) {
@@ -141,7 +141,7 @@ fn check(
     found: &Found,
     spaces: &[Space],
     closing: &[SpaceId],
-    instance: Option<u32>,
+    instance: Option<Instance>,
     discard: Discard,
 ) -> Result<Risks, Fail> {
     let top = found.w.path.as_str();

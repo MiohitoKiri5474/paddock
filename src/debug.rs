@@ -6,9 +6,11 @@
 
 use crate::backend::{Backend, Float, SpaceId, Split, Structure, Tab, TerminalDetails, TerminalId};
 use crate::paths::Paths;
+use crate::sessions::log;
 use anyhow::Result;
 use serde::Serialize;
 use std::collections::BTreeMap;
+use std::path::Path;
 
 /// The version of the JSON's shape; `VERSION` in `tests/harness/state.rs`
 /// reads it and changes with it.
@@ -27,6 +29,8 @@ struct State<'a> {
     /// The backend's instance id (it names the hook event log); `None`
     /// when it does not run.
     instance: Option<u32>,
+    /// The path of that hook event log; `None` when it does not run.
+    event_log: Option<String>,
     /// Oldest first, as the sidebar lists them.
     spaces: Vec<SpaceState<'a>>,
 }
@@ -81,13 +85,14 @@ struct SplitState<'a> {
 /// The JSON for `spaces` (oldest first), the backend's `instance` and
 /// every terminal's `terminals` details.
 pub fn state_json(
-    instance: Option<u32>,
+    instance: Option<(u32, &Path)>,
     spaces: &[SpaceSnapshot],
     terminals: &[TerminalDetails],
 ) -> Result<serde_json::Value> {
     let state = State {
         version: VERSION,
-        instance,
+        instance: instance.map(|(id, _)| id),
+        event_log: instance.map(|(_, log)| log.to_string_lossy().into_owned()),
         spaces: spaces.iter().map(|s| space(s, terminals)).collect(),
     };
     Ok(serde_json::to_value(state)?)
@@ -152,9 +157,11 @@ fn splits<'a>(
 /// backend: with none running there are no spaces. A backend running that
 /// this paddock cannot talk to is an error, not an empty state.
 pub fn print_state() -> Result<()> {
-    let backend = Backend::configured(Paths::from_env()?)?;
+    let paths = Paths::from_env()?;
+    let backend = Backend::configured(paths.clone())?;
     backend.check()?;
     let instance = backend.instance().ok();
+    let log = instance.map(|i| (i.id, log::path(&paths.state_dir, i)));
     // A space that ends between the list and its read is left out.
     let spaces: Vec<SpaceSnapshot> = backend
         .spaces()
@@ -170,6 +177,7 @@ pub fn print_state() -> Result<()> {
         })
         .collect();
     let terminals = backend.terminal_details();
+    let instance = log.as_ref().map(|(id, path)| (*id, path.as_path()));
     println!("{}", state_json(instance, &spaces, &terminals)?);
     Ok(())
 }
@@ -241,10 +249,16 @@ mod tests {
             })
         };
         assert_eq!(
-            state_json(Some(42), &spaces, &terminals).unwrap(),
+            state_json(
+                Some((42, Path::new("/s/events/42.jsonl"))),
+                &spaces,
+                &terminals
+            )
+            .unwrap(),
             json!({
                 "version": 1,
                 "instance": 42,
+                "event_log": "/s/events/42.jsonl",
                 "spaces": [{
                     "id": "$1",
                     "name": "api",
@@ -278,7 +292,7 @@ mod tests {
     fn with_no_backend_running_there_is_nothing_but_the_version() {
         assert_eq!(
             state_json(None, &[], &[]).unwrap(),
-            json!({"version": 1, "instance": null, "spaces": []})
+            json!({"version": 1, "instance": null, "event_log": null, "spaces": []})
         );
     }
 }
