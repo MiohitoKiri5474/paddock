@@ -49,7 +49,7 @@ fn echo(paddock: &mut Paddock, word: &str) {
 }
 
 #[test]
-fn native_needs_41_a_remapped_command_works_and_its_old_key_does_not() {
+fn a_remapped_command_works_and_its_old_key_does_not() {
     let sandbox = Sandbox::new();
     sandbox.write_config("[keys.commands]\nnew_tab = \"t\"\n");
     let mut paddock = ready(&sandbox);
@@ -65,7 +65,7 @@ fn native_needs_41_a_remapped_command_works_and_its_old_key_does_not() {
 }
 
 #[test]
-fn native_needs_42_a_remapped_sidebar_key_works_and_its_old_key_does_not() {
+fn a_remapped_sidebar_key_works_and_its_old_key_does_not() {
     let sandbox = Sandbox::new();
     sandbox.write_config("[keys.sidebar]\nup = \"K\"\n");
     let mut paddock = ready(&sandbox);
@@ -115,7 +115,7 @@ fn an_alt_key_warning_is_printed_again_on_leaving() {
 }
 
 #[test]
-fn native_needs_42_ctrl_does_not_matter_for_sidebar_keys() {
+fn ctrl_does_not_matter_for_sidebar_keys() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     paddock.command(b"C\r");
@@ -163,7 +163,7 @@ fn paddock_keys_prints_the_defaults_as_toml() {
 }
 
 #[test]
-fn native_needs_41_direct_chords_work_without_the_prefix() {
+fn direct_chords_work_without_the_prefix() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
 
@@ -216,7 +216,7 @@ fn an_unbound_direct_chord_reaches_the_terminal_again() {
 }
 
 #[test]
-fn native_needs_42_in_a_float_a_direct_chord_goes_to_the_float() {
+fn in_a_float_a_direct_chord_goes_to_the_float() {
     let sandbox = Sandbox::new();
     sandbox.write_config("[floats]\nG = \"cat -v\"\n");
     let mut paddock = ready(&sandbox);

@@ -124,7 +124,7 @@ fn claude_runs_in(sandbox: &Sandbox, name: &str, cwd: &Path) {
 }
 
 #[test]
-fn native_needs_42_new_makes_a_worktree_and_a_space_that_a_running_paddock_shows() {
+fn new_makes_a_worktree_and_a_space_that_a_running_paddock_shows() {
     let sandbox = Sandbox::new();
     let dir = repo(&sandbox);
     let paddock = sandbox.launch();
@@ -194,7 +194,7 @@ fn new_starts_the_server_when_paddock_is_closed_and_no_space_makes_none() {
 }
 
 #[test]
-fn native_needs_42_an_existing_branch_is_checked_out_and_failures_make_nothing() {
+fn an_existing_branch_is_checked_out_and_failures_make_nothing() {
     let sandbox = Sandbox::new();
     let dir = repo(&sandbox);
     git(&dir, &["branch", "feat/y"]);
@@ -273,7 +273,7 @@ fn open_makes_a_space_once() {
 }
 
 #[test]
-fn native_needs_42_list_tells_each_kind_of_worktree_apart() {
+fn list_tells_each_kind_of_worktree_apart() {
     let sandbox = Sandbox::new();
     let dir = repo(&sandbox);
     let clean = made(&sandbox, &dir, "feat/clean");
@@ -514,7 +514,7 @@ fn rm_refuses_each_risk_with_exit_3_and_deletes_nothing() {
 }
 
 #[test]
-fn native_needs_42_rm_never_deletes_the_tree_its_caller_or_a_busy_claude_is_in() {
+fn rm_never_deletes_the_tree_its_caller_or_a_busy_claude_is_in() {
     let sandbox = Sandbox::new();
     let dir = repo(&sandbox);
     let out = cli(&sandbox, &dir, &["new", "feat/c"]);
@@ -610,7 +610,7 @@ fn help_lists_the_worktree_commands() {
 }
 
 #[test]
-fn native_needs_42_rm_counts_a_busy_claude_in_a_float_and_list_leaves_floats_out() {
+fn rm_counts_a_busy_claude_in_a_float_and_list_leaves_floats_out() {
     let sandbox = Sandbox::new();
     let dir = repo(&sandbox);
     let out = cli(&sandbox, &dir, &["new", "feat/f"]);

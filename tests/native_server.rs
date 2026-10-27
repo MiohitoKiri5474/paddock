@@ -5,6 +5,7 @@
 mod harness;
 
 use harness::backend::{alive, server_pid, NATIVE};
+use harness::native_skip::NATIVE_NEEDS;
 use harness::{Paddock, Sandbox, PROMPT};
 use std::io::{Read, Write};
 use std::os::unix::net::UnixListener;
@@ -287,4 +288,42 @@ fn a_server_speaking_another_protocol_version_is_a_clear_error() {
         server_pid(&sandbox.state_dir()).is_none(),
         "no server of ours started"
     );
+}
+
+/// Every entry of the native skip list is a test, and its `--skip` (a
+/// substring match) leaves out no test it does not list.
+#[test]
+fn the_native_skip_list_names_tests_and_skips_only_those() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+    let mut tests = Vec::new();
+    for entry in std::fs::read_dir(&dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_none_or(|e| e != "rs") {
+            continue;
+        }
+        let file = path.file_stem().unwrap().to_string_lossy().into_owned();
+        let text = std::fs::read_to_string(&path).unwrap();
+        for test in text.split("#[test]\nfn ").skip(1) {
+            let name = test.split('(').next().unwrap();
+            tests.push((file.clone(), name.to_string()));
+        }
+    }
+    let listed = |file: &str, name: &str| {
+        let path = format!("{file}::{name}");
+        NATIVE_NEEDS.iter().any(|(p, _)| *p == path)
+    };
+    for (path, tickets) in NATIVE_NEEDS {
+        let (file, name) = path.split_once("::").unwrap();
+        assert!(!tickets.is_empty(), "{path} needs no ticket: delete it");
+        assert!(
+            tests.iter().any(|(f, n)| f == file && n == name),
+            "{path} is no test"
+        );
+        for (f, n) in &tests {
+            assert!(
+                listed(f, n) || !n.contains(name),
+                "--skip {name} also skips {f}::{n}"
+            );
+        }
+    }
 }

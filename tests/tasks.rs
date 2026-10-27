@@ -152,7 +152,7 @@ fn tabs(sandbox: &Sandbox) -> usize {
 }
 
 #[test]
-fn native_needs_43_switching_branches_adds_a_task_row_for_each_branch() {
+fn switching_branches_adds_a_task_row_for_each_branch() {
     let sandbox = Sandbox::new();
     let dir = repo(&sandbox);
     let mut paddock = ready(&sandbox);
@@ -191,7 +191,7 @@ fn native_needs_43_switching_branches_adds_a_task_row_for_each_branch() {
 }
 
 #[test]
-fn native_needs_43_task_rows_show_ahead_behind_and_line_changes() {
+fn task_rows_show_ahead_behind_and_line_changes() {
     let sandbox = Sandbox::new();
     let dir = repo(&sandbox);
     git(&dir, &["switch", "-q", "-c", "feat/x", "--track", "main"]);
@@ -222,7 +222,7 @@ fn native_needs_43_task_rows_show_ahead_behind_and_line_changes() {
 }
 
 #[test]
-fn native_needs_43_no_rows_for_the_default_branch_or_shells_without_claude() {
+fn no_rows_for_the_default_branch_or_shells_without_claude() {
     let sandbox = Sandbox::new();
     let dir = repo(&sandbox);
     let mut paddock = ready(&sandbox);
@@ -330,7 +330,7 @@ fn sub(label: &str, state: &str) -> String {
 }
 
 #[test]
-fn native_needs_43_parallel_subagents_show_as_task_rows_from_running_to_done() {
+fn parallel_subagents_show_as_task_rows_from_running_to_done() {
     let sandbox = Sandbox::new();
     let dir = repo(&sandbox);
     write_meta(&sandbox);
@@ -379,7 +379,7 @@ fn native_needs_43_parallel_subagents_show_as_task_rows_from_running_to_done() {
 }
 
 #[test]
-fn native_needs_43_subagent_work_done_while_paddock_is_closed_appears_on_reopen() {
+fn subagent_work_done_while_paddock_is_closed_appears_on_reopen() {
     let sandbox = Sandbox::new();
     let dir = repo(&sandbox);
     write_meta(&sandbox);
@@ -411,7 +411,7 @@ fn native_needs_43_subagent_work_done_while_paddock_is_closed_appears_on_reopen(
 }
 
 #[test]
-fn native_needs_43_a_session_that_ends_while_paddock_is_closed_is_gone_with_its_tasks_on_reopen() {
+fn a_session_that_ends_while_paddock_is_closed_is_gone_with_its_tasks_on_reopen() {
     let sandbox = Sandbox::new();
     let dir = repo(&sandbox);
     write_meta(&sandbox);
@@ -491,7 +491,7 @@ fn has_branch(dir: &Path, branch: &str) -> bool {
 }
 
 #[test]
-fn native_needs_43_j_skips_branch_rows_and_d_dismisses_them_with_the_session() {
+fn j_skips_branch_rows_and_d_dismisses_them_with_the_session() {
     let sandbox = Sandbox::new();
     let dir = repo(&sandbox);
     let mut paddock = ready(&sandbox);
@@ -518,7 +518,7 @@ fn native_needs_43_j_skips_branch_rows_and_d_dismisses_them_with_the_session() {
 }
 
 #[test]
-fn native_needs_43_d_on_a_session_row_hides_it_with_its_tasks_until_claude_reports_again() {
+fn d_on_a_session_row_hides_it_with_its_tasks_until_claude_reports_again() {
     let sandbox = Sandbox::new();
     let dir = repo(&sandbox);
     let mut paddock = ready(&sandbox);
@@ -543,7 +543,7 @@ fn native_needs_43_d_on_a_session_row_hides_it_with_its_tasks_until_claude_repor
 }
 
 #[test]
-fn native_needs_43_a_closed_terminals_rows_leave_at_once_and_stay_gone_after_reopening() {
+fn a_closed_terminals_rows_leave_at_once_and_stay_gone_after_reopening() {
     let sandbox = Sandbox::new();
     let dir = repo(&sandbox);
     let mut paddock = ready(&sandbox);
@@ -567,7 +567,7 @@ fn native_needs_43_a_closed_terminals_rows_leave_at_once_and_stay_gone_after_reo
 }
 
 #[test]
-fn native_needs_43_a_session_whose_claude_quit_leaves_with_its_task_rows() {
+fn a_session_whose_claude_quit_leaves_with_its_task_rows() {
     let sandbox = Sandbox::new();
     let dir = repo(&sandbox);
     let mut paddock = ready(&sandbox);
@@ -600,7 +600,7 @@ fn native_needs_43_a_session_whose_claude_quit_leaves_with_its_task_rows() {
 }
 
 #[test]
-fn native_needs_43_a_new_conversation_in_the_same_terminal_keeps_its_task_rows() {
+fn a_new_conversation_in_the_same_terminal_keeps_its_task_rows() {
     let sandbox = Sandbox::new();
     let dir = repo(&sandbox);
     let mut paddock = ready(&sandbox);
@@ -613,7 +613,7 @@ fn native_needs_43_a_new_conversation_in_the_same_terminal_keeps_its_task_rows()
 }
 
 #[test]
-fn native_needs_43_j_skips_subagent_rows_and_d_on_the_session_takes_them_along() {
+fn j_skips_subagent_rows_and_d_on_the_session_takes_them_along() {
     let sandbox = Sandbox::new();
     let dir = repo(&sandbox);
     write_meta(&sandbox);

@@ -27,7 +27,7 @@ fn wait_for_sessions(paddock: &Paddock, sandbox: &Sandbox, want: &[&str]) {
 }
 
 #[test]
-fn native_needs_42_a_new_space_asks_for_its_name_and_enter_keeps_the_default() {
+fn a_new_space_asks_for_its_name_and_enter_keeps_the_default() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
 
@@ -41,7 +41,7 @@ fn native_needs_42_a_new_space_asks_for_its_name_and_enter_keeps_the_default() {
 }
 
 #[test]
-fn native_needs_42_a_new_space_takes_the_name_typed_and_esc_makes_none() {
+fn a_new_space_takes_the_name_typed_and_esc_makes_none() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
 
@@ -118,7 +118,7 @@ fn a_click_outside_the_popup_cancels_it_and_one_inside_does_not() {
 }
 
 #[test]
-fn native_needs_42_a_new_space_with_a_taken_name_shows_a_notice_after_the_popup_closes() {
+fn a_new_space_with_a_taken_name_shows_a_notice_after_the_popup_closes() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
 
@@ -136,7 +136,7 @@ fn native_needs_42_a_new_space_with_a_taken_name_shows_a_notice_after_the_popup_
 }
 
 #[test]
-fn native_needs_42_naming_a_new_space_from_the_sidebar_keeps_the_sidebar_focused() {
+fn naming_a_new_space_from_the_sidebar_keeps_the_sidebar_focused() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     paddock.command(b"w");
@@ -164,7 +164,7 @@ fn native_needs_42_naming_a_new_space_from_the_sidebar_keeps_the_sidebar_focused
 }
 
 #[test]
-fn native_needs_42_naming_a_new_space_from_the_dashboard_keeps_the_dashboard_open() {
+fn naming_a_new_space_from_the_dashboard_keeps_the_dashboard_open() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     paddock.command(b"o");

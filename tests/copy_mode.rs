@@ -160,7 +160,7 @@ fn output_while_in_copy_mode_shows_only_after_leaving() {
 }
 
 #[test]
-fn native_needs_41_the_wheel_scrolls_the_copy_view_and_direct_chords_do_not_fire() {
+fn the_wheel_scrolls_the_copy_view_and_direct_chords_do_not_fire() {
     let sandbox = Sandbox::new();
     let mut p = ready(&sandbox);
     p.type_line("seq 1 100");
@@ -188,7 +188,7 @@ fn native_needs_41_the_wheel_scrolls_the_copy_view_and_direct_chords_do_not_fire
 }
 
 #[test]
-fn native_needs_41_a_command_or_the_pane_closing_leaves_copy_mode() {
+fn a_command_or_the_pane_closing_leaves_copy_mode() {
     let sandbox = Sandbox::new();
     let mut p = ready(&sandbox);
     enter_copy_mode(&mut p);
@@ -209,7 +209,7 @@ fn native_needs_41_a_command_or_the_pane_closing_leaves_copy_mode() {
 }
 
 #[test]
-fn native_needs_42_copy_mode_works_in_the_float_shown() {
+fn copy_mode_works_in_the_float_shown() {
     let sandbox = Sandbox::new();
     sandbox.write_config("[floats]\nG = \"cat\"\n");
     let mut p = ready(&sandbox);

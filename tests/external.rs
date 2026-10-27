@@ -117,7 +117,7 @@ fn open_dashboard(paddock: &mut Paddock) {
 }
 
 #[test]
-fn native_needs_43_an_external_session_shows_dim_and_last_with_its_state_and_branch() {
+fn an_external_session_shows_dim_and_last_with_its_state_and_branch() {
     let sandbox = Sandbox::new();
     let web = web_repo(&sandbox);
     let web = web.to_str().unwrap();
@@ -278,7 +278,7 @@ fn external_events_from_before_are_replayed_but_quiet_ones_stay_gone() {
 }
 
 #[test]
-fn native_needs_43_external_false_hides_the_group_and_its_notifications() {
+fn external_false_hides_the_group_and_its_notifications() {
     let sandbox = Sandbox::new();
     sandbox.write_config("[dashboard]\nexternal = false\n");
     let paddock = ready(&sandbox);

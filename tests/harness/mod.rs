@@ -11,12 +11,13 @@
 //! [`State`]), so they hold for any backend; only tests of tmux-only
 //! behaviour call tmux, through [`tmux_only`]. Their names start with
 //! `tmux_only_`: `cargo test -- --skip tmux_only` leaves them out.
-//! [`backend`] picks the backend a run is on, and names the tests the
-//! native backend cannot pass yet (`native_needs_4N`).
+//! [`backend`] picks the backend a run is on; [`native_skip`] lists the
+//! tests the native backend cannot pass yet.
 
 #![allow(dead_code)] // Each test binary uses a different part of the harness.
 
 pub mod backend;
+pub mod native_skip;
 mod panes;
 mod state;
 pub mod tmux_only;
@@ -76,6 +77,7 @@ pub struct Sandbox {
 
 impl Sandbox {
     pub fn new() -> Self {
+        native_skip::check();
         // Short base path: unix socket paths are limited to about 100 bytes on macOS.
         let root = tempfile::Builder::new()
             .prefix("pdk")

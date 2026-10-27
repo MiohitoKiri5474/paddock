@@ -56,7 +56,7 @@ fn row_of(p: &Paddock, line: &str) -> u16 {
 }
 
 #[test]
-fn native_needs_41_clicking_a_split_focuses_it() {
+fn clicking_a_split_focuses_it() {
     let sandbox = Sandbox::new();
     let mut p = ready(&sandbox);
     split_side_by_side(&mut p); // the new right terminal has the focus
@@ -71,7 +71,7 @@ fn native_needs_41_clicking_a_split_focuses_it() {
 }
 
 #[test]
-fn native_needs_41_clicking_a_tab_label_switches_tabs() {
+fn clicking_a_tab_label_switches_tabs() {
     let sandbox = Sandbox::new();
     let mut p = ready(&sandbox);
     p.command(b"c");
@@ -86,7 +86,7 @@ fn native_needs_41_clicking_a_tab_label_switches_tabs() {
 }
 
 #[test]
-fn native_needs_42_clicking_a_space_shows_its_tabs() {
+fn clicking_a_space_shows_its_tabs() {
     let sandbox = Sandbox::new();
     let mut p = ready(&sandbox);
     p.command(b"c");
@@ -100,7 +100,7 @@ fn native_needs_42_clicking_a_space_shows_its_tabs() {
 }
 
 #[test]
-fn native_needs_41_wheel_scrolls_the_split_under_the_pointer() {
+fn wheel_scrolls_the_split_under_the_pointer() {
     let sandbox = Sandbox::new();
     let mut p = ready(&sandbox);
     p.type_line("seq 1 100");
@@ -133,7 +133,7 @@ fn dragging_copies_exactly_the_selected_text() {
 }
 
 #[test]
-fn native_needs_41_programs_that_ask_for_the_mouse_get_it_in_their_own_coordinates() {
+fn programs_that_ask_for_the_mouse_get_it_in_their_own_coordinates() {
     let sandbox = Sandbox::new();
     let mut p = ready(&sandbox);
     split_side_by_side(&mut p);
@@ -156,7 +156,7 @@ fn native_needs_41_programs_that_ask_for_the_mouse_get_it_in_their_own_coordinat
 }
 
 #[test]
-fn native_needs_41_the_plus_after_the_tabs_opens_a_tab() {
+fn the_plus_after_the_tabs_opens_a_tab() {
     let sandbox = Sandbox::new();
     let mut p = ready(&sandbox);
     p.wait_for_tabs(&["1:home"]);
@@ -169,7 +169,7 @@ fn native_needs_41_the_plus_after_the_tabs_opens_a_tab() {
 }
 
 #[test]
-fn native_needs_41_the_wheel_over_the_tab_bar_switches_tabs() {
+fn the_wheel_over_the_tab_bar_switches_tabs() {
     let sandbox = Sandbox::new();
     let mut p = ready(&sandbox);
     p.command(b"c");

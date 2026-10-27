@@ -114,7 +114,7 @@ fn repo(sandbox: &Sandbox) -> PathBuf {
 
 /// Ticket 33: every row shows its agent's kind, `claude` for now.
 #[test]
-fn native_needs_43_rows_are_tagged_with_their_agents_kind() {
+fn rows_are_tagged_with_their_agents_kind() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     claude(&sandbox, "space-1:0", "Stop", "s1", "/w/repo");
@@ -137,7 +137,7 @@ fn native_needs_43_rows_are_tagged_with_their_agents_kind() {
 }
 
 #[test]
-fn native_needs_43_o_opens_the_dashboard_and_esc_closes_it() {
+fn o_opens_the_dashboard_and_esc_closes_it() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     // Empty, it still opens, and says so.
@@ -163,7 +163,7 @@ fn native_needs_43_o_opens_the_dashboard_and_esc_closes_it() {
 }
 
 #[test]
-fn native_needs_43_slash_filters_the_list_enter_keeps_the_filter_and_esc_clears_it() {
+fn slash_filters_the_list_enter_keeps_the_filter_and_esc_clears_it() {
     let sandbox = Sandbox::new();
     let mut paddock = two_tabs(&sandbox);
     claude(&sandbox, "space-1:0", "PermissionRequest", "s1", "/w/alpha");
@@ -203,7 +203,7 @@ fn native_needs_43_slash_filters_the_list_enter_keeps_the_filter_and_esc_clears_
 }
 
 #[test]
-fn native_needs_43_the_list_sits_above_the_preview_and_the_keys_at_the_bottom() {
+fn the_list_sits_above_the_preview_and_the_keys_at_the_bottom() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     claude(&sandbox, "space-1:0", "Stop", "s1", "/w/repo");
@@ -233,7 +233,7 @@ fn native_needs_43_the_list_sits_above_the_preview_and_the_keys_at_the_bottom() 
 }
 
 #[test]
-fn native_needs_43_j_and_k_move_and_enter_jumps_to_the_rows_terminal() {
+fn j_and_k_move_and_enter_jumps_to_the_rows_terminal() {
     let sandbox = Sandbox::new();
     let mut paddock = two_tabs(&sandbox);
     // Waiting sorts before idle.
@@ -263,7 +263,7 @@ fn native_needs_43_j_and_k_move_and_enter_jumps_to_the_rows_terminal() {
 }
 
 #[test]
-fn native_needs_43_d_dismisses_a_row_and_it_stays_gone_after_reopening() {
+fn d_dismisses_a_row_and_it_stays_gone_after_reopening() {
     let sandbox = Sandbox::new();
     let mut paddock = two_tabs(&sandbox);
     claude(&sandbox, "space-1:0", "PermissionRequest", "s1", "/w/alpha");
@@ -310,7 +310,7 @@ fn three_waiting(sandbox: &Sandbox) -> Paddock {
 }
 
 #[test]
-fn native_needs_43_a_closed_terminals_session_leaves_and_the_selection_moves_to_the_next() {
+fn a_closed_terminals_session_leaves_and_the_selection_moves_to_the_next() {
     let sandbox = Sandbox::new();
     // No `claude agents` snapshots, whose polls would move the selection
     // anyway.
@@ -329,7 +329,7 @@ fn native_needs_43_a_closed_terminals_session_leaves_and_the_selection_moves_to_
 }
 
 #[test]
-fn native_needs_43_a_session_whose_claude_quit_leaves_while_its_terminal_stays() {
+fn a_session_whose_claude_quit_leaves_while_its_terminal_stays() {
     let sandbox = Sandbox::new();
     sandbox.set_agents("not json");
     let mut paddock = three_waiting(&sandbox);
@@ -350,7 +350,7 @@ fn native_needs_43_a_session_whose_claude_quit_leaves_while_its_terminal_stays()
 }
 
 #[test]
-fn native_needs_43_the_preview_shows_the_selected_terminal_live() {
+fn the_preview_shows_the_selected_terminal_live() {
     let sandbox = Sandbox::new();
     // No `claude agents` snapshots, whose polls redraw the screen anyway.
     sandbox.set_agents("not json");
@@ -396,7 +396,7 @@ fn two_tabs_with_cat(sandbox: &Sandbox) -> (Paddock, std::path::PathBuf) {
 }
 
 #[test]
-fn native_needs_43_i_types_into_the_previewed_terminal_and_esc_is_never_sent() {
+fn i_types_into_the_previewed_terminal_and_esc_is_never_sent() {
     let sandbox = Sandbox::new();
     let (mut paddock, out) = two_tabs_with_cat(&sandbox);
 
@@ -419,7 +419,7 @@ fn native_needs_43_i_types_into_the_previewed_terminal_and_esc_is_never_sent() {
 }
 
 #[test]
-fn native_needs_43_esc_and_a_key_in_one_read_leave_interactive_preview_unsent() {
+fn esc_and_a_key_in_one_read_leave_interactive_preview_unsent() {
     let sandbox = Sandbox::new();
     let (mut paddock, out) = two_tabs_with_cat(&sandbox);
 
@@ -440,7 +440,7 @@ fn native_needs_43_esc_and_a_key_in_one_read_leave_interactive_preview_unsent() 
 }
 
 #[test]
-fn native_needs_43_x_asks_while_claude_runs_then_returns_to_the_dashboard() {
+fn x_asks_while_claude_runs_then_returns_to_the_dashboard() {
     let sandbox = Sandbox::new();
     let mut paddock = two_tabs(&sandbox);
     claude(&sandbox, "space-1:0", "UserPromptSubmit", "s1", "/w/repo");
@@ -457,7 +457,7 @@ fn native_needs_43_x_asks_while_claude_runs_then_returns_to_the_dashboard() {
 }
 
 #[test]
-fn native_needs_43_a_click_outside_the_close_question_cancels_it_back_to_the_dashboard() {
+fn a_click_outside_the_close_question_cancels_it_back_to_the_dashboard() {
     let sandbox = Sandbox::new();
     let mut paddock = two_tabs(&sandbox);
     claude(&sandbox, "space-1:0", "UserPromptSubmit", "s1", "/w/repo");
@@ -476,7 +476,7 @@ fn native_needs_43_a_click_outside_the_close_question_cancels_it_back_to_the_das
 }
 
 #[test]
-fn native_needs_43_f_forks_the_selected_session() {
+fn f_forks_the_selected_session() {
     let sandbox = Sandbox::new();
     let mut paddock = two_tabs(&sandbox);
     let dir = sandbox.path("home/repo");

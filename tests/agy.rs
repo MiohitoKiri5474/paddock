@@ -107,7 +107,7 @@ fn wait_row(paddock: &Paddock, what: &str, parts: &[&str]) {
 }
 
 #[test]
-fn native_needs_43_an_agy_session_goes_idle_working_waiting_done_then_ends_at_the_shell() {
+fn an_agy_session_goes_idle_working_waiting_done_then_ends_at_the_shell() {
     let sandbox = Sandbox::new();
     stub_agy(&sandbox);
     let mut paddock = ready(&sandbox);
@@ -172,7 +172,7 @@ fn native_needs_43_an_agy_session_goes_idle_working_waiting_done_then_ends_at_th
 }
 
 #[test]
-fn native_needs_43_an_agy_session_ends_when_its_terminal_closes() {
+fn an_agy_session_ends_when_its_terminal_closes() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     paddock.command(b"c");
@@ -187,7 +187,7 @@ fn native_needs_43_an_agy_session_ends_when_its_terminal_closes() {
 }
 
 #[test]
-fn native_needs_43_reports_from_other_programs_or_without_a_session_change_nothing() {
+fn reports_from_other_programs_or_without_a_session_change_nothing() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     stub_agy(&sandbox);
@@ -244,7 +244,7 @@ fn server_log(sandbox: &Sandbox) -> String {
 }
 
 #[test]
-fn native_needs_43_the_same_report_after_a_hook_shows_again() {
+fn the_same_report_after_a_hook_shows_again() {
     let sandbox = Sandbox::new();
     stub_agy(&sandbox);
     let mut paddock = ready(&sandbox);
@@ -268,7 +268,7 @@ fn native_needs_43_the_same_report_after_a_hook_shows_again() {
 }
 
 #[test]
-fn native_needs_43_a_report_right_after_the_start_hook_waits_for_its_session() {
+fn a_report_right_after_the_start_hook_waits_for_its_session() {
     let sandbox = Sandbox::new();
     stub_agy(&sandbox);
     let mut paddock = ready(&sandbox);
@@ -312,7 +312,7 @@ fn reopen_and_wait(sandbox: &Sandbox, mut paddock: Paddock, state: &str) {
 }
 
 #[test]
-fn native_needs_43_a_report_just_before_its_session_starts_belongs_to_it_live_and_on_replay() {
+fn a_report_just_before_its_session_starts_belongs_to_it_live_and_on_replay() {
     let sandbox = Sandbox::new();
     stub_agy(&sandbox);
     let mut paddock = ready(&sandbox);
@@ -342,7 +342,7 @@ fn a_report_older_than_a_later_hook_is_dropped() {
 }
 
 #[test]
-fn native_needs_43_reports_from_a_terminal_without_an_agy_session_are_not_recorded() {
+fn reports_from_a_terminal_without_an_agy_session_are_not_recorded() {
     let sandbox = Sandbox::new();
     let paddock = ready(&sandbox);
     write_to(&sandbox, "space-1:0", &status("blocked", Some("auth")));
@@ -359,7 +359,7 @@ fn native_needs_43_reports_from_a_terminal_without_an_agy_session_are_not_record
 }
 
 #[test]
-fn native_needs_43_agy_quitting_without_a_prompt_does_not_notify() {
+fn agy_quitting_without_a_prompt_does_not_notify() {
     let sandbox = Sandbox::new();
     stub_agy(&sandbox);
     let mut paddock = ready(&sandbox);

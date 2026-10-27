@@ -64,7 +64,7 @@ fn open(paddock: &mut Paddock) {
 }
 
 #[test]
-fn native_needs_42_g_opens_the_finder_and_typing_a_tabs_name_then_enter_shows_it() {
+fn g_opens_the_finder_and_typing_a_tabs_name_then_enter_shows_it() {
     let sandbox = Sandbox::new();
     let mut paddock = two_tabs(&sandbox);
 
@@ -86,7 +86,7 @@ fn native_needs_42_g_opens_the_finder_and_typing_a_tabs_name_then_enter_shows_it
 }
 
 #[test]
-fn native_needs_42_an_agent_row_opens_its_pane() {
+fn an_agent_row_opens_its_pane() {
     let sandbox = Sandbox::new();
     let mut paddock = two_tabs(&sandbox);
     claude(&sandbox, "space-1:0", "Stop", "s1", "/w/alpha");
@@ -103,7 +103,7 @@ fn native_needs_42_an_agent_row_opens_its_pane() {
 }
 
 #[test]
-fn native_needs_42_state_letters_filter_agents_on_an_empty_query() {
+fn state_letters_filter_agents_on_an_empty_query() {
     let sandbox = Sandbox::new();
     let mut paddock = two_tabs(&sandbox);
     // The agent in `logs` waits; bravo finished its turn in the tab
@@ -137,7 +137,7 @@ fn native_needs_42_state_letters_filter_agents_on_an_empty_query() {
 }
 
 #[test]
-fn native_needs_42_esc_and_a_click_outside_cancel_and_change_nothing() {
+fn esc_and_a_click_outside_cancel_and_change_nothing() {
     let sandbox = Sandbox::new();
     let mut paddock = two_tabs(&sandbox);
 
@@ -163,7 +163,7 @@ fn native_needs_42_esc_and_a_click_outside_cancel_and_change_nothing() {
 }
 
 #[test]
-fn native_needs_42_a_click_on_a_row_opens_it() {
+fn a_click_on_a_row_opens_it() {
     let sandbox = Sandbox::new();
     let mut paddock = two_tabs(&sandbox);
 
@@ -180,7 +180,7 @@ fn native_needs_42_a_click_on_a_row_opens_it() {
 }
 
 #[test]
-fn native_needs_42_the_finder_opened_from_the_dashboard_returns_to_it_on_esc() {
+fn the_finder_opened_from_the_dashboard_returns_to_it_on_esc() {
     let sandbox = Sandbox::new();
     let mut paddock = two_tabs(&sandbox);
     paddock.command(b"o");

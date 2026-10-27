@@ -47,7 +47,7 @@ fn assert_sizes_stay(sandbox: &Sandbox, expected: &[&str]) {
 }
 
 #[test]
-fn native_needs_41_shift_h_and_l_move_the_border_and_repeat_without_the_prefix() {
+fn shift_h_and_l_move_the_border_and_repeat_without_the_prefix() {
     let sandbox = Sandbox::new();
     let mut p = split(&sandbox);
 
@@ -66,7 +66,7 @@ fn native_needs_41_shift_h_and_l_move_the_border_and_repeat_without_the_prefix()
 }
 
 #[test]
-fn native_needs_41_shift_k_and_j_move_a_border_between_rows() {
+fn shift_k_and_j_move_a_border_between_rows() {
     let sandbox = Sandbox::new();
     let mut p = ready(&sandbox);
     p.command(b"-");
@@ -79,7 +79,7 @@ fn native_needs_41_shift_k_and_j_move_a_border_between_rows() {
 }
 
 #[test]
-fn native_needs_41_a_zero_repeat_window_types_the_second_key() {
+fn a_zero_repeat_window_types_the_second_key() {
     let sandbox = Sandbox::new();
     sandbox.write_config("[keys]\nrepeat_ms = 0\n");
     let mut p = split(&sandbox);
@@ -93,7 +93,7 @@ fn native_needs_41_a_zero_repeat_window_types_the_second_key() {
 }
 
 #[test]
-fn native_needs_41_a_split_stops_at_one_column_without_a_notice() {
+fn a_split_stops_at_one_column_without_a_notice() {
     let sandbox = Sandbox::new();
     let mut p = split(&sandbox);
 
@@ -115,7 +115,7 @@ fn native_needs_41_a_split_stops_at_one_column_without_a_notice() {
 }
 
 #[test]
-fn native_needs_41_dragging_the_border_between_splits_resizes_them_live() {
+fn dragging_the_border_between_splits_resizes_them_live() {
     let sandbox = Sandbox::new();
     let mut p = split(&sandbox);
 
@@ -143,7 +143,7 @@ fn native_needs_41_dragging_the_border_between_splits_resizes_them_live() {
 }
 
 #[test]
-fn native_needs_41_dragging_a_border_between_rows_resizes_them() {
+fn dragging_a_border_between_rows_resizes_them() {
     let sandbox = Sandbox::new();
     let mut p = ready(&sandbox);
     p.command(b"-");
@@ -159,7 +159,7 @@ fn native_needs_41_dragging_a_border_between_rows_resizes_them() {
 }
 
 #[test]
-fn native_needs_41_dragging_a_border_beside_a_nested_row_moves_that_border() {
+fn dragging_a_border_beside_a_nested_row_moves_that_border() {
     let sandbox = Sandbox::new();
     let mut p = split(&sandbox);
     // `{A | B}` over C, beside D: B is the last of its row, so resizing B
@@ -186,7 +186,7 @@ fn native_needs_41_dragging_a_border_beside_a_nested_row_moves_that_border() {
 }
 
 #[test]
-fn native_needs_41_the_sidebar_border_still_resizes_the_sidebar_beside_splits() {
+fn the_sidebar_border_still_resizes_the_sidebar_beside_splits() {
     let sandbox = Sandbox::new();
     let mut p = split(&sandbox);
 
@@ -212,7 +212,7 @@ fn zoom(sandbox: &Sandbox, p: &mut Paddock) {
 }
 
 #[test]
-fn native_needs_41_a_resize_key_in_a_zoomed_tab_unzooms_it_first() {
+fn a_resize_key_in_a_zoomed_tab_unzooms_it_first() {
     let sandbox = Sandbox::new();
     let mut p = split(&sandbox);
     zoom(&sandbox, &mut p);
@@ -225,7 +225,7 @@ fn native_needs_41_a_resize_key_in_a_zoomed_tab_unzooms_it_first() {
 }
 
 #[test]
-fn native_needs_41_a_zoomed_tab_has_no_border_to_drag() {
+fn a_zoomed_tab_has_no_border_to_drag() {
     let sandbox = Sandbox::new();
     let mut p = split(&sandbox);
     zoom(&sandbox, &mut p);
@@ -240,7 +240,7 @@ fn native_needs_41_a_zoomed_tab_has_no_border_to_drag() {
 }
 
 #[test]
-fn native_needs_41_equalize_evens_out_splits_after_a_resize() {
+fn equalize_evens_out_splits_after_a_resize() {
     let sandbox = Sandbox::new();
     let mut p = split(&sandbox);
     p.send(b"\x01HHH");

@@ -4,9 +4,8 @@
 //! tmux. The native server lives in the sandbox's state directory, socket
 //! and lock included, so it never meets the user's own.
 //!
-//! On native, run with `--skip tmux_only --skip native_needs`: a test
-//! whose name holds `native_needs_4N` needs ticket 4N's part of the native
-//! backend, which is not there yet.
+//! On native, run `scripts/test-native.sh`: it skips the tmux-only tests
+//! and those in [`super::native_skip`].
 
 use std::path::Path;
 use std::time::{Duration, Instant};
