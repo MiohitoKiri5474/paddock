@@ -1,7 +1,7 @@
 //! The tests the native backend cannot pass yet, each with the tickets
-//! (41: tabs, splits, zoom, resizing; 42: more spaces, floats, finder,
-//! worktrees, roots; 43: agents and hooks) whose part of the backend it
-//! needs. A ticket that lands takes its number off every entry, and
+//! (42: more spaces, floats, finder, worktrees, roots; 43: agents and
+//! hooks) whose part of the backend it needs; 41 (tabs, splits, zoom,
+//! resizing) has landed. A ticket that lands takes its number off every entry, and
 //! deletes the entries left with none.
 //!
 //! A native run skips them: `scripts/test-native.sh` turns each into a
