@@ -12,141 +12,90 @@ use crate::terminal::SCROLLBACK;
 use anyhow::Result;
 use std::fs::File;
 use std::io::Write;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// How the server names itself to XTVERSION.
 const NAME: &str = concat!("paddock ", env!("CARGO_PKG_VERSION"));
-/// Bytes waiting for a program past which, if it has also read nothing
-/// for [`STALL`], it is not reading: more input to it is dropped.
-const INPUT_LIMIT: usize = 4 << 20;
-const STALL: Duration = Duration::from_secs(2);
-/// Bytes waiting for a program past which more input to it is dropped
-/// even while it reads: the most a terminal's input holds.
-const INPUT_MAX: usize = 64 << 20;
-/// The most written to the PTY at once, so a program that reads slowly
-/// shows its progress.
-const WRITE_CHUNK: usize = 4 << 10;
+/// The most input that may wait for a program: an input that would take
+/// what waits past it is refused whole.
+pub const INPUT_MAX: usize = 64 << 20;
 
 /// Bytes for a program, in order (input and query replies), written by a
 /// thread of its own: queuing never waits, so neither the state lock nor
 /// the connection the input came on (with its resizes and detach) waits
-/// on a program that does not read.
+/// on a program that does not read. What is queued is never dropped.
 pub struct Input {
     queue: Queue<Vec<u8>>,
-    /// When the program last took some of its input (or input started to
-    /// wait for it), in milliseconds from `epoch`.
-    progress: Arc<AtomicU64>,
-    epoch: Instant,
-    /// Input is being dropped: from the first drop until the program has
-    /// read all that waits (an episode).
-    dropping: AtomicBool,
+    /// Input is being refused: from the first refusal until the program
+    /// has taken all that waited (an episode).
+    refusing: AtomicBool,
 }
 
-/// What became of bytes for a program.
+/// What became of an input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Sent {
     Queued,
-    /// Dropped, in an episode already told.
-    Dropped,
-    /// Dropped, the first of an episode: why.
-    DroppedFirst(Why),
+    /// Refused, as it would take what waits past [`INPUT_MAX`]; `first`
+    /// of an episode.
+    Refused {
+        first: bool,
+    },
     /// Its writer has ended (the PTY is gone): nothing is written.
     Ended,
-}
-
-/// Why input was dropped.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Why {
-    /// More than [`INPUT_LIMIT`] waits, and the program has read nothing
-    /// for [`STALL`].
-    NotReading,
-    /// More than [`INPUT_MAX`] would wait.
-    TooMuch,
-}
-
-impl Why {
-    /// Why, said of `program`: "vim is not reading it".
-    pub fn of(self, program: &str) -> String {
-        match self {
-            Self::NotReading => format!("{program} is not reading it"),
-            Self::TooMuch => format!("more than {} MiB waits for {program}", INPUT_MAX >> 20),
-        }
-    }
 }
 
 impl Input {
     /// Start the thread writing to `master`, terminal `id`'s PTY.
     pub fn start(id: &TerminalId, mut master: File) -> Self {
         let id = id.clone();
-        let epoch = Instant::now();
-        let progress = Arc::new(AtomicU64::new(0));
-        let made = Arc::clone(&progress);
         let (queue, _) = Queue::start(Vec::len, move |bytes: Vec<u8>| {
-            for chunk in bytes.chunks(WRITE_CHUNK) {
-                if let Err(e) = master.write_all(chunk) {
-                    eprintln!("paddock server: cannot write {id}'s input: {e}");
-                    return false;
-                }
-                made.store(millis(epoch), Ordering::Relaxed);
+            let written = master.write_all(&bytes);
+            if let Err(e) = &written {
+                eprintln!("paddock server: cannot write {id}'s input: {e}");
             }
-            true
+            written.is_ok()
         });
         Self {
             queue,
-            progress,
-            epoch,
-            dropping: AtomicBool::new(false),
+            refusing: AtomicBool::new(false),
         }
     }
 
-    /// Queue input for the program, unless it is not reading, or too much
-    /// waits already (see [`Why`]).
+    /// Queue one whole input (a key, a paste), unless it would take what
+    /// waits for the program past [`INPUT_MAX`].
     pub fn send(&self, bytes: Vec<u8>) -> Sent {
-        match self.drop_why(bytes.len()) {
-            None => self.push(bytes),
-            Some(why) if !self.dropping.swap(true, Ordering::Relaxed) => Sent::DroppedFirst(why),
-            Some(_) => Sent::Dropped,
+        if self.queue.ended() {
+            return Sent::Ended;
         }
-    }
-
-    /// Queue a reply to the program's query, as [`Self::send`], but one
-    /// dropped never tells: only the user's input does.
-    pub fn reply(&self, bytes: Vec<u8>) {
-        if self.drop_why(bytes.len()).is_none() {
-            let _ = self.push(bytes);
-        }
-    }
-
-    /// Why `len` more bytes are not to be queued; `None` to queue them.
-    fn drop_why(&self, len: usize) -> Option<Why> {
         let waiting = self.queue.waiting();
         if waiting == 0 {
-            // A new episode, and the program has caught up.
-            self.dropping.store(false, Ordering::Relaxed);
-            self.progress.store(millis(self.epoch), Ordering::Relaxed);
-            return None;
+            // The program has taken all that waited: a new episode.
+            self.refusing.store(false, Ordering::Relaxed);
         }
-        if waiting + len > INPUT_MAX {
-            return Some(Why::TooMuch);
+        if waiting + bytes.len() > INPUT_MAX {
+            let first = !self.refusing.swap(true, Ordering::Relaxed);
+            return Sent::Refused { first };
         }
-        let idle = millis(self.epoch).saturating_sub(self.progress.load(Ordering::Relaxed));
-        let stalled = u128::from(idle) > STALL.as_millis();
-        (waiting + len > INPUT_LIMIT && stalled).then_some(Why::NotReading)
-    }
-
-    fn push(&self, bytes: Vec<u8>) -> Sent {
         match self.queue.push(bytes) {
             Some(_) => Sent::Queued,
             None => Sent::Ended,
         }
     }
-}
 
-/// Milliseconds since `epoch`.
-fn millis(epoch: Instant) -> u64 {
-    u64::try_from(epoch.elapsed().as_millis()).unwrap_or(u64::MAX)
+    /// Refuse an input too big to ever queue, as [`Self::send`] would.
+    pub fn refuse(&self) -> Sent {
+        if self.queue.waiting() == 0 {
+            self.refusing.store(false, Ordering::Relaxed);
+        }
+        let first = !self.refusing.swap(true, Ordering::Relaxed);
+        Sent::Refused { first }
+    }
+
+    /// Queue a reply to the program's query: always (replies are small,
+    /// and come only as its output does).
+    pub fn reply(&self, bytes: Vec<u8>) {
+        let _ = self.queue.push(bytes);
+    }
 }
 
 pub struct HostedTerminal {
@@ -334,33 +283,41 @@ mod tests {
     /// reading end, kept open.
     fn unread_input() -> (Input, OwnedFd) {
         let mut fds = [0; 2];
-        // SAFETY: pipe writes two descriptors, which we then own.
+        // SAFETY: pipe writes two descriptors into the array.
         assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+        // SAFETY: pipe succeeded, so both are open descriptors that nothing
+        // else owns.
         let (read, write) = unsafe { (OwnedFd::from_raw_fd(fds[0]), File::from_raw_fd(fds[1])) };
         (Input::start(&TerminalId::new("%1"), write), read)
     }
 
     #[test]
-    fn input_is_dropped_only_once_its_program_has_stopped_reading() {
-        let (mut input, _read) = unread_input();
-        // Far more than a pipe holds, while nothing waits: kept whole.
-        assert_eq!(input.send(vec![b'x'; INPUT_LIMIT + 1]), Sent::Queued);
-        // It may still be reading: a key is kept.
-        assert_eq!(input.send(b"\x03".to_vec()), Sent::Queued);
-        // Now it has read nothing for long. A reply is dropped quietly,
-        // and leaves the episode's notice to the user's input.
-        input.epoch = input.epoch.checked_sub(STALL * 5).unwrap();
-        input.reply(b"\x1b[?6c".to_vec());
+    fn an_input_that_would_pass_the_cap_is_refused_whole_and_told_once() {
+        let (input, _read) = unread_input();
+        // Far more than the pipe holds: it waits, whole.
+        assert_eq!(input.send(vec![b'x'; INPUT_MAX - 10]), Sent::Queued);
+        assert_eq!(input.send(vec![b'k'; 5]), Sent::Queued, "under the cap");
+        // Replies always go in, and use up no notice.
+        input.reply(vec![b'r'; 100]);
         assert_eq!(
-            input.send(b"y".to_vec()),
-            Sent::DroppedFirst(Why::NotReading)
+            input.send(vec![b'p'; 1 << 20]),
+            Sent::Refused { first: true }
         );
-        assert_eq!(input.send(b"y".to_vec()), Sent::Dropped);
         assert_eq!(
-            input.send(vec![0; INPUT_MAX]),
-            Sent::Dropped,
-            "one notice an episode"
+            input.send(vec![b'p'; 1 << 20]),
+            Sent::Refused { first: false }
         );
+    }
+
+    #[test]
+    fn input_to_a_program_whose_pty_is_gone_ends() {
+        let (input, read) = unread_input();
+        drop(read);
+        let start = std::time::Instant::now();
+        while input.send(b"x".to_vec()) != Sent::Ended {
+            assert!(start.elapsed().as_secs() < 5, "never ended");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 
     #[test]

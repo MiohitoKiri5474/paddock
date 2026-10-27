@@ -111,7 +111,7 @@ impl Subscriber {
 /// About how many bytes `frame` takes queued.
 fn size(frame: &Frame) -> usize {
     match frame {
-        Frame::Bytes { data, .. } => data.len(),
+        Frame::Bytes { data, .. } | Frame::Part { data, .. } => data.len(),
         Frame::Message(_) => 64,
     }
 }

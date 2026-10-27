@@ -5,8 +5,13 @@
 //! - kind 0, a [`Message`] as JSON;
 //! - kind 1, raw bytes for one terminal: the length of its id (one byte),
 //!   the id, then the bytes. From the server they are the terminal's
-//!   output (or, right after an attach, its snapshot); to the server, its
-//!   input.
+//!   output (or, right after an attach, its snapshot);
+//! - kind 2, a part of one input to a terminal, to the server: the length
+//!   of its id, the id, how many bytes of the input follow this part (a
+//!   big-endian `u64`), then the part's bytes. An input (a key, a paste)
+//!   comes as parts of at most 64 KiB, in order, the last with 0 to
+//!   follow: the server queues it once all has come, or refuses all of
+//!   it, and discards one whose connection ends before its last part.
 //!
 //! Both sides start with [`Message::Hello`], carrying [`VERSION`]. A side
 //! that reads another version says so and goes no further. Then the
@@ -35,12 +40,22 @@ pub const FROM_SERVER: usize = 256 << 20;
 pub const FROM_CLIENT: usize = 16 << 20;
 const MESSAGE: u8 = 0;
 const BYTES: u8 = 1;
+const PART: u8 = 2;
 
 /// One frame.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Frame {
     Message(Message),
-    Bytes { terminal: TerminalId, data: Vec<u8> },
+    Bytes {
+        terminal: TerminalId,
+        data: Vec<u8>,
+    },
+    /// Part of one input: `rest` bytes of it follow.
+    Part {
+        terminal: TerminalId,
+        rest: u64,
+        data: Vec<u8>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -162,9 +177,10 @@ pub enum Notice {
     /// The space's last terminal ended, or the server is ending and hangs
     /// every shell up; nothing follows.
     Ended,
-    /// Input to `terminal` is being dropped, and `why` ("vim is not
-    /// reading it"). Once per episode (until it has read all that waits).
-    InputDropped { terminal: TerminalId, why: String },
+    /// Input to `terminal` was refused, and `why` ("it would take what
+    /// waits for vim past 64 MiB"). Once per episode (until its program
+    /// has taken all that waited).
+    InputRefused { terminal: TerminalId, why: String },
 }
 
 /// Write `frame` and flush.
@@ -182,11 +198,18 @@ pub fn encode(frame: &Frame) -> Result<Vec<u8>> {
             serde_json::to_writer(&mut body, m)?;
         }
         Frame::Bytes { terminal, data } => {
-            let id = terminal.as_str().as_bytes();
-            let len = u8::try_from(id.len()).context("terminal id too long")?;
             body.push(BYTES);
-            body.push(len);
-            body.extend_from_slice(id);
+            push_id(&mut body, terminal)?;
+            body.extend_from_slice(data);
+        }
+        Frame::Part {
+            terminal,
+            rest,
+            data,
+        } => {
+            body.push(PART);
+            push_id(&mut body, terminal)?;
+            body.extend_from_slice(&rest.to_be_bytes());
             body.extend_from_slice(data);
         }
     }
@@ -227,20 +250,43 @@ pub fn read(r: &mut impl Read, max: usize) -> Result<Option<Frame>> {
 fn decode(body: &[u8]) -> Result<Frame> {
     match body.split_first() {
         Some((&MESSAGE, json)) => Ok(Frame::Message(serde_json::from_slice(json)?)),
-        Some((&BYTES, rest)) => {
-            let (&len, rest) = rest.split_first().context("short bytes frame")?;
-            let len = usize::from(len);
-            if rest.len() < len {
-                bail!("short bytes frame");
-            }
-            let id = std::str::from_utf8(&rest[..len]).context("terminal id")?;
+        Some((&BYTES, body)) => {
+            let (terminal, data) = take_id(body)?;
             Ok(Frame::Bytes {
-                terminal: TerminalId::new(id),
-                data: rest[len..].to_vec(),
+                terminal,
+                data: data.to_vec(),
+            })
+        }
+        Some((&PART, body)) => {
+            let (terminal, body) = take_id(body)?;
+            let (rest, data) = body.split_first_chunk::<8>().context("short part frame")?;
+            Ok(Frame::Part {
+                terminal,
+                rest: u64::from_be_bytes(*rest),
+                data: data.to_vec(),
             })
         }
         _ => bail!("unknown frame kind"),
     }
+}
+
+/// A terminal id as frames carry it: its length (one byte), then it.
+fn push_id(body: &mut Vec<u8>, terminal: &TerminalId) -> Result<()> {
+    let id = terminal.as_str().as_bytes();
+    body.push(u8::try_from(id.len()).context("terminal id too long")?);
+    body.extend_from_slice(id);
+    Ok(())
+}
+
+/// The terminal id `body` starts with, and what follows it.
+fn take_id(body: &[u8]) -> Result<(TerminalId, &[u8])> {
+    let (&len, body) = body.split_first().context("short bytes frame")?;
+    let len = usize::from(len);
+    if body.len() < len {
+        bail!("short bytes frame");
+    }
+    let id = std::str::from_utf8(&body[..len]).context("terminal id")?;
+    Ok((TerminalId::new(id), &body[len..]))
 }
 
 /// Send our hello and read theirs: the other side's pid, or an error if it
@@ -296,6 +342,11 @@ mod tests {
         round_trip(Frame::Bytes {
             terminal: TerminalId::new("%1"),
             data: b"\x1b[31mred\0\xff".to_vec(),
+        });
+        round_trip(Frame::Part {
+            terminal: TerminalId::new("%1"),
+            rest: 1 << 40,
+            data: b"\x1b[200~paste".to_vec(),
         });
     }
 

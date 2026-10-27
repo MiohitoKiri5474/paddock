@@ -432,39 +432,145 @@ fn a_paste_bigger_than_any_frame_reaches_a_program_that_reads_whole() {
     assert!(got.iter().all(|&b| b == b'x'), "every byte as pasted");
 }
 
-#[test]
-fn a_key_typed_while_a_big_paste_drains_still_arrives() {
-    const LEN: usize = 6 << 20;
-    let sandbox = native();
-    let mut paddock = ready(&sandbox);
-    paddock.type_line("stty raw -echo; echo READING''-NOW; cat > got.txt");
-    paddock.wait_for_text("READING-NOW");
-    finished(paddock.send_in_background(paste(LEN)), "the paste");
-    // More than 4 MiB still waits for cat, which reads all along.
-    finished(paddock.send_in_background(b"Z".to_vec()), "the key");
+/// Write part `data` of an input to `terminal`, `rest` bytes of it to
+/// follow (a kind 2 frame), as paddock does.
+fn send_part(stream: &mut UnixStream, terminal: &str, rest: u64, data: &[u8]) {
+    let mut body = vec![2, u8::try_from(terminal.len()).unwrap()];
+    body.extend_from_slice(terminal.as_bytes());
+    body.extend_from_slice(&rest.to_be_bytes());
+    body.extend_from_slice(data);
+    let len = u32::try_from(body.len()).unwrap().to_be_bytes();
+    stream.write_all(&len).unwrap();
+    stream.write_all(&body).unwrap();
+}
 
-    let file = sandbox.path("home/got.txt");
-    wait_within(SEND_TIMEOUT, "cat to get the key after the paste", || {
-        std::fs::read(&file).is_ok_and(|got| got.len() == LEN + 1 && got.ends_with(b"xZ"))
-    });
-    assert!(!paddock.full_screen().contains("input dropped"));
+/// A connection to the sandbox's server, past the hello, and its one
+/// terminal, where `cat` (raw, so nothing is cooked) writes what it reads
+/// to `got.txt` once `wait` seconds have passed.
+fn cat_after(sandbox: &Sandbox, paddock: &mut Paddock, wait: u32) -> (UnixStream, String) {
+    paddock.type_line(&format!(
+        "stty raw -echo; echo CAT''-READY; sleep {wait}; cat > got.txt"
+    ));
+    paddock.wait_for_text("CAT-READY");
+    connect(sandbox)
+}
+
+/// A connection to the sandbox's server, past the hello, and its one
+/// terminal.
+fn connect(sandbox: &Sandbox) -> (UnixStream, String) {
+    let terminal = sandbox.terminal("space-1").id;
+    let mut stream = UnixStream::connect(sandbox.state_dir().join("server.sock")).unwrap();
+    send_message(&mut stream, r#"{"Hello":{"version":1,"pid":1}}"#);
+    assert!(read_frame(&mut stream).is_some(), "the server's hello");
+    (stream, terminal)
+}
+
+/// Send `data` as one input in parts of at most 8 MiB, as paddock does in
+/// 64 KiB ones.
+fn send_input(stream: &mut UnixStream, terminal: &str, data: &[u8]) {
+    let mut rest = data.len();
+    for part in data.chunks(8 << 20) {
+        rest -= part.len();
+        send_part(stream, terminal, rest as u64, part);
+    }
 }
 
 #[test]
-fn input_a_program_never_reads_is_dropped_with_a_notice() {
+fn an_input_in_parts_is_queued_whole_however_long_its_parts_take() {
     let sandbox = native();
     let mut paddock = ready(&sandbox);
-    paddock.type_line("stty raw -echo; echo FLOOD''-READY; sleep 60");
-    paddock.wait_for_text("FLOOD-READY");
-    // More than 4 MiB waits for sleep, which then reads nothing for long.
-    finished(paddock.send_in_background(paste(6 << 20)), "the paste");
-    std::thread::sleep(Duration::from_secs(3));
-    finished(paddock.send_in_background(paste(1 << 10)), "the paste");
-    finished(paddock.send_in_background(paste(1 << 10)), "the paste");
+    let (mut stream, terminal) = cat_after(&sandbox, &mut paddock, 0);
+    send_part(&mut stream, &terminal, 1006, b"\x1b[200~abc");
+    std::thread::sleep(Duration::from_secs(1));
+    let file = sandbox.path("home/got.txt");
+    assert_eq!(
+        std::fs::read(&file).unwrap_or_default(),
+        b"",
+        "not before its end"
+    );
+    send_part(
+        &mut stream,
+        &terminal,
+        0,
+        &[[b'y'; 1000].as_slice(), b"\x1b[201~"].concat(),
+    );
 
-    paddock.wait_for_text("input dropped: sleep is not reading it");
+    let want = format!("\x1b[200~abc{}\x1b[201~", "y".repeat(1000));
+    wait_until("the whole paste", || {
+        std::fs::read_to_string(&file).is_ok_and(|got| got == want)
+    });
+}
+
+#[test]
+fn a_key_typed_while_a_big_paste_waits_still_arrives() {
+    const LEN: usize = 6 << 20;
+    let sandbox = native();
+    let mut paddock = ready(&sandbox);
+    let (mut stream, terminal) = cat_after(&sandbox, &mut paddock, 1);
+    send_input(&mut stream, &terminal, &vec![b'x'; LEN]);
+    send_input(&mut stream, &terminal, b"Z");
+
+    let file = sandbox.path("home/got.txt");
+    wait_within(SEND_TIMEOUT, "the key after the paste", || {
+        std::fs::read(&file).is_ok_and(|got| got.len() == LEN + 1 && got.ends_with(b"xZ"))
+    });
+    assert!(!paddock.full_screen().contains("input refused"));
+}
+
+#[test]
+fn an_input_cut_by_a_takeover_is_discarded_whole() {
+    let sandbox = native();
+    let mut paddock = ready(&sandbox);
+    let space = sandbox.state().spaces[0].id.clone();
+    let attach = format!(r#"{{"Request":{{"Attach":{{"space":"{space}","size":[80,24]}}}}}}"#);
+    let (mut first, terminal) = cat_after(&sandbox, &mut paddock, 0);
+    send_message(&mut first, &attach);
+    send_part(&mut first, &terminal, 100, b"\x1b[200~cut");
+    // A second client takes over: the first is let go mid-paste.
+    let (mut second, _) = connect(&sandbox);
+    send_message(&mut second, &attach);
+    first
+        .set_read_timeout(Some(harness::TIMEOUT))
+        .expect("a read timeout");
+    while read_frame(&mut first).is_some() {}
+    send_input(&mut second, &terminal, b"after");
+
+    let file = sandbox.path("home/got.txt");
+    wait_until("the next input", || {
+        std::fs::read(&file).is_ok_and(|got| !got.is_empty())
+    });
+    assert_eq!(std::fs::read(&file).unwrap(), b"after");
+}
+
+#[test]
+fn an_input_past_the_cap_is_refused_whole_with_one_notice() {
+    const CAP: usize = 64 << 20;
+    let sandbox = native();
+    let mut paddock = ready(&sandbox);
+    let (mut stream, terminal) = cat_after(&sandbox, &mut paddock, 4);
+    let start = Instant::now();
+    send_input(&mut stream, &terminal, &vec![b'x'; CAP - (4 << 20)]);
+    // Past the cap: refused, both, with one notice.
+    let paste = [b"\x1b[200~".as_slice(), &vec![b'p'; 8 << 20], b"\x1b[201~"].concat();
+    send_input(&mut stream, &terminal, &paste);
+    send_input(&mut stream, &terminal, &paste);
+    send_input(&mut stream, &terminal, b"Z");
+    assert!(
+        start.elapsed() < Duration::from_secs(4),
+        "all sent while it slept"
+    );
+
+    paddock.wait_for_text("input refused: it would take what waits for sleep past 64 MiB");
+    let file = sandbox.path("home/got.txt");
+    let want = CAP - (4 << 20) + 1;
+    wait_within(SEND_TIMEOUT, "what was kept", || {
+        std::fs::metadata(&file).is_ok_and(|m| m.len() == want as u64)
+    });
+    let got = std::fs::read(&file).unwrap();
+    assert!(got.ends_with(b"xZ"), "the key after what was kept");
+    assert!(!got.contains(&b'p'), "nothing of the refused pastes");
     let log = std::fs::read_to_string(sandbox.state_dir().join("server.log")).unwrap();
-    assert_eq!(log.matches("dropping input").count(), 1, "{log}");
+    assert_eq!(log.matches("refusing input").count(), 1, "{log}");
 }
 
 #[test]

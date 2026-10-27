@@ -11,7 +11,7 @@
 
 use super::protocol::{self, Answer, Ending, Frame, Message, Notice, Refusal, Request};
 use super::state::{Space, State, Subscriber};
-use super::terminal::{HostedTerminal, Input, Sent};
+use super::terminal::{HostedTerminal, Input, Sent, INPUT_MAX};
 use super::{lock, pty, socket_path, unsupported, LOG};
 use crate::backend::env::{clean_env, AGY_STATUS_VAR};
 use crate::backend::{SpaceId, TabId, TerminalId};
@@ -189,10 +189,22 @@ fn hang_up(pid: u32) {
 fn serve_connection(shared: &Arc<Shared>, conn: u64, mut stream: UnixStream) -> Result<()> {
     protocol::hello(&mut stream, false)?;
     let mut attached = false;
+    // An input whose last parts have not come yet. Left so when the
+    // connection ends, it is discarded whole.
+    let mut ongoing = None;
+    let ongoing = &mut ongoing;
     while let Some(frame) = protocol::read(&mut stream, protocol::FROM_CLIENT)? {
         let request = match frame {
             Frame::Bytes { terminal, data } => {
-                input(shared, &terminal, data);
+                input(shared, ongoing, &terminal, 0, data);
+                continue;
+            }
+            Frame::Part {
+                terminal,
+                rest,
+                data,
+            } => {
+                input(shared, ongoing, &terminal, rest, data);
                 continue;
             }
             Frame::Message(Message::Request(request)) => request,
@@ -241,25 +253,70 @@ fn reply(answer: Result<Answer>) -> Frame {
     Frame::Message(Message::Reply(answer))
 }
 
-/// Write `data` to `terminal`'s program, after what came before it.
-/// Never waits (see [`Input`]): the connection goes on reading, so a
-/// resize or detach behind input to a program that does not read gets
-/// through.
-fn input(shared: &Shared, terminal: &TerminalId, data: Vec<u8>) {
+/// An input whose parts still come on a connection: collected, to be
+/// queued whole once its last part has come.
+pub struct Ongoing {
+    terminal: TerminalId,
+    /// Its bytes so far; none kept once it is too big to queue.
+    data: Vec<u8>,
+    /// Its whole length.
+    len: usize,
+}
+
+/// Take part `data` of an input to `terminal`'s program, `rest` bytes of
+/// it to follow; once all has come, queue it whole ([`Input::send`]), or
+/// refuse it whole with a notice. Never waits: the connection goes on
+/// reading, so a resize or detach behind input to a program that does not
+/// read gets through.
+fn input(
+    shared: &Shared,
+    ongoing: &mut Option<Ongoing>,
+    terminal: &TerminalId,
+    rest: u64,
+    data: Vec<u8>,
+) {
+    // A part of another terminal's input means that one was cut: it goes.
+    let mut collected = ongoing
+        .take()
+        .filter(|o| o.terminal == *terminal)
+        .unwrap_or_else(|| {
+            let rest = usize::try_from(rest).unwrap_or(usize::MAX);
+            Ongoing {
+                terminal: terminal.clone(),
+                data: Vec::new(),
+                len: rest.saturating_add(data.len()),
+            }
+        });
+    // An input too big to queue is refused whole: no use keeping it.
+    if collected.len <= INPUT_MAX {
+        collected.data.extend_from_slice(&data);
+    }
+    if rest > 0 {
+        *ongoing = Some(collected);
+        return;
+    }
     let mut state = shared.lock();
     let found = state.terminals().find(|(_, t)| t.id == *terminal);
     let Some((space, term)) = found else { return };
-    let Sent::DroppedFirst(why) = term.input.send(data) else {
-        return;
+    let sent = if collected.len > INPUT_MAX {
+        term.input.refuse()
+    } else {
+        term.input.send(collected.data)
     };
+    if sent != (Sent::Refused { first: true }) {
+        return;
+    }
     let program = term.command().unwrap_or_else(|| "its program".into());
-    let why = why.of(&program);
-    eprintln!("paddock server: dropping input to {terminal}: {why}");
-    let notice = Notice::InputDropped {
+    let why = format!(
+        "it would take what waits for {program} past {} MiB",
+        INPUT_MAX >> 20
+    );
+    eprintln!("paddock server: refusing input to {terminal}: {why}");
+    let space = space.id.clone();
+    let notice = Notice::InputRefused {
         terminal: terminal.clone(),
         why,
     };
-    let space = space.id.clone();
     state.notify(&space, notice);
 }
 

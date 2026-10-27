@@ -309,8 +309,8 @@ fn handle_backend(app: &mut App, space: &SpaceId, event: backend::Event) -> Back
             BackendHandled::terminals_changed(Flow::Continue)
         }
         backend::Event::Ended => BackendHandled::terminals_changed(Flow::Quit),
-        backend::Event::InputDropped { why, .. } => {
-            app.notice = Some(format!("input dropped: {why}"));
+        backend::Event::InputRefused { why, .. } => {
+            app.notice = Some(format!("input refused: {why}"));
             BackendHandled {
                 flow: Flow::Continue,
                 changed: true,

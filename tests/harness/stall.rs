@@ -9,8 +9,9 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 /// How long paddock gets to take what [`Paddock::send_in_background`]
-/// sends: pastes of many MiB, while the whole suite runs.
-pub const SEND_TIMEOUT: Duration = Duration::from_secs(60);
+/// sends: pastes of many MiB (17 MiB takes about 2 s alone), while the
+/// whole suite runs.
+pub const SEND_TIMEOUT: Duration = Duration::from_secs(30);
 
 impl Paddock {
     /// Send `bytes` from a thread of its own, 4 KiB at a time (other sends

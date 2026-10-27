@@ -45,9 +45,9 @@ pub enum Event {
     /// server let this paddock go (it stopped reading), or failed. (A
     /// server that ends on purpose sends [`Event::Ended`] first.)
     Lost,
-    /// Input to `terminal` is being dropped, and `why` (native only):
-    /// once, until its program has read all that waits.
-    InputDropped { terminal: TerminalId, why: String },
+    /// Input to `terminal` was refused, and `why` (native only): once,
+    /// until its program has taken all that waited.
+    InputRefused { terminal: TerminalId, why: String },
 }
 
 /// A space as listed: its id and its current name.

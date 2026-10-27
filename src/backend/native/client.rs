@@ -335,14 +335,15 @@ impl Client {
                     Frame::Bytes { terminal, data } => Event::Output { terminal, data },
                     Frame::Message(Message::Notice(Notice::Changed)) => Event::Changed,
                     Frame::Message(Message::Notice(Notice::SpacesChanged)) => Event::SpacesChanged,
-                    Frame::Message(Message::Notice(Notice::InputDropped { terminal, why })) => {
-                        Event::InputDropped { terminal, why }
+                    Frame::Message(Message::Notice(Notice::InputRefused { terminal, why })) => {
+                        Event::InputRefused { terminal, why }
                     }
                     Frame::Message(Message::Notice(Notice::Ended)) => {
                         deliver(Event::Ended);
                         return;
                     }
-                    Frame::Message(_) => continue,
+                    // Input parts only go to the server.
+                    Frame::Message(_) | Frame::Part { .. } => continue,
                 };
                 if !deliver(event) {
                     return;
@@ -376,13 +377,16 @@ pub struct Attached {
 }
 
 impl Attached {
-    /// Send `bytes` to `terminal`'s program, in frames of at most
-    /// [`INPUT_FRAME`] bytes: a paste of any size fits the server's frame
-    /// limit, and the server sees the program's progress through it.
+    /// Send `bytes` to `terminal`'s program as one input, in parts of at
+    /// most [`INPUT_FRAME`] bytes (a paste of any size fits the server's
+    /// frame limit); the server queues or refuses all of it.
     pub fn input(&mut self, terminal: &TerminalId, bytes: &[u8]) -> Result<()> {
+        let mut rest = bytes.len();
         for chunk in bytes.chunks(INPUT_FRAME) {
-            let frame = Frame::Bytes {
+            rest -= chunk.len();
+            let frame = Frame::Part {
                 terminal: terminal.clone(),
+                rest: rest as u64,
                 data: chunk.to_vec(),
             };
             protocol::write(&mut self.stream, &frame)?;
