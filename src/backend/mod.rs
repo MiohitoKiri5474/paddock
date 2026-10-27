@@ -135,6 +135,16 @@ impl Backend {
         }
     }
 
+    /// An error if a host runs that this paddock cannot talk to; unlike
+    /// [`Self::prepare`], changes nothing. Queries that cannot say answer
+    /// with nothing, so a caller that acts on them checks this first.
+    pub fn check(&self) -> Result<()> {
+        match self {
+            Self::Tmux(_) => Ok(()),
+            Self::Native(n) => n.check(),
+        }
+    }
+
     /// Bring a host that already runs, maybe started by an older paddock,
     /// up to this paddock's settings.
     pub fn refresh(&self) -> Result<()> {
@@ -158,7 +168,7 @@ impl Backend {
         match self {
             Self::Tmux(t) => t.sessions(),
             // Here and below: none when it cannot say, as with tmux. A
-            // server this paddock cannot talk to is `prepare`'s error.
+            // server this paddock cannot talk to is `check`'s error.
             Self::Native(n) => n.spaces().unwrap_or_default(),
         }
     }

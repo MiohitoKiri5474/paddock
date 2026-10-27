@@ -75,6 +75,11 @@ impl Context {
         let caller = backend::hook_terminal(var, &paths.socket);
         let backend = Backend::configured(paths.clone())
             .map_err(|e| Fail::new(Code::Usage, format!("{e:#}")))?;
+        // What runs where comes back empty from a host paddock cannot talk
+        // to, and `rm` must not take that for nothing busy.
+        backend
+            .check()
+            .map_err(|e| Fail::new(Code::Usage, format!("{e:#}")))?;
         Ok(Self::new(backend, paths, cwd, caller))
     }
 

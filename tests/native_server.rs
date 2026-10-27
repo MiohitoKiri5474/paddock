@@ -291,9 +291,9 @@ fn a_launch_right_after_the_last_shell_exits_gets_a_new_server() {
     last.wait_for_text("still-fine\n");
 }
 
-#[test]
-fn a_server_speaking_another_protocol_version_is_a_clear_error() {
-    let sandbox = native();
+/// Listen as an older server would: it reads paddock's hello and
+/// answers with its own, version 999 and pid 4242.
+fn fake_older_server(sandbox: &Sandbox) {
     std::fs::create_dir_all(sandbox.state_dir()).unwrap();
     let listener = UnixListener::bind(sandbox.state_dir().join("server.sock")).unwrap();
     // An older server: it reads paddock's hello and answers with its own.
@@ -313,6 +313,12 @@ fn a_server_speaking_another_protocol_version_is_a_clear_error() {
             let _ = stream.write_all(hello);
         }
     });
+}
+
+#[test]
+fn a_server_speaking_another_protocol_version_is_a_clear_error() {
+    let sandbox = native();
+    fake_older_server(&sandbox);
 
     let mut paddock = sandbox.launch();
 
@@ -327,6 +333,18 @@ fn a_server_speaking_another_protocol_version_is_a_clear_error() {
         server_pid(&sandbox.state_dir()).is_none(),
         "no server of ours started"
     );
+}
+
+#[test]
+fn paddock_worktree_stops_at_a_server_it_cannot_talk_to() {
+    let sandbox = native();
+    fake_older_server(&sandbox);
+
+    let out = sandbox.run(&["worktree", "list"], &[], "");
+
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{err}");
+    assert!(err.contains("speaks protocol version 999"), "{err}");
 }
 
 /// Write a JSON message frame (kind 0) as the protocol does.
