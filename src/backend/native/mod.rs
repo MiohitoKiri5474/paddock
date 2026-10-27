@@ -14,11 +14,13 @@
 //! - [`protocol`]: the frames between them.
 
 mod client;
+mod layout;
 mod protocol;
 mod pty;
 mod queue;
 mod server;
 mod state;
+mod tab;
 mod terminal;
 
 pub use client::{Attached, Client};
