@@ -198,6 +198,40 @@ impl HostedTerminal {
     pub fn command(&self) -> Option<String> {
         pty::name(self.foreground())
     }
+
+    /// The name of a tab that follows what runs in this terminal, as
+    /// paddock's tmux config names one: a shell is named after its
+    /// directory, anything else after its command. `None` while it cannot
+    /// say (the shell not started yet).
+    pub fn auto_name(&self) -> Option<String> {
+        let foreground = self.foreground();
+        let command = pty::name(foreground)?;
+        // Forked from the server, not yet the shell.
+        if command == "paddock" && u32::try_from(foreground).is_ok_and(|p| p == self.pid) {
+            return None;
+        }
+        if !is_shell(&command) {
+            return Some(command);
+        }
+        pty::cwd(foreground).map(|dir| dir_name(&dir))
+    }
+}
+
+/// Whether `command` is a shell, as paddock's tmux config tells one
+/// (`^-?(ba|z|fi|da|k|tc|c)?sh$`): `ssh` and `mosh` are not.
+fn is_shell(command: &str) -> bool {
+    let name = command.strip_prefix('-').unwrap_or(command);
+    let Some(kind) = name.strip_suffix("sh") else {
+        return false;
+    };
+    matches!(kind, "" | "ba" | "z" | "fi" | "da" | "k" | "tc" | "c")
+}
+
+/// A directory's last part (`/` for the root), as a tab is named after it.
+pub fn dir_name(dir: &str) -> String {
+    let path = std::path::Path::new(dir);
+    path.file_name()
+        .map_or_else(|| dir.to_string(), |n| n.to_string_lossy().into_owned())
 }
 
 /// What alacritty does not tell of a program's output, read across
@@ -347,6 +381,20 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert_eq!(input.refuse(), Sent::Ended);
+    }
+
+    #[test]
+    fn shells_are_named_after_their_directory_and_other_programs_after_themselves() {
+        for shell in [
+            "zsh", "-zsh", "bash", "sh", "fish", "dash", "ksh", "tcsh", "csh",
+        ] {
+            assert!(is_shell(shell), "{shell}");
+        }
+        for other in ["ssh", "mosh", "vim", "nush", "-", ""] {
+            assert!(!is_shell(other), "{other}");
+        }
+        assert_eq!(dir_name("/Users/me/src/paddock"), "paddock");
+        assert_eq!(dir_name("/"), "/");
     }
 
     #[test]

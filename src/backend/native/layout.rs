@@ -22,6 +22,7 @@ use crate::backend::TerminalId;
 use crate::input::Direction;
 use anyhow::{bail, Result};
 use ratatui::layout::Rect;
+use serde::{Deserialize, Serialize};
 
 /// One node of the tree: a terminal, or a row or column of cells.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,7 +42,7 @@ struct Cell {
 /// A border between two cells, as [`Layout::border_at`] finds it: moved
 /// by sizing the cell that ends in `terminal` (its last terminal), which
 /// starts at `start` on the border's axis.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Found {
     pub terminal: TerminalId,
     pub columns: bool,

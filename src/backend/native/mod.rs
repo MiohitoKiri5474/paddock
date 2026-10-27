@@ -19,6 +19,7 @@ mod protocol;
 mod pty;
 mod queue;
 mod server;
+mod space;
 mod state;
 mod tab;
 mod terminal;

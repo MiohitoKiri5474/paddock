@@ -22,8 +22,10 @@
 //! from the client, which get no reply (the server closes a connection
 //! that asks anything else then).
 
+use super::layout::Found;
 use crate::backend::TerminalId;
 use crate::backend::{ListedSpace, SpaceId, SpaceTerminal, Structure, TabId, TerminalDetails};
+use crate::input::Direction;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -88,8 +90,44 @@ pub enum Request {
     Root(SpaceId),
     Structure(SpaceId),
     SpaceTerminals(SpaceId),
+    /// A tab at the end of the space, current, its shell in `cwd`.
+    NewTab {
+        space: SpaceId,
+        cwd: PathBuf,
+    },
     RenameTab(TabId, String),
     Select(TabId, Option<TerminalId>),
+    /// Swap two tabs of a space; the current one stays current.
+    SwapTabs(TabId, TabId),
+    /// Split a terminal (side by side if `columns`), the new shell in
+    /// `cwd` taking the second half and the focus.
+    Split {
+        terminal: TerminalId,
+        columns: bool,
+        cwd: PathBuf,
+    },
+    FocusTowards(TerminalId, Direction),
+    Spread(TerminalId),
+    Zoom(TerminalId),
+    /// Move a terminal's border in a direction by `cells`.
+    ResizeSplit {
+        terminal: TerminalId,
+        dir: Direction,
+        cells: u16,
+    },
+    /// The border at `(x, y)` of a tab, if any.
+    BorderAt {
+        tab: TabId,
+        x: u16,
+        y: u16,
+    },
+    /// Size the cell ending in `terminal` (a [`Found`] border's) to
+    /// `size` along the border's axis.
+    DragBorder {
+        terminal: TerminalId,
+        columns: bool,
+        size: u16,
+    },
     CloseTerminal(TerminalId),
     TerminalDir(TerminalId),
     SpaceOf(TerminalId),
@@ -150,6 +188,9 @@ impl std::error::Error for Closed {}
 pub enum Answer {
     Done,
     Space(SpaceId),
+    /// A terminal just started.
+    Terminal(TerminalId),
+    Border(Option<Found>),
     /// The space holding a terminal; `None` if no space does.
     SpaceOf(Option<SpaceId>),
     Spaces(Vec<ListedSpace>),
@@ -170,7 +211,8 @@ pub enum Answer {
 /// What the server tells the attached client, in order with the output.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Notice {
-    /// The space's structure changed (a resize, a rename).
+    /// The space's structure changed (its tabs, splits, focus, zoom,
+    /// sizes or names): read it again.
     Changed,
     /// A space was made or ended.
     SpacesChanged,
@@ -337,6 +379,18 @@ mod tests {
             "no".into(),
         )))));
         round_trip(Frame::Message(Message::Reply(Err(Refusal::Ending))));
+        round_trip(Frame::Message(Message::Request(Request::ResizeSplit {
+            terminal: TerminalId::new("%2"),
+            dir: Direction::Left,
+            cells: 2,
+        })));
+        round_trip(Frame::Message(Message::Reply(Ok(Answer::Border(Some(
+            Found {
+                terminal: TerminalId::new("%3"),
+                columns: true,
+                start: 0,
+            },
+        ))))));
         round_trip(Frame::Message(Message::Reply(Ok(Answer::Pids(
             HashMap::from([(42, TerminalId::new("%1"))]),
         )))));

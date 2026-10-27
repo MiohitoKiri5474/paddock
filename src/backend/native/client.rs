@@ -7,11 +7,13 @@
 use super::protocol::{self, Answer, Closed, Ending, Frame, Message, Notice, Refusal, Request};
 use super::server::log_path;
 use super::socket_path;
+use crate::backend::border::{Anchor, Border};
 use crate::backend::env::clean_env;
 use crate::backend::{
     Event, ListedSpace, Replay, SpaceId, SpaceTerminal, Structure, TabId, TerminalDetails,
     TerminalId,
 };
+use crate::input::Direction;
 use crate::paths::Paths;
 use anyhow::{anyhow, bail, Context, Result};
 use std::collections::HashMap;
@@ -226,6 +228,76 @@ impl Client {
 
     pub fn close_terminal(&self, terminal: &TerminalId) -> Result<()> {
         self.done(Request::CloseTerminal(terminal.clone()))
+    }
+
+    fn started(&self, request: Request) -> Result<TerminalId> {
+        match self.request(request)? {
+            Answer::Terminal(id) => Ok(id),
+            other => Err(unexpected(&other)),
+        }
+    }
+
+    pub fn new_tab(&self, space: &SpaceId, cwd: &Path) -> Result<TerminalId> {
+        self.started(Request::NewTab {
+            space: space.clone(),
+            cwd: cwd.into(),
+        })
+    }
+
+    pub fn split(&self, terminal: &TerminalId, columns: bool, cwd: &Path) -> Result<TerminalId> {
+        self.started(Request::Split {
+            terminal: terminal.clone(),
+            columns,
+            cwd: cwd.into(),
+        })
+    }
+
+    pub fn swap_tabs(&self, a: &TabId, b: &TabId) -> Result<()> {
+        self.done(Request::SwapTabs(a.clone(), b.clone()))
+    }
+
+    pub fn focus_towards(&self, terminal: &TerminalId, dir: Direction) -> Result<()> {
+        self.done(Request::FocusTowards(terminal.clone(), dir))
+    }
+
+    pub fn spread(&self, terminal: &TerminalId) -> Result<()> {
+        self.done(Request::Spread(terminal.clone()))
+    }
+
+    pub fn zoom(&self, terminal: &TerminalId) -> Result<()> {
+        self.done(Request::Zoom(terminal.clone()))
+    }
+
+    pub fn resize(&self, terminal: &TerminalId, dir: Direction, cells: u16) -> Result<()> {
+        self.done(Request::ResizeSplit {
+            terminal: terminal.clone(),
+            dir,
+            cells,
+        })
+    }
+
+    /// The border at `(x, y)` of tab `tab`: moved by sizing the cell
+    /// before it (see [`Self::drag_border`]).
+    pub fn border_at(&self, tab: &TabId, x: u16, y: u16) -> Result<Option<Border>> {
+        let request = Request::BorderAt {
+            tab: tab.clone(),
+            x,
+            y,
+        };
+        match self.request(request)? {
+            Answer::Border(found) => {
+                Ok(found.map(|f| Border::new(f.terminal, f.columns, Anchor::Before(f.start))))
+            }
+            other => Err(unexpected(&other)),
+        }
+    }
+
+    pub fn drag_border(&self, border: &Border, size: u16) -> Result<()> {
+        self.done(Request::DragBorder {
+            terminal: border.terminal.clone(),
+            columns: border.columns(),
+            size,
+        })
     }
 
     /// The server's answer to `request`, taken by `pick`; `None` if no
