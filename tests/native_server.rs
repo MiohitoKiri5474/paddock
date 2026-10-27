@@ -237,6 +237,21 @@ fn the_server_ends_with_its_last_shell() {
 }
 
 #[test]
+fn a_launch_right_after_the_last_shell_exits_gets_a_new_server() {
+    let sandbox = native();
+    for round in 0..4 {
+        let mut paddock = ready(&sandbox);
+        paddock.type_line(&format!("echo round-{round}"));
+        paddock.wait_for_text(&format!("round-{round}\n"));
+        paddock.type_line("exit");
+        assert!(paddock.wait_exit(), "round {round}");
+    }
+    let mut last = ready(&sandbox);
+    last.type_line("echo still-fine");
+    last.wait_for_text("still-fine\n");
+}
+
+#[test]
 fn a_server_speaking_another_protocol_version_is_a_clear_error() {
     let sandbox = native();
     std::fs::create_dir_all(sandbox.state_dir()).unwrap();

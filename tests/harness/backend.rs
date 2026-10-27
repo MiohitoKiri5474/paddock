@@ -39,6 +39,17 @@ pub fn server_pid(state_dir: &Path) -> Option<i32> {
     text.trim().parse().ok().filter(|&pid| pid > 1)
 }
 
+/// Whether a process holds the lock on `path`.
+fn locked(path: &Path) -> bool {
+    use std::os::fd::AsRawFd;
+    let Ok(file) = std::fs::File::open(path) else {
+        return false;
+    };
+    // SAFETY: flock on a descriptor `file` owns; dropping `file` lets go
+    // of a lock taken here.
+    unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) != 0 }
+}
+
 /// Whether process `pid` runs.
 pub fn alive(pid: i32) -> bool {
     std::process::Command::new("kill")
@@ -54,6 +65,11 @@ pub fn stop_server(state_dir: &Path) {
     let Some(pid) = server_pid(state_dir) else {
         return;
     };
+    // The lock outlives its server, with its pid, which another process
+    // may have since: only a held lock means a server runs.
+    if !locked(&state_dir.join("server.lock")) {
+        return;
+    }
     let signal = |name: &str| {
         let _ = std::process::Command::new("kill")
             .args([name, &pid.to_string()])

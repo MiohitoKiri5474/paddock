@@ -43,6 +43,8 @@ pub struct State {
     pub attached: Option<Subscriber>,
     /// A terminal ran: once none is left, the server ends.
     pub started: bool,
+    /// The server is ending: it takes no new space.
+    pub closing: bool,
 }
 
 impl State {

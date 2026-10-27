@@ -114,6 +114,12 @@ mod tests {
         let pid = std::fs::read_to_string(dir.path().join(LOCK)).unwrap();
         assert_eq!(pid.trim(), std::process::id().to_string());
         drop(held);
-        assert!(lock(dir.path()).unwrap().is_some(), "free once dropped");
+        // A child forked meanwhile by another test holds the descriptor
+        // until it execs (it is close-on-exec): give it a moment.
+        let start = std::time::Instant::now();
+        while lock(dir.path()).unwrap().is_none() {
+            assert!(start.elapsed().as_secs() < 2, "free once dropped");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 }

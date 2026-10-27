@@ -4,7 +4,7 @@
 //! running and says so (or answers with nothing).
 
 use super::protocol::{self, Answer, Frame, Message, Notice, Request};
-use super::server::log_path;
+use super::server::{log_path, CLOSING};
 use super::socket_path;
 use crate::backend::env::clean_env;
 use crate::backend::{
@@ -126,13 +126,22 @@ impl Client {
     }
 
     pub fn new_space(&self, name: &str, cwd: &Path, size: (u16, u16)) -> Result<SpaceId> {
-        self.start()?;
         let request = Request::NewSpace {
             name: name.into(),
             cwd: cwd.into(),
             size,
         };
-        match self.request(request)? {
+        self.start()?;
+        let answer = match self.request(request.clone()) {
+            // Its last terminal had just ended: the next server takes it.
+            Err(e) if is_closing(&e) => {
+                std::thread::sleep(POLL);
+                self.start()?;
+                self.request(request)?
+            }
+            answer => answer?,
+        };
+        match answer {
             Answer::Space(id) => Ok(id),
             other => Err(unexpected(&other)),
         }
@@ -302,6 +311,12 @@ fn read_reply(stream: &mut UnixStream) -> Result<Answer> {
         Some(other) => bail!("expected a reply from the paddock server, got {other:?}"),
         None => bail!("the paddock server closed the connection"),
     }
+}
+
+/// Whether `e` says the server was ending (or went away) as it was asked.
+fn is_closing(e: &anyhow::Error) -> bool {
+    let text = format!("{e:#}");
+    text.contains(CLOSING) || text.contains("closed the connection")
 }
 
 fn unexpected(answer: &Answer) -> anyhow::Error {

@@ -34,6 +34,10 @@ const IDLE_EXIT: Duration = Duration::from_secs(15);
 /// How long the attached client gets to read its last frames at the end.
 const LAST_WORDS: Duration = Duration::from_secs(1);
 const READ_CHUNK: usize = 64 * 1024;
+/// Why an ending server makes no space; the client starts a new server.
+pub const CLOSING: &str = "the paddock server is ending";
+/// How long a new server waits for an ending one's lock.
+const LOCK_WAIT: Duration = Duration::from_secs(3);
 
 struct Shared {
     state: Mutex<State>,
@@ -58,7 +62,7 @@ pub fn serve() -> Result<()> {
     std::fs::create_dir_all(&paths.state_dir)
         .with_context(|| format!("cannot create {}", paths.state_dir.display()))?;
     let socket = socket_path(&paths)?;
-    let Some(_lock) = lock(&paths.state_dir)? else {
+    let Some(_lock) = wait_for_lock(&paths.state_dir)? else {
         return Ok(());
     };
     let listener = bind(&socket)?;
@@ -99,6 +103,21 @@ pub fn serve() -> Result<()> {
     Ok(())
 }
 
+/// The server lock, once a server that is ending lets it go; `None` if
+/// another server keeps it.
+fn wait_for_lock(state_dir: &Path) -> Result<Option<std::fs::File>> {
+    let start = std::time::Instant::now();
+    loop {
+        if let Some(lock) = lock(state_dir)? {
+            return Ok(Some(lock));
+        }
+        if start.elapsed() > LOCK_WAIT {
+            return Ok(None);
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
 /// Listen on `socket`, mode 0600, in place of any socket left there: the
 /// lock says no server runs.
 fn bind(socket: &Path) -> Result<UnixListener> {
@@ -128,6 +147,7 @@ fn watch_signals(shared: &Arc<Shared>) -> Result<()> {
 fn shut_down(shared: &Shared) -> ! {
     let attached = {
         let mut state = shared.lock();
+        close(shared, &mut state);
         for (_, host) in state.hosts() {
             hang_up(host.pid);
         }
@@ -136,8 +156,16 @@ fn shut_down(shared: &Shared) -> ! {
     if let Some(attached) = attached {
         let_go(attached);
     }
-    let _ = std::fs::remove_file(&shared.socket);
     std::process::exit(0)
+}
+
+/// Take no more spaces, and stop listening: a paddock that comes now
+/// starts the next server.
+fn close(shared: &Shared, state: &mut State) {
+    if !state.closing {
+        state.closing = true;
+        let _ = std::fs::remove_file(&shared.socket);
+    }
 }
 
 /// Let the attached client go once it has read what it was sent, or after
@@ -297,6 +325,9 @@ fn resize(shared: &Shared, conn: u64, size: (u16, u16)) {
 /// Start the one space: a shell in `cwd`, at `size`.
 fn new_space(shared: &Arc<Shared>, name: &str, cwd: &Path, size: (u16, u16)) -> Result<Answer> {
     let mut state = shared.lock();
+    if state.closing {
+        bail!(CLOSING);
+    }
     if !state.spaces.is_empty() {
         bail!(unsupported("more than one space"));
     }
@@ -398,6 +429,9 @@ fn wait_for_exit(shared: &Shared, space: &SpaceId, id: &TerminalId, mut child: C
         }
     }
     let last = state.spaces.is_empty();
+    if last {
+        close(shared, &mut state);
+    }
     drop(state);
     if let Some(ended) = ended {
         let_go(ended);
