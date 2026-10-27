@@ -78,7 +78,7 @@ pub fn run() -> Result<()> {
         return Ok(());
     };
     let state_dir = paths.state_dir.clone();
-    let backend = Backend::new(paths);
+    let backend = Backend::new(paths, config.backend);
     backend.prepare()?;
     let start_dir = std::env::current_dir().context("no current directory")?;
 

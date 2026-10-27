@@ -4,16 +4,18 @@
 
 use super::{FloatId, TabId, TerminalId};
 use ratatui::layout::Rect;
+use serde::{Deserialize, Serialize};
 
 /// One terminal and where it sits in its tab or float.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Split {
     pub id: TerminalId,
+    #[serde(with = "rect")]
     pub rect: Rect,
 }
 
 /// One tab of a space.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Tab {
     pub id: TabId,
     pub name: String,
@@ -55,7 +57,7 @@ impl Tab {
 }
 
 /// A float: a program in a box over the screen, on its key.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Float {
     pub id: FloatId,
     /// The float's key, as written by [`crate::input::keymap::Key::name`].
@@ -68,7 +70,7 @@ pub struct Float {
 
 /// A space's name, its tabs in order with the current one's index, and
 /// its floats.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Structure {
     pub name: String,
     pub tabs: Vec<Tab>,
@@ -87,5 +89,21 @@ impl Structure {
     pub fn splits(&self) -> impl Iterator<Item = &Split> {
         let tabs = self.tabs.iter().flat_map(|t| &t.splits);
         tabs.chain(self.floats.iter().flat_map(|f| &f.splits))
+    }
+}
+
+/// A [`Rect`] as `[x, y, width, height]`, for the native backend's
+/// protocol.
+mod rect {
+    use ratatui::layout::Rect;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S: Serializer>(r: &Rect, s: S) -> Result<S::Ok, S::Error> {
+        [r.x, r.y, r.width, r.height].serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Rect, D::Error> {
+        let [x, y, width, height] = <[u16; 4]>::deserialize(d)?;
+        Ok(Rect::new(x, y, width, height))
     }
 }

@@ -151,7 +151,7 @@ fn splits<'a>(
 /// Print the backend's state as JSON on one line. It never starts the
 /// backend: with none running there are no spaces.
 pub fn print_state() -> Result<()> {
-    let backend = Backend::new(Paths::from_env()?);
+    let backend = Backend::configured(Paths::from_env()?)?;
     let instance = backend.instance().ok();
     // A space that ends between the list and its read is left out.
     let spaces: Vec<SpaceSnapshot> = backend

@@ -1,0 +1,430 @@
+//! `paddock server` (ADR 0007): started in the background by the first
+//! paddock that needs it, one per user (its lock), listening on its socket
+//! (mode 0600) until its last terminal ends.
+//!
+//! Every terminal has three threads: one reads its PTY, feeds its
+//! emulator and passes the output on to the attached client; one writes
+//! its input and query replies; one waits for its shell to exit. All
+//! share one [`State`] behind one lock, so a snapshot taken under it holds
+//! exactly the output before it, and everything after it reaches the
+//! client after the snapshot: no byte lost or doubled.
+
+use super::host::Host;
+use super::protocol::{self, Answer, Frame, Message, Notice, Request};
+use super::state::{Space, State, Subscriber};
+use super::{lock, pty, socket_path, unsupported, LOG};
+use crate::backend::env::{clean_env, AGY_STATUS_VAR};
+use crate::backend::{SpaceId, TabId, TerminalId};
+use crate::paths::Paths;
+use anyhow::{bail, Context, Result};
+use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
+use signal_hook::iterator::Signals;
+use std::io::{Read, Write};
+use std::os::unix::net::{UnixListener, UnixStream};
+use std::path::{Path, PathBuf};
+use std::process::Child;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc;
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::Duration;
+
+/// How long a server that never got a terminal waits before ending (its
+/// client may have died before asking for one).
+const IDLE_EXIT: Duration = Duration::from_secs(15);
+/// How long the attached client gets to read its last frames at the end.
+const LAST_WORDS: Duration = Duration::from_secs(1);
+const READ_CHUNK: usize = 64 * 1024;
+
+struct Shared {
+    state: Mutex<State>,
+    socket: PathBuf,
+    shell: String,
+    home: PathBuf,
+    /// The shells' environment.
+    env: Vec<(String, String)>,
+    connections: AtomicU64,
+}
+
+impl Shared {
+    fn lock(&self) -> MutexGuard<'_, State> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+/// Run the server until its last terminal ends. Returns at once if
+/// another server holds the lock.
+pub fn serve() -> Result<()> {
+    let paths = Paths::from_env()?;
+    std::fs::create_dir_all(&paths.state_dir)
+        .with_context(|| format!("cannot create {}", paths.state_dir.display()))?;
+    let socket = socket_path(&paths)?;
+    let Some(_lock) = lock(&paths.state_dir)? else {
+        return Ok(());
+    };
+    let listener = bind(&socket)?;
+    let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
+    let mut env = clean_env(std::env::vars());
+    env.push(("COLORTERM".into(), "truecolor".into()));
+    env.push((AGY_STATUS_VAR.into(), "on".into()));
+    let shared = Arc::new(Shared {
+        state: Mutex::default(),
+        socket,
+        shell: var("SHELL").unwrap_or_else(|| "/bin/sh".into()),
+        home: var("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from),
+        env,
+        connections: AtomicU64::new(0),
+    });
+    watch_signals(&shared)?;
+    let idle = Arc::clone(&shared);
+    std::thread::spawn(move || {
+        std::thread::sleep(IDLE_EXIT);
+        if !idle.lock().started {
+            shut_down(&idle);
+        }
+    });
+    for stream in listener.incoming() {
+        let Ok(stream) = stream else { continue };
+        let shared = Arc::clone(&shared);
+        std::thread::spawn(move || {
+            let conn = shared.connections.fetch_add(1, Ordering::Relaxed);
+            if let Err(e) = serve_connection(&shared, conn, stream) {
+                eprintln!("paddock server: connection {conn}: {e:#}");
+            }
+            let mut state = shared.lock();
+            if state.attached.as_ref().is_some_and(|s| s.conn == conn) {
+                state.attached = None;
+            }
+        });
+    }
+    Ok(())
+}
+
+/// Listen on `socket`, mode 0600, in place of any socket left there: the
+/// lock says no server runs.
+fn bind(socket: &Path) -> Result<UnixListener> {
+    let _ = std::fs::remove_file(socket);
+    // SAFETY: umask only changes the mask of files made from now on.
+    let old = unsafe { libc::umask(0o177) };
+    let listener = UnixListener::bind(socket);
+    // SAFETY: as above, putting the old mask back.
+    unsafe { libc::umask(old) };
+    listener.with_context(|| format!("cannot listen on {}", socket.display()))
+}
+
+/// End everything when asked to (SIGTERM, SIGINT, SIGHUP).
+fn watch_signals(shared: &Arc<Shared>) -> Result<()> {
+    let mut signals = Signals::new([SIGTERM, SIGINT, SIGHUP]).context("cannot handle signals")?;
+    let shared = Arc::clone(shared);
+    std::thread::spawn(move || {
+        if signals.forever().next().is_some() {
+            shut_down(&shared);
+        }
+    });
+    Ok(())
+}
+
+/// Hang every shell up, give the attached client its last frames, remove
+/// the socket and exit.
+fn shut_down(shared: &Shared) -> ! {
+    let attached = {
+        let mut state = shared.lock();
+        for (_, host) in state.hosts() {
+            hang_up(host.pid);
+        }
+        state.attached.take()
+    };
+    if let Some(attached) = attached {
+        let_go(attached);
+    }
+    let _ = std::fs::remove_file(&shared.socket);
+    std::process::exit(0)
+}
+
+/// Let the attached client go once it has read what it was sent, or after
+/// [`LAST_WORDS`].
+fn let_go(Subscriber { tx, writer, .. }: Subscriber) {
+    drop(tx);
+    let (done, wait) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = writer.join();
+        let _ = done.send(());
+    });
+    let _ = wait.recv_timeout(LAST_WORDS);
+}
+
+/// Hang up the shell `pid` and its process group, as closing its terminal
+/// does.
+fn hang_up(pid: u32) {
+    let Ok(pid) = i32::try_from(pid) else { return };
+    // SAFETY: kill has no memory-safety preconditions; `pid` > 1 leads its
+    // own session (setsid), so `-pid` is its group only.
+    unsafe {
+        if pid > 1 {
+            libc::kill(-pid, libc::SIGHUP);
+            libc::kill(pid, libc::SIGHUP);
+        }
+    }
+}
+
+fn serve_connection(shared: &Arc<Shared>, conn: u64, mut stream: UnixStream) -> Result<()> {
+    protocol::hello(&mut stream, false)?;
+    while let Some(frame) = protocol::read(&mut stream)? {
+        match frame {
+            Frame::Bytes { terminal, data } => input(shared, &terminal, data),
+            Frame::Message(Message::Request(request)) => {
+                let answer = match request {
+                    Request::Attach { space, size } => {
+                        match attach(shared, conn, &stream, &space, size) {
+                            Ok(()) => continue,
+                            Err(e) => Err(e),
+                        }
+                    }
+                    Request::Resize(size) => {
+                        resize(shared, conn, size);
+                        continue;
+                    }
+                    Request::Detach => {
+                        let mut state = shared.lock();
+                        if state.attached.as_ref().is_some_and(|s| s.conn == conn) {
+                            state.attached = None;
+                        }
+                        continue;
+                    }
+                    Request::Stop => {
+                        protocol::write(&mut stream, &reply(Ok(Answer::Done)))?;
+                        shut_down(shared);
+                    }
+                    Request::NewSpace { name, cwd, size } => new_space(shared, &name, &cwd, size),
+                    Request::CloseSpace(space) => close_space(shared, &space),
+                    Request::CloseTerminal(terminal) => close_terminal(shared, &terminal),
+                    request => shared.lock().answer(request),
+                };
+                protocol::write(&mut stream, &reply(answer))?;
+            }
+            Frame::Message(other) => bail!("unexpected {other:?}"),
+        }
+    }
+    Ok(())
+}
+
+fn reply(answer: Result<Answer>) -> Frame {
+    Frame::Message(Message::Reply(answer.map_err(|e| format!("{e:#}"))))
+}
+
+/// Write `data` to `terminal`'s program, after what came before it.
+fn input(shared: &Shared, terminal: &TerminalId, data: Vec<u8>) {
+    let state = shared.lock();
+    let host = state.hosts().find(|(_, h)| h.id == *terminal);
+    if let Some((_, host)) = host {
+        let _ = host.input.send(data);
+    }
+}
+
+/// Make connection `conn` the attached client of `space`, shown at
+/// `size`: its reply, then each terminal's snapshot, then their output,
+/// all through a writer thread of its own. Any other client is let go.
+fn attach(
+    shared: &Shared,
+    conn: u64,
+    stream: &UnixStream,
+    space: &SpaceId,
+    size: (u16, u16),
+) -> Result<()> {
+    let out = stream.try_clone()?;
+    let mut state = shared.lock();
+    let hosts = &mut state.space_mut(space)?.hosts;
+    for host in hosts.iter_mut() {
+        host.resize(size)?;
+    }
+    let (tx, rx) = mpsc::channel();
+    let terminals = hosts.iter().map(|h| (h.id.clone(), h.size)).collect();
+    let snapshots: Vec<Frame> = hosts
+        .iter_mut()
+        .map(|h| Frame::Bytes {
+            terminal: h.id.clone(),
+            data: h.snapshot(),
+        })
+        .collect();
+    let structure = state.structure(space)?;
+    let _ = tx.send(reply(Ok(Answer::Attached {
+        structure,
+        terminals,
+    })));
+    for frame in snapshots {
+        let _ = tx.send(frame);
+    }
+    let writer = std::thread::spawn(move || write_frames(out, &rx));
+    let old = state.attached.replace(Subscriber {
+        conn,
+        space: space.clone(),
+        tx,
+        writer,
+    });
+    drop(state);
+    // Its writer finishes what it holds and closes its connection.
+    drop(old);
+    Ok(())
+}
+
+/// Write every frame `rx` brings to `out`, then close it.
+fn write_frames(mut out: UnixStream, rx: &mpsc::Receiver<Frame>) {
+    for frame in rx {
+        if protocol::write(&mut out, &frame).is_err() {
+            break;
+        }
+    }
+    let _ = out.shutdown(std::net::Shutdown::Both);
+}
+
+/// Show the space connection `conn` attached at `size`.
+fn resize(shared: &Shared, conn: u64, size: (u16, u16)) {
+    let mut state = shared.lock();
+    let Some(space) = state.attached.as_ref().filter(|s| s.conn == conn) else {
+        return;
+    };
+    let space = space.space.clone();
+    let Ok(s) = state.space_mut(&space) else {
+        return;
+    };
+    for host in &mut s.hosts {
+        if let Err(e) = host.resize(size) {
+            eprintln!("paddock server: {e:#}");
+        }
+    }
+    state.notify(&space, Notice::Changed);
+}
+
+/// Start the one space: a shell in `cwd`, at `size`.
+fn new_space(shared: &Arc<Shared>, name: &str, cwd: &Path, size: (u16, u16)) -> Result<Answer> {
+    let mut state = shared.lock();
+    if !state.spaces.is_empty() {
+        bail!(unsupported("more than one space"));
+    }
+    let space = SpaceId::new(format!("${}", state.next()));
+    let tab = TabId::new(format!("@{}", state.next()));
+    let terminal = TerminalId::new(format!("%{}", state.next()));
+    let host = start_terminal(shared, &space, terminal, cwd, size)?;
+    let tab_name = cwd
+        .file_name()
+        .map_or_else(|| cwd.to_string_lossy(), |n| n.to_string_lossy())
+        .into_owned();
+    state.spaces.push(Space {
+        id: space.clone(),
+        name: name.to_string(),
+        root: cwd.to_string_lossy().into_owned(),
+        tab,
+        tab_name,
+        auto_name: true,
+        hosts: vec![host],
+    });
+    state.started = true;
+    state.notify_spaces();
+    Ok(Answer::Space(space))
+}
+
+/// A shell on a new PTY in `cwd`, and its threads. Called with the state
+/// locked, so its reader waits until the terminal is in it.
+fn start_terminal(
+    shared: &Arc<Shared>,
+    space: &SpaceId,
+    id: TerminalId,
+    cwd: &Path,
+    size: (u16, u16),
+) -> Result<Host> {
+    let pty = pty::spawn(&shared.shell, cwd, &shared.home, size, &shared.env)?;
+    let (tx, rx) = mpsc::channel::<Vec<u8>>();
+    let mut writer = pty.master.try_clone()?;
+    std::thread::spawn(move || {
+        for bytes in rx {
+            if writer.write_all(&bytes).is_err() {
+                return;
+            }
+        }
+    });
+    let host = Host::new(id.clone(), &pty, tx, size)?;
+    let reader = pty.master.try_clone()?;
+    let (s, sp, t) = (Arc::clone(shared), space.clone(), id.clone());
+    std::thread::spawn(move || read_output(&s, &sp, &t, reader));
+    let (s, sp) = (Arc::clone(shared), space.clone());
+    let child = pty.child;
+    std::thread::spawn(move || wait_for_exit(&s, &sp, &id, child));
+    Ok(host)
+}
+
+/// Feed terminal `id`'s output to its emulator and the attached client,
+/// until its PTY closes.
+fn read_output(shared: &Shared, space: &SpaceId, id: &TerminalId, mut master: std::fs::File) {
+    let mut buf = vec![0; READ_CHUNK];
+    loop {
+        let n = match master.read(&mut buf) {
+            Ok(0) | Err(_) => return,
+            Ok(n) => n,
+        };
+        let mut state = shared.lock();
+        let Some(host) = state
+            .spaces
+            .iter_mut()
+            .flat_map(|s| s.hosts.iter_mut())
+            .find(|h| h.id == *id)
+        else {
+            return;
+        };
+        host.output(&buf[..n]);
+        if let Some(s) = state.attached.as_ref().filter(|s| s.space == *space) {
+            let _ = s.tx.send(Frame::Bytes {
+                terminal: id.clone(),
+                data: buf[..n].to_vec(),
+            });
+        }
+    }
+}
+
+/// When terminal `id`'s shell exits, forget the terminal, and its space
+/// with its last terminal; end the server with the last one.
+fn wait_for_exit(shared: &Shared, space: &SpaceId, id: &TerminalId, mut child: Child) {
+    let _ = child.wait();
+    let mut state = shared.lock();
+    let mut ended = None;
+    if let Ok(s) = state.space_mut(space) {
+        s.hosts.retain(|h| h.id != *id);
+        if s.hosts.is_empty() {
+            state.spaces.retain(|s| s.id != *space);
+            state.notify(space, Notice::Ended);
+            // Nothing follows its end.
+            ended = state.attached.take_if(|s| s.space == *space);
+            state.notify_spaces();
+        } else {
+            state.notify(space, Notice::Changed);
+        }
+    }
+    let last = state.spaces.is_empty();
+    drop(state);
+    if let Some(ended) = ended {
+        let_go(ended);
+    }
+    if last {
+        shut_down(shared);
+    }
+}
+
+fn close_space(shared: &Shared, space: &SpaceId) -> Result<Answer> {
+    let state = shared.lock();
+    for host in &state.space(space)?.hosts {
+        hang_up(host.pid);
+    }
+    Ok(Answer::Done)
+}
+
+fn close_terminal(shared: &Shared, terminal: &TerminalId) -> Result<Answer> {
+    let state = shared.lock();
+    let Some((_, host)) = state.hosts().find(|(_, h)| h.id == *terminal) else {
+        bail!("no terminal {terminal}");
+    };
+    hang_up(host.pid);
+    Ok(Answer::Done)
+}
+
+/// Where the server writes what goes wrong, under `state_dir`.
+pub fn log_path(state_dir: &Path) -> PathBuf {
+    state_dir.join(LOG)
+}

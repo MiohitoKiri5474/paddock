@@ -13,6 +13,7 @@
 
 #![allow(dead_code)] // Each test binary uses a different part of the harness.
 
+pub mod backend;
 mod panes;
 mod state;
 pub mod tmux_only;
@@ -91,11 +92,19 @@ impl Sandbox {
         write_copy_stub(root.path());
         write_osascript_stub(root.path());
         write_gh_stub(root.path());
-        Self { root }
+        let sandbox = Self { root };
+        sandbox.write_config("");
+        sandbox
     }
 
     pub fn path(&self, name: &str) -> PathBuf {
         self.root.path().join(name)
+    }
+
+    /// paddock's state directory (`$XDG_STATE_HOME/paddock`), where the
+    /// native server keeps its socket and lock.
+    pub fn state_dir(&self) -> PathBuf {
+        self.path("state/paddock")
     }
 
     fn tmux_tmpdir(&self) -> PathBuf {
@@ -125,9 +134,10 @@ impl Sandbox {
 
     /// The sandbox's variables a process in paddock's terminals has from
     /// the backend's clean environment: its state directory and where the
-    /// backend listens. tmux-bound until ticket 40: the socket is tmux's
-    /// (`PADDOCK_TMUX_SOCKET`, `TMUX_TMPDIR`), and the native backend's
-    /// variables join them there.
+    /// backend listens: tmux's socket (`PADDOCK_TMUX_SOCKET`,
+    /// `TMUX_TMPDIR`), and the state directory, which holds the native
+    /// server's socket. The native backend's own variables (ticket 43)
+    /// join them here.
     pub fn backend_env(&self) -> Vec<(String, String)> {
         let kept = ["XDG_STATE_HOME", "PADDOCK_TMUX_SOCKET", "TMUX_TMPDIR"];
         let env = self.env().into_iter();
@@ -247,10 +257,12 @@ impl Sandbox {
             .expect("run tmux")
     }
 
-    /// Write paddock's `config.toml`.
+    /// Write paddock's `config.toml`, after the `[backend]` table the
+    /// run picks (see [`backend`]) unless `text` has its own.
     pub fn write_config(&self, text: &str) {
         let dir = self.path("config/paddock");
         std::fs::create_dir_all(&dir).expect("config dir");
+        let text = format!("{}{text}", backend::config(text));
         std::fs::write(dir.join("config.toml"), text).expect("write config");
     }
 
@@ -525,6 +537,7 @@ fn write_gh_stub(root: &std::path::Path) {
 impl Drop for Sandbox {
     fn drop(&mut self) {
         self.tmux_tolerant(&["kill-server"]);
+        backend::stop_server(&self.state_dir());
         // Shells may still be exiting and writing into the sandbox; retry
         // until the whole tree is gone (TempDir's own cleanup is then a no-op).
         let start = Instant::now();
