@@ -117,6 +117,8 @@ pub struct HostedTerminal {
     /// The pid of its shell.
     pub pid: u32,
     pub tty: String,
+    /// The variables that tell a process it runs here (see [`super::hook`]).
+    pub hook_env: Vec<(String, String)>,
     /// The PTY's master side, for its size and foreground.
     pub master: File,
     /// Bytes for the program: input and query replies.
@@ -128,11 +130,18 @@ pub struct HostedTerminal {
 }
 
 impl HostedTerminal {
-    pub fn new(id: TerminalId, pty: &Pty, input: Input, size: (u16, u16)) -> Result<Self> {
+    pub fn new(
+        id: TerminalId,
+        pty: &Pty,
+        hook_env: Vec<(String, String)>,
+        input: Input,
+        size: (u16, u16),
+    ) -> Result<Self> {
         Ok(Self {
             id,
             pid: pty.child.id(),
             tty: pty.tty.clone(),
+            hook_env,
             master: pty.master.try_clone()?,
             input,
             size,

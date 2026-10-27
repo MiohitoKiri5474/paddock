@@ -12,7 +12,7 @@
 use super::protocol::{self, Answer, Ending, Frame, Message, Notice, Refusal, Request};
 use super::state::{Space, State, Subscriber};
 use super::terminal::{HostedTerminal, Input, Sent, INPUT_MAX};
-use super::{lock, pty, socket_path, unsupported, LOG};
+use super::{hook, lock, pty, socket_path, unsupported, LOG};
 use crate::backend::env::{clean_env, AGY_STATUS_VAR};
 use crate::backend::{SpaceId, TabId, TerminalId};
 use crate::paths::Paths;
@@ -66,6 +66,7 @@ pub fn serve() -> Result<()> {
     let Some(_lock) = wait_for_lock(&paths.state_dir)? else {
         return Ok(());
     };
+    forget_old_events(&paths.state_dir);
     let listener = bind(&socket)?;
     let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
     let mut env = clean_env(std::env::vars());
@@ -100,6 +101,19 @@ pub fn serve() -> Result<()> {
         });
     }
     Ok(())
+}
+
+/// Remove the hook event log named by this server's instance id (its
+/// pid), left by an earlier server (native or tmux) that had the same pid:
+/// its records name terminals of that server, not of this one. No hook
+/// writes to it before this server's first terminal starts.
+fn forget_old_events(state_dir: &Path) {
+    let log = crate::sessions::log::path(state_dir, std::process::id());
+    match std::fs::remove_file(&log) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => eprintln!("paddock server: cannot remove {}: {e}", log.display()),
+    }
 }
 
 /// The server lock, once a server that is ending lets it go; `None` if
@@ -430,11 +444,13 @@ fn start_terminal(
     cwd: &Path,
     size: (u16, u16),
 ) -> Result<HostedTerminal> {
-    let mut pty = pty::spawn(&shared.shell, cwd, &shared.home, size, &shared.env)?;
+    let hook_env = hook::env(&shared.socket, std::process::id(), &id);
+    let env: Vec<_> = shared.env.iter().chain(&hook_env).cloned().collect();
+    let mut pty = pty::spawn(&shared.shell, cwd, &shared.home, size, &env)?;
     let ready = (|| {
         let input = Input::start(&id, pty.master.try_clone()?);
         let reader = pty.master.try_clone()?;
-        let term = HostedTerminal::new(id.clone(), &pty, input, size)?;
+        let term = HostedTerminal::new(id.clone(), &pty, hook_env, input, size)?;
         anyhow::Ok((reader, term))
     })();
     let (reader, term) = match ready {

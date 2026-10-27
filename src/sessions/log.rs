@@ -1,7 +1,8 @@
-//! The hook event log: `<state>/events/<tmux server pid>.jsonl`, one JSON
-//! record per line. Hooks append with a single `write` each, so parallel
-//! hooks never interleave. One file per server, because tmux reuses pane ids
-//! after the server restarts.
+//! The hook event log: `<state>/events/<instance>.jsonl`, named by the
+//! backend's instance id (the tmux server's pid, or the native server's),
+//! one JSON record per line. Hooks append with a single `write` each, so
+//! parallel hooks never interleave. One file per server, because a backend
+//! reuses terminal ids after its server restarts.
 //!
 //! Events of external sessions (agents outside paddock's terminals) have no
 //! server: they go to `<state>/events/external.jsonl`, without a pane. The
@@ -14,8 +15,8 @@ use serde_json::Value;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
-pub fn path(state_dir: &Path, server_pid: u32) -> PathBuf {
-    state_dir.join("events").join(format!("{server_pid}.jsonl"))
+pub fn path(state_dir: &Path, instance: u32) -> PathBuf {
+    state_dir.join("events").join(format!("{instance}.jsonl"))
 }
 
 /// The log of external sessions' events.

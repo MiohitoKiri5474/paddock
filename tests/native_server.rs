@@ -80,6 +80,28 @@ fn shells_run_with_the_clean_environment() {
     paddock.wait_for_text("term=xterm-256color agy=on");
 }
 
+/// Ticket 43: a hook in a terminal finds it, and the server's event log,
+/// from the variables the shell really has, which debug state reports.
+#[test]
+fn shells_carry_their_terminal_and_server_for_hooks() {
+    let sandbox = native();
+    let mut paddock = ready(&sandbox);
+    let state = sandbox.state();
+    let instance = state.instance.expect("the server's instance id");
+    let env = &sandbox.terminal("space-1").hook_env;
+    let socket = sandbox.state_dir().join("server.sock");
+    assert_eq!(env["PADDOCK_SOCKET"], socket.to_string_lossy());
+    assert_eq!(env["PADDOCK_INSTANCE"], instance.to_string());
+    paddock.type_line(&format!(
+        "[ \"$PADDOCK_SOCKET\" = '{}' ] && echo pane=$PADDOCK_PANE-instance=$PADDOCK_INSTANCE",
+        env["PADDOCK_SOCKET"]
+    ));
+    paddock.wait_for_text(&format!(
+        "pane={}-instance={instance}\n",
+        env["PADDOCK_PANE"]
+    ));
+}
+
 #[test]
 fn the_server_answers_terminal_queries() {
     let sandbox = native();

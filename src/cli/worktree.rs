@@ -72,7 +72,7 @@ impl Context {
         let cwd = std::env::current_dir()
             .map_err(|e| Fail::new(Code::Usage, format!("no current directory: {e}")))?;
         let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
-        let caller = backend::hook_terminal(var, &paths.socket);
+        let caller = backend::hook_terminal(var, &paths);
         let backend = Backend::configured(paths.clone())
             .map_err(|e| Fail::new(Code::Usage, format!("{e:#}")))?;
         // What runs where comes back empty from a host paddock cannot talk

@@ -294,7 +294,7 @@ impl State {
                         pid: h.pid,
                         tty: h.tty.clone(),
                         scrollback: u32::try_from(h.scrollback()).unwrap_or(u32::MAX),
-                        hook_env: Vec::new(),
+                        hook_env: h.hook_env.clone(),
                     })
                     .collect(),
             ),

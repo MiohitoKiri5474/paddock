@@ -105,10 +105,12 @@ pub struct HookTerminal {
 
 /// The terminal of paddock's a process runs in, from its environment as
 /// `var` reads it; `None` outside paddock's terminals, or in those of a
-/// backend on another socket than `socket`. Only tmux's terminals tell so
-/// far (the native backend's join in ticket 43).
-pub fn hook_terminal(var: impl Fn(&str) -> Option<String>, socket: &str) -> Option<HookTerminal> {
-    tmux::hook_terminal(var, socket)
+/// backend other than the one under `paths`. The native server's
+/// variables (`PADDOCK_PANE`, `PADDOCK_SOCKET`, `PADDOCK_INSTANCE`) come
+/// first, then tmux's (`TMUX`, `TMUX_PANE`). Reads only the environment:
+/// every agent hook on the machine runs it.
+pub fn hook_terminal(var: impl Fn(&str) -> Option<String>, paths: &Paths) -> Option<HookTerminal> {
+    native::hook_terminal(&var, paths).or_else(|| tmux::hook_terminal(&var, &paths.socket))
 }
 
 /// The process that hosts paddock's terminals, which outlive the app.
@@ -484,5 +486,67 @@ impl Connection {
             Self::Tmux(c) => c.detach(),
             Self::Native(a) => a.detach(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    const NATIVE_SOCKET: &str = "/Users/me/.local/state/paddock/server.sock";
+    const TMUX: &str = "/private/tmp/tmux-501/paddock,4242,0";
+
+    fn paths() -> Paths {
+        Paths {
+            socket: "paddock".into(),
+            state_dir: PathBuf::from("/Users/me/.local/state/paddock"),
+            config_dir: PathBuf::from("/Users/me/.config/paddock"),
+        }
+    }
+
+    fn lookup(vars: &[(&str, &str)]) -> Option<(u32, String)> {
+        let var = |k: &str| {
+            vars.iter()
+                .find(|(n, _)| *n == k)
+                .map(|(_, v)| v.to_string())
+        };
+        hook_terminal(var, &paths()).map(|t| (t.instance, t.terminal.to_string()))
+    }
+
+    fn native(socket: &str) -> [(&str, &str); 3] {
+        [
+            ("PADDOCK_PANE", "%5"),
+            ("PADDOCK_SOCKET", socket),
+            ("PADDOCK_INSTANCE", "77"),
+        ]
+    }
+
+    #[test]
+    fn a_native_terminal_is_read_from_paddocks_variables() {
+        assert_eq!(lookup(&native(NATIVE_SOCKET)), Some((77, "%5".into())));
+    }
+
+    #[test]
+    fn a_tmux_terminal_is_read_from_tmuxs_variables() {
+        let tmux = [("TMUX", TMUX), ("TMUX_PANE", "%3")];
+        assert_eq!(lookup(&tmux), Some((4242, "%3".into())));
+    }
+
+    #[test]
+    fn paddocks_variables_come_before_tmuxs() {
+        let mut both = native(NATIVE_SOCKET).to_vec();
+        both.extend([("TMUX", TMUX), ("TMUX_PANE", "%3")]);
+        assert_eq!(lookup(&both), Some((77, "%5".into())));
+    }
+
+    #[test]
+    fn another_servers_variables_fall_back_to_tmuxs_or_to_none() {
+        let other = native("/tmp/elsewhere/paddock/server.sock");
+        assert_eq!(lookup(&other), None);
+        let mut both = other.to_vec();
+        both.extend([("TMUX", TMUX), ("TMUX_PANE", "%3")]);
+        assert_eq!(lookup(&both), Some((4242, "%3".into())));
+        assert_eq!(lookup(&[]), None, "outside paddock's terminals");
     }
 }
