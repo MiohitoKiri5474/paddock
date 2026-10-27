@@ -358,7 +358,12 @@ external_timeout = 10     # minutes an external session stays with no hook event
 
 [github]
 refresh_secs = 60         # how often the dashboard and the sidebar ask `gh` for each repository's pull requests; 0 turns PR status off (in `worktree list` too)
+
+[backend]
+kind = "tmux"             # what hosts the terminals: "tmux" (the default) or "native" (experimental)
 ```
+
+`[backend] kind` is `"tmux"` (the default: the hidden `tmux -L paddock` server) or `"native"`, paddock's own server (`paddock server`, started in the background and listening on `~/.local/state/paddock/server.sock`); anything else is refused at start. **The native backend is experimental**: it holds one space with one tab and one terminal so far, which survives closing paddock like a tmux one; new tabs, splits, zoom, floats, more spaces and agent tracking come in later releases and give a notice until then. Switching kinds does not move running terminals: each backend keeps its own.
 
 `[worktrees] directory` must be absolute once `~` is expanded, and not your home directory itself; paddock refuses to start otherwise.
 

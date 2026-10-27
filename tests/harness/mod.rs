@@ -3,13 +3,16 @@
 //! what it draws with a VT parser.
 //!
 //! Isolation: every [`Sandbox`] has its own `TMUX_TMPDIR`, so even a bug that
-//! ignored `PADDOCK_TMUX_SOCKET` could not reach the user's tmux server. The
-//! sandbox kills its tmux server when dropped.
+//! ignored `PADDOCK_TMUX_SOCKET` could not reach the user's tmux server, and
+//! its own `XDG_STATE_HOME`, which holds the native server's socket and lock.
+//! The sandbox ends its tmux server and its native server when dropped.
 //!
 //! Tests ask paddock what runs where (`paddock debug state`, see
 //! [`State`]), so they hold for any backend; only tests of tmux-only
 //! behaviour call tmux, through [`tmux_only`]. Their names start with
 //! `tmux_only_`: `cargo test -- --skip tmux_only` leaves them out.
+//! [`backend`] picks the backend a run is on, and names the tests the
+//! native backend cannot pass yet (`native_needs_4N`).
 
 #![allow(dead_code)] // Each test binary uses a different part of the harness.
 
