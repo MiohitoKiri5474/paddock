@@ -19,6 +19,20 @@ jobs:
       - name: Unit tests
         run: cargo test --bin paddock --locked
 
+  # The app-level harness on the native backend (experimental, ticket 40):
+  # the tests in tests/harness/native_skip.rs wait for tickets 41-43.
+  native:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # The harness still ends a sandbox's tmux server when dropped.
+      - name: Install tmux
+        run: brew install tmux
+      - name: Harness on the native backend
+        run: scripts/test-native.sh --locked
+
   build:
     needs: test
     runs-on: macos-latest

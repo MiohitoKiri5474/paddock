@@ -62,6 +62,8 @@ fn main() -> anyhow::Result<()> {
         ["worktree", ..] => std::process::exit(cli::run(&args[1..])),
         // Hidden from the usage: for tests and bug reports.
         ["debug", "state", "--json"] => debug::print_state(),
+        // Hidden from the usage: paddock starts it (ADR 0007).
+        ["server"] => backend::serve(),
         _ => anyhow::bail!("{}", USAGE.trim_end()),
     }
 }

@@ -18,6 +18,11 @@ use std::time::{Duration, Instant};
 const FRAME: Duration = Duration::from_millis(16);
 /// Milliseconds in a second.
 const MS_PER_SEC: u64 = 1000;
+/// paddock's farewell when its connection to the native server breaks
+/// while its terminals may run on.
+const LOST: &str = "lost the connection to the paddock server (it let this paddock go, \
+                    or failed; see server.log in paddock's state directory): run paddock \
+                    again to attach to what still runs";
 
 /// Tells the git thread which task rows are on screen, and the pull
 /// requests' thread (while PR status is on) what shows PRs.
@@ -118,7 +123,7 @@ pub fn run(
     rx: &Receiver<Event>,
     git: Sender<watch::Watched>,
     prs: Option<Sender<prs::Wanted>>,
-) -> Result<()> {
+) -> Result<Option<String>> {
     let mut feed = TaskFeed {
         tx: git,
         sent: watch::Watched::default(),
@@ -156,7 +161,9 @@ pub fn run(
             break;
         }
     }
-    app.detach_all()
+    let farewell = app.farewell.take();
+    app.detach_all()?;
+    Ok(farewell)
 }
 
 /// Keep up with an event just handled (see `effects`): turns seen, the tab bar
@@ -302,6 +309,19 @@ fn handle_backend(app: &mut App, space: &SpaceId, event: backend::Event) -> Back
             BackendHandled::terminals_changed(Flow::Continue)
         }
         backend::Event::Ended => BackendHandled::terminals_changed(Flow::Quit),
+        backend::Event::InputRefused { why, .. } => {
+            app.notice = Some(format!("input refused: {why}"));
+            BackendHandled {
+                flow: Flow::Continue,
+                changed: true,
+                terminals_changed: false,
+            }
+        }
+        // Never a quiet quit: the terminals may run on, to attach again.
+        backend::Event::Lost => {
+            app.farewell = Some(LOST.to_string());
+            BackendHandled::terminals_changed(Flow::Quit)
+        }
         // A space came or went: one made outside paddock becomes a space
         // here (one that ended reports its own end).
         backend::Event::SpacesChanged => {

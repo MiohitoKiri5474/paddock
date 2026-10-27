@@ -180,6 +180,8 @@ fn check(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::Backend;
+    use crate::config::BackendKind;
     use crate::paths::Paths;
     use std::process::Command;
     use std::time::Duration;
@@ -219,7 +221,8 @@ mod tests {
         let wt = root.join("wt");
         let config = format!("[worktrees]\ndirectory = {:?}\n", wt.to_string_lossy());
         std::fs::write(paths.config_dir.join("config.toml"), config).unwrap();
-        let mut cx = Context::new(paths, root.clone(), None);
+        let backend = Backend::new(paths.clone(), BackendKind::Tmux);
+        let mut cx = Context::new(backend, paths, root.clone(), None);
         // Nothing can be checked in no time. The check comes before
         // `claude agents`, so no real Claude is asked.
         cx.risk_deadline = Duration::ZERO;

@@ -1,0 +1,209 @@
+//! The native server's PTYs: a shell started on a new one, its size, and
+//! what macOS (`libproc`) says of the program in its foreground.
+
+use anyhow::{Context, Result};
+use std::ffi::CStr;
+use std::fs::File;
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::unix::process::CommandExt;
+use std::path::Path;
+use std::process::{Child, Command, Stdio};
+
+/// A shell on a PTY of its own.
+pub struct Pty {
+    /// The PTY's master side: the shell's output is read, and its input
+    /// written, here.
+    pub master: File,
+    /// The path of the shell's tty.
+    pub tty: String,
+    pub child: Child,
+}
+
+/// Start `shell` as a login shell (as tmux does, so macOS's
+/// `path_helper` runs) in `cwd`, or in `home` if `cwd` is gone, on a new
+/// PTY of `(cols, rows)`, with exactly the environment `env`. The server
+/// calls it holding its state lock (see `open`).
+pub fn spawn(
+    shell: &str,
+    cwd: &Path,
+    home: &Path,
+    size: (u16, u16),
+    env: &[(String, String)],
+) -> Result<Pty> {
+    let (master, slave) = open(size)?;
+    let tty = tty_name(slave.as_raw_fd()).unwrap_or_default();
+    let name = Path::new(shell)
+        .file_name()
+        .map_or("sh".into(), |n| n.to_string_lossy().into_owned());
+    let dir = if cwd.is_dir() { cwd } else { home };
+    let mut command = Command::new(shell);
+    command
+        .arg0(format!("-{name}"))
+        .env_clear()
+        .envs(env.iter().map(|(k, v)| (k, v)))
+        .current_dir(dir)
+        .stdin(Stdio::from(slave.try_clone()?))
+        .stdout(Stdio::from(slave.try_clone()?))
+        .stderr(Stdio::from(slave));
+    // SAFETY: only async-signal-safe calls between fork and exec.
+    unsafe {
+        command.pre_exec(|| {
+            // A session of its own, with the PTY as its controlling tty.
+            if libc::setsid() < 0 || libc::ioctl(0, libc::TIOCSCTTY.into(), 0) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let child = command
+        .spawn()
+        .with_context(|| format!("cannot start {shell}"))?;
+    Ok(Pty {
+        master: File::from(master),
+        tty,
+        child,
+    })
+}
+
+/// A new PTY of `(cols, rows)`: its master and slave, neither inherited by
+/// other programs.
+fn open((cols, rows): (u16, u16)) -> Result<(OwnedFd, OwnedFd)> {
+    let (mut master, mut slave): (RawFd, RawFd) = (-1, -1);
+    let mut size = winsize(cols, rows);
+    // SAFETY: openpty writes two descriptors; the name and termios are
+    // optional and passed as null.
+    let ok = unsafe {
+        libc::openpty(
+            &mut master,
+            &mut slave,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut size,
+        )
+    };
+    if ok != 0 {
+        return Err(std::io::Error::last_os_error()).context("cannot open a PTY");
+    }
+    // SAFETY: openpty succeeded, so both are open descriptors we own.
+    let (master, slave) = unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
+    // Until this, a program started meanwhile would inherit both. Safe
+    // only because the server starts programs (spawn) under its state
+    // lock alone, which its caller holds.
+    for fd in [&master, &slave] {
+        // SAFETY: fcntl on a descriptor we own.
+        if unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
+            return Err(std::io::Error::last_os_error()).context("cannot set up a PTY");
+        }
+    }
+    Ok((master, slave))
+}
+
+fn winsize(cols: u16, rows: u16) -> libc::winsize {
+    libc::winsize {
+        ws_row: rows,
+        ws_col: cols,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    }
+}
+
+/// Tell the program on `master` its terminal is now `(cols, rows)`.
+pub fn resize(master: &File, (cols, rows): (u16, u16)) -> Result<()> {
+    let size = winsize(cols, rows);
+    // SAFETY: TIOCSWINSZ reads one winsize from the pointer.
+    if unsafe { libc::ioctl(master.as_raw_fd(), libc::TIOCSWINSZ, &size) } < 0 {
+        return Err(std::io::Error::last_os_error()).context("cannot resize a PTY");
+    }
+    Ok(())
+}
+
+fn tty_name(fd: RawFd) -> Option<String> {
+    let mut buf = [0 as libc::c_char; 128];
+    // SAFETY: ttyname_r writes at most `buf.len()` bytes, NUL included.
+    if unsafe { libc::ttyname_r(fd, buf.as_mut_ptr(), buf.len()) } != 0 {
+        return None;
+    }
+    // SAFETY: on success the buffer holds a NUL-terminated string.
+    let name = unsafe { CStr::from_ptr(buf.as_ptr()) };
+    Some(name.to_string_lossy().into_owned())
+}
+
+/// The process group in the foreground of the PTY `master`.
+pub fn foreground(master: &File) -> Option<i32> {
+    // SAFETY: tcgetpgrp only reads the descriptor.
+    let group = unsafe { libc::tcgetpgrp(master.as_raw_fd()) };
+    (group > 0).then_some(group)
+}
+
+/// Process `pid`'s name (its command, as `ps -c` shows it).
+pub fn name(pid: i32) -> Option<String> {
+    let mut buf = [0u8; 256];
+    let size = u32::try_from(buf.len()).ok()?;
+    // SAFETY: proc_name writes at most `size` bytes to the buffer.
+    let n = unsafe { libc::proc_name(pid, buf.as_mut_ptr().cast(), size) };
+    let n = usize::try_from(n).ok().filter(|&n| n > 0)?;
+    Some(String::from_utf8_lossy(&buf[..n]).into_owned())
+}
+
+/// Process `pid`'s current directory.
+pub fn cwd(pid: i32) -> Option<String> {
+    // SAFETY: an all-zero proc_vnodepathinfo is a valid value.
+    let mut info: libc::proc_vnodepathinfo = unsafe { std::mem::zeroed() };
+    let size = i32::try_from(std::mem::size_of::<libc::proc_vnodepathinfo>()).ok()?;
+    // SAFETY: proc_pidinfo writes at most `size` bytes to `info`.
+    let n = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDVNODEPATHINFO,
+            0,
+            std::ptr::from_mut(&mut info).cast(),
+            size,
+        )
+    };
+    if n != size {
+        return None;
+    }
+    // SAFETY: the kernel writes the path NUL-terminated within the array.
+    let path = unsafe { CStr::from_ptr(info.pvi_cdir.vip_path.as_ptr().cast()) };
+    Some(path.to_string_lossy().into_owned()).filter(|p| !p.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Read;
+
+    #[test]
+    fn a_shell_runs_on_its_own_pty_where_it_started() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = [("PATH".to_string(), "/usr/bin:/bin".to_string())];
+        let mut pty = spawn("/bin/sh", dir.path(), dir.path(), (40, 10), &env).unwrap();
+        assert!(pty.tty.starts_with("/dev/ttys"), "{}", pty.tty);
+        let pid = i32::try_from(pty.child.id()).unwrap();
+        // The shell leads its own session, in the PTY's foreground.
+        let start = std::time::Instant::now();
+        while foreground(&pty.master) != Some(pid) {
+            assert!(start.elapsed().as_secs() < 5, "never in the foreground");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(name(pid).as_deref(), Some("sh"));
+        let real = std::fs::canonicalize(dir.path()).unwrap();
+        assert_eq!(cwd(pid), Some(real.to_string_lossy().into_owned()));
+        resize(&pty.master, (50, 12)).unwrap();
+        use std::io::Write;
+        pty.master
+            .write_all(b"stty size; exit\n")
+            .expect("write to the shell");
+        // Read to the end: an exiting shell waits for its output to be read.
+        let mut out = String::new();
+        let mut buf = [0; 1024];
+        while let Ok(n) = pty.master.read(&mut buf) {
+            if n == 0 {
+                break;
+            }
+            out.push_str(&String::from_utf8_lossy(&buf[..n]));
+        }
+        assert!(out.contains("12 50"), "{out:?}");
+        pty.child.wait().unwrap();
+    }
+}

@@ -57,9 +57,9 @@ pub(super) fn ids(spaces: &[Space]) -> Vec<SpaceId> {
 }
 
 impl Context {
-    pub fn new(paths: Paths, cwd: PathBuf, caller: Option<HookTerminal>) -> Self {
+    pub fn new(backend: Backend, paths: Paths, cwd: PathBuf, caller: Option<HookTerminal>) -> Self {
         Self {
-            backend: Backend::new(paths.clone()),
+            backend,
             paths,
             cwd,
             caller,
@@ -73,7 +73,14 @@ impl Context {
             .map_err(|e| Fail::new(Code::Usage, format!("no current directory: {e}")))?;
         let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
         let caller = backend::hook_terminal(var, &paths.socket);
-        Ok(Self::new(paths, cwd, caller))
+        let backend = Backend::configured(paths.clone())
+            .map_err(|e| Fail::new(Code::Usage, format!("{e:#}")))?;
+        // What runs where comes back empty from a host paddock cannot talk
+        // to, and `rm` must not take that for nothing busy.
+        backend
+            .check()
+            .map_err(|e| Fail::new(Code::Usage, format!("{e:#}")))?;
+        Ok(Self::new(backend, paths, cwd, caller))
     }
 
     /// The directory `--from` names, else the current one.
