@@ -67,34 +67,48 @@ impl Input {
         if self.queue.ended() {
             return Sent::Ended;
         }
-        let waiting = self.queue.waiting();
-        if waiting == 0 {
-            // The program has taken all that waited: a new episode.
-            self.refusing.store(false, Ordering::Relaxed);
+        if self.fits(bytes.len()) {
+            if self.queue.push(bytes).is_some() {
+                return Sent::Queued;
+            }
+            return Sent::Ended;
         }
-        if waiting + bytes.len() > INPUT_MAX {
-            let first = !self.refusing.swap(true, Ordering::Relaxed);
-            return Sent::Refused { first };
-        }
-        match self.queue.push(bytes) {
-            Some(_) => Sent::Queued,
-            None => Sent::Ended,
-        }
+        self.refused()
     }
 
     /// Refuse an input too big to ever queue, as [`Self::send`] would.
     pub fn refuse(&self) -> Sent {
-        if self.queue.waiting() == 0 {
-            self.refusing.store(false, Ordering::Relaxed);
+        if self.queue.ended() {
+            return Sent::Ended;
         }
-        let first = !self.refusing.swap(true, Ordering::Relaxed);
-        Sent::Refused { first }
+        let _ = self.fits(0);
+        self.refused()
     }
 
-    /// Queue a reply to the program's query: always (replies are small,
-    /// and come only as its output does).
+    /// Queue a reply to the program's query, unless it would take what
+    /// waits past [`INPUT_MAX`]: then it is dropped, quietly (the notice
+    /// is the user's input's).
     pub fn reply(&self, bytes: Vec<u8>) {
-        let _ = self.queue.push(bytes);
+        let waiting = self.queue.waiting();
+        if waiting + bytes.len() <= INPUT_MAX {
+            let _ = self.queue.push(bytes);
+        }
+    }
+
+    /// Whether `len` more bytes fit under [`INPUT_MAX`]. Nothing waiting
+    /// means the program has taken all that waited: the episode ends.
+    fn fits(&self, len: usize) -> bool {
+        let waiting = self.queue.waiting();
+        if waiting == 0 {
+            self.refusing.store(false, Ordering::Relaxed);
+        }
+        waiting + len <= INPUT_MAX
+    }
+
+    /// A refusal: the episode's first, or not.
+    fn refused(&self) -> Sent {
+        let first = !self.refusing.swap(true, Ordering::Relaxed);
+        Sent::Refused { first }
     }
 }
 
@@ -297,7 +311,7 @@ mod tests {
         // Far more than the pipe holds: it waits, whole.
         assert_eq!(input.send(vec![b'x'; INPUT_MAX - 10]), Sent::Queued);
         assert_eq!(input.send(vec![b'k'; 5]), Sent::Queued, "under the cap");
-        // Replies always go in, and use up no notice.
+        // A reply that fits goes in, and uses up no notice.
         input.reply(vec![b'r'; 100]);
         assert_eq!(
             input.send(vec![b'p'; 1 << 20]),
@@ -310,6 +324,20 @@ mod tests {
     }
 
     #[test]
+    fn a_reply_past_the_cap_is_dropped_quietly() {
+        let (input, _read) = unread_input();
+        assert_eq!(input.send(vec![b'x'; INPUT_MAX]), Sent::Queued);
+        let waiting = input.queue.waiting();
+        input.reply(vec![b'r'; 1 << 20]);
+        assert!(input.queue.waiting() <= waiting, "not queued");
+        // The user's input still gets the episode's notice.
+        assert_eq!(
+            input.send(vec![b'k'; 1 << 20]),
+            Sent::Refused { first: true }
+        );
+    }
+
+    #[test]
     fn input_to_a_program_whose_pty_is_gone_ends() {
         let (input, read) = unread_input();
         drop(read);
@@ -318,6 +346,7 @@ mod tests {
             assert!(start.elapsed().as_secs() < 5, "never ended");
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
+        assert_eq!(input.refuse(), Sent::Ended);
     }
 
     #[test]

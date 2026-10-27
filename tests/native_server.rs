@@ -517,6 +517,43 @@ fn a_key_typed_while_a_big_paste_waits_still_arrives() {
     assert!(!paddock.full_screen().contains("input refused"));
 }
 
+/// Whether the server closes `stream` (it reads to its end).
+fn closed(stream: &mut UnixStream) -> bool {
+    stream
+        .set_read_timeout(Some(harness::TIMEOUT))
+        .expect("a read timeout");
+    while read_frame(stream).is_some() {}
+    true
+}
+
+#[test]
+fn a_client_whose_frames_lie_is_cut_off_and_its_input_never_arrives() {
+    let sandbox = native();
+    let mut paddock = ready(&sandbox);
+    let (mut lying, terminal) = cat_after(&sandbox, &mut paddock, 0);
+    // 100 bytes said to follow, then 1 that says it is the last.
+    send_part(&mut lying, &terminal, 100, b"abc");
+    send_part(&mut lying, &terminal, 0, b"x");
+    assert!(closed(&mut lying));
+    // Output, which only the server sends.
+    let (mut sending_output, _) = connect(&sandbox);
+    let mut body = vec![1, u8::try_from(terminal.len()).unwrap()];
+    body.extend_from_slice(terminal.as_bytes());
+    body.extend_from_slice(b"out");
+    let len = u32::try_from(body.len()).unwrap().to_be_bytes();
+    sending_output.write_all(&len).unwrap();
+    sending_output.write_all(&body).unwrap();
+    assert!(closed(&mut sending_output));
+
+    let (mut honest, _) = connect(&sandbox);
+    send_input(&mut honest, &terminal, b"ok");
+    let file = sandbox.path("home/got.txt");
+    wait_until("the honest input", || {
+        std::fs::read(&file).is_ok_and(|got| !got.is_empty())
+    });
+    assert_eq!(std::fs::read(&file).unwrap(), b"ok");
+}
+
 #[test]
 fn an_input_cut_by_a_takeover_is_discarded_whole() {
     let sandbox = native();
@@ -529,10 +566,7 @@ fn an_input_cut_by_a_takeover_is_discarded_whole() {
     // A second client takes over: the first is let go mid-paste.
     let (mut second, _) = connect(&sandbox);
     send_message(&mut second, &attach);
-    first
-        .set_read_timeout(Some(harness::TIMEOUT))
-        .expect("a read timeout");
-    while read_frame(&mut first).is_some() {}
+    assert!(closed(&mut first));
     send_input(&mut second, &terminal, b"after");
 
     let file = sandbox.path("home/got.txt");

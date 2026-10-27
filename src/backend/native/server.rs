@@ -195,19 +195,17 @@ fn serve_connection(shared: &Arc<Shared>, conn: u64, mut stream: UnixStream) -> 
     let ongoing = &mut ongoing;
     while let Some(frame) = protocol::read(&mut stream, protocol::FROM_CLIENT)? {
         let request = match frame {
-            Frame::Bytes { terminal, data } => {
-                input(shared, ongoing, &terminal, 0, data);
-                continue;
-            }
             Frame::Part {
                 terminal,
                 rest,
                 data,
             } => {
-                input(shared, ongoing, &terminal, rest, data);
+                input(shared, ongoing, &terminal, rest, data)?;
                 continue;
             }
             Frame::Message(Message::Request(request)) => request,
+            // Output is the server's to send.
+            Frame::Bytes { .. } => bail!("unexpected bytes frame"),
             Frame::Message(other) => bail!("unexpected {other:?}"),
         };
         let answer = match request {
@@ -255,56 +253,67 @@ fn reply(answer: Result<Answer>) -> Frame {
 
 /// An input whose parts still come on a connection: collected, to be
 /// queued whole once its last part has come.
-pub struct Ongoing {
+struct Ongoing {
     terminal: TerminalId,
-    /// Its bytes so far; none kept once it is too big to queue.
+    /// Its bytes so far; none kept if it is too big to queue.
     data: Vec<u8>,
-    /// Its whole length.
-    len: usize,
+    /// Its bytes still to come.
+    due: usize,
+    /// Bigger than [`INPUT_MAX`]: refused whole.
+    too_big: bool,
 }
 
 /// Take part `data` of an input to `terminal`'s program, `rest` bytes of
 /// it to follow; once all has come, queue it whole ([`Input::send`]), or
 /// refuse it whole with a notice. Never waits: the connection goes on
 /// reading, so a resize or detach behind input to a program that does not
-/// read gets through.
+/// read gets through. A part that does not continue the input before it
+/// (another terminal, or lengths that do not add up) is an error, which
+/// closes the connection: what it collects never passes the input's first
+/// length, nor [`INPUT_MAX`].
 fn input(
     shared: &Shared,
     ongoing: &mut Option<Ongoing>,
     terminal: &TerminalId,
     rest: u64,
     data: Vec<u8>,
-) {
-    // A part of another terminal's input means that one was cut: it goes.
-    let mut collected = ongoing
-        .take()
-        .filter(|o| o.terminal == *terminal)
-        .unwrap_or_else(|| {
-            let rest = usize::try_from(rest).unwrap_or(usize::MAX);
-            Ongoing {
-                terminal: terminal.clone(),
-                data: Vec::new(),
-                len: rest.saturating_add(data.len()),
-            }
-        });
-    // An input too big to queue is refused whole: no use keeping it.
-    if collected.len <= INPUT_MAX {
+) -> Result<()> {
+    let rest = usize::try_from(rest).context("an input too long")?;
+    let total = data.len().checked_add(rest).context("an input too long")?;
+    let mut collected = match ongoing.take() {
+        Some(o) if o.terminal == *terminal && o.due == total => o,
+        Some(o) => bail!(
+            "a part of {terminal}'s input, {total} bytes, where {} of {}'s were due",
+            o.due,
+            o.terminal
+        ),
+        None => Ongoing {
+            terminal: terminal.clone(),
+            data: Vec::new(),
+            due: total,
+            too_big: total > INPUT_MAX,
+        },
+    };
+    collected.due = rest;
+    if !collected.too_big {
         collected.data.extend_from_slice(&data);
     }
     if rest > 0 {
         *ongoing = Some(collected);
-        return;
+        return Ok(());
     }
     let mut state = shared.lock();
     let found = state.terminals().find(|(_, t)| t.id == *terminal);
-    let Some((space, term)) = found else { return };
-    let sent = if collected.len > INPUT_MAX {
+    let Some((space, term)) = found else {
+        return Ok(());
+    };
+    let sent = if collected.too_big {
         term.input.refuse()
     } else {
         term.input.send(collected.data)
     };
     if sent != (Sent::Refused { first: true }) {
-        return;
+        return Ok(());
     }
     let program = term.command().unwrap_or_else(|| "its program".into());
     let why = format!(
@@ -318,6 +327,7 @@ fn input(
         why,
     };
     state.notify(&space, notice);
+    Ok(())
 }
 
 /// Make connection `conn` the attached client of `space`, shown at

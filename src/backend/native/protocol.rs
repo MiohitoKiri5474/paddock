@@ -278,12 +278,13 @@ fn push_id(body: &mut Vec<u8>, terminal: &TerminalId) -> Result<()> {
     Ok(())
 }
 
-/// The terminal id `body` starts with, and what follows it.
+/// The terminal id `body` (a bytes or part frame's) starts with, and what
+/// follows it.
 fn take_id(body: &[u8]) -> Result<(TerminalId, &[u8])> {
-    let (&len, body) = body.split_first().context("short bytes frame")?;
+    let (&len, body) = body.split_first().context("short frame")?;
     let len = usize::from(len);
     if body.len() < len {
-        bail!("short bytes frame");
+        bail!("short frame");
     }
     let id = std::str::from_utf8(&body[..len]).context("terminal id")?;
     Ok((TerminalId::new(id), &body[len..]))
