@@ -309,15 +309,15 @@ fn handle_backend(app: &mut App, space: &SpaceId, event: backend::Event) -> Back
             BackendHandled::terminals_changed(Flow::Continue)
         }
         backend::Event::Ended => BackendHandled::terminals_changed(Flow::Quit),
-        // Never a quiet quit: the terminals may run on, to attach again.
-        backend::Event::InputDropped { program, .. } => {
-            app.notice = Some(format!("input dropped: {program} is not reading it"));
+        backend::Event::InputDropped { why, .. } => {
+            app.notice = Some(format!("input dropped: {why}"));
             BackendHandled {
                 flow: Flow::Continue,
                 changed: true,
                 terminals_changed: false,
             }
         }
+        // Never a quiet quit: the terminals may run on, to attach again.
         backend::Event::Lost => {
             app.farewell = Some(LOST.to_string());
             BackendHandled::terminals_changed(Flow::Quit)

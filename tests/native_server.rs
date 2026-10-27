@@ -6,7 +6,7 @@ mod harness;
 
 use harness::backend::{alive, server_pid, NATIVE};
 use harness::native_skip::NATIVE_NEEDS;
-use harness::stall::finished;
+use harness::stall::{finished, SEND_TIMEOUT};
 use harness::{Paddock, Sandbox, PROMPT};
 use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -26,9 +26,14 @@ fn ready(sandbox: &Sandbox) -> Paddock {
 
 /// Wait until `done` holds, or fail saying `what`.
 fn wait_until(what: &str, done: impl Fn() -> bool) {
+    wait_within(harness::TIMEOUT, what, done);
+}
+
+/// [`wait_until`], within `limit`.
+fn wait_within(limit: Duration, what: &str, done: impl Fn() -> bool) {
     let start = Instant::now();
     while !done() {
-        assert!(start.elapsed() < harness::TIMEOUT, "{what}");
+        assert!(start.elapsed() < limit, "{what}");
         std::thread::sleep(Duration::from_millis(20));
     }
 }
@@ -410,19 +415,39 @@ fn paste(len: usize) -> Vec<u8> {
 }
 
 #[test]
-fn a_paste_bigger_than_the_input_limit_reaches_a_program_that_reads_whole() {
-    const LEN: usize = 5_000_000;
+fn a_paste_bigger_than_any_frame_reaches_a_program_that_reads_whole() {
+    // Past the server's 16 MiB frame and 4 MiB input limits.
+    const LEN: usize = 17 << 20;
     let sandbox = native();
     let mut paddock = ready(&sandbox);
     paddock.type_line(&format!(
         "stty raw -echo; head -c {LEN} > big.txt; stty sane; echo GOT''-IT"
     ));
     finished(paddock.send_in_background(paste(LEN)), "the paste");
-    paddock.wait_for_text("GOT-IT");
-    let got = std::fs::metadata(sandbox.path("home/big.txt"))
-        .unwrap()
-        .len();
-    assert_eq!(got, LEN as u64);
+    wait_within(SEND_TIMEOUT, "head to get it all", || {
+        paddock.screen().contains("GOT-IT")
+    });
+    let got = std::fs::read(sandbox.path("home/big.txt")).unwrap();
+    assert_eq!(got.len(), LEN);
+    assert!(got.iter().all(|&b| b == b'x'), "every byte as pasted");
+}
+
+#[test]
+fn a_key_typed_while_a_big_paste_drains_still_arrives() {
+    const LEN: usize = 6 << 20;
+    let sandbox = native();
+    let mut paddock = ready(&sandbox);
+    paddock.type_line("stty raw -echo; echo READING''-NOW; cat > got.txt");
+    paddock.wait_for_text("READING-NOW");
+    finished(paddock.send_in_background(paste(LEN)), "the paste");
+    // More than 4 MiB still waits for cat, which reads all along.
+    finished(paddock.send_in_background(b"Z".to_vec()), "the key");
+
+    let file = sandbox.path("home/got.txt");
+    wait_within(SEND_TIMEOUT, "cat to get the key after the paste", || {
+        std::fs::read(&file).is_ok_and(|got| got.len() == LEN + 1 && got.ends_with(b"xZ"))
+    });
+    assert!(!paddock.full_screen().contains("input dropped"));
 }
 
 #[test]
@@ -431,13 +456,15 @@ fn input_a_program_never_reads_is_dropped_with_a_notice() {
     let mut paddock = ready(&sandbox);
     paddock.type_line("stty raw -echo; echo FLOOD''-READY; sleep 60");
     paddock.wait_for_text("FLOOD-READY");
-    // The first waits for sleep; the second would take it past 4 MiB.
-    finished(paddock.send_in_background(paste(3 << 20)), "the paste");
-    finished(paddock.send_in_background(paste(3 << 20)), "the paste");
+    // More than 4 MiB waits for sleep, which then reads nothing for long.
+    finished(paddock.send_in_background(paste(6 << 20)), "the paste");
+    std::thread::sleep(Duration::from_secs(3));
+    finished(paddock.send_in_background(paste(1 << 10)), "the paste");
+    finished(paddock.send_in_background(paste(1 << 10)), "the paste");
 
     paddock.wait_for_text("input dropped: sleep is not reading it");
     let log = std::fs::read_to_string(sandbox.state_dir().join("server.log")).unwrap();
-    assert_eq!(log.matches("is not reading its input").count(), 1, "{log}");
+    assert_eq!(log.matches("dropping input").count(), 1, "{log}");
 }
 
 #[test]

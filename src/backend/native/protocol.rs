@@ -162,13 +162,9 @@ pub enum Notice {
     /// The space's last terminal ended, or the server is ending and hangs
     /// every shell up; nothing follows.
     Ended,
-    /// Input to `terminal` is being dropped: `program`, in its
-    /// foreground, is not reading it. Once per episode (until it has read
-    /// all that waits).
-    InputDropped {
-        terminal: TerminalId,
-        program: String,
-    },
+    /// Input to `terminal` is being dropped, and `why` ("vim is not
+    /// reading it"). Once per episode (until it has read all that waits).
+    InputDropped { terminal: TerminalId, why: String },
 }
 
 /// Write `frame` and flush.

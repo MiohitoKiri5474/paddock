@@ -64,6 +64,8 @@ macro_rules! pick {
     };
 }
 
+/// The most input one frame carries.
+const INPUT_FRAME: usize = 64 << 10;
 /// How long a new server gets to start listening.
 const START_TIMEOUT: Duration = Duration::from_secs(5);
 const POLL: Duration = Duration::from_millis(20);
@@ -333,8 +335,8 @@ impl Client {
                     Frame::Bytes { terminal, data } => Event::Output { terminal, data },
                     Frame::Message(Message::Notice(Notice::Changed)) => Event::Changed,
                     Frame::Message(Message::Notice(Notice::SpacesChanged)) => Event::SpacesChanged,
-                    Frame::Message(Message::Notice(Notice::InputDropped { terminal, program })) => {
-                        Event::InputDropped { terminal, program }
+                    Frame::Message(Message::Notice(Notice::InputDropped { terminal, why })) => {
+                        Event::InputDropped { terminal, why }
                     }
                     Frame::Message(Message::Notice(Notice::Ended)) => {
                         deliver(Event::Ended);
@@ -374,12 +376,18 @@ pub struct Attached {
 }
 
 impl Attached {
+    /// Send `bytes` to `terminal`'s program, in frames of at most
+    /// [`INPUT_FRAME`] bytes: a paste of any size fits the server's frame
+    /// limit, and the server sees the program's progress through it.
     pub fn input(&mut self, terminal: &TerminalId, bytes: &[u8]) -> Result<()> {
-        let frame = Frame::Bytes {
-            terminal: terminal.clone(),
-            data: bytes.to_vec(),
-        };
-        protocol::write(&mut self.stream, &frame)
+        for chunk in bytes.chunks(INPUT_FRAME) {
+            let frame = Frame::Bytes {
+                terminal: terminal.clone(),
+                data: chunk.to_vec(),
+            };
+            protocol::write(&mut self.stream, &frame)?;
+        }
+        Ok(())
     }
 
     pub fn resize(&mut self, size: (u16, u16)) -> Result<()> {

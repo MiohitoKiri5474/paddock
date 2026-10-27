@@ -1,12 +1,16 @@
 //! A paddock under strain: input sent from a thread of its own, and the
 //! process stopped a while, for the native server's queues.
 
-use super::{Paddock, TIMEOUT};
+use super::Paddock;
 use std::io::Write;
 use std::process::Command;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
+
+/// How long paddock gets to take what [`Paddock::send_in_background`]
+/// sends: pastes of many MiB, while the whole suite runs.
+pub const SEND_TIMEOUT: Duration = Duration::from_secs(60);
 
 impl Paddock {
     /// Send `bytes` from a thread of its own, 4 KiB at a time (other sends
@@ -37,12 +41,12 @@ impl Paddock {
 }
 
 /// Wait for a [`Paddock::send_in_background`] to have sent everything;
-/// panic saying `what` if it has not within [`TIMEOUT`] (paddock stopped
+/// panic saying `what` if it has not within [`SEND_TIMEOUT`] (paddock stopped
 /// taking input).
 pub fn finished(send: JoinHandle<()>, what: &str) {
     let start = Instant::now();
     while !send.is_finished() {
-        assert!(start.elapsed() < TIMEOUT, "paddock never took {what}");
+        assert!(start.elapsed() < SEND_TIMEOUT, "paddock never took {what}");
         std::thread::sleep(Duration::from_millis(20));
     }
     send.join().expect("the sending thread");

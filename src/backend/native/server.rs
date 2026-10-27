@@ -249,14 +249,15 @@ fn input(shared: &Shared, terminal: &TerminalId, data: Vec<u8>) {
     let mut state = shared.lock();
     let found = state.terminals().find(|(_, t)| t.id == *terminal);
     let Some((space, term)) = found else { return };
-    if term.input.send(data) != (Sent::Dropped { first: true }) {
+    let Sent::DroppedFirst(why) = term.input.send(data) else {
         return;
-    }
+    };
     let program = term.command().unwrap_or_else(|| "its program".into());
-    eprintln!("paddock server: {program} in {terminal} is not reading its input; dropping more");
+    let why = why.of(&program);
+    eprintln!("paddock server: dropping input to {terminal}: {why}");
     let notice = Notice::InputDropped {
         terminal: terminal.clone(),
-        program,
+        why,
     };
     let space = space.id.clone();
     state.notify(&space, notice);
