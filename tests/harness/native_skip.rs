@@ -116,7 +116,7 @@ pub const NATIVE_NEEDS: &[(&str, &[&str])] = &[
     ),
     (
         "close_fork::f_on_a_space_forks_its_agent_into_a_new_tab_of_that_space",
-        &["42", "43"],
+        &["41", "42", "43"],
     ),
     (
         "close_fork::closing_the_only_pane_of_a_spaces_only_tab_asks_to_close_the_space",
@@ -150,11 +150,11 @@ pub const NATIVE_NEEDS: &[(&str, &[&str])] = &[
     ),
     (
         "dashboard::j_and_k_move_and_enter_jumps_to_the_rows_terminal",
-        &["43"],
+        &["41", "43"],
     ),
     (
         "dashboard::d_dismisses_a_row_and_it_stays_gone_after_reopening",
-        &["43"],
+        &["41", "43"],
     ),
     (
         "dashboard::a_closed_terminals_session_leaves_and_the_selection_moves_to_the_next",
@@ -170,21 +170,21 @@ pub const NATIVE_NEEDS: &[(&str, &[&str])] = &[
     ),
     (
         "dashboard::i_types_into_the_previewed_terminal_and_esc_is_never_sent",
-        &["43"],
+        &["41", "43"],
     ),
     (
         "dashboard::esc_and_a_key_in_one_read_leave_interactive_preview_unsent",
-        &["43"],
+        &["41", "43"],
     ),
     (
         "dashboard::x_asks_while_claude_runs_then_returns_to_the_dashboard",
-        &["43"],
+        &["41", "43"],
     ),
     (
         "dashboard::a_click_outside_the_close_question_cancels_it_back_to_the_dashboard",
-        &["43"],
+        &["41", "43"],
     ),
-    ("dashboard::f_forks_the_selected_session", &["43"]),
+    ("dashboard::f_forks_the_selected_session", &["41", "43"]),
     (
         "external::an_external_session_shows_dim_and_last_with_its_state_and_branch",
         &["43"],
@@ -363,25 +363,28 @@ pub const NATIVE_NEEDS: &[(&str, &[&str])] = &[
     ),
     (
         "sessions::enter_on_an_agent_jumps_to_its_space_tab_and_pane",
-        &["42", "43"],
+        &["41", "42", "43"],
     ),
     (
         "sessions::c_a_s_starts_on_the_current_space_when_no_agent_is_focused",
-        &["42", "43"],
+        &["41", "42", "43"],
     ),
     (
         "sessions::the_focused_agent_has_the_current_background",
-        &["43"],
+        &["41", "43"],
     ),
     (
         "sessions::c_a_s_starts_on_the_focused_agent_even_with_the_sidebar_hidden",
-        &["43"],
+        &["41", "43"],
     ),
     (
         "sessions::clicking_an_agent_row_jumps_to_its_pane",
-        &["42", "43"],
+        &["41", "42", "43"],
     ),
-    ("sessions::x_on_an_agent_row_closes_its_pane", &["42", "43"]),
+    (
+        "sessions::x_on_an_agent_row_closes_its_pane",
+        &["41", "42", "43"],
+    ),
     ("sessions::parallel_hooks_never_interleave_records", &["43"]),
     ("sessions::dragging_the_border_resizes_the_sidebar", &["42"]),
     (
@@ -635,10 +638,16 @@ pub fn check() {
     if !super::backend::native() {
         return;
     }
-    // libtest names each test's thread after the test.
+    // libtest names each test's thread after the test, with one test
+    // thread too (`--test-threads=1`, Rust 1.93; checked by
+    // `tests/native_server.rs`). Without a name this check cannot say,
+    // and only the script's skips hold.
     let Some(test) = std::thread::current().name().map(str::to_owned) else {
         return;
     };
+    if test == "main" {
+        return;
+    }
     let path = format!("{}::{test}", env!("CARGO_CRATE_NAME"));
     if let Some((_, tickets)) = NATIVE_NEEDS.iter().find(|(p, _)| *p == path) {
         panic!(

@@ -412,10 +412,42 @@ fn a_request_after_attaching_closes_the_connection_unanswered() {
     }
 }
 
+/// The test functions in a test file's source: the `fn` after each
+/// `#[test]`, past any other attributes. Tests in a nested module would
+/// be named by its path, which this does not read: it refuses them.
+fn tests_in(file: &str, text: &str) -> Vec<String> {
+    let mut lines = text.lines().map(str::trim);
+    let mut tests = Vec::new();
+    while let Some(line) = lines.next() {
+        assert!(
+            !(line.starts_with("mod ") && line.ends_with('{')),
+            "{file}: a nested module ({line}): name its tests by its path here"
+        );
+        if line != "#[test]" {
+            continue;
+        }
+        let item = lines
+            .by_ref()
+            .find(|l| !l.is_empty() && !l.starts_with("#[") && !l.starts_with("//"))
+            .unwrap_or_default();
+        let name = item
+            .strip_prefix("fn ")
+            .and_then(|rest| rest.split('(').next())
+            .unwrap_or_else(|| panic!("{file}: no fn after #[test]: {item}"));
+        tests.push(name.to_string());
+    }
+    tests
+}
+
 /// Every entry of the native skip list is a test, and its `--skip` (a
 /// substring match) leaves out no test it does not list.
 #[test]
 fn the_native_skip_list_names_tests_and_skips_only_those() {
+    // native_skip::check() reads the running test's name from its thread.
+    assert_eq!(
+        std::thread::current().name(),
+        Some("the_native_skip_list_names_tests_and_skips_only_those")
+    );
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
     let mut tests = Vec::new();
     for entry in std::fs::read_dir(&dir).unwrap() {
@@ -425,9 +457,8 @@ fn the_native_skip_list_names_tests_and_skips_only_those() {
         }
         let file = path.file_stem().unwrap().to_string_lossy().into_owned();
         let text = std::fs::read_to_string(&path).unwrap();
-        for test in text.split("#[test]\nfn ").skip(1) {
-            let name = test.split('(').next().unwrap();
-            tests.push((file.clone(), name.to_string()));
+        for name in tests_in(&file, &text) {
+            tests.push((file.clone(), name));
         }
     }
     let listed = |file: &str, name: &str| {
@@ -448,4 +479,11 @@ fn the_native_skip_list_names_tests_and_skips_only_those() {
             );
         }
     }
+}
+
+#[test]
+fn test_functions_are_found_past_other_attributes() {
+    let text =
+        "#[test]\n#[ignore = \"slow\"]\n\nfn one() {}\nfn helper() {}\n#[test]\nfn two() {}\n";
+    assert_eq!(tests_in("x", text), ["one", "two"]);
 }
