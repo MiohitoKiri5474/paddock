@@ -320,7 +320,7 @@ fn without_paddock_on_path_the_plugin_hooks_exit_0_silently() {
 }
 
 #[test]
-fn the_plugin_hooks_alone_record_every_event_once() {
+fn native_needs_43_the_plugin_hooks_alone_record_every_event_once() {
     let sandbox = Sandbox::new();
     sandbox.add_paddock();
     let commands = hook_commands(&plugin_hooks());
@@ -331,7 +331,7 @@ fn the_plugin_hooks_alone_record_every_event_once() {
 }
 
 #[test]
-fn the_plugin_and_settings_hooks_together_record_every_event_once() {
+fn native_needs_43_the_plugin_and_settings_hooks_together_record_every_event_once() {
     let sandbox = Sandbox::new();
     sandbox.add_paddock();
     let out = sandbox.run(PADDOCK, &["hooks", "install"], "");
@@ -454,7 +454,7 @@ fn hooks_install_refuses_an_unknown_agent_and_touches_nothing() {
 }
 
 #[test]
-fn a_hook_naming_claude_records_as_claudes_and_an_unknown_one_stays_silent() {
+fn native_needs_43_a_hook_naming_claude_records_as_claudes_and_an_unknown_one_stays_silent() {
     let sandbox = Sandbox::new();
     let run = |args: &[&str]| {
         let out = sandbox.run_where(true, PADDOCK, args, PAYLOAD);

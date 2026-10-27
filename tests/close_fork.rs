@@ -64,7 +64,7 @@ fn wait_for_items(paddock: &Paddock, sandbox: &Sandbox, want: &[&str]) {
 }
 
 #[test]
-fn x_closes_an_idle_session_without_asking() {
+fn native_needs_43_x_closes_an_idle_session_without_asking() {
     let sandbox = Sandbox::new();
     let mut paddock = two_tabs(&sandbox);
     claude(&sandbox, "space-1:1", "Stop", "s2");
@@ -78,7 +78,7 @@ fn x_closes_an_idle_session_without_asking() {
 }
 
 #[test]
-fn x_asks_while_claude_is_running() {
+fn native_needs_43_x_asks_while_claude_is_running() {
     let sandbox = Sandbox::new();
     let mut paddock = two_tabs(&sandbox);
     claude(&sandbox, "space-1:1", "UserPromptSubmit", "s2");
@@ -98,7 +98,7 @@ fn x_asks_while_claude_is_running() {
 }
 
 #[test]
-fn the_question_shows_even_with_many_tabs() {
+fn native_needs_43_the_question_shows_even_with_many_tabs() {
     let sandbox = Sandbox::new();
     let mut paddock = two_tabs(&sandbox);
     for n in 3..=5 {
@@ -116,7 +116,7 @@ fn the_question_shows_even_with_many_tabs() {
 }
 
 #[test]
-fn x_on_a_space_with_a_waiting_claude_asks_then_closes_the_space() {
+fn native_needs_43_x_on_a_space_with_a_waiting_claude_asks_then_closes_the_space() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     paddock.command(b"c");
@@ -137,7 +137,7 @@ fn x_on_a_space_with_a_waiting_claude_asks_then_closes_the_space() {
 }
 
 #[test]
-fn x_on_a_quiet_space_closes_it_without_asking() {
+fn native_needs_42_x_on_a_quiet_space_closes_it_without_asking() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     paddock.command(b"C\r");
@@ -169,7 +169,7 @@ fn repo(sandbox: &Sandbox) -> (String, String) {
 }
 
 #[test]
-fn f_forks_the_session_into_a_new_tab_in_its_directory() {
+fn native_needs_43_f_forks_the_session_into_a_new_tab_in_its_directory() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     let (dir, canonical) = repo(&sandbox);
@@ -192,7 +192,7 @@ fn f_forks_the_session_into_a_new_tab_in_its_directory() {
 }
 
 #[test]
-fn f_on_a_space_forks_its_agent_into_a_new_tab_of_that_space() {
+fn native_needs_43_f_on_a_space_forks_its_agent_into_a_new_tab_of_that_space() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     paddock.command(b"C\r");
@@ -235,7 +235,7 @@ fn f_in_a_plain_shell_says_so_and_opens_nothing() {
 }
 
 #[test]
-fn closing_the_only_pane_of_a_spaces_only_tab_asks_to_close_the_space() {
+fn native_needs_43_closing_the_only_pane_of_a_spaces_only_tab_asks_to_close_the_space() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     claude(&sandbox, "space-1:0", "UserPromptSubmit", "s1");
@@ -249,7 +249,7 @@ fn closing_the_only_pane_of_a_spaces_only_tab_asks_to_close_the_space() {
 }
 
 #[test]
-fn a_busy_close_asked_from_the_sidebar_gives_the_sidebar_back() {
+fn native_needs_43_a_busy_close_asked_from_the_sidebar_gives_the_sidebar_back() {
     let sandbox = Sandbox::new();
     let mut paddock = two_tabs(&sandbox);
     claude(&sandbox, "space-1:1", "UserPromptSubmit", "s2");

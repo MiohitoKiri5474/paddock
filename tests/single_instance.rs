@@ -13,7 +13,7 @@ fn ready(sandbox: &Sandbox) -> Paddock {
 }
 
 #[test]
-fn accepting_take_over_closes_the_first_and_keeps_its_terminals() {
+fn native_needs_41_accepting_take_over_closes_the_first_and_keeps_its_terminals() {
     let sandbox = Sandbox::new();
     let mut first = ready(&sandbox);
     first.command(b"c");

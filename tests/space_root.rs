@@ -90,7 +90,7 @@ fn repo(sandbox: &Sandbox) -> PathBuf {
 }
 
 #[test]
-fn the_first_space_and_c_a_c_take_the_focused_directory_as_root() {
+fn native_needs_42_the_first_space_and_c_a_c_take_the_focused_directory_as_root() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     assert_eq!(
@@ -114,7 +114,7 @@ fn the_first_space_and_c_a_c_take_the_focused_directory_as_root() {
 }
 
 #[test]
-fn a_worktree_space_s_root_is_its_worktree_from_the_keys_and_the_command() {
+fn native_needs_42_a_worktree_space_s_root_is_its_worktree_from_the_keys_and_the_command() {
     let sandbox = Sandbox::new();
     let repo = repo(&sandbox);
     let mut paddock = ready(&sandbox);
@@ -144,7 +144,7 @@ fn a_worktree_space_s_root_is_its_worktree_from_the_keys_and_the_command() {
 }
 
 #[test]
-fn by_default_new_tabs_and_splits_start_in_the_focused_directory() {
+fn native_needs_42_by_default_new_tabs_and_splits_start_in_the_focused_directory() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     let b = dir(&sandbox, "b");
@@ -161,7 +161,7 @@ fn by_default_new_tabs_and_splits_start_in_the_focused_directory() {
 }
 
 #[test]
-fn with_root_new_tabs_and_splits_start_in_the_space_s_root() {
+fn native_needs_42_with_root_new_tabs_and_splits_start_in_the_space_s_root() {
     let sandbox = Sandbox::new();
     sandbox.write_config(ROOT_MODE);
     let mut paddock = ready(&sandbox);
@@ -181,7 +181,7 @@ fn with_root_new_tabs_and_splits_start_in_the_space_s_root() {
 }
 
 #[test]
-fn c_a_r_makes_the_focused_directory_the_root_with_a_notice() {
+fn native_needs_42_c_a_r_makes_the_focused_directory_the_root_with_a_notice() {
     let sandbox = Sandbox::new();
     sandbox.write_config(ROOT_MODE);
     let mut paddock = ready(&sandbox);
@@ -253,7 +253,7 @@ fn the_finder_shows_a_space_s_root() {
 }
 
 #[test]
-fn the_finder_shows_a_worktree_space_s_root_with_its_branch() {
+fn native_needs_42_the_finder_shows_a_worktree_space_s_root_with_its_branch() {
     let sandbox = Sandbox::new();
     let repo = repo(&sandbox);
     let mut paddock = ready(&sandbox);

@@ -65,7 +65,7 @@ fn settle(paddock: &mut Paddock) {
 }
 
 #[test]
-fn waiting_and_finished_turns_notify_once_each() {
+fn native_needs_43_waiting_and_finished_turns_notify_once_each() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     new_tab(&mut paddock, "2:home"); // look away from the first tab
@@ -94,7 +94,7 @@ fn waiting_and_finished_turns_notify_once_each() {
 }
 
 #[test]
-fn the_terminal_you_look_at_never_notifies() {
+fn native_needs_43_the_terminal_you_look_at_never_notifies() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     hooks(
@@ -130,7 +130,7 @@ fn the_terminal_you_look_at_never_notifies() {
 }
 
 #[test]
-fn events_while_paddock_is_closed_never_notify() {
+fn native_needs_43_events_while_paddock_is_closed_never_notify() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     new_tab(&mut paddock, "2:home"); // reopens on the second tab
@@ -159,7 +159,7 @@ fn events_while_paddock_is_closed_never_notify() {
 }
 
 #[test]
-fn c_a_a_cycles_through_sessions_that_need_you() {
+fn native_needs_43_c_a_a_cycles_through_sessions_that_need_you() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     paddock.command(b"a");
@@ -208,7 +208,7 @@ fn c_a_a_cycles_through_sessions_that_need_you() {
 }
 
 #[test]
-fn c_a_a_focuses_the_split_running_the_session() {
+fn native_needs_43_c_a_a_focuses_the_split_running_the_session() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     paddock.command(b"|");
@@ -232,7 +232,7 @@ fn c_a_a_focuses_the_split_running_the_session() {
 }
 
 #[test]
-fn a_turn_finished_out_of_sight_is_done_until_you_look_at_it() {
+fn native_needs_43_a_turn_finished_out_of_sight_is_done_until_you_look_at_it() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     new_tab(&mut paddock, "2:home");
@@ -249,7 +249,7 @@ fn a_turn_finished_out_of_sight_is_done_until_you_look_at_it() {
 }
 
 #[test]
-fn a_turn_finished_in_a_split_hidden_by_a_zoom_is_done_until_unzoomed() {
+fn native_needs_43_a_turn_finished_in_a_split_hidden_by_a_zoom_is_done_until_unzoomed() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     paddock.command(b"|");
@@ -270,7 +270,7 @@ fn a_turn_finished_in_a_split_hidden_by_a_zoom_is_done_until_unzoomed() {
 }
 
 #[test]
-fn c_a_a_to_a_split_hidden_by_a_zoom_gives_the_layout_back_focused_there() {
+fn native_needs_43_c_a_a_to_a_split_hidden_by_a_zoom_gives_the_layout_back_focused_there() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     paddock.command(b"|");
@@ -292,7 +292,7 @@ fn c_a_a_to_a_split_hidden_by_a_zoom_gives_the_layout_back_focused_there() {
 }
 
 #[test]
-fn a_turn_finished_in_view_is_idle_at_once() {
+fn native_needs_43_a_turn_finished_in_view_is_idle_at_once() {
     let sandbox = Sandbox::new();
     let paddock = ready(&sandbox);
 
@@ -303,7 +303,7 @@ fn a_turn_finished_in_view_is_idle_at_once() {
 }
 
 #[test]
-fn a_notifier_that_fails_says_so_in_a_notice() {
+fn native_needs_43_a_notifier_that_fails_says_so_in_a_notice() {
     let sandbox = Sandbox::new();
     let stub = sandbox.path("bin/osascript");
     std::fs::write(&stub, "#!/bin/sh\necho 'syntax error' >&2\nexit 1\n").unwrap();
@@ -320,7 +320,7 @@ fn a_notifier_that_fails_says_so_in_a_notice() {
 }
 
 #[test]
-fn finished_turns_can_stop_notifying_while_waits_still_do() {
+fn native_needs_43_finished_turns_can_stop_notifying_while_waits_still_do() {
     let sandbox = Sandbox::new();
     sandbox.write_config("[notify]\nidle = false\n");
     let mut paddock = ready(&sandbox);
@@ -340,7 +340,7 @@ fn finished_turns_can_stop_notifying_while_waits_still_do() {
 }
 
 #[test]
-fn waits_can_stop_notifying_while_finished_turns_still_do() {
+fn native_needs_43_waits_can_stop_notifying_while_finished_turns_still_do() {
     let sandbox = Sandbox::new();
     sandbox.write_config("[notify]\nwaiting = false\n");
     let mut paddock = ready(&sandbox);
@@ -360,7 +360,7 @@ fn waits_can_stop_notifying_while_finished_turns_still_do() {
 }
 
 #[test]
-fn turning_waits_off_silences_a_subagents_wait_too() {
+fn native_needs_43_turning_waits_off_silences_a_subagents_wait_too() {
     let sandbox = Sandbox::new();
     sandbox.write_config("[notify]\nwaiting = false\n");
     let mut paddock = ready(&sandbox);

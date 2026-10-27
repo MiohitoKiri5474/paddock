@@ -113,7 +113,7 @@ fn wait_for_worktree_row(paddock: &Paddock, name: &str) {
 }
 
 #[test]
-fn c_a_w_makes_a_worktree_and_a_space_in_it() {
+fn native_needs_42_c_a_w_makes_a_worktree_and_a_space_in_it() {
     let sandbox = Sandbox::new();
     let dir = repo(&sandbox);
     let mut paddock = in_repo(&sandbox, &dir);
@@ -135,7 +135,7 @@ fn c_a_w_makes_a_worktree_and_a_space_in_it() {
 }
 
 #[test]
-fn an_existing_branch_is_checked_out_and_bad_names_or_git_errors_make_nothing() {
+fn native_needs_42_an_existing_branch_is_checked_out_and_bad_names_or_git_errors_make_nothing() {
     let sandbox = Sandbox::new();
     let dir = repo(&sandbox);
     git(&dir, &["branch", "feat/y"]);
@@ -169,7 +169,7 @@ fn an_existing_branch_is_checked_out_and_bad_names_or_git_errors_make_nothing() 
 }
 
 #[test]
-fn c_a_o_lists_worktrees_without_a_space_and_opens_one() {
+fn native_needs_42_c_a_o_lists_worktrees_without_a_space_and_opens_one() {
     let sandbox = Sandbox::new();
     let dir = repo(&sandbox);
     let other = sandbox.path("wt/feat-o");
@@ -228,7 +228,7 @@ fn open_listed(paddock: &mut Paddock, name: &str) {
 }
 
 #[test]
-fn x_on_a_clean_merged_worktree_space_deletes_it_after_one_yes() {
+fn native_needs_42_x_on_a_clean_merged_worktree_space_deletes_it_after_one_yes() {
     let sandbox = Sandbox::new();
     let dir = repo(&sandbox);
     let mut paddock = in_repo(&sandbox, &dir);
@@ -260,7 +260,7 @@ fn x_on_a_clean_merged_worktree_space_deletes_it_after_one_yes() {
 }
 
 #[test]
-fn x_on_a_dirty_worktree_space_asks_again_naming_the_risk() {
+fn native_needs_42_x_on_a_dirty_worktree_space_asks_again_naming_the_risk() {
     let sandbox = Sandbox::new();
     let dir = repo(&sandbox);
     let mut paddock = in_repo(&sandbox, &dir);
@@ -286,7 +286,7 @@ fn x_on_a_dirty_worktree_space_asks_again_naming_the_risk() {
 }
 
 #[test]
-fn a_dirty_unmerged_worktree_names_both_risks_and_the_branch_is_kept() {
+fn native_needs_42_a_dirty_unmerged_worktree_names_both_risks_and_the_branch_is_kept() {
     let sandbox = Sandbox::new();
     let dir = repo(&sandbox);
     let mut paddock = in_repo(&sandbox, &dir);
@@ -317,7 +317,7 @@ fn a_dirty_unmerged_worktree_names_both_risks_and_the_branch_is_kept() {
 }
 
 #[test]
-fn commits_made_after_the_question_are_never_lost() {
+fn native_needs_42_commits_made_after_the_question_are_never_lost() {
     let sandbox = Sandbox::new();
     let dir = repo(&sandbox);
     let mut paddock = in_repo(&sandbox, &dir);
@@ -344,7 +344,7 @@ fn commits_made_after_the_question_are_never_lost() {
 }
 
 #[test]
-fn every_space_in_the_worktree_closes_with_it() {
+fn native_needs_42_every_space_in_the_worktree_closes_with_it() {
     let sandbox = Sandbox::new();
     let dir = repo(&sandbox);
     let mut paddock = in_repo(&sandbox, &dir);
@@ -380,7 +380,7 @@ fn every_space_in_the_worktree_closes_with_it() {
 }
 
 #[test]
-fn changes_made_after_the_question_are_never_forced_away() {
+fn native_needs_42_changes_made_after_the_question_are_never_forced_away() {
     let sandbox = Sandbox::new();
     let dir = repo(&sandbox);
     let mut paddock = in_repo(&sandbox, &dir);
@@ -403,7 +403,7 @@ fn changes_made_after_the_question_are_never_forced_away() {
 }
 
 #[test]
-fn a_detached_worktree_with_its_own_commits_asks_again() {
+fn native_needs_42_a_detached_worktree_with_its_own_commits_asks_again() {
     let sandbox = Sandbox::new();
     let dir = repo(&sandbox);
     let path = worktree(&sandbox, "loose");
@@ -429,7 +429,7 @@ fn a_detached_worktree_with_its_own_commits_asks_again() {
 }
 
 #[test]
-fn x_on_a_worktree_space_paddock_did_not_make_only_closes_it() {
+fn native_needs_42_x_on_a_worktree_space_paddock_did_not_make_only_closes_it() {
     let sandbox = Sandbox::new();
     let dir = repo(&sandbox);
     // As Claude's worktree isolation makes them: inside the repository.
@@ -457,7 +457,7 @@ fn x_on_a_worktree_space_paddock_did_not_make_only_closes_it() {
 }
 
 #[test]
-fn the_main_checkout_is_never_deleted() {
+fn native_needs_42_the_main_checkout_is_never_deleted() {
     let sandbox = Sandbox::new();
     sandbox.write_config("[keys.commands]\ndelete_worktree = \"X\"\n");
     let dir = repo(&sandbox);

@@ -116,7 +116,7 @@ fn new_tab(paddock: &mut Paddock, label: &str) {
 }
 
 #[test]
-fn hook_events_drive_the_agent_row() {
+fn native_needs_43_hook_events_drive_the_agent_row() {
     let sandbox = Sandbox::new();
     let paddock = ready(&sandbox);
     wait_for_lines(&paddock, &no_agents());
@@ -190,7 +190,7 @@ fn tmux_only_hooks_outside_paddock_say_nothing_and_go_to_the_external_log() {
 }
 
 #[test]
-fn agents_of_every_space_are_listed_with_their_space_and_tab() {
+fn native_needs_43_agents_of_every_space_are_listed_with_their_space_and_tab() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     new_tab(&mut paddock, "2:home");
@@ -232,7 +232,7 @@ fn agents_of_every_space_are_listed_with_their_space_and_tab() {
 }
 
 #[test]
-fn events_recorded_while_paddock_is_closed_appear_on_reopen() {
+fn native_needs_43_events_recorded_while_paddock_is_closed_appear_on_reopen() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     paddock.detach_keys();
@@ -250,7 +250,7 @@ fn events_recorded_while_paddock_is_closed_appear_on_reopen() {
 }
 
 #[test]
-fn claude_agents_corrects_missed_events() {
+fn native_needs_43_claude_agents_corrects_missed_events() {
     let sandbox = Sandbox::new();
     let paddock = ready(&sandbox);
     sandbox.hook("space-1", "UserPromptSubmit", &payload("UserPromptSubmit"));
@@ -280,7 +280,7 @@ fn claude_agents_finds_sessions_no_hook_reported() {
 }
 
 #[test]
-fn c_a_w_selects_the_current_space_and_esc_leaves_without_switching() {
+fn native_needs_42_c_a_w_selects_the_current_space_and_esc_leaves_without_switching() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     paddock.command(b"C\r");
@@ -340,7 +340,7 @@ fn wait_in_tab(paddock: &Paddock, sandbox: &Sandbox, tab: usize, text: &str) {
 }
 
 #[test]
-fn enter_on_an_agent_jumps_to_its_space_tab_and_pane() {
+fn native_needs_43_enter_on_an_agent_jumps_to_its_space_tab_and_pane() {
     let sandbox = Sandbox::new();
     let mut paddock = agent_in_another_space(&sandbox);
 
@@ -358,7 +358,7 @@ fn enter_on_an_agent_jumps_to_its_space_tab_and_pane() {
 }
 
 #[test]
-fn c_a_s_starts_on_the_current_space_when_no_agent_is_focused() {
+fn native_needs_43_c_a_s_starts_on_the_current_space_when_no_agent_is_focused() {
     let sandbox = Sandbox::new();
     let mut paddock = agent_in_another_space(&sandbox);
 
@@ -397,7 +397,7 @@ fn focused_agent_second(sandbox: &Sandbox) -> Paddock {
 }
 
 #[test]
-fn the_focused_agent_has_the_current_background() {
+fn native_needs_43_the_focused_agent_has_the_current_background() {
     let sandbox = Sandbox::new();
     let paddock = focused_agent_second(&sandbox);
 
@@ -419,7 +419,7 @@ fn the_focused_agent_has_the_current_background() {
 }
 
 #[test]
-fn c_a_s_starts_on_the_focused_agent_even_with_the_sidebar_hidden() {
+fn native_needs_43_c_a_s_starts_on_the_focused_agent_even_with_the_sidebar_hidden() {
     let sandbox = Sandbox::new();
     let mut paddock = focused_agent_second(&sandbox);
 
@@ -439,7 +439,7 @@ fn c_a_s_starts_on_the_focused_agent_even_with_the_sidebar_hidden() {
 }
 
 #[test]
-fn clicking_an_agent_row_jumps_to_its_pane() {
+fn native_needs_43_clicking_an_agent_row_jumps_to_its_pane() {
     let sandbox = Sandbox::new();
     let mut paddock = agent_in_another_space(&sandbox);
 
@@ -452,7 +452,7 @@ fn clicking_an_agent_row_jumps_to_its_pane() {
 }
 
 #[test]
-fn x_on_an_agent_row_closes_its_pane() {
+fn native_needs_43_x_on_an_agent_row_closes_its_pane() {
     let sandbox = Sandbox::new();
     let mut paddock = agent_in_another_space(&sandbox);
 
@@ -479,7 +479,7 @@ fn wait_for_width(sandbox: &Sandbox, cols: u16) {
 }
 
 #[test]
-fn parallel_hooks_never_interleave_records() {
+fn native_needs_43_parallel_hooks_never_interleave_records() {
     let sandbox = Sandbox::new();
     let _paddock = ready(&sandbox);
     let big = payload("Stop").replace("Both subagents", &"x".repeat(20_000));
@@ -579,7 +579,7 @@ fn the_sidebar_never_gets_narrower_than_sixteen_or_wider_than_half() {
 }
 
 #[test]
-fn dragging_the_border_resizes_the_sidebar() {
+fn native_needs_42_dragging_the_border_resizes_the_sidebar() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     paddock.command(b"C\r"); // a second space, so a stray click would switch
@@ -605,7 +605,7 @@ fn the_config_sets_the_starting_width() {
 }
 
 #[test]
-fn a_click_on_the_border_without_a_drag_is_a_click_on_the_row() {
+fn native_needs_42_a_click_on_the_border_without_a_drag_is_a_click_on_the_row() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     paddock.command(b"C\r");

@@ -58,7 +58,7 @@ fn zoom(sandbox: &Sandbox, p: &mut Paddock) {
 }
 
 #[test]
-fn z_zooms_the_focused_split_and_again_gives_the_layout_back() {
+fn native_needs_41_z_zooms_the_focused_split_and_again_gives_the_layout_back() {
     let sandbox = Sandbox::new();
     let mut p = split(&sandbox);
 
@@ -79,7 +79,7 @@ fn z_zooms_the_focused_split_and_again_gives_the_layout_back() {
 }
 
 #[test]
-fn a_click_in_the_zoomed_split_keeps_it_zoomed_and_focused() {
+fn native_needs_41_a_click_in_the_zoomed_split_keeps_it_zoomed_and_focused() {
     let sandbox = Sandbox::new();
     let mut p = split(&sandbox);
     zoom(&sandbox, &mut p);
@@ -94,7 +94,7 @@ fn a_click_in_the_zoomed_split_keeps_it_zoomed_and_focused() {
 }
 
 #[test]
-fn moving_focus_while_zoomed_unzooms_then_moves() {
+fn native_needs_41_moving_focus_while_zoomed_unzooms_then_moves() {
     let sandbox = Sandbox::new();
     let mut p = split(&sandbox);
     zoom(&sandbox, &mut p);
@@ -123,7 +123,7 @@ fn zoom_left(sandbox: &Sandbox, p: &mut Paddock) {
 }
 
 #[test]
-fn splitting_while_zoomed_unzooms() {
+fn native_needs_41_splitting_while_zoomed_unzooms() {
     let sandbox = Sandbox::new();
     let mut p = split(&sandbox);
     zoom(&sandbox, &mut p);
@@ -137,7 +137,7 @@ fn splitting_while_zoomed_unzooms() {
 }
 
 #[test]
-fn evening_out_while_zoomed_unzooms_then_evens_out() {
+fn native_needs_41_evening_out_while_zoomed_unzooms_then_evens_out() {
     let sandbox = Sandbox::new();
     let mut p = split(&sandbox);
     p.command(b"|");
@@ -155,7 +155,7 @@ fn evening_out_while_zoomed_unzooms_then_evens_out() {
 }
 
 #[test]
-fn closing_the_zoomed_split_unzooms() {
+fn native_needs_41_closing_the_zoomed_split_unzooms() {
     let sandbox = Sandbox::new();
     let mut p = split(&sandbox);
     p.command(b"|");
@@ -194,7 +194,7 @@ fn tmux_only_a_zoom_made_outside_paddock_shows() {
 }
 
 #[test]
-fn a_zoom_survives_detach_and_relaunch() {
+fn native_needs_41_a_zoom_survives_detach_and_relaunch() {
     let sandbox = Sandbox::new();
     let mut p = split(&sandbox);
     zoom(&sandbox, &mut p);

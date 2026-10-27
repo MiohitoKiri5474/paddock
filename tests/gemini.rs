@@ -51,7 +51,7 @@ fn wait_row(paddock: &Paddock, what: &str, parts: &[&str]) {
 }
 
 #[test]
-fn a_gemini_session_goes_working_waiting_idle_then_ends() {
+fn native_needs_43_a_gemini_session_goes_working_waiting_idle_then_ends() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     // Gemini runs in the first tab; the second is the one looked at, so
@@ -97,7 +97,7 @@ fn a_gemini_session_goes_working_waiting_idle_then_ends() {
 }
 
 #[test]
-fn fork_refuses_a_gemini_session() {
+fn native_needs_43_fork_refuses_a_gemini_session() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     gemini(&sandbox, "space-1:0", &["SessionStart"]);

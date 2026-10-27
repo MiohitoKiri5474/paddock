@@ -79,7 +79,7 @@ fn wait_hidden(paddock: &Paddock) {
 }
 
 #[test]
-fn the_key_shows_a_float_over_everything_and_hides_it_with_its_program_kept() {
+fn native_needs_42_the_key_shows_a_float_over_everything_and_hides_it_with_its_program_kept() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     let work = sandbox.path("work");
@@ -119,7 +119,7 @@ fn the_key_shows_a_float_over_everything_and_hides_it_with_its_program_kept() {
 }
 
 #[test]
-fn keys_go_to_the_float_and_not_to_the_terminal_under_it() {
+fn native_needs_42_keys_go_to_the_float_and_not_to_the_terminal_under_it() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
 
@@ -133,7 +133,7 @@ fn keys_go_to_the_float_and_not_to_the_terminal_under_it() {
 }
 
 #[test]
-fn when_its_program_exits_the_float_closes_and_the_next_toggle_starts_it_again() {
+fn native_needs_42_when_its_program_exits_the_float_closes_and_the_next_toggle_starts_it_again() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
 
@@ -157,7 +157,7 @@ fn when_its_program_exits_the_float_closes_and_the_next_toggle_starts_it_again()
 }
 
 #[test]
-fn a_command_that_changes_the_page_hides_the_float_and_tabs_never_include_it() {
+fn native_needs_42_a_command_that_changes_the_page_hides_the_float_and_tabs_never_include_it() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
 
@@ -180,7 +180,7 @@ fn a_command_that_changes_the_page_hides_the_float_and_tabs_never_include_it() {
 }
 
 #[test]
-fn each_space_has_its_own_float() {
+fn native_needs_42_each_space_has_its_own_float() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
 
@@ -207,7 +207,7 @@ fn each_space_has_its_own_float() {
 }
 
 #[test]
-fn closing_the_last_tab_closes_its_space_with_the_float() {
+fn native_needs_42_closing_the_last_tab_closes_its_space_with_the_float() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
 
@@ -223,7 +223,7 @@ fn closing_the_last_tab_closes_its_space_with_the_float() {
 }
 
 #[test]
-fn pasted_text_goes_to_the_float() {
+fn native_needs_42_pasted_text_goes_to_the_float() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
 
@@ -237,7 +237,7 @@ fn pasted_text_goes_to_the_float() {
 }
 
 #[test]
-fn a_click_outside_the_float_does_nothing() {
+fn native_needs_42_a_click_outside_the_float_does_nothing() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     paddock.wait_for_tabs(&["1:home"]);
@@ -270,7 +270,7 @@ fn waiting(id: &str, cwd: &str) -> String {
 }
 
 #[test]
-fn claude_in_a_float_is_not_followed() {
+fn native_needs_42_claude_in_a_float_is_not_followed() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     let shell = tab_panes(&sandbox, "space-1").remove(0);
@@ -299,7 +299,7 @@ fn claude_in_a_float_is_not_followed() {
 }
 
 #[test]
-fn a_float_on_the_semicolon_key_opens() {
+fn native_needs_42_a_float_on_the_semicolon_key_opens() {
     let sandbox = Sandbox::new();
     sandbox.write_config("[floats]\nG = \"\"\n\";\" = \"cat\"\n");
     let mut paddock = sandbox.launch();
@@ -315,7 +315,7 @@ fn a_float_on_the_semicolon_key_opens() {
 }
 
 #[test]
-fn a_program_that_exits_at_once_gives_a_notice_and_never_a_tab() {
+fn native_needs_42_a_program_that_exits_at_once_gives_a_notice_and_never_a_tab() {
     let sandbox = Sandbox::new();
     sandbox.write_config("[floats]\nG = \"exit 3\"\n");
     let mut paddock = sandbox.launch();
@@ -332,7 +332,7 @@ fn a_program_that_exits_at_once_gives_a_notice_and_never_a_tab() {
 }
 
 #[test]
-fn hooks_from_a_float_that_has_closed_are_still_left_out() {
+fn native_needs_42_hooks_from_a_float_that_has_closed_are_still_left_out() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     let shell = tab_panes(&sandbox, "space-1").remove(0);
@@ -368,7 +368,7 @@ fn hooks_from_a_float_that_has_closed_are_still_left_out() {
 }
 
 #[test]
-fn a_float_whose_key_left_the_config_is_closed_at_the_next_start() {
+fn native_needs_42_a_float_whose_key_left_the_config_is_closed_at_the_next_start() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     paddock.command(b"G");
@@ -387,7 +387,7 @@ fn a_float_whose_key_left_the_config_is_closed_at_the_next_start() {
 }
 
 #[test]
-fn the_tab_under_a_float_is_not_looked_at() {
+fn native_needs_42_the_tab_under_a_float_is_not_looked_at() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     let shell = tab_panes(&sandbox, "space-1").remove(0);
@@ -408,7 +408,7 @@ G = "printf '\\033[?1000h\\033[?1006hready-for-mouse\\n'; exec cat"
 "#;
 
 #[test]
-fn clicks_and_the_wheel_inside_the_float_reach_its_pane() {
+fn native_needs_42_clicks_and_the_wheel_inside_the_float_reach_its_pane() {
     let sandbox = Sandbox::new();
     sandbox.write_config(MOUSE_CONFIG);
     let mut paddock = sandbox.launch();
@@ -429,7 +429,7 @@ fn clicks_and_the_wheel_inside_the_float_reach_its_pane() {
 }
 
 #[test]
-fn the_finder_opens_over_a_float_and_cancelling_leaves_it_shown() {
+fn native_needs_42_the_finder_opens_over_a_float_and_cancelling_leaves_it_shown() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     paddock.command(b"G");

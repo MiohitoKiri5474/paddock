@@ -41,7 +41,7 @@ fn split_side_by_side(p: &mut Paddock) {
 }
 
 #[test]
-fn pipe_splits_side_by_side_into_a_new_pane() {
+fn native_needs_41_pipe_splits_side_by_side_into_a_new_pane() {
     let sandbox = Sandbox::new();
     let mut p = ready(&sandbox);
 
@@ -59,7 +59,7 @@ fn pipe_splits_side_by_side_into_a_new_pane() {
 }
 
 #[test]
-fn minus_splits_top_and_bottom() {
+fn native_needs_41_minus_splits_top_and_bottom() {
     let sandbox = Sandbox::new();
     let mut p = ready(&sandbox);
 
@@ -75,7 +75,7 @@ fn minus_splits_top_and_bottom() {
 }
 
 #[test]
-fn hjkl_and_arrows_move_focus() {
+fn native_needs_41_hjkl_and_arrows_move_focus() {
     let sandbox = Sandbox::new();
     let mut p = ready(&sandbox);
     split_side_by_side(&mut p);
@@ -103,7 +103,7 @@ fn hjkl_and_arrows_move_focus() {
 }
 
 #[test]
-fn background_splits_keep_drawing_their_output() {
+fn native_needs_41_background_splits_keep_drawing_their_output() {
     let sandbox = Sandbox::new();
     let mut p = ready(&sandbox);
     p.type_line("sleep 1; echo printed-while-unfocused");
@@ -113,7 +113,7 @@ fn background_splits_keep_drawing_their_output() {
 }
 
 #[test]
-fn x_closes_only_the_focused_split_and_its_neighbour_takes_the_space() {
+fn native_needs_41_x_closes_only_the_focused_split_and_its_neighbour_takes_the_space() {
     let sandbox = Sandbox::new();
     let mut p = ready(&sandbox);
     split_side_by_side(&mut p);
@@ -128,7 +128,7 @@ fn x_closes_only_the_focused_split_and_its_neighbour_takes_the_space() {
 }
 
 #[test]
-fn a_shell_exiting_closes_only_its_split() {
+fn native_needs_41_a_shell_exiting_closes_only_its_split() {
     let sandbox = Sandbox::new();
     let mut p = ready(&sandbox);
     split_side_by_side(&mut p);
@@ -141,7 +141,7 @@ fn a_shell_exiting_closes_only_its_split() {
 }
 
 #[test]
-fn equals_gives_the_focused_split_and_its_neighbours_the_same_size() {
+fn native_needs_41_equals_gives_the_focused_split_and_its_neighbours_the_same_size() {
     let sandbox = Sandbox::new();
     let mut p = ready(&sandbox);
     split_side_by_side(&mut p);
@@ -155,7 +155,7 @@ fn equals_gives_the_focused_split_and_its_neighbours_the_same_size() {
 }
 
 #[test]
-fn splits_and_focus_come_back_after_detach_and_relaunch() {
+fn native_needs_41_splits_and_focus_come_back_after_detach_and_relaunch() {
     let sandbox = Sandbox::new();
     let mut p = ready(&sandbox);
     // Tab 1: left | (top over bottom). Tab 2: one pane.
@@ -189,7 +189,7 @@ fn splits_and_focus_come_back_after_detach_and_relaunch() {
 }
 
 #[test]
-fn the_layout_lives_in_the_backend_not_in_the_state_file() {
+fn native_needs_41_the_layout_lives_in_the_backend_not_in_the_state_file() {
     let sandbox = Sandbox::new();
     let mut p = ready(&sandbox);
     split_side_by_side(&mut p);
@@ -205,7 +205,7 @@ fn the_layout_lives_in_the_backend_not_in_the_state_file() {
 }
 
 #[test]
-fn an_unreadable_layout_is_kept_aside_not_overwritten() {
+fn native_needs_41_an_unreadable_layout_is_kept_aside_not_overwritten() {
     let sandbox = Sandbox::new();
     let mut p = ready(&sandbox);
     p.detach_keys();

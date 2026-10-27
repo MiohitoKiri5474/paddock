@@ -80,7 +80,7 @@ fn the_sidebar_shows_the_first_space_and_the_tab_bar_its_tab() {
 }
 
 #[test]
-fn c_opens_a_new_tab_in_the_current_space() {
+fn native_needs_41_c_opens_a_new_tab_in_the_current_space() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
 
@@ -96,7 +96,7 @@ fn c_opens_a_new_tab_in_the_current_space() {
 }
 
 #[test]
-fn capital_c_opens_a_new_space_with_its_own_tabs() {
+fn native_needs_41_capital_c_opens_a_new_space_with_its_own_tabs() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     new_tab(&mut paddock, &["1:home", "2:home"]);
@@ -112,7 +112,7 @@ fn capital_c_opens_a_new_space_with_its_own_tabs() {
 }
 
 #[test]
-fn picking_a_space_shows_its_tabs() {
+fn native_needs_41_picking_a_space_shows_its_tabs() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     paddock.type_line("echo first-item-marker");
@@ -138,7 +138,7 @@ fn picking_a_space_shows_its_tabs() {
 }
 
 #[test]
-fn the_current_space_has_its_own_background() {
+fn native_needs_41_the_current_space_has_its_own_background() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     paddock.command(b"C\r");
@@ -165,7 +165,7 @@ fn the_current_space_background_comes_from_the_config() {
 }
 
 #[test]
-fn n_p_and_numbers_switch_tabs_and_each_keeps_its_screen() {
+fn native_needs_41_n_p_and_numbers_switch_tabs_and_each_keeps_its_screen() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     paddock.type_line("echo first-tab-marker");
@@ -190,7 +190,7 @@ fn n_p_and_numbers_switch_tabs_and_each_keeps_its_screen() {
 }
 
 #[test]
-fn tabs_are_named_after_what_runs_in_them() {
+fn native_needs_41_tabs_are_named_after_what_runs_in_them() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     new_tab(&mut paddock, &["1:home", "2:home"]);
@@ -203,7 +203,7 @@ fn tabs_are_named_after_what_runs_in_them() {
 }
 
 #[test]
-fn background_tabs_keep_receiving_output() {
+fn native_needs_41_background_tabs_keep_receiving_output() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     paddock.type_line("sleep 1; echo done-while-hidden");
@@ -272,7 +272,7 @@ fn a_tab_and_a_space_keep_a_hash_in_their_name() {
 }
 
 #[test]
-fn renaming_a_space_to_a_taken_name_shows_an_error_and_keeps_the_old_name() {
+fn native_needs_41_renaming_a_space_to_a_taken_name_shows_an_error_and_keeps_the_old_name() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     paddock.command(b"C\r");
@@ -313,7 +313,7 @@ fn renaming_can_be_cancelled_and_does_not_reach_the_shell() {
 }
 
 #[test]
-fn x_closes_the_tab_with_its_last_split() {
+fn native_needs_41_x_closes_the_tab_with_its_last_split() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     new_tab(&mut paddock, &["1:home", "2:home"]);
@@ -326,7 +326,7 @@ fn x_closes_the_tab_with_its_last_split() {
 }
 
 #[test]
-fn closing_a_spaces_last_tab_closes_the_space() {
+fn native_needs_41_closing_a_spaces_last_tab_closes_the_space() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     paddock.command(b"C\r");
@@ -353,7 +353,7 @@ fn closing_the_last_terminal_quits_paddock() {
 }
 
 #[test]
-fn a_shell_exiting_closes_only_its_tab() {
+fn native_needs_41_a_shell_exiting_closes_only_its_tab() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     new_tab(&mut paddock, &["1:home", "2:home"]);
@@ -413,7 +413,7 @@ fn prefix_twice_sends_a_literal_prefix() {
 }
 
 #[test]
-fn reattaching_shows_every_space_and_tab_as_the_backend_has_them() {
+fn native_needs_41_reattaching_shows_every_space_and_tab_as_the_backend_has_them() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     new_tab(&mut paddock, &["1:home", "2:home"]);
@@ -459,7 +459,7 @@ fn tmux_only_sessions_of_an_older_paddock_open_as_one_space_each() {
 }
 
 #[test]
-fn the_prefix_comes_from_the_config_file() {
+fn native_needs_41_the_prefix_comes_from_the_config_file() {
     let sandbox = Sandbox::new();
     sandbox.write_config("[keys]\nprefix = \"C-b\"\n");
     let mut paddock = ready(&sandbox);
@@ -527,7 +527,7 @@ fn reattach_while_streaming(sandbox: &Sandbox, mut paddock: Paddock) -> Paddock 
 }
 
 #[test]
-fn reattaching_while_a_background_tab_streams_loses_nothing() {
+fn native_needs_41_reattaching_while_a_background_tab_streams_loses_nothing() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     new_tab(&mut paddock, &["1:home", "2:home"]);
@@ -545,7 +545,7 @@ fn reattaching_while_a_background_tab_streams_loses_nothing() {
 }
 
 #[test]
-fn reattaching_a_split_tab_while_one_split_streams_loses_nothing() {
+fn native_needs_41_reattaching_a_split_tab_while_one_split_streams_loses_nothing() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     paddock.command(b"-");
@@ -641,7 +641,7 @@ fn a_space_shows_its_directory_and_git_branch() {
 }
 
 #[test]
-fn c_a_angle_brackets_move_the_tab_left_and_right() {
+fn native_needs_41_c_a_angle_brackets_move_the_tab_left_and_right() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     new_tab(&mut paddock, &["1:home", "2:home"]);
@@ -668,7 +668,7 @@ fn c_a_angle_brackets_move_the_tab_left_and_right() {
 }
 
 #[test]
-fn c_a_tab_goes_back_to_the_last_page_across_spaces() {
+fn native_needs_41_c_a_tab_goes_back_to_the_last_page_across_spaces() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     paddock.command(b"\t");
@@ -695,7 +695,7 @@ fn c_a_tab_goes_back_to_the_last_page_across_spaces() {
 }
 
 #[test]
-fn c_a_tab_skips_a_closed_page_for_an_older_one() {
+fn native_needs_41_c_a_tab_skips_a_closed_page_for_an_older_one() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox); // A1
     paddock.command(b"C\r"); // space-2: B1
