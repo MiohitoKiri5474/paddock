@@ -154,6 +154,10 @@ impl Scanner {
                     self.region = None;
                     State::Ground
                 }
+                // CAN and SUB cancel a sequence; other C0 controls inside
+                // one are carried out and leave it going on, as in vte.
+                (State::Escape | State::Csi, 0x18 | 0x1a) => State::Ground,
+                (state @ (State::Escape | State::Csi), 0x00..=0x1f) => state,
                 (State::Csi, 0x40..=0x7e) => {
                     if b == b'q' && matches!(self.params.as_slice(), b">" | b">0") {
                         found += 1;
@@ -188,8 +192,13 @@ impl Scanner {
         if top >= bottom {
             return;
         }
+        // alacritty clamps after that check, so `CSI 30;40 r` on 24 rows
+        // leaves it an empty region, and `CSI 24;30 r` one of the last
+        // row. No DECSTBM rebuilds either (top must be above bottom):
+        // those are left as the whole screen.
         let (top, bottom) = (top.min(rows), bottom.min(rows));
-        self.region = (top != 1 || bottom != rows).then_some((top, bottom));
+        let whole = top >= bottom || (top == 1 && bottom == rows);
+        self.region = (!whole).then_some((top, bottom));
     }
 }
 
@@ -221,5 +230,16 @@ mod tests {
         assert_eq!(s.region, None, "the whole screen");
         s.feed(b"\x1b[5;9r\x1bc", 24);
         assert_eq!(s.region, None, "RIS resets it");
+        // A control inside the sequence is carried out, and it goes on;
+        // CAN cancels it.
+        s.feed(b"\x1b[2;\r\n5r", 24);
+        assert_eq!(s.region, Some((2, 5)));
+        s.feed(b"\x1b[3;\x187r", 24);
+        assert_eq!(s.region, Some((2, 5)));
+        // Regions past the screen's end that no DECSTBM can rebuild.
+        s.feed(b"\x1b[30;40r", 24);
+        assert_eq!(s.region, None);
+        s.feed(b"\x1b[2;5r\x1b[24;30r", 24);
+        assert_eq!(s.region, None);
     }
 }
