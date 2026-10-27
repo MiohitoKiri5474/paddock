@@ -149,9 +149,11 @@ fn splits<'a>(
 }
 
 /// Print the backend's state as JSON on one line. It never starts the
-/// backend: with none running there are no spaces.
+/// backend: with none running there are no spaces. A backend running that
+/// this paddock cannot talk to is an error, not an empty state.
 pub fn print_state() -> Result<()> {
     let backend = Backend::configured(Paths::from_env()?)?;
+    backend.check()?;
     let instance = backend.instance().ok();
     // A space that ends between the list and its read is left out.
     let spaces: Vec<SpaceSnapshot> = backend

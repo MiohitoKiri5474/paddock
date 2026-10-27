@@ -347,6 +347,19 @@ fn paddock_worktree_stops_at_a_server_it_cannot_talk_to() {
     assert!(err.contains("speaks protocol version 999"), "{err}");
 }
 
+#[test]
+fn debug_state_fails_at_a_server_it_cannot_talk_to() {
+    let sandbox = native();
+    fake_older_server(&sandbox);
+
+    let out = sandbox.run(&["debug", "state", "--json"], &[], "");
+
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{err}");
+    assert!(err.contains("speaks protocol version 999"), "{err}");
+    assert!(out.stdout.is_empty(), "no state printed");
+}
+
 /// Write a JSON message frame (kind 0) as the protocol does.
 fn send_message(stream: &mut UnixStream, json: &str) {
     let len = u32::try_from(json.len() + 1).unwrap().to_be_bytes();
