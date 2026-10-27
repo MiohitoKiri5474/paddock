@@ -132,6 +132,45 @@ fn a_full_screen_program_survives_reattaching() {
     again.wait_for_text("back\n");
 }
 
+/// A program that keeps rows 2-4 as its scroll region (as vim, less and
+/// htop do), and after a key scrolls that region twice. (The quotes
+/// keep the typed command from showing what the program draws.)
+const SCROLL_REGION: &str = "printf '\\033[?1049h\\033[H'; \
+for i in 1 2 3 4 5 6; do printf 'line-%d\\r\\n' $i; done; printf '\\033[2;4r\\033[4;1HREGION-SE''T'; \
+stty raw -echo; read -rs -k1 c; printf '\\r\\nscrolled-%d\\r\\nscrolled-%d' 1 2; read -rs -k1 c; \
+stty sane; printf '\\033[r\\033[?1049l'";
+
+#[test]
+fn a_scroll_region_survives_reattaching_at_the_same_size() {
+    let sandbox = native();
+    let mut paddock = ready(&sandbox);
+    paddock.type_line(SCROLL_REGION);
+    paddock.wait_for_text("REGION-SET");
+    paddock.detach_keys();
+    assert!(paddock.wait_exit());
+
+    let mut again = sandbox.launch();
+    again.wait_for_text("REGION-SET");
+    again.send(b"x");
+    again.wait_for_text("scrolled-2");
+    // Only the region scrolled: the rows above and below it stay put.
+    let want = [
+        "line-1",
+        "REGION-SET",
+        "scrolled-1",
+        "scrolled-2",
+        "line-5",
+        "line-6",
+    ];
+    again.wait_for("the region to scroll alone", |screen| {
+        let rows: Vec<&str> = screen.lines().map(str::trim_end).collect();
+        rows.windows(want.len()).any(|w| w == want)
+    });
+    again.send(b"x");
+    again.type_line("echo after");
+    again.wait_for_text("after\n");
+}
+
 /// Lines the streaming test writes.
 const LINES: u32 = 400;
 

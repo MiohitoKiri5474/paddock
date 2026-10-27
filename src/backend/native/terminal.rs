@@ -29,7 +29,7 @@ pub struct HostedTerminal {
     pub size: (u16, u16),
     emulator: Emulator,
     keys: KeyModeScanner,
-    queries: QueryScanner,
+    scanner: Scanner,
 }
 
 impl HostedTerminal {
@@ -48,7 +48,7 @@ impl HostedTerminal {
             size,
             emulator: Emulator::answering(size.0, size.1, SCROLLBACK),
             keys: KeyModeScanner::default(),
-            queries: QueryScanner::default(),
+            scanner: Scanner::default(),
         })
     }
 
@@ -58,7 +58,7 @@ impl HostedTerminal {
         self.keys.feed(bytes);
         self.emulator.feed(bytes);
         let mut replies = self.emulator.take_replies();
-        for _ in 0..self.queries.feed(bytes) {
+        for _ in 0..self.scanner.feed(bytes, self.size.1) {
             replies.extend_from_slice(format!("\x1bP>|{NAME}\x1b\\").as_bytes());
         }
         if !replies.is_empty() {
@@ -71,16 +71,18 @@ impl HostedTerminal {
         if size != self.size {
             self.size = size;
             self.emulator.resize(size.0, size.1);
+            // As alacritty does on a resize.
+            self.scanner.region = None;
             pty::resize(&self.master, size)?;
         }
         Ok(())
     }
 
     /// The bytes that rebuild the terminal in a fresh emulator of its
-    /// size: the emulator's snapshot, and modifyOtherKeys, which
-    /// alacritty does not keep.
+    /// size: the emulator's snapshot with the scroll region, and
+    /// modifyOtherKeys, which alacritty does not keep.
     pub fn snapshot(&mut self) -> Vec<u8> {
-        let mut bytes = self.emulator.snapshot();
+        let mut bytes = self.emulator.snapshot(self.scanner.region);
         let level = self.keys.modify_other_keys();
         if level != 0 {
             bytes.extend_from_slice(format!("\x1b[>4;{level}m").as_bytes());
@@ -109,12 +111,16 @@ impl HostedTerminal {
     }
 }
 
-/// Finds XTVERSION queries (`CSI > q`, `CSI > 0 q`) in a program's
-/// output, across reads.
+/// What alacritty does not tell of a program's output, read across
+/// reads: XTVERSION queries (`CSI > q`, `CSI > 0 q`), and the scroll
+/// region (DECSTBM, `CSI top ; bottom r`), which alacritty keeps private.
 #[derive(Default)]
-struct QueryScanner {
+struct Scanner {
     state: State,
     params: Vec<u8>,
+    /// The scroll region's first and last rows, from 1, as DECSTBM
+    /// writes them; `None` for the whole screen.
+    region: Option<(u16, u16)>,
 }
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
@@ -125,12 +131,13 @@ enum State {
     Csi,
 }
 
-/// Longer parameters are no query of ours.
-const MAX_PARAMS: usize = 8;
+/// Longer parameters are no sequence of ours.
+const MAX_PARAMS: usize = 16;
 
-impl QueryScanner {
-    /// How many XTVERSION queries `bytes` finish.
-    fn feed(&mut self, bytes: &[u8]) -> usize {
+impl Scanner {
+    /// Read `bytes`, written to a screen of `rows`; how many XTVERSION
+    /// queries they finish.
+    fn feed(&mut self, bytes: &[u8], rows: u16) -> usize {
         let mut found = 0;
         for &b in bytes {
             self.state = match (self.state, b) {
@@ -139,9 +146,17 @@ impl QueryScanner {
                     self.params.clear();
                     State::Csi
                 }
+                // RIS: a full reset.
+                (State::Escape, b'c') => {
+                    self.region = None;
+                    State::Ground
+                }
                 (State::Csi, 0x40..=0x7e) => {
                     if b == b'q' && matches!(self.params.as_slice(), b">" | b">0") {
                         found += 1;
+                    }
+                    if b == b'r' {
+                        self.scroll_region(rows);
                     }
                     State::Ground
                 }
@@ -154,6 +169,25 @@ impl QueryScanner {
         }
         found
     }
+
+    /// DECSTBM with the parameters read, as alacritty takes it: a missing
+    /// or 0 top is the first row, a missing or 0 bottom the last, and a
+    /// top not above the bottom changes nothing.
+    fn scroll_region(&mut self, rows: u16) {
+        // `CSI ? … r` and the like are other sequences.
+        if !self.params.iter().all(|&b| b.is_ascii_digit() || b == b';') {
+            return;
+        }
+        let text = String::from_utf8_lossy(&self.params);
+        let mut nums = text.split(';').map(|n| n.parse::<u16>().unwrap_or(0));
+        let top = nums.next().filter(|&n| n != 0).unwrap_or(1);
+        let bottom = nums.next().filter(|&n| n != 0).unwrap_or(rows);
+        if top >= bottom {
+            return;
+        }
+        let (top, bottom) = (top.min(rows), bottom.min(rows));
+        self.region = (top != 1 || bottom != rows).then_some((top, bottom));
+    }
 }
 
 #[cfg(test)]
@@ -162,10 +196,27 @@ mod tests {
 
     #[test]
     fn xtversion_queries_are_found_across_reads_and_nothing_else_is() {
-        let mut s = QueryScanner::default();
-        assert_eq!(s.feed(b"\x1b[>q text \x1b[>0q"), 2);
-        assert_eq!(s.feed(b"\x1b["), 0);
-        assert_eq!(s.feed(b">q"), 1);
-        assert_eq!(s.feed(b"\x1b[q \x1b[>1q \x1b[31m \x1b[ q"), 0);
+        let mut s = Scanner::default();
+        assert_eq!(s.feed(b"\x1b[>q text \x1b[>0q", 24), 2);
+        assert_eq!(s.feed(b"\x1b[", 24), 0);
+        assert_eq!(s.feed(b">q", 24), 1);
+        assert_eq!(s.feed(b"\x1b[q \x1b[>1q \x1b[31m \x1b[ q", 24), 0);
+    }
+
+    #[test]
+    fn the_scroll_region_is_followed_across_reads_until_reset() {
+        let mut s = Scanner::default();
+        s.feed(b"\x1b[2;2", 24);
+        s.feed(b"0r", 24);
+        assert_eq!(s.region, Some((2, 20)));
+        // Other sequences, and a region of no rows, change nothing.
+        s.feed(b"\x1b[?5r \x1b[9;3r \x1b[>1r", 24);
+        assert_eq!(s.region, Some((2, 20)));
+        s.feed(b"\x1b[3;30r", 24);
+        assert_eq!(s.region, Some((3, 24)), "clamped to the screen");
+        s.feed(b"\x1b[;0r", 24);
+        assert_eq!(s.region, None, "the whole screen");
+        s.feed(b"\x1b[5;9r\x1bc", 24);
+        assert_eq!(s.region, None, "RIS resets it");
     }
 }

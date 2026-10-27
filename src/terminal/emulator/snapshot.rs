@@ -4,9 +4,12 @@
 //! one too while a program uses the alternate one), the cursor, the pen,
 //! the modes and the kitty keyboard flags of each screen.
 //!
-//! Not carried: the scroll region and the charsets (alacritty keeps them
-//! private), the title and hyperlinks. A full-screen program redraws on
-//! the resize an attach brings.
+//! The scroll region is carried too, but alacritty keeps it private: the
+//! caller tracks it from the output and passes it in. Without it, a
+//! full-screen program reattached at the same size (no resize, so no
+//! redraw) would scroll its region while the client scrolled the whole
+//! screen. Not carried: the charsets (private too), the title and
+//! hyperlinks.
 
 use super::Emulator;
 use alacritty_terminal::grid::{Dimensions, Grid};
@@ -42,9 +45,11 @@ const OFF_MODES: &[(TermMode, u16)] = &[
 
 impl Emulator {
     /// The bytes that rebuild this emulator in a fresh one of its size
-    /// and scrollback. It takes `&mut self` only to read the normal
-    /// screen while the alternate one shows, and leaves it as it was.
-    pub fn snapshot(&mut self) -> Vec<u8> {
+    /// and scrollback, with `region` as its scroll region (its first and
+    /// last rows, from 1; `None` for the whole screen). It takes
+    /// `&mut self` only to read the normal screen while the alternate one
+    /// shows, and leaves it as it was.
+    pub fn snapshot(&mut self, region: Option<(u16, u16)>) -> Vec<u8> {
         let mut out = String::new();
         let mode = *self.term.mode();
         if mode.contains(TermMode::ALT_SCREEN) {
@@ -64,8 +69,29 @@ impl Emulator {
         }
         write_kitty(&mut out, mode);
         write_modes(&mut out, mode);
+        write_region(&mut out, self.term.grid(), mode, region);
         out.into_bytes()
     }
+}
+
+/// The scroll region and origin mode, then the cursor again: DECSTBM and
+/// DECOM move it home. Last, so the lines written before scroll the whole
+/// screen.
+fn write_region(out: &mut String, grid: &Grid<Cell>, mode: TermMode, region: Option<(u16, u16)>) {
+    let origin = mode.contains(TermMode::ORIGIN);
+    if region.is_none() && !origin {
+        return;
+    }
+    if let Some((top, bottom)) = region {
+        let _ = write!(out, "\x1b[{top};{bottom}r");
+    }
+    let mut line = grid.cursor.point.line.0 + 1;
+    if origin {
+        out.push_str("\x1b[?6h");
+        // The cursor moves within the region now, from its top.
+        line -= region.map_or(0, |(top, _)| i32::from(top) - 1);
+    }
+    let _ = write!(out, "\x1b[{line};{}H", grid.cursor.point.column.0 + 1);
 }
 
 /// `grid`'s lines (its scrollback first if `history`), then its cursor
@@ -251,7 +277,7 @@ mod tests {
     fn rebuilt(e: &mut Emulator) -> Emulator {
         let (cols, rows) = e.size();
         let mut copy = Emulator::new(cols, rows, SCROLLBACK);
-        copy.feed(&e.snapshot());
+        copy.feed(&e.snapshot(None));
         copy
     }
 
@@ -313,10 +339,10 @@ mod tests {
         e.feed(b"one\r\ntwo\r\nthree\r\nfour");
         e.feed(b"\x1b[>1u\x1b[?1049h\x1b[>5u\x1b[?1003h\x1b[?1006h\x1b[?2004h\x1b[?25l");
         e.feed(b"\x1b[H\x1b[2Jfull\r\nscreen");
-        let before = e.snapshot();
+        let before = e.snapshot(None);
         let mut copy = rebuilt(&mut e);
         assert_eq!(
-            e.snapshot(),
+            e.snapshot(None),
             before,
             "a snapshot leaves the emulator as it was"
         );
@@ -331,6 +357,35 @@ mod tests {
         }
         assert_same(&e, &copy);
         assert_eq!(e.take_replies(), copy.take_replies());
+    }
+
+    #[test]
+    fn rebuilds_the_scroll_region_and_origin_mode() {
+        let mut e = Emulator::new(10, 6, SCROLLBACK);
+        e.feed(b"one\r\ntwo\r\nthree\r\nfour\r\nfive\r\nsix");
+        e.feed(b"\x1b[2;4r\x1b[4;3H");
+        let mut copy = Emulator::new(10, 6, SCROLLBACK);
+        copy.feed(&e.snapshot(Some((2, 4))));
+        let mut whole = rebuilt(&mut e);
+        assert_same(&e, &copy);
+        // A new line at the region's bottom scrolls only the region.
+        for t in [&mut e, &mut copy, &mut whole] {
+            t.feed(b"\nnew");
+        }
+        assert_same(&e, &copy);
+        assert_eq!(copy.row_text(0), "one");
+        assert_eq!(copy.row_text(4), "five");
+        assert_ne!(picture(&e), picture(&whole), "the region matters here");
+        // In origin mode the cursor moves within the region.
+        e.feed(b"\x1b[?6h\x1b[2;2H");
+        let mut copy = Emulator::new(10, 6, SCROLLBACK);
+        copy.feed(&e.snapshot(Some((2, 4))));
+        assert_same(&e, &copy);
+        for t in [&mut e, &mut copy] {
+            t.feed(b"\x1b[1;1Hx");
+        }
+        assert_same(&e, &copy);
+        assert_eq!(copy.cursor(), (1, 1));
     }
 
     #[test]
