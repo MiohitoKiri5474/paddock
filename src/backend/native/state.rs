@@ -4,6 +4,7 @@
 //! is the server's ([`super::server`]), as it starts their threads.
 
 use super::protocol::{self, Answer, Frame, Message, Notice, Request};
+use super::queue::Queue;
 use super::terminal::HostedTerminal;
 use super::unsupported;
 use crate::backend::{
@@ -12,9 +13,7 @@ use crate::backend::{
 use anyhow::{anyhow, bail, Result};
 use ratatui::layout::Rect;
 use std::os::unix::net::UnixStream;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::{self, Sender};
-use std::sync::Arc;
+use std::sync::mpsc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -39,16 +38,14 @@ pub struct Space {
     pub terminals: Vec<HostedTerminal>,
 }
 
-/// The attached client: frames for it go through `tx`, in order, to a
-/// thread that writes them.
+/// The attached client: frames for it go through `queue`, in order, to
+/// a thread that writes them.
 pub struct Subscriber {
     /// Which connection it is.
     pub conn: u64,
     pub space: SpaceId,
-    tx: Sender<Frame>,
+    queue: Queue<Frame>,
     writer: JoinHandle<()>,
-    /// Bytes queued and not yet written.
-    queued: Arc<AtomicUsize>,
     /// Since when it has been [`BEHIND`].
     behind: Option<Instant>,
     /// Its connection, which only letting it go closes.
@@ -60,24 +57,15 @@ impl Subscriber {
     /// with its writer thread.
     pub fn new(conn: u64, space: SpaceId, stream: &UnixStream) -> Result<Self> {
         let mut out = stream.try_clone()?;
-        let (tx, rx) = mpsc::channel::<Frame>();
-        let queued = Arc::new(AtomicUsize::new(0));
-        let written = Arc::clone(&queued);
         // It never closes the connection: whoever lets the client go does.
-        let writer = std::thread::spawn(move || {
-            for frame in rx {
-                if protocol::write(&mut out, &frame).is_err() {
-                    return;
-                }
-                written.fetch_sub(size(&frame), Ordering::Relaxed);
-            }
+        let (queue, writer) = Queue::start(size, move |frame: Frame| {
+            protocol::write(&mut out, &frame).is_ok()
         });
         Ok(Self {
             conn,
             space,
-            tx,
+            queue,
             writer,
-            queued,
             behind: None,
             stream: stream.try_clone()?,
         })
@@ -85,11 +73,9 @@ impl Subscriber {
 
     /// Queue `frame`; `Err` with why if the client is to be let go.
     pub fn queue(&mut self, frame: Frame) -> Result<(), &'static str> {
-        let size = size(&frame);
-        let queued = self.queued.fetch_add(size, Ordering::Relaxed) + size;
-        if self.tx.send(frame).is_err() {
+        let Some(queued) = self.queue.push(frame) else {
             return Err("it went away");
-        }
+        };
         if queued <= BEHIND {
             self.behind = None;
             return Ok(());
@@ -106,9 +92,12 @@ impl Subscriber {
     /// client that does not read.
     pub fn let_go(self, wait: Duration) {
         let Self {
-            tx, writer, stream, ..
+            queue,
+            writer,
+            stream,
+            ..
         } = self;
-        drop(tx);
+        drop(queue);
         let (done, finished) = mpsc::channel();
         std::thread::spawn(move || {
             let _ = writer.join();

@@ -6,6 +6,7 @@ mod harness;
 
 use harness::backend::{alive, server_pid, NATIVE};
 use harness::native_skip::NATIVE_NEEDS;
+use harness::stall::finished;
 use harness::{Paddock, Sandbox, PROMPT};
 use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -392,16 +393,66 @@ fn pasting_into_a_program_that_never_reads_leaves_paddock_free_to_detach() {
     paddock.type_line("stty raw -echo; echo FLOOD''-READY; sleep 60");
     paddock.wait_for_text("FLOOD-READY");
     // Many pastes: far more input than the program will ever take.
-    let paste = [b"\x1b[200~".as_slice(), &[b'x'; 16 << 10], b"\x1b[201~"].concat();
-    let flood = paddock.send_in_background(paste.repeat(200));
+    let paste = paste(16 << 10);
     // paddock takes it all: it never waits on the program.
-    wait_until("paddock to take the whole paste", || flood.is_finished());
+    finished(paddock.send_in_background(paste.repeat(200)), "the paste");
 
     // Still answering keys: it detaches.
-    let _ = paddock.send_in_background(b"\x01d".to_vec()).join();
+    finished(paddock.send_in_background(b"\x01d".to_vec()), "C-a d");
     assert!(paddock.wait_exit());
     let again = sandbox.launch();
     again.wait_for_text("FLOOD-READY");
+}
+
+/// One paste of `len` bytes of `x`.
+fn paste(len: usize) -> Vec<u8> {
+    [b"\x1b[200~".as_slice(), &vec![b'x'; len], b"\x1b[201~"].concat()
+}
+
+#[test]
+fn a_paste_bigger_than_the_input_limit_reaches_a_program_that_reads_whole() {
+    const LEN: usize = 5_000_000;
+    let sandbox = native();
+    let mut paddock = ready(&sandbox);
+    paddock.type_line(&format!(
+        "stty raw -echo; head -c {LEN} > big.txt; stty sane; echo GOT''-IT"
+    ));
+    finished(paddock.send_in_background(paste(LEN)), "the paste");
+    paddock.wait_for_text("GOT-IT");
+    let got = std::fs::metadata(sandbox.path("home/big.txt"))
+        .unwrap()
+        .len();
+    assert_eq!(got, LEN as u64);
+}
+
+#[test]
+fn input_a_program_never_reads_is_dropped_with_a_notice() {
+    let sandbox = native();
+    let mut paddock = ready(&sandbox);
+    paddock.type_line("stty raw -echo; echo FLOOD''-READY; sleep 60");
+    paddock.wait_for_text("FLOOD-READY");
+    // The first waits for sleep; the second would take it past 4 MiB.
+    finished(paddock.send_in_background(paste(3 << 20)), "the paste");
+    finished(paddock.send_in_background(paste(3 << 20)), "the paste");
+
+    paddock.wait_for_text("input dropped: sleep is not reading it");
+    let log = std::fs::read_to_string(sandbox.state_dir().join("server.log")).unwrap();
+    assert_eq!(log.matches("is not reading its input").count(), 1, "{log}");
+}
+
+#[test]
+fn stopping_the_server_ends_paddock_without_a_lost_connection() {
+    let sandbox = native();
+    let mut paddock = ready(&sandbox);
+
+    harness::backend::stop_server(&sandbox.state_dir());
+
+    assert!(paddock.wait_exit(), "a clean end");
+    assert!(
+        !paddock.full_screen().contains("lost the connection"),
+        "{}",
+        paddock.full_screen()
+    );
 }
 
 #[test]
@@ -478,8 +529,9 @@ fn tests_in(file: &str, text: &str) -> Vec<String> {
     let mut lines = text.lines().map(str::trim);
     let mut tests = Vec::new();
     while let Some(line) = lines.next() {
+        let module = line.split_whitespace().any(|w| w == "mod") && line.ends_with('{');
         assert!(
-            !(line.starts_with("mod ") && line.ends_with('{')),
+            !module,
             "{file}: a nested module ({line}): name its tests by its path here"
         );
         if line != "#[test]" {
@@ -545,4 +597,10 @@ fn test_functions_are_found_past_other_attributes() {
     let text =
         "#[test]\n#[ignore = \"slow\"]\n\nfn one() {}\nfn helper() {}\n#[test]\nfn two() {}\n";
     assert_eq!(tests_in("x", text), ["one", "two"]);
+}
+
+#[test]
+#[should_panic = "a nested module"]
+fn a_nested_test_module_is_refused() {
+    tests_in("x", "pub(crate) mod inner {\n#[test]\nfn one() {}\n}\n");
 }

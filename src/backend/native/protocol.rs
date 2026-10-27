@@ -153,14 +153,22 @@ pub enum Answer {
 }
 
 /// What the server tells the attached client, in order with the output.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Notice {
     /// The space's structure changed (a resize, a rename).
     Changed,
     /// A space was made or ended.
     SpacesChanged,
-    /// The space's last terminal ended; nothing follows.
+    /// The space's last terminal ended, or the server is ending and hangs
+    /// every shell up; nothing follows.
     Ended,
+    /// Input to `terminal` is being dropped: `program`, in its
+    /// foreground, is not reading it. Once per episode (until it has read
+    /// all that waits).
+    InputDropped {
+        terminal: TerminalId,
+        program: String,
+    },
 }
 
 /// Write `frame` and flush.

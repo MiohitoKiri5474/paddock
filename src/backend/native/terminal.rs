@@ -4,6 +4,7 @@
 //! XTVERSION here), and makes the snapshot a client attaches with.
 
 use super::pty::{self, Pty};
+use super::queue::Queue;
 use crate::backend::TerminalId;
 use crate::terminal::emulator::Emulator;
 use crate::terminal::key_modes::KeyModeScanner;
@@ -11,14 +12,13 @@ use crate::terminal::SCROLLBACK;
 use anyhow::Result;
 use std::fs::File;
 use std::io::Write;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::mpsc::{self, Sender};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// How the server names itself to XTVERSION.
 const NAME: &str = concat!("paddock ", env!("CARGO_PKG_VERSION"));
-/// How many bytes wait for a program at most: input past them, to a
-/// program that has stopped reading, is dropped.
+/// Bytes waiting for a program past which it is not reading: more input
+/// to it is dropped. One write never is while nothing waits, however big
+/// (a large paste into a program that reads).
 const INPUT_LIMIT: usize = 4 << 20;
 
 /// Bytes for a program, in order (input and query replies), written by a
@@ -26,51 +26,59 @@ const INPUT_LIMIT: usize = 4 << 20;
 /// the connection the input came on (with its resizes and detach) waits
 /// on a program that does not read.
 pub struct Input {
-    tx: Sender<Vec<u8>>,
-    /// Bytes queued and not yet written.
-    pending: Arc<AtomicUsize>,
-    /// Bytes are being dropped (said once in the log until the program
-    /// reads again).
-    dropping: Arc<AtomicBool>,
+    queue: Queue<Vec<u8>>,
+    /// Input is being dropped: from the first drop until the program has
+    /// read all that waits (an episode).
+    dropping: AtomicBool,
+}
+
+/// What became of bytes for a program.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sent {
+    Queued,
+    /// Dropped, as the program is not reading; `first` of an episode.
+    Dropped {
+        first: bool,
+    },
+    /// Its writer has ended (the PTY is gone): nothing is written.
+    Ended,
 }
 
 impl Input {
-    /// Start the thread writing to `master`, the PTY's master side.
-    pub fn start(mut master: File) -> Self {
-        let (tx, rx) = mpsc::channel::<Vec<u8>>();
-        let pending = Arc::new(AtomicUsize::new(0));
-        let dropping = Arc::new(AtomicBool::new(false));
-        let (left, quiet) = (Arc::clone(&pending), Arc::clone(&dropping));
-        std::thread::spawn(move || {
-            for bytes in rx {
-                if master.write_all(&bytes).is_err() {
-                    return;
-                }
-                if left.fetch_sub(bytes.len(), Ordering::Relaxed) == bytes.len() {
-                    quiet.store(false, Ordering::Relaxed);
-                }
+    /// Start the thread writing to `master`, terminal `id`'s PTY.
+    pub fn start(id: &TerminalId, mut master: File) -> Self {
+        let id = id.clone();
+        let (queue, _) = Queue::start(Vec::len, move |bytes: Vec<u8>| {
+            let written = master.write_all(&bytes);
+            if let Err(e) = &written {
+                eprintln!("paddock server: cannot write {id}'s input: {e}");
             }
+            written.is_ok()
         });
         Self {
-            tx,
-            pending,
-            dropping,
+            queue,
+            dropping: AtomicBool::new(false),
         }
     }
 
-    /// Queue `bytes` for the program, unless [`INPUT_LIMIT`] bytes
-    /// already wait: then they are dropped.
-    pub fn send(&self, id: &TerminalId, bytes: Vec<u8>) {
-        let len = bytes.len();
-        if self.pending.load(Ordering::Relaxed) + len > INPUT_LIMIT {
-            if !self.dropping.swap(true, Ordering::Relaxed) {
-                eprintln!("paddock server: {id} does not read its input; dropping more of it");
-            }
-            return;
+    /// Queue `bytes` for the program, unless it is not reading: some
+    /// bytes wait for it already, and these would take them past
+    /// [`INPUT_LIMIT`].
+    pub fn send(&self, bytes: Vec<u8>) -> Sent {
+        if self.queue.ended() {
+            return Sent::Ended;
         }
-        self.pending.fetch_add(len, Ordering::Relaxed);
-        // The writer is gone only once the program is.
-        let _ = self.tx.send(bytes);
+        let waiting = self.queue.waiting();
+        if waiting == 0 {
+            self.dropping.store(false, Ordering::Relaxed);
+        } else if waiting + bytes.len() > INPUT_LIMIT {
+            let first = !self.dropping.swap(true, Ordering::Relaxed);
+            return Sent::Dropped { first };
+        }
+        match self.queue.push(bytes) {
+            Some(_) => Sent::Queued,
+            None => Sent::Ended,
+        }
     }
 }
 
@@ -114,7 +122,8 @@ impl HostedTerminal {
             replies.extend_from_slice(format!("\x1bP>|{NAME}\x1b\\").as_bytes());
         }
         if !replies.is_empty() {
-            self.input.send(&self.id, replies);
+            // Replies to a program that does not read are dropped too.
+            let _ = self.input.send(replies);
         }
     }
 

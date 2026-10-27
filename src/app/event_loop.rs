@@ -8,11 +8,6 @@ use crate::backend::{self, SpaceId, TerminalId};
 use crate::hooks::now_ms;
 use crate::ui::{dashboard, help, session_view, sidebar};
 use anyhow::Result;
-
-/// paddock's farewell when its connection to the native server breaks.
-const LOST: &str = "lost the connection to the paddock server (it let this paddock go, \
-                    or ended; see server.log in paddock's state directory): run paddock \
-                    again to attach";
 use crossterm::event::{self as ct, KeyEventKind};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect};
@@ -23,6 +18,11 @@ use std::time::{Duration, Instant};
 const FRAME: Duration = Duration::from_millis(16);
 /// Milliseconds in a second.
 const MS_PER_SEC: u64 = 1000;
+/// paddock's farewell when its connection to the native server breaks
+/// while its terminals may run on.
+const LOST: &str = "lost the connection to the paddock server (it let this paddock go, \
+                    or failed; see server.log in paddock's state directory): run paddock \
+                    again to attach to what still runs";
 
 /// Tells the git thread which task rows are on screen, and the pull
 /// requests' thread (while PR status is on) what shows PRs.
@@ -310,6 +310,14 @@ fn handle_backend(app: &mut App, space: &SpaceId, event: backend::Event) -> Back
         }
         backend::Event::Ended => BackendHandled::terminals_changed(Flow::Quit),
         // Never a quiet quit: the terminals may run on, to attach again.
+        backend::Event::InputDropped { program, .. } => {
+            app.notice = Some(format!("input dropped: {program} is not reading it"));
+            BackendHandled {
+                flow: Flow::Continue,
+                changed: true,
+                terminals_changed: false,
+            }
+        }
         backend::Event::Lost => {
             app.farewell = Some(LOST.to_string());
             BackendHandled::terminals_changed(Flow::Quit)

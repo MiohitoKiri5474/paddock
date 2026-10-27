@@ -42,8 +42,15 @@ pub enum Event {
     /// detached.
     Ended,
     /// The connection broke while the space may still run: the native
-    /// server let this paddock go (it stopped reading) or went away.
+    /// server let this paddock go (it stopped reading), or failed. (A
+    /// server that ends on purpose sends [`Event::Ended`] first.)
     Lost,
+    /// Input to `terminal` is being dropped, as `program` is not reading
+    /// it (native only): once, until it reads again.
+    InputDropped {
+        terminal: TerminalId,
+        program: String,
+    },
 }
 
 /// A space as listed: its id and its current name.

@@ -333,6 +333,9 @@ impl Client {
                     Frame::Bytes { terminal, data } => Event::Output { terminal, data },
                     Frame::Message(Message::Notice(Notice::Changed)) => Event::Changed,
                     Frame::Message(Message::Notice(Notice::SpacesChanged)) => Event::SpacesChanged,
+                    Frame::Message(Message::Notice(Notice::InputDropped { terminal, program })) => {
+                        Event::InputDropped { terminal, program }
+                    }
                     Frame::Message(Message::Notice(Notice::Ended)) => {
                         deliver(Event::Ended);
                         return;

@@ -9,11 +9,14 @@
 //! - [`server`]: the server process: its socket, lock and lifetime.
 //! - [`state`]: the spaces it holds and what it answers about them.
 //! - [`terminal`] and [`pty`]: one terminal, its shell and its emulator.
+//! - [`queue`]: the queues to the threads that write to a client or a
+//!   program.
 //! - [`protocol`]: the frames between them.
 
 mod client;
 mod protocol;
 mod pty;
+mod queue;
 mod server;
 mod state;
 mod terminal;

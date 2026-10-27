@@ -11,7 +11,7 @@
 
 use super::protocol::{self, Answer, Ending, Frame, Message, Notice, Refusal, Request};
 use super::state::{Space, State, Subscriber};
-use super::terminal::{HostedTerminal, Input};
+use super::terminal::{HostedTerminal, Input, Sent};
 use super::{lock, pty, socket_path, unsupported, LOG};
 use crate::backend::env::{clean_env, AGY_STATUS_VAR};
 use crate::backend::{SpaceId, TabId, TerminalId};
@@ -143,14 +143,17 @@ fn watch_signals(shared: &Arc<Shared>) -> Result<()> {
     Ok(())
 }
 
-/// Hang every shell up, give the attached client its last frames, remove
-/// the socket and exit.
+/// Hang every shell up, tell the attached client its space ended (with
+/// its last frames), remove the socket and exit.
 fn shut_down(shared: &Shared) -> ! {
     let attached = {
         let mut state = shared.lock();
         close(shared, &mut state);
         for (_, term) in state.terminals() {
             hang_up(term.pid);
+        }
+        if let Some(space) = state.attached.as_ref().map(|s| s.space.clone()) {
+            state.notify(&space, Notice::Ended);
         }
         state.attached.take()
     };
@@ -243,11 +246,20 @@ fn reply(answer: Result<Answer>) -> Frame {
 /// resize or detach behind input to a program that does not read gets
 /// through.
 fn input(shared: &Shared, terminal: &TerminalId, data: Vec<u8>) {
-    let state = shared.lock();
+    let mut state = shared.lock();
     let found = state.terminals().find(|(_, t)| t.id == *terminal);
-    if let Some((_, term)) = found {
-        term.input.send(terminal, data);
+    let Some((space, term)) = found else { return };
+    if term.input.send(data) != (Sent::Dropped { first: true }) {
+        return;
     }
+    let program = term.command().unwrap_or_else(|| "its program".into());
+    eprintln!("paddock server: {program} in {terminal} is not reading its input; dropping more");
+    let notice = Notice::InputDropped {
+        terminal: terminal.clone(),
+        program,
+    };
+    let space = space.id.clone();
+    state.notify(&space, notice);
 }
 
 /// Make connection `conn` the attached client of `space`, shown at
@@ -352,7 +364,7 @@ fn start_terminal(
 ) -> Result<HostedTerminal> {
     let mut pty = pty::spawn(&shared.shell, cwd, &shared.home, size, &shared.env)?;
     let ready = (|| {
-        let input = Input::start(pty.master.try_clone()?);
+        let input = Input::start(&id, pty.master.try_clone()?);
         let reader = pty.master.try_clone()?;
         let term = HostedTerminal::new(id.clone(), &pty, input, size)?;
         anyhow::Ok((reader, term))
