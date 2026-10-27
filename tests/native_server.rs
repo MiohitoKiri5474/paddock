@@ -409,6 +409,7 @@ fn a_paddock_stalled_a_moment_under_heavy_output_stays_attached() {
     let sandbox = native();
     let mut paddock = ready(&sandbox);
     paddock.type_line("seq 1 1000000; echo ALL''-DONE");
+    paddock.wait_for("numbers", |s| s.lines().any(|l| l.parse::<u32>().is_ok()));
     let start = Instant::now();
     paddock.stall_until(|| start.elapsed() > Duration::from_secs(2));
     paddock.wait_for_text("ALL-DONE");
@@ -421,6 +422,7 @@ fn a_paddock_the_server_lets_go_says_so() {
     let sandbox = native();
     let mut paddock = ready(&sandbox);
     paddock.type_line("yes");
+    paddock.wait_for_text("y\ny\ny\n");
     // Stopped while output piles up, until the server gives up on it.
     let log = sandbox.state_dir().join("server.log");
     let start = Instant::now();
