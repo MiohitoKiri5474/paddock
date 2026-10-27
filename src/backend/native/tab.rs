@@ -131,9 +131,9 @@ impl Tab {
             let at = self.focused.iter().position(|f| f == t);
             at.map_or(0, |i| i as u64 + 1)
         };
-        let next = self.layout.neighbour(terminal, dir, area(size), rank);
-        self.zoomed = false;
-        if let Some(next) = next {
+        // None there: the zoom stays, as tmux puts it back.
+        if let Some(next) = self.layout.neighbour(terminal, dir, area(size), rank) {
+            self.zoomed = false;
             self.focus(&next);
         }
     }
@@ -259,6 +259,9 @@ mod tests {
         let mut tab = split();
         tab.zoom(&t(1));
         assert_eq!(tab.border_at(34, 3, SIZE), None, "no border shows");
+        // No terminal that way: the zoom stays.
+        tab.focus_towards(&t(1), Direction::Up, SIZE);
+        assert!(tab.zoomed());
     }
 
     #[test]
