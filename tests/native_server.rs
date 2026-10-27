@@ -8,7 +8,7 @@ use harness::backend::{alive, server_pid, NATIVE};
 use harness::native_skip::NATIVE_NEEDS;
 use harness::{Paddock, Sandbox, PROMPT};
 use std::io::{Read, Write};
-use std::os::unix::net::UnixListener;
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::time::{Duration, Instant};
 
 fn native() -> Sandbox {
@@ -327,6 +327,58 @@ fn a_server_speaking_another_protocol_version_is_a_clear_error() {
         server_pid(&sandbox.state_dir()).is_none(),
         "no server of ours started"
     );
+}
+
+/// Write a JSON message frame (kind 0) as the protocol does.
+fn send_message(stream: &mut UnixStream, json: &str) {
+    let len = u32::try_from(json.len() + 1).unwrap().to_be_bytes();
+    stream.write_all(&len).unwrap();
+    stream.write_all(&[0]).unwrap();
+    stream.write_all(json.as_bytes()).unwrap();
+}
+
+/// The next frame's body; `None` once the server closed the connection.
+fn read_frame(stream: &mut UnixStream) -> Option<Vec<u8>> {
+    let mut len = [0; 4];
+    if let Err(e) = stream.read_exact(&mut len) {
+        use std::io::ErrorKind::{TimedOut, WouldBlock};
+        assert!(
+            !matches!(e.kind(), WouldBlock | TimedOut),
+            "no frame, no end"
+        );
+        return None;
+    }
+    let mut body = vec![0; u32::from_be_bytes(len) as usize];
+    stream.read_exact(&mut body).ok()?;
+    Some(body)
+}
+
+#[test]
+fn a_request_after_attaching_closes_the_connection_unanswered() {
+    let sandbox = native();
+    let paddock = ready(&sandbox);
+    let space = sandbox.state().spaces[0].id.clone();
+    let mut stream = UnixStream::connect(sandbox.state_dir().join("server.sock")).unwrap();
+    stream
+        .set_read_timeout(Some(harness::TIMEOUT))
+        .expect("a read timeout");
+    send_message(&mut stream, r#"{"Hello":{"version":1,"pid":1}}"#);
+    assert!(read_frame(&mut stream).is_some(), "the server's hello");
+    let attach = format!(r#"{{"Request":{{"Attach":{{"space":"{space}","size":[80,24]}}}}}}"#);
+    send_message(&mut stream, &attach);
+    let reply = read_frame(&mut stream).expect("the attach reply");
+    assert!(String::from_utf8_lossy(&reply).contains("Attached"));
+    drop(paddock);
+
+    send_message(&mut stream, r#"{"Request":"Spaces"}"#);
+    // Whatever the stream still brings, no reply: then the end.
+    while let Some(frame) = read_frame(&mut stream) {
+        assert!(
+            !String::from_utf8_lossy(&frame).contains("Reply"),
+            "{}",
+            String::from_utf8_lossy(&frame)
+        );
+    }
 }
 
 /// Every entry of the native skip list is a test, and its `--skip` (a

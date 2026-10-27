@@ -157,7 +157,9 @@ impl Backend {
     pub fn spaces(&self) -> Vec<ListedSpace> {
         match self {
             Self::Tmux(t) => t.sessions(),
-            Self::Native(n) => n.spaces(),
+            // Here and below: none when it cannot say, as with tmux. A
+            // server this paddock cannot talk to is `prepare`'s error.
+            Self::Native(n) => n.spaces().unwrap_or_default(),
         }
     }
 
@@ -206,7 +208,7 @@ impl Backend {
     pub fn root(&self, space: &SpaceId) -> Option<String> {
         match self {
             Self::Tmux(t) => t.root(space.as_str()),
-            Self::Native(n) => n.root(space),
+            Self::Native(n) => n.root(space).unwrap_or_default(),
         }
     }
 
@@ -223,7 +225,7 @@ impl Backend {
     pub fn space_terminals(&self, space: &SpaceId) -> Vec<SpaceTerminal> {
         match self {
             Self::Tmux(t) => t.space_panes(space.as_str()),
-            Self::Native(n) => n.space_terminals(space),
+            Self::Native(n) => n.space_terminals(space).unwrap_or_default(),
         }
     }
 
@@ -359,7 +361,7 @@ impl Backend {
     pub fn terminal_dir(&self, terminal: &TerminalId) -> Option<String> {
         match self {
             Self::Tmux(t) => t.pane_path(terminal.as_str()),
-            Self::Native(n) => n.terminal_dir(terminal),
+            Self::Native(n) => n.terminal_dir(terminal).unwrap_or_default(),
         }
     }
 
@@ -367,7 +369,7 @@ impl Backend {
     pub fn space_of(&self, terminal: &TerminalId) -> Option<SpaceId> {
         match self {
             Self::Tmux(t) => t.pane_session(terminal.as_str()),
-            Self::Native(n) => n.space_of(terminal),
+            Self::Native(n) => n.space_of(terminal).unwrap_or_default(),
         }
     }
 
@@ -375,7 +377,7 @@ impl Backend {
     pub fn terminal_commands(&self) -> Option<HashMap<TerminalId, String>> {
         match self {
             Self::Tmux(t) => t.pane_commands(),
-            Self::Native(n) => n.terminal_commands(),
+            Self::Native(n) => n.terminal_commands().ok().flatten(),
         }
     }
 
@@ -383,7 +385,7 @@ impl Backend {
     pub fn terminal_pids(&self) -> HashMap<u32, TerminalId> {
         match self {
             Self::Tmux(t) => t.pane_pids(),
-            Self::Native(n) => n.terminal_pids(),
+            Self::Native(n) => n.terminal_pids().unwrap_or_default(),
         }
     }
 
@@ -392,7 +394,7 @@ impl Backend {
     pub fn terminal_details(&self) -> Vec<TerminalDetails> {
         match self {
             Self::Tmux(t) => t.pane_details(),
-            Self::Native(n) => n.terminal_details(),
+            Self::Native(n) => n.terminal_details().unwrap_or_default(),
         }
     }
 

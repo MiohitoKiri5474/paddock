@@ -10,7 +10,7 @@ use crate::terminal::key_modes::KeyModeScanner;
 use crate::terminal::SCROLLBACK;
 use anyhow::Result;
 use std::fs::File;
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::SyncSender;
 
 /// How the server names itself to XTVERSION.
 const NAME: &str = concat!("paddock ", env!("CARGO_PKG_VERSION"));
@@ -23,9 +23,10 @@ pub struct HostedTerminal {
     /// The PTY's master side, for its size and foreground.
     pub master: File,
     /// Bytes for the program, in order: input and query replies. A thread
-    /// of its own writes them, so nobody waits on a program that does not
-    /// read.
-    pub input: Sender<Vec<u8>>,
+    /// of its own writes them, so the state lock never waits on a program
+    /// that does not read; the queue is bounded, so input waits instead
+    /// (its client's connection does).
+    pub input: SyncSender<Vec<u8>>,
     pub size: (u16, u16),
     emulator: Emulator,
     keys: KeyModeScanner,
@@ -36,7 +37,7 @@ impl HostedTerminal {
     pub fn new(
         id: TerminalId,
         pty: &Pty,
-        input: Sender<Vec<u8>>,
+        input: SyncSender<Vec<u8>>,
         size: (u16, u16),
     ) -> Result<Self> {
         Ok(Self {
@@ -62,8 +63,10 @@ impl HostedTerminal {
             replies.extend_from_slice(format!("\x1bP>|{NAME}\x1b\\").as_bytes());
         }
         if !replies.is_empty() {
-            // The writer is gone only once the terminal is.
-            let _ = self.input.send(replies);
+            // Called under the state lock, so never wait: replies to a
+            // program that does not read its input are dropped (and the
+            // writer is gone only once the terminal is).
+            let _ = self.input.try_send(replies);
         }
     }
 

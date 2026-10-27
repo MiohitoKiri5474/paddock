@@ -11,8 +11,15 @@ use crate::backend::{
 };
 use anyhow::{anyhow, bail, Result};
 use ratatui::layout::Rect;
-use std::sync::mpsc::Sender;
+use std::os::unix::net::UnixStream;
+use std::sync::mpsc::{self, SyncSender, TrySendError};
 use std::thread::JoinHandle;
+use std::time::Duration;
+
+/// How many frames wait for the attached client at most (each at most a
+/// read of output, so a few MiB): one that falls this far behind has
+/// stopped reading, and is let go.
+pub const QUEUE: usize = 256;
 
 pub struct Space {
     pub id: SpaceId,
@@ -32,8 +39,29 @@ pub struct Subscriber {
     /// Which connection it is.
     pub conn: u64,
     pub space: SpaceId,
-    pub tx: Sender<Frame>,
+    pub tx: SyncSender<Frame>,
     pub writer: JoinHandle<()>,
+    /// Its connection, which only letting it go closes.
+    pub stream: UnixStream,
+}
+
+impl Subscriber {
+    /// Let the client go once it has read what it was sent, or after
+    /// `wait`: close its connection, which also ends a writer stuck on a
+    /// client that does not read.
+    pub fn let_go(self, wait: Duration) {
+        let Self {
+            tx, writer, stream, ..
+        } = self;
+        drop(tx);
+        let (done, finished) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = writer.join();
+            let _ = done.send(());
+        });
+        let _ = finished.recv_timeout(wait);
+        let _ = stream.shutdown(std::net::Shutdown::Both);
+    }
 }
 
 #[derive(Default)]
@@ -81,20 +109,35 @@ impl State {
         found.ok_or_else(|| anyhow!("no terminal {terminal}"))
     }
 
-    /// Tell the client attached to `space`, if any.
-    pub fn notify(&self, space: &SpaceId, notice: Notice) {
-        if let Some(s) = self.attached.as_ref().filter(|s| s.space == *space) {
-            // A client that went away is let go when its connection ends.
-            let _ = s.tx.send(Frame::Message(Message::Notice(notice)));
+    /// Queue `frame` for the attached client, if it is attached to
+    /// `space` (to any space if `None`). A client whose queue is full has
+    /// stopped reading, and one whose writer failed has gone: either is
+    /// let go, so its frames never pile up.
+    pub fn send(&mut self, space: Option<&SpaceId>, frame: Frame) {
+        let Some(s) = &self.attached else { return };
+        if space.is_some_and(|space| s.space != *space) {
+            return;
+        }
+        let why = match s.tx.try_send(frame) {
+            Ok(()) => return,
+            Err(TrySendError::Full(_)) => "it stopped reading",
+            Err(TrySendError::Disconnected(_)) => "it went away",
+        };
+        if let Some(s) = self.attached.take() {
+            eprintln!("paddock server: letting connection {} go: {why}", s.conn);
+            std::thread::spawn(move || s.let_go(Duration::ZERO));
         }
     }
 
+    /// Tell the client attached to `space`, if any.
+    pub fn notify(&mut self, space: &SpaceId, notice: Notice) {
+        self.send(Some(space), Frame::Message(Message::Notice(notice)));
+    }
+
     /// Tell the attached client a space was made or ended.
-    pub fn notify_spaces(&self) {
-        if let Some(s) = &self.attached {
-            let notice = Message::Notice(Notice::SpacesChanged);
-            let _ = s.tx.send(Frame::Message(notice));
-        }
+    pub fn notify_spaces(&mut self) {
+        let notice = Message::Notice(Notice::SpacesChanged);
+        self.send(None, Frame::Message(notice));
     }
 
     /// Space `id`'s tab with its terminal, filling it.
@@ -181,10 +224,9 @@ impl State {
             Request::TerminalDir(t) => {
                 Answer::Text(self.terminal(&t).ok().and_then(|(_, h)| h.dir()))
             }
-            Request::SpaceOf(t) => match self.terminal(&t) {
-                Ok((space, _)) => Answer::Space(space.id.clone()),
-                Err(_) => Answer::Text(None),
-            },
+            Request::SpaceOf(t) => {
+                Answer::SpaceOf(self.terminal(&t).ok().map(|(space, _)| space.id.clone()))
+            }
             Request::TerminalCommands => Answer::Commands(
                 self.terminals()
                     .filter_map(|(_, h)| Some((h.id.clone(), h.command()?)))

@@ -9,8 +9,8 @@
 //! exactly the output before it, and everything after it reaches the
 //! client after the snapshot: no byte lost or doubled.
 
-use super::protocol::{self, Answer, Frame, Message, Notice, Request};
-use super::state::{Space, State, Subscriber};
+use super::protocol::{self, Answer, Frame, Message, Notice, Refusal, Request};
+use super::state::{Space, State, Subscriber, QUEUE};
 use super::terminal::HostedTerminal;
 use super::{lock, pty, socket_path, unsupported, LOG};
 use crate::backend::env::{clean_env, AGY_STATUS_VAR};
@@ -34,8 +34,10 @@ const IDLE_EXIT: Duration = Duration::from_secs(15);
 /// How long the attached client gets to read its last frames at the end.
 const LAST_WORDS: Duration = Duration::from_secs(1);
 const READ_CHUNK: usize = 64 * 1024;
-/// Why an ending server makes no space; the client starts a new server.
-pub const CLOSING: &str = "the paddock server is ending";
+/// How many writes wait for a program at most: then its input waits.
+const INPUT_QUEUE: usize = 64;
+/// How long an exited shell's last output gets to be read.
+const DRAIN: Duration = Duration::from_millis(500);
 /// How long a new server waits for an ending one's lock.
 const LOCK_WAIT: Duration = Duration::from_secs(3);
 
@@ -55,8 +57,9 @@ impl Shared {
     }
 }
 
-/// Run the server until its last terminal ends. Returns at once if
-/// another server holds the lock.
+/// Run the server until its last terminal ends. If another server holds
+/// the lock, waits up to [`LOCK_WAIT`] for it to let go (an ending one
+/// does), else returns without serving.
 pub fn serve() -> Result<()> {
     let paths = Paths::from_env()?;
     std::fs::create_dir_all(&paths.state_dir)
@@ -94,10 +97,8 @@ pub fn serve() -> Result<()> {
             if let Err(e) = serve_connection(&shared, conn, stream) {
                 eprintln!("paddock server: connection {conn}: {e:#}");
             }
-            let mut state = shared.lock();
-            if state.attached.as_ref().is_some_and(|s| s.conn == conn) {
-                state.attached = None;
-            }
+            // Its writer ends; nobody reads what is left.
+            drop(shared.lock().attached.take_if(|s| s.conn == conn));
         });
     }
     Ok(())
@@ -122,6 +123,8 @@ fn wait_for_lock(state_dir: &Path) -> Result<Option<std::fs::File>> {
 /// lock says no server runs.
 fn bind(socket: &Path) -> Result<UnixListener> {
     let _ = std::fs::remove_file(socket);
+    // The mask is the whole process's: safe only because no other thread
+    // runs yet to make a file meanwhile (`serve` starts them after this).
     // SAFETY: umask only changes the mask of files made from now on.
     let old = unsafe { libc::umask(0o177) };
     let listener = UnixListener::bind(socket);
@@ -154,7 +157,7 @@ fn shut_down(shared: &Shared) -> ! {
         state.attached.take()
     };
     if let Some(attached) = attached {
-        let_go(attached);
+        attached.let_go(LAST_WORDS);
     }
     std::process::exit(0)
 }
@@ -166,18 +169,6 @@ fn close(shared: &Shared, state: &mut State) {
         state.closing = true;
         let _ = std::fs::remove_file(&shared.socket);
     }
-}
-
-/// Let the attached client go once it has read what it was sent, or after
-/// [`LAST_WORDS`].
-fn let_go(Subscriber { tx, writer, .. }: Subscriber) {
-    drop(tx);
-    let (done, wait) = mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = writer.join();
-        let _ = done.send(());
-    });
-    let _ = wait.recv_timeout(LAST_WORDS);
 }
 
 /// Hang up the shell `pid` and its process group, as closing its terminal
@@ -196,56 +187,82 @@ fn hang_up(pid: u32) {
 
 fn serve_connection(shared: &Arc<Shared>, conn: u64, mut stream: UnixStream) -> Result<()> {
     protocol::hello(&mut stream, false)?;
-    while let Some(frame) = protocol::read(&mut stream)? {
-        match frame {
-            Frame::Bytes { terminal, data } => input(shared, &terminal, data),
-            Frame::Message(Message::Request(request)) => {
-                let answer = match request {
-                    Request::Attach { space, size } => {
-                        match attach(shared, conn, &stream, &space, size) {
-                            Ok(()) => continue,
-                            Err(e) => Err(e),
-                        }
-                    }
-                    Request::Resize(size) => {
-                        resize(shared, conn, size);
-                        continue;
-                    }
-                    Request::Detach => {
-                        let mut state = shared.lock();
-                        if state.attached.as_ref().is_some_and(|s| s.conn == conn) {
-                            state.attached = None;
-                        }
-                        continue;
-                    }
-                    Request::Stop => {
-                        protocol::write(&mut stream, &reply(Ok(Answer::Done)))?;
-                        shut_down(shared);
-                    }
-                    Request::NewSpace { name, cwd, size } => new_space(shared, &name, &cwd, size),
-                    Request::CloseSpace(space) => close_space(shared, &space),
-                    Request::CloseTerminal(terminal) => close_terminal(shared, &terminal),
-                    request => shared.lock().answer(request),
-                };
-                protocol::write(&mut stream, &reply(answer))?;
+    let mut attached = false;
+    while let Some(frame) = protocol::read(&mut stream, protocol::FROM_CLIENT)? {
+        let request = match frame {
+            Frame::Bytes { terminal, data } => {
+                input(shared, &terminal, data);
+                continue;
             }
+            Frame::Message(Message::Request(request)) => request,
             Frame::Message(other) => bail!("unexpected {other:?}"),
-        }
+        };
+        let answer = match request {
+            Request::Resize(size) => {
+                resize(shared, conn, size);
+                continue;
+            }
+            Request::Detach => {
+                let mut state = shared.lock();
+                // Its writer ends; the client closes the connection.
+                drop(state.attached.take_if(|s| s.conn == conn));
+                continue;
+            }
+            // Once attached, the connection is the writer's: a reply here
+            // would land among its frames.
+            request if attached => bail!("{request:?} after attaching"),
+            Request::Attach { space, size } => match attach(shared, conn, &stream, &space, size) {
+                Ok(()) => {
+                    attached = true;
+                    continue;
+                }
+                Err(e) => Err(e),
+            },
+            Request::Stop => {
+                protocol::write(&mut stream, &reply(Ok(Answer::Done)))?;
+                shut_down(shared);
+            }
+            Request::NewSpace { name, cwd, size } => new_space(shared, &name, &cwd, size),
+            Request::CloseSpace(space) => close_space(shared, &space),
+            Request::CloseTerminal(terminal) => close_terminal(shared, &terminal),
+            request => shared.lock().answer(request),
+        };
+        protocol::write(&mut stream, &reply(answer))?;
     }
     Ok(())
 }
 
-fn reply(answer: Result<Answer>) -> Frame {
-    Frame::Message(Message::Reply(answer.map_err(|e| format!("{e:#}"))))
+/// Why an ending server makes no space.
+#[derive(Debug)]
+struct Ending;
+
+impl std::fmt::Display for Ending {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the paddock server is ending")
+    }
 }
 
-/// Write `data` to `terminal`'s program, after what came before it.
+impl std::error::Error for Ending {}
+
+fn reply(answer: Result<Answer>) -> Frame {
+    let answer = answer.map_err(|e| match e.downcast_ref::<Ending>() {
+        Some(Ending) => Refusal::Ending,
+        None => Refusal::Failed(format!("{e:#}")),
+    });
+    Frame::Message(Message::Reply(answer))
+}
+
+/// Write `data` to `terminal`'s program, after what came before it. Waits
+/// while its queue is full (the program is not reading), outside the
+/// state lock: so the client sending it waits, and nothing else does.
 fn input(shared: &Shared, terminal: &TerminalId, data: Vec<u8>) {
-    let state = shared.lock();
-    let term = state.terminals().find(|(_, h)| h.id == *terminal);
-    if let Some((_, term)) = term {
-        let _ = term.input.send(data);
-    }
+    let input = {
+        let state = shared.lock();
+        let found = state.terminals().find(|(_, t)| t.id == *terminal);
+        let Some((_, term)) = found else { return };
+        term.input.clone()
+    };
+    let _ = input.send(data);
 }
 
 /// Make connection `conn` the attached client of `space`, shown at
@@ -259,27 +276,29 @@ fn attach(
     size: (u16, u16),
 ) -> Result<()> {
     let out = stream.try_clone()?;
+    let kept = stream.try_clone()?;
     let mut state = shared.lock();
     let hosted = &mut state.space_mut(space)?.terminals;
     for term in hosted.iter_mut() {
         term.resize(size)?;
     }
-    let (tx, rx) = mpsc::channel();
-    let terminals = hosted.iter().map(|h| (h.id.clone(), h.size)).collect();
+    let (tx, rx) = mpsc::sync_channel(QUEUE);
+    let terminals = hosted.iter().map(|t| (t.id.clone(), t.size)).collect();
     let snapshots: Vec<Frame> = hosted
         .iter_mut()
-        .map(|h| Frame::Bytes {
-            terminal: h.id.clone(),
-            data: h.snapshot(),
+        .map(|t| Frame::Bytes {
+            terminal: t.id.clone(),
+            data: t.snapshot(),
         })
         .collect();
     let structure = state.structure(space)?;
-    let _ = tx.send(reply(Ok(Answer::Attached {
+    let first = std::iter::once(reply(Ok(Answer::Attached {
         structure,
         terminals,
     })));
-    for frame in snapshots {
-        let _ = tx.send(frame);
+    for frame in first.chain(snapshots) {
+        // The queue is new, and holds far more than one frame per terminal.
+        let _ = tx.try_send(frame);
     }
     let writer = std::thread::spawn(move || write_frames(out, &rx));
     let old = state.attached.replace(Subscriber {
@@ -287,21 +306,24 @@ fn attach(
         space: space.clone(),
         tx,
         writer,
+        stream: kept,
     });
     drop(state);
-    // Its writer finishes what it holds and closes its connection.
-    drop(old);
+    if let Some(old) = old {
+        std::thread::spawn(move || old.let_go(LAST_WORDS));
+    }
     Ok(())
 }
 
-/// Write every frame `rx` brings to `out`, then close it.
+/// Write every frame `rx` brings to `out`, until it brings no more or the
+/// client is gone. The connection stays open: whoever lets the client go
+/// closes it.
 fn write_frames(mut out: UnixStream, rx: &mpsc::Receiver<Frame>) {
     for frame in rx {
         if protocol::write(&mut out, &frame).is_err() {
-            break;
+            return;
         }
     }
-    let _ = out.shutdown(std::net::Shutdown::Both);
 }
 
 /// Show the space connection `conn` attached at `size`.
@@ -326,7 +348,7 @@ fn resize(shared: &Shared, conn: u64, size: (u16, u16)) {
 fn new_space(shared: &Arc<Shared>, name: &str, cwd: &Path, size: (u16, u16)) -> Result<Answer> {
     let mut state = shared.lock();
     if state.closing {
-        bail!(CLOSING);
+        return Err(Ending.into());
     }
     if !state.spaces.is_empty() {
         bail!(unsupported("more than one space"));
@@ -354,7 +376,8 @@ fn new_space(shared: &Arc<Shared>, name: &str, cwd: &Path, size: (u16, u16)) -> 
 }
 
 /// A shell on a new PTY in `cwd`, and its threads. Called with the state
-/// locked, so its reader waits until the terminal is in it.
+/// locked, so its reader waits until the terminal is in it (and no other
+/// shell starts meanwhile, see [`pty::spawn`]).
 fn start_terminal(
     shared: &Arc<Shared>,
     space: &SpaceId,
@@ -362,9 +385,23 @@ fn start_terminal(
     cwd: &Path,
     size: (u16, u16),
 ) -> Result<HostedTerminal> {
-    let pty = pty::spawn(&shared.shell, cwd, &shared.home, size, &shared.env)?;
-    let (tx, rx) = mpsc::channel::<Vec<u8>>();
-    let mut writer = pty.master.try_clone()?;
+    let mut pty = pty::spawn(&shared.shell, cwd, &shared.home, size, &shared.env)?;
+    let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(INPUT_QUEUE);
+    let ready = (|| {
+        let writer = pty.master.try_clone()?;
+        let reader = pty.master.try_clone()?;
+        let term = HostedTerminal::new(id.clone(), &pty, tx, size)?;
+        anyhow::Ok((writer, reader, term))
+    })();
+    let (mut writer, reader, term) = match ready {
+        Ok(ready) => ready,
+        Err(e) => {
+            // Leave no shell behind with no terminal.
+            let _ = pty.child.kill();
+            let _ = pty.child.wait();
+            return Err(e);
+        }
+    };
     std::thread::spawn(move || {
         for bytes in rx {
             if writer.write_all(&bytes).is_err() {
@@ -372,19 +409,24 @@ fn start_terminal(
             }
         }
     });
-    let term = HostedTerminal::new(id.clone(), &pty, tx, size)?;
-    let reader = pty.master.try_clone()?;
+    let (drained, done) = mpsc::channel::<()>();
     let (s, sp, t) = (Arc::clone(shared), space.clone(), id.clone());
-    std::thread::spawn(move || read_output(&s, &sp, &t, reader));
+    std::thread::spawn(move || read_output(&s, &sp, &t, reader, drained));
     let (s, sp) = (Arc::clone(shared), space.clone());
     let child = pty.child;
-    std::thread::spawn(move || wait_for_exit(&s, &sp, &id, child));
+    std::thread::spawn(move || wait_for_exit(&s, &sp, &id, child, &done));
     Ok(term)
 }
 
 /// Feed terminal `id`'s output to its emulator and the attached client,
-/// until its PTY closes.
-fn read_output(shared: &Shared, space: &SpaceId, id: &TerminalId, mut master: std::fs::File) {
+/// until its PTY closes; then drop `_drained`.
+fn read_output(
+    shared: &Shared,
+    space: &SpaceId,
+    id: &TerminalId,
+    mut master: std::fs::File,
+    _drained: mpsc::Sender<()>,
+) {
     let mut buf = vec![0; READ_CHUNK];
     loop {
         let n = match master.read(&mut buf) {
@@ -392,32 +434,39 @@ fn read_output(shared: &Shared, space: &SpaceId, id: &TerminalId, mut master: st
             Ok(n) => n,
         };
         let mut state = shared.lock();
-        let Some(term) = state
+        let found = state
             .spaces
             .iter_mut()
             .flat_map(|s| s.terminals.iter_mut())
-            .find(|h| h.id == *id)
-        else {
-            return;
-        };
+            .find(|t| t.id == *id);
+        let Some(term) = found else { return };
         term.output(&buf[..n]);
-        if let Some(s) = state.attached.as_ref().filter(|s| s.space == *space) {
-            let _ = s.tx.send(Frame::Bytes {
-                terminal: id.clone(),
-                data: buf[..n].to_vec(),
-            });
-        }
+        let frame = Frame::Bytes {
+            terminal: id.clone(),
+            data: buf[..n].to_vec(),
+        };
+        state.send(Some(space), frame);
     }
 }
 
-/// When terminal `id`'s shell exits, forget the terminal, and its space
-/// with its last terminal; end the server with the last one.
-fn wait_for_exit(shared: &Shared, space: &SpaceId, id: &TerminalId, mut child: Child) {
+/// When terminal `id`'s shell exits, and its last output is read (or after
+/// [`DRAIN`], as a program left in the background may hold the PTY open),
+/// forget the terminal, and its space with its last terminal; end the
+/// server with the last one.
+fn wait_for_exit(
+    shared: &Shared,
+    space: &SpaceId,
+    id: &TerminalId,
+    mut child: Child,
+    drained: &mpsc::Receiver<()>,
+) {
     let _ = child.wait();
+    // The reader only drops its end.
+    let _ = drained.recv_timeout(DRAIN);
     let mut state = shared.lock();
     let mut ended = None;
     if let Ok(s) = state.space_mut(space) {
-        s.terminals.retain(|h| h.id != *id);
+        s.terminals.retain(|t| t.id != *id);
         if s.terminals.is_empty() {
             state.spaces.retain(|s| s.id != *space);
             state.notify(space, Notice::Ended);
@@ -434,7 +483,7 @@ fn wait_for_exit(shared: &Shared, space: &SpaceId, id: &TerminalId, mut child: C
     }
     drop(state);
     if let Some(ended) = ended {
-        let_go(ended);
+        ended.let_go(LAST_WORDS);
     }
     if last {
         shut_down(shared);
@@ -451,7 +500,7 @@ fn close_space(shared: &Shared, space: &SpaceId) -> Result<Answer> {
 
 fn close_terminal(shared: &Shared, terminal: &TerminalId) -> Result<Answer> {
     let state = shared.lock();
-    let Some((_, term)) = state.terminals().find(|(_, h)| h.id == *terminal) else {
+    let Some((_, term)) = state.terminals().find(|(_, t)| t.id == *terminal) else {
         bail!("no terminal {terminal}");
     };
     hang_up(term.pid);

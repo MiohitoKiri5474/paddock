@@ -21,7 +21,8 @@ pub struct Pty {
 
 /// Start `shell` as a login shell (as tmux does, so macOS's
 /// `path_helper` runs) in `cwd`, or in `home` if `cwd` is gone, on a new
-/// PTY of `(cols, rows)`, with exactly the environment `env`.
+/// PTY of `(cols, rows)`, with exactly the environment `env`. The server
+/// calls it holding its state lock (see `open`).
 pub fn spawn(
     shell: &str,
     cwd: &Path,
@@ -85,6 +86,9 @@ fn open((cols, rows): (u16, u16)) -> Result<(OwnedFd, OwnedFd)> {
     }
     // SAFETY: openpty succeeded, so both are open descriptors we own.
     let (master, slave) = unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
+    // Until this, a program started meanwhile would inherit both. Safe
+    // only because the server starts programs (spawn) under its state
+    // lock alone, which its caller holds.
     for fd in [&master, &slave] {
         // SAFETY: fcntl on a descriptor we own.
         if unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {

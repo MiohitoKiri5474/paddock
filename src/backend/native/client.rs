@@ -1,10 +1,11 @@
 //! paddock as the native server's client: one short connection per
 //! request, and one long one for the attached space ([`Attached`]). Only
 //! making a space starts the server; every other request finds none
-//! running and says so (or answers with nothing).
+//! running and says so ([`NoServer`]), or, if it only asks, has nothing
+//! for an answer. A server this paddock cannot talk to is an error.
 
-use super::protocol::{self, Answer, Frame, Message, Notice, Request};
-use super::server::{log_path, CLOSING};
+use super::protocol::{self, Answer, Closed, Frame, Message, Notice, Refusal, Request};
+use super::server::log_path;
 use super::socket_path;
 use crate::backend::env::clean_env;
 use crate::backend::{
@@ -19,6 +20,53 @@ use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
+
+/// No server could answer: none runs, or the one asked was ending.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoServer {
+    NotRunning,
+    Ending,
+}
+
+impl std::fmt::Display for NoServer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::NotRunning => "the paddock server is not running",
+            Self::Ending => "the paddock server is ending",
+        })
+    }
+}
+
+impl std::error::Error for NoServer {}
+
+/// The server could not do what it was asked: why.
+#[derive(Debug)]
+struct Refused(String);
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Refused {}
+
+/// Whether `e` says no server could answer: none runs, or it was ending
+/// or went away as it was asked (the next request starts a new one).
+fn no_server(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<NoServer>().is_some() || e.downcast_ref::<Closed>().is_some()
+}
+
+/// A closure taking the value of answer `variant`, and giving any other
+/// answer back.
+macro_rules! pick {
+    ($variant:path) => {
+        |answer| match answer {
+            $variant(value) => Ok(value),
+            other => Err(other),
+        }
+    };
+}
 
 /// How long a new server gets to start listening.
 const START_TIMEOUT: Duration = Duration::from_secs(5);
@@ -38,8 +86,7 @@ impl Client {
     /// none runs or it speaks another protocol version.
     fn connect(&self) -> Result<(UnixStream, u32)> {
         let socket = socket_path(&self.paths)?;
-        let mut stream =
-            UnixStream::connect(&socket).context("the paddock server is not running")?;
+        let mut stream = UnixStream::connect(&socket).context(NoServer::NotRunning)?;
         let pid = protocol::hello(&mut stream, true)?;
         Ok((stream, pid))
     }
@@ -118,11 +165,9 @@ impl Client {
         }
     }
 
-    pub fn spaces(&self) -> Vec<ListedSpace> {
-        match self.request(Request::Spaces) {
-            Ok(Answer::Spaces(spaces)) => spaces,
-            _ => Vec::new(),
-        }
+    pub fn spaces(&self) -> Result<Vec<ListedSpace>> {
+        let spaces = self.query(Request::Spaces, pick!(Answer::Spaces))?;
+        Ok(spaces.unwrap_or_default())
     }
 
     pub fn new_space(&self, name: &str, cwd: &Path, size: (u16, u16)) -> Result<SpaceId> {
@@ -134,7 +179,7 @@ impl Client {
         self.start()?;
         let answer = match self.request(request.clone()) {
             // Its last terminal had just ended: the next server takes it.
-            Err(e) if is_closing(&e) => {
+            Err(e) if no_server(&e) => {
                 std::thread::sleep(POLL);
                 self.start()?;
                 self.request(request)?
@@ -185,19 +230,29 @@ impl Client {
         self.done(Request::CloseTerminal(terminal.clone()))
     }
 
-    fn text(&self, request: Request) -> Option<String> {
+    /// The server's answer to `request`, taken by `pick`; `None` if no
+    /// server runs or it could not say (no such space). An error if one
+    /// runs that this paddock cannot talk to, or it answers out of turn.
+    fn query<T>(
+        &self,
+        request: Request,
+        pick: impl FnOnce(Answer) -> Result<T, Answer>,
+    ) -> Result<Option<T>> {
         match self.request(request) {
-            Ok(Answer::Text(text)) => text,
-            _ => None,
+            Ok(answer) => pick(answer).map(Some).map_err(|a| unexpected(&a)),
+            Err(e) if no_server(&e) || e.downcast_ref::<Refused>().is_some() => Ok(None),
+            Err(e) => Err(e),
         }
     }
 
-    pub fn root(&self, space: &SpaceId) -> Option<String> {
-        self.text(Request::Root(space.clone()))
+    pub fn root(&self, space: &SpaceId) -> Result<Option<String>> {
+        let root = self.query(Request::Root(space.clone()), pick!(Answer::Text))?;
+        Ok(root.flatten())
     }
 
-    pub fn terminal_dir(&self, terminal: &TerminalId) -> Option<String> {
-        self.text(Request::TerminalDir(terminal.clone()))
+    pub fn terminal_dir(&self, terminal: &TerminalId) -> Result<Option<String>> {
+        let request = Request::TerminalDir(terminal.clone());
+        Ok(self.query(request, pick!(Answer::Text))?.flatten())
     }
 
     pub fn structure(&self, space: &SpaceId) -> Result<Structure> {
@@ -207,39 +262,30 @@ impl Client {
         }
     }
 
-    pub fn space_terminals(&self, space: &SpaceId) -> Vec<SpaceTerminal> {
-        match self.request(Request::SpaceTerminals(space.clone())) {
-            Ok(Answer::Terminals(t)) => t,
-            _ => Vec::new(),
-        }
+    pub fn space_terminals(&self, space: &SpaceId) -> Result<Vec<SpaceTerminal>> {
+        let request = Request::SpaceTerminals(space.clone());
+        Ok(self
+            .query(request, pick!(Answer::Terminals))?
+            .unwrap_or_default())
     }
 
-    pub fn space_of(&self, terminal: &TerminalId) -> Option<SpaceId> {
-        match self.request(Request::SpaceOf(terminal.clone())) {
-            Ok(Answer::Space(id)) => Some(id),
-            _ => None,
-        }
+    pub fn space_of(&self, terminal: &TerminalId) -> Result<Option<SpaceId>> {
+        let request = Request::SpaceOf(terminal.clone());
+        Ok(self.query(request, pick!(Answer::SpaceOf))?.flatten())
     }
 
-    pub fn terminal_commands(&self) -> Option<HashMap<TerminalId, String>> {
-        match self.request(Request::TerminalCommands) {
-            Ok(Answer::Commands(c)) => Some(c),
-            _ => None,
-        }
+    pub fn terminal_commands(&self) -> Result<Option<HashMap<TerminalId, String>>> {
+        self.query(Request::TerminalCommands, pick!(Answer::Commands))
     }
 
-    pub fn terminal_pids(&self) -> HashMap<u32, TerminalId> {
-        match self.request(Request::TerminalPids) {
-            Ok(Answer::Pids(p)) => p,
-            _ => HashMap::new(),
-        }
+    pub fn terminal_pids(&self) -> Result<HashMap<u32, TerminalId>> {
+        let pids = self.query(Request::TerminalPids, pick!(Answer::Pids))?;
+        Ok(pids.unwrap_or_default())
     }
 
-    pub fn terminal_details(&self) -> Vec<TerminalDetails> {
-        match self.request(Request::TerminalDetails) {
-            Ok(Answer::Details(d)) => d,
-            _ => Vec::new(),
-        }
+    pub fn terminal_details(&self) -> Result<Vec<TerminalDetails>> {
+        let details = self.query(Request::TerminalDetails, pick!(Answer::Details))?;
+        Ok(details.unwrap_or_default())
     }
 
     /// End every terminal and the server.
@@ -271,7 +317,7 @@ impl Client {
         };
         let mut replays = Vec::new();
         for (terminal, size) in terminals {
-            match protocol::read(&mut stream)? {
+            match protocol::read(&mut stream, protocol::FROM_SERVER)? {
                 Some(Frame::Bytes { terminal: t, data }) if t == terminal => replays.push(Replay {
                     terminal,
                     size,
@@ -286,7 +332,7 @@ impl Client {
         std::thread::spawn(move || {
             // The server's end, or the connection's (detached, let go for
             // another client, or the server gone), ends the space here.
-            while let Ok(Some(frame)) = protocol::read(&mut reader) {
+            while let Ok(Some(frame)) = protocol::read(&mut reader, protocol::FROM_SERVER) {
                 let event = match frame {
                     Frame::Bytes { terminal, data } => Event::Output { terminal, data },
                     Frame::Message(Message::Notice(Notice::Changed)) => Event::Changed,
@@ -306,17 +352,14 @@ impl Client {
 
 /// The reply that comes next on `stream`.
 fn read_reply(stream: &mut UnixStream) -> Result<Answer> {
-    match protocol::read(stream)? {
-        Some(Frame::Message(Message::Reply(reply))) => reply.map_err(|e| anyhow!(e)),
+    match protocol::read(stream, protocol::FROM_SERVER)? {
+        Some(Frame::Message(Message::Reply(reply))) => reply.map_err(|refusal| match refusal {
+            Refusal::Ending => NoServer::Ending.into(),
+            Refusal::Failed(why) => Refused(why).into(),
+        }),
         Some(other) => bail!("expected a reply from the paddock server, got {other:?}"),
-        None => bail!("the paddock server closed the connection"),
+        None => Err(anyhow::Error::new(Closed).context("no reply from the paddock server")),
     }
-}
-
-/// Whether `e` says the server was ending (or went away) as it was asked.
-fn is_closing(e: &anyhow::Error) -> bool {
-    let text = format!("{e:#}");
-    text.contains(CLOSING) || text.contains("closed the connection")
 }
 
 fn unexpected(answer: &Answer) -> anyhow::Error {

@@ -12,9 +12,10 @@
 //! that reads another version says so and goes no further. Then the
 //! client sends a [`Request`] and reads its [`Message::Reply`]; one
 //! connection can ask many. After [`Request::Attach`] the connection
-//! carries the space: its replies, snapshots, output and [`Notice`]s from
-//! the server, and input, [`Request::Resize`] and [`Request::Detach`] from
-//! the client, which get no reply.
+//! carries the space: its reply, snapshots, output and [`Notice`]s from
+//! the server, and only input, [`Request::Resize`] and [`Request::Detach`]
+//! from the client, which get no reply (the server closes a connection
+//! that asks anything else then).
 
 use crate::backend::TerminalId;
 use crate::backend::{ListedSpace, SpaceId, SpaceTerminal, Structure, TabId, TerminalDetails};
@@ -27,9 +28,11 @@ use std::path::PathBuf;
 /// The protocol's version: it changes whenever a message changes.
 pub const VERSION: u32 = 1;
 
-/// The largest frame either side reads (a snapshot of 50,000 lines of
-/// scrollback fits many times over).
-const MAX_FRAME: usize = 256 << 20;
+/// The largest frame the client reads: a snapshot of 50,000 lines of
+/// scrollback, even with colours changing every few cells, fits.
+pub const FROM_SERVER: usize = 256 << 20;
+/// The largest frame the server reads: a request, or input (a paste).
+pub const FROM_CLIENT: usize = 16 << 20;
 const MESSAGE: u8 = 0;
 const BYTES: u8 = 1;
 
@@ -49,7 +52,7 @@ pub enum Message {
     },
     Request(Request),
     /// The answer to a request, or why there is none.
-    Reply(Result<Answer, String>),
+    Reply(Result<Answer, Refusal>),
     /// What changed in the attached space.
     Notice(Notice),
 }
@@ -92,11 +95,34 @@ pub enum Request {
     Stop,
 }
 
+/// Why the server answers a request with nothing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Refusal {
+    /// It is ending, and makes no space: the client starts the next one.
+    Ending,
+    /// The request failed: why.
+    Failed(String),
+}
+
+/// The other side closed the connection where a frame was due.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Closed;
+
+impl std::fmt::Display for Closed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the other side closed the paddock server connection")
+    }
+}
+
+impl std::error::Error for Closed {}
+
 /// A request's answer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Answer {
     Done,
     Space(SpaceId),
+    /// The space holding a terminal; `None` if no space does.
+    SpaceOf(Option<SpaceId>),
     Spaces(Vec<ListedSpace>),
     Text(Option<String>),
     Structure(Structure),
@@ -152,21 +178,31 @@ pub fn encode(frame: &Frame) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-/// The next frame; `None` if the other side closed the connection
-/// between frames.
-pub fn read(r: &mut impl Read) -> Result<Option<Frame>> {
+/// The next frame, of at most `max` bytes; `None` if the other side
+/// closed the connection between frames. A connection closed within a
+/// frame, its length included, is an error.
+pub fn read(r: &mut impl Read, max: usize) -> Result<Option<Frame>> {
     let mut len = [0; 4];
-    match r.read_exact(&mut len) {
-        Ok(()) => {}
-        Err(e) if e.kind() == ErrorKind::UnexpectedEof => return Ok(None),
-        Err(e) => return Err(e.into()),
+    let mut got = 0;
+    while got < len.len() {
+        match r.read(&mut len[got..]) {
+            Ok(0) if got == 0 => return Ok(None),
+            Ok(0) => bail!("the paddock server connection closed within a frame's length"),
+            Ok(n) => got += n,
+            Err(e) if e.kind() == ErrorKind::Interrupted => {}
+            Err(e) => return Err(e.into()),
+        }
     }
     let len = u32::from_be_bytes(len) as usize;
-    if len == 0 || len > MAX_FRAME {
-        bail!("bad frame length {len} from the paddock server connection");
+    if len == 0 || len > max {
+        bail!("bad frame length {len} on the paddock server connection");
     }
-    let mut body = vec![0; len];
-    r.read_exact(&mut body)?;
+    // Read as it comes: a false length allocates nothing up front.
+    let mut body = Vec::new();
+    r.take(len as u64).read_to_end(&mut body)?;
+    if body.len() < len {
+        bail!("the paddock server connection closed within a frame");
+    }
     decode(&body).map(Some)
 }
 
@@ -197,7 +233,7 @@ pub fn hello(stream: &mut (impl Read + Write), server: bool) -> Result<u32> {
         pid: std::process::id(),
     };
     write(stream, &Frame::Message(ours))?;
-    match read(stream)? {
+    match read(stream, FROM_CLIENT)? {
         Some(Frame::Message(Message::Hello { version, pid })) if version == VERSION => Ok(pid),
         Some(Frame::Message(Message::Hello { version, pid })) if server => bail!(
             "the running paddock server (pid {pid}) speaks protocol version {version}, \
@@ -208,7 +244,7 @@ pub fn hello(stream: &mut (impl Read + Write), server: bool) -> Result<u32> {
             bail!("a client speaks protocol version {version}, this server {VERSION}")
         }
         Some(_) => bail!("no hello from the other side"),
-        None => bail!("the other side closed the connection before saying hello"),
+        None => Err(anyhow::Error::new(Closed).context("no hello from the other side")),
     }
 }
 
@@ -219,7 +255,10 @@ mod tests {
 
     fn round_trip(frame: Frame) {
         let bytes = encode(&frame).unwrap();
-        assert_eq!(read(&mut bytes.as_slice()).unwrap(), Some(frame));
+        assert_eq!(
+            read(&mut bytes.as_slice(), FROM_CLIENT).unwrap(),
+            Some(frame)
+        );
     }
 
     #[test]
@@ -229,7 +268,10 @@ mod tests {
             cwd: "/w/api".into(),
             size: (80, 24),
         })));
-        round_trip(Frame::Message(Message::Reply(Err("no".into()))));
+        round_trip(Frame::Message(Message::Reply(Err(Refusal::Failed(
+            "no".into(),
+        )))));
+        round_trip(Frame::Message(Message::Reply(Err(Refusal::Ending))));
         round_trip(Frame::Message(Message::Reply(Ok(Answer::Pids(
             HashMap::from([(42, TerminalId::new("%1"))]),
         )))));
@@ -244,18 +286,22 @@ mod tests {
         let mut bytes = encode(&Frame::Message(Message::Notice(Notice::Changed))).unwrap();
         bytes.extend(encode(&Frame::Message(Message::Notice(Notice::Ended))).unwrap());
         let mut r = bytes.as_slice();
-        assert!(read(&mut r).unwrap().is_some());
-        assert!(read(&mut r).unwrap().is_some());
-        assert_eq!(read(&mut r).unwrap(), None);
+        assert!(read(&mut r, FROM_CLIENT).unwrap().is_some());
+        assert!(read(&mut r, FROM_CLIENT).unwrap().is_some());
+        assert_eq!(read(&mut r, FROM_CLIENT).unwrap(), None);
     }
 
     #[test]
     fn a_cut_or_oversized_frame_is_an_error() {
         let bytes = encode(&Frame::Message(Message::Notice(Notice::Changed))).unwrap();
-        assert!(read(&mut &bytes[..bytes.len() - 1]).is_err());
-        let huge = (u32::try_from(MAX_FRAME).unwrap() + 1).to_be_bytes();
-        assert!(read(&mut huge.as_slice()).is_err());
-        assert!(read(&mut [0, 0, 0, 1, 9].as_slice()).is_err());
+        assert!(read(&mut &bytes[..bytes.len() - 1], FROM_CLIENT).is_err());
+        for cut in 1..4 {
+            assert!(read(&mut &bytes[..cut], FROM_CLIENT).is_err(), "{cut}");
+        }
+        let huge = (u32::try_from(FROM_CLIENT).unwrap() + 1).to_be_bytes();
+        assert!(read(&mut huge.as_slice(), FROM_CLIENT).is_err());
+        assert!(read(&mut huge.as_slice(), FROM_SERVER).is_err(), "cut");
+        assert!(read(&mut [0, 0, 0, 1, 9].as_slice(), FROM_CLIENT).is_err());
     }
 
     #[test]
