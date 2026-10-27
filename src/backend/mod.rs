@@ -41,6 +41,9 @@ pub enum Event {
     /// The connection ended: the space's last terminal closed, or paddock
     /// detached.
     Ended,
+    /// The connection broke while the space may still run: the native
+    /// server let this paddock go (it stopped reading) or went away.
+    Lost,
 }
 
 /// A space as listed: its id and its current name.

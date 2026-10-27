@@ -10,10 +10,69 @@ use crate::terminal::key_modes::KeyModeScanner;
 use crate::terminal::SCROLLBACK;
 use anyhow::Result;
 use std::fs::File;
-use std::sync::mpsc::SyncSender;
+use std::io::Write;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::mpsc::{self, Sender};
+use std::sync::Arc;
 
 /// How the server names itself to XTVERSION.
 const NAME: &str = concat!("paddock ", env!("CARGO_PKG_VERSION"));
+/// How many bytes wait for a program at most: input past them, to a
+/// program that has stopped reading, is dropped.
+const INPUT_LIMIT: usize = 4 << 20;
+
+/// Bytes for a program, in order (input and query replies), written by a
+/// thread of its own: queuing never waits, so neither the state lock nor
+/// the connection the input came on (with its resizes and detach) waits
+/// on a program that does not read.
+pub struct Input {
+    tx: Sender<Vec<u8>>,
+    /// Bytes queued and not yet written.
+    pending: Arc<AtomicUsize>,
+    /// Bytes are being dropped (said once in the log until the program
+    /// reads again).
+    dropping: Arc<AtomicBool>,
+}
+
+impl Input {
+    /// Start the thread writing to `master`, the PTY's master side.
+    pub fn start(mut master: File) -> Self {
+        let (tx, rx) = mpsc::channel::<Vec<u8>>();
+        let pending = Arc::new(AtomicUsize::new(0));
+        let dropping = Arc::new(AtomicBool::new(false));
+        let (left, quiet) = (Arc::clone(&pending), Arc::clone(&dropping));
+        std::thread::spawn(move || {
+            for bytes in rx {
+                if master.write_all(&bytes).is_err() {
+                    return;
+                }
+                if left.fetch_sub(bytes.len(), Ordering::Relaxed) == bytes.len() {
+                    quiet.store(false, Ordering::Relaxed);
+                }
+            }
+        });
+        Self {
+            tx,
+            pending,
+            dropping,
+        }
+    }
+
+    /// Queue `bytes` for the program, unless [`INPUT_LIMIT`] bytes
+    /// already wait: then they are dropped.
+    pub fn send(&self, id: &TerminalId, bytes: Vec<u8>) {
+        let len = bytes.len();
+        if self.pending.load(Ordering::Relaxed) + len > INPUT_LIMIT {
+            if !self.dropping.swap(true, Ordering::Relaxed) {
+                eprintln!("paddock server: {id} does not read its input; dropping more of it");
+            }
+            return;
+        }
+        self.pending.fetch_add(len, Ordering::Relaxed);
+        // The writer is gone only once the program is.
+        let _ = self.tx.send(bytes);
+    }
+}
 
 pub struct HostedTerminal {
     pub id: TerminalId,
@@ -22,11 +81,8 @@ pub struct HostedTerminal {
     pub tty: String,
     /// The PTY's master side, for its size and foreground.
     pub master: File,
-    /// Bytes for the program, in order: input and query replies. A thread
-    /// of its own writes them, so the state lock never waits on a program
-    /// that does not read; the queue is bounded, so input waits instead
-    /// (its client's connection does).
-    pub input: SyncSender<Vec<u8>>,
+    /// Bytes for the program: input and query replies.
+    pub input: Input,
     pub size: (u16, u16),
     emulator: Emulator,
     keys: KeyModeScanner,
@@ -34,12 +90,7 @@ pub struct HostedTerminal {
 }
 
 impl HostedTerminal {
-    pub fn new(
-        id: TerminalId,
-        pty: &Pty,
-        input: SyncSender<Vec<u8>>,
-        size: (u16, u16),
-    ) -> Result<Self> {
+    pub fn new(id: TerminalId, pty: &Pty, input: Input, size: (u16, u16)) -> Result<Self> {
         Ok(Self {
             id,
             pid: pty.child.id(),
@@ -63,10 +114,7 @@ impl HostedTerminal {
             replies.extend_from_slice(format!("\x1bP>|{NAME}\x1b\\").as_bytes());
         }
         if !replies.is_empty() {
-            // Called under the state lock, so never wait: replies to a
-            // program that does not read its input are dropped (and the
-            // writer is gone only once the terminal is).
-            let _ = self.input.try_send(replies);
+            self.input.send(&self.id, replies);
         }
     }
 

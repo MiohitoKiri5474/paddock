@@ -9,9 +9,9 @@
 //! exactly the output before it, and everything after it reaches the
 //! client after the snapshot: no byte lost or doubled.
 
-use super::protocol::{self, Answer, Frame, Message, Notice, Refusal, Request};
-use super::state::{Space, State, Subscriber, QUEUE};
-use super::terminal::HostedTerminal;
+use super::protocol::{self, Answer, Ending, Frame, Message, Notice, Refusal, Request};
+use super::state::{Space, State, Subscriber};
+use super::terminal::{HostedTerminal, Input};
 use super::{lock, pty, socket_path, unsupported, LOG};
 use crate::backend::env::{clean_env, AGY_STATUS_VAR};
 use crate::backend::{SpaceId, TabId, TerminalId};
@@ -19,7 +19,7 @@ use crate::paths::Paths;
 use anyhow::{bail, Context, Result};
 use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
 use signal_hook::iterator::Signals;
-use std::io::{Read, Write};
+use std::io::Read;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::Child;
@@ -34,8 +34,6 @@ const IDLE_EXIT: Duration = Duration::from_secs(15);
 /// How long the attached client gets to read its last frames at the end.
 const LAST_WORDS: Duration = Duration::from_secs(1);
 const READ_CHUNK: usize = 64 * 1024;
-/// How many writes wait for a program at most: then its input waits.
-const INPUT_QUEUE: usize = 64;
 /// How long an exited shell's last output gets to be read.
 const DRAIN: Duration = Duration::from_millis(500);
 /// How long a new server waits for an ending one's lock.
@@ -232,18 +230,6 @@ fn serve_connection(shared: &Arc<Shared>, conn: u64, mut stream: UnixStream) -> 
     Ok(())
 }
 
-/// Why an ending server makes no space.
-#[derive(Debug)]
-struct Ending;
-
-impl std::fmt::Display for Ending {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("the paddock server is ending")
-    }
-}
-
-impl std::error::Error for Ending {}
-
 fn reply(answer: Result<Answer>) -> Frame {
     let answer = answer.map_err(|e| match e.downcast_ref::<Ending>() {
         Some(Ending) => Refusal::Ending,
@@ -252,17 +238,16 @@ fn reply(answer: Result<Answer>) -> Frame {
     Frame::Message(Message::Reply(answer))
 }
 
-/// Write `data` to `terminal`'s program, after what came before it. Waits
-/// while its queue is full (the program is not reading), outside the
-/// state lock: so the client sending it waits, and nothing else does.
+/// Write `data` to `terminal`'s program, after what came before it.
+/// Never waits (see [`Input`]): the connection goes on reading, so a
+/// resize or detach behind input to a program that does not read gets
+/// through.
 fn input(shared: &Shared, terminal: &TerminalId, data: Vec<u8>) {
-    let input = {
-        let state = shared.lock();
-        let found = state.terminals().find(|(_, t)| t.id == *terminal);
-        let Some((_, term)) = found else { return };
-        term.input.clone()
-    };
-    let _ = input.send(data);
+    let state = shared.lock();
+    let found = state.terminals().find(|(_, t)| t.id == *terminal);
+    if let Some((_, term)) = found {
+        term.input.send(terminal, data);
+    }
 }
 
 /// Make connection `conn` the attached client of `space`, shown at
@@ -275,14 +260,12 @@ fn attach(
     space: &SpaceId,
     size: (u16, u16),
 ) -> Result<()> {
-    let out = stream.try_clone()?;
-    let kept = stream.try_clone()?;
+    let mut subscriber = Subscriber::new(conn, space.clone(), stream)?;
     let mut state = shared.lock();
     let hosted = &mut state.space_mut(space)?.terminals;
     for term in hosted.iter_mut() {
         term.resize(size)?;
     }
-    let (tx, rx) = mpsc::sync_channel(QUEUE);
     let terminals = hosted.iter().map(|t| (t.id.clone(), t.size)).collect();
     let snapshots: Vec<Frame> = hosted
         .iter_mut()
@@ -297,33 +280,15 @@ fn attach(
         terminals,
     })));
     for frame in first.chain(snapshots) {
-        // The queue is new, and holds far more than one frame per terminal.
-        let _ = tx.try_send(frame);
+        // A new client: it has had no time to fall behind.
+        let _ = subscriber.queue(frame);
     }
-    let writer = std::thread::spawn(move || write_frames(out, &rx));
-    let old = state.attached.replace(Subscriber {
-        conn,
-        space: space.clone(),
-        tx,
-        writer,
-        stream: kept,
-    });
+    let old = state.attached.replace(subscriber);
     drop(state);
     if let Some(old) = old {
         std::thread::spawn(move || old.let_go(LAST_WORDS));
     }
     Ok(())
-}
-
-/// Write every frame `rx` brings to `out`, until it brings no more or the
-/// client is gone. The connection stays open: whoever lets the client go
-/// closes it.
-fn write_frames(mut out: UnixStream, rx: &mpsc::Receiver<Frame>) {
-    for frame in rx {
-        if protocol::write(&mut out, &frame).is_err() {
-            return;
-        }
-    }
 }
 
 /// Show the space connection `conn` attached at `size`.
@@ -386,14 +351,13 @@ fn start_terminal(
     size: (u16, u16),
 ) -> Result<HostedTerminal> {
     let mut pty = pty::spawn(&shared.shell, cwd, &shared.home, size, &shared.env)?;
-    let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(INPUT_QUEUE);
     let ready = (|| {
-        let writer = pty.master.try_clone()?;
+        let input = Input::start(pty.master.try_clone()?);
         let reader = pty.master.try_clone()?;
-        let term = HostedTerminal::new(id.clone(), &pty, tx, size)?;
-        anyhow::Ok((writer, reader, term))
+        let term = HostedTerminal::new(id.clone(), &pty, input, size)?;
+        anyhow::Ok((reader, term))
     })();
-    let (mut writer, reader, term) = match ready {
+    let (reader, term) = match ready {
         Ok(ready) => ready,
         Err(e) => {
             // Leave no shell behind with no terminal.
@@ -402,13 +366,6 @@ fn start_terminal(
             return Err(e);
         }
     };
-    std::thread::spawn(move || {
-        for bytes in rx {
-            if writer.write_all(&bytes).is_err() {
-                return;
-            }
-        }
-    });
     let (drained, done) = mpsc::channel::<()>();
     let (s, sp, t) = (Arc::clone(shared), space.clone(), id.clone());
     std::thread::spawn(move || read_output(&s, &sp, &t, reader, drained));

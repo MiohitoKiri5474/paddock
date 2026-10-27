@@ -8,6 +8,11 @@ use crate::backend::{self, SpaceId, TerminalId};
 use crate::hooks::now_ms;
 use crate::ui::{dashboard, help, session_view, sidebar};
 use anyhow::Result;
+
+/// paddock's farewell when its connection to the native server breaks.
+const LOST: &str = "lost the connection to the paddock server (it let this paddock go, \
+                    or ended; see server.log in paddock's state directory): run paddock \
+                    again to attach";
 use crossterm::event::{self as ct, KeyEventKind};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect};
@@ -118,7 +123,7 @@ pub fn run(
     rx: &Receiver<Event>,
     git: Sender<watch::Watched>,
     prs: Option<Sender<prs::Wanted>>,
-) -> Result<()> {
+) -> Result<Option<String>> {
     let mut feed = TaskFeed {
         tx: git,
         sent: watch::Watched::default(),
@@ -156,7 +161,9 @@ pub fn run(
             break;
         }
     }
-    app.detach_all()
+    let farewell = app.farewell.take();
+    app.detach_all()?;
+    Ok(farewell)
 }
 
 /// Keep up with an event just handled (see `effects`): turns seen, the tab bar
@@ -302,6 +309,11 @@ fn handle_backend(app: &mut App, space: &SpaceId, event: backend::Event) -> Back
             BackendHandled::terminals_changed(Flow::Continue)
         }
         backend::Event::Ended => BackendHandled::terminals_changed(Flow::Quit),
+        // Never a quiet quit: the terminals may run on, to attach again.
+        backend::Event::Lost => {
+            app.farewell = Some(LOST.to_string());
+            BackendHandled::terminals_changed(Flow::Quit)
+        }
         // A space came or went: one made outside paddock becomes a space
         // here (one that ended reports its own end).
         backend::Event::SpacesChanged => {

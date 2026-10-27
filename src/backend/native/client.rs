@@ -1,10 +1,10 @@
 //! paddock as the native server's client: one short connection per
 //! request, and one long one for the attached space ([`Attached`]). Only
 //! making a space starts the server; every other request finds none
-//! running and says so ([`NoServer`]), or, if it only asks, has nothing
+//! running and says so ([`NotRunning`]), or, if it only asks, has nothing
 //! for an answer. A server this paddock cannot talk to is an error.
 
-use super::protocol::{self, Answer, Closed, Frame, Message, Notice, Refusal, Request};
+use super::protocol::{self, Answer, Closed, Ending, Frame, Message, Notice, Refusal, Request};
 use super::server::log_path;
 use super::socket_path;
 use crate::backend::env::clean_env;
@@ -21,23 +21,17 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-/// No server could answer: none runs, or the one asked was ending.
+/// No server runs (nothing listens on its socket).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NoServer {
-    NotRunning,
-    Ending,
-}
+pub struct NotRunning;
 
-impl std::fmt::Display for NoServer {
+impl std::fmt::Display for NotRunning {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::NotRunning => "the paddock server is not running",
-            Self::Ending => "the paddock server is ending",
-        })
+        f.write_str("the paddock server is not running")
     }
 }
 
-impl std::error::Error for NoServer {}
+impl std::error::Error for NotRunning {}
 
 /// The server could not do what it was asked: why.
 #[derive(Debug)]
@@ -54,7 +48,9 @@ impl std::error::Error for Refused {}
 /// Whether `e` says no server could answer: none runs, or it was ending
 /// or went away as it was asked (the next request starts a new one).
 fn no_server(e: &anyhow::Error) -> bool {
-    e.downcast_ref::<NoServer>().is_some() || e.downcast_ref::<Closed>().is_some()
+    e.downcast_ref::<NotRunning>().is_some()
+        || e.downcast_ref::<Ending>().is_some()
+        || e.downcast_ref::<Closed>().is_some()
 }
 
 /// A closure taking the value of answer `variant`, and giving any other
@@ -86,7 +82,7 @@ impl Client {
     /// none runs or it speaks another protocol version.
     fn connect(&self) -> Result<(UnixStream, u32)> {
         let socket = socket_path(&self.paths)?;
-        let mut stream = UnixStream::connect(&socket).context(NoServer::NotRunning)?;
+        let mut stream = UnixStream::connect(&socket).context(NotRunning)?;
         let pid = protocol::hello(&mut stream, true)?;
         Ok((stream, pid))
     }
@@ -330,21 +326,24 @@ impl Client {
         }
         let mut reader = stream.try_clone()?;
         std::thread::spawn(move || {
-            // The server's end, or the connection's (detached, let go for
-            // another client, or the server gone), ends the space here.
+            // The space's end is the server's notice; a connection that
+            // ends without it (let go, or the server gone) is lost.
             while let Ok(Some(frame)) = protocol::read(&mut reader, protocol::FROM_SERVER) {
                 let event = match frame {
                     Frame::Bytes { terminal, data } => Event::Output { terminal, data },
                     Frame::Message(Message::Notice(Notice::Changed)) => Event::Changed,
                     Frame::Message(Message::Notice(Notice::SpacesChanged)) => Event::SpacesChanged,
-                    Frame::Message(Message::Notice(Notice::Ended)) => break,
+                    Frame::Message(Message::Notice(Notice::Ended)) => {
+                        deliver(Event::Ended);
+                        return;
+                    }
                     Frame::Message(_) => continue,
                 };
                 if !deliver(event) {
                     return;
                 }
             }
-            deliver(Event::Ended);
+            deliver(Event::Lost);
         });
         Ok((Attached { stream }, structure, replays))
     }
@@ -354,7 +353,7 @@ impl Client {
 fn read_reply(stream: &mut UnixStream) -> Result<Answer> {
     match protocol::read(stream, protocol::FROM_SERVER)? {
         Some(Frame::Message(Message::Reply(reply))) => reply.map_err(|refusal| match refusal {
-            Refusal::Ending => NoServer::Ending.into(),
+            Refusal::Ending => Ending.into(),
             Refusal::Failed(why) => Refused(why).into(),
         }),
         Some(other) => bail!("expected a reply from the paddock server, got {other:?}"),

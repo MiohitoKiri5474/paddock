@@ -230,6 +230,9 @@ pub struct App {
     pub(super) mode: Mode,
     /// A message for the user, shown in the tab bar until the next key.
     pub(super) notice: Option<String>,
+    /// Why paddock quits, said once the screen is back; `None` for a
+    /// quit that needs no word.
+    pub(super) farewell: Option<String>,
     /// Size of the whole outer screen.
     pub(super) screen: (u16, u16),
     /// Where new terminals start when the current one's directory is unknown.
@@ -352,6 +355,7 @@ impl App {
             mode: Mode::Normal,
             // Settings that work but may surprise.
             notice: (!config.warnings.is_empty()).then(|| config.warnings.join("; ")),
+            farewell: None,
             screen,
             start_dir,
             state_dir,

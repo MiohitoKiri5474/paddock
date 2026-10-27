@@ -19,6 +19,7 @@
 pub mod backend;
 pub mod native_skip;
 mod panes;
+mod stall;
 mod state;
 pub mod tmux_only;
 
@@ -559,6 +560,8 @@ impl Drop for Sandbox {
 pub struct Paddock {
     child: Box<dyn Child + Send + Sync>,
     writer: Box<dyn Write + Send>,
+    /// The same writer, for [`Self::send_in_background`].
+    shared: Arc<Mutex<Box<dyn Write + Send>>>,
     master: Box<dyn MasterPty + Send>,
     screen: Arc<Mutex<vt100::Parser>>,
 }
@@ -589,10 +592,12 @@ impl Paddock {
         )));
         let reader = pair.master.try_clone_reader().expect("reader");
         spawn_reader(reader, Arc::clone(&screen), Arc::clone(&writer));
+        let shared = Arc::clone(&writer);
         let writer = Box::new(SharedWriter(writer));
         Self {
             child,
             writer,
+            shared,
             master: pair.master,
             screen,
         }

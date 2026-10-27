@@ -104,6 +104,20 @@ pub enum Refusal {
     Failed(String),
 }
 
+/// The server is ending, so it makes no space: the error a server
+/// refuses with ([`Refusal::Ending`] on the wire), and the client reads
+/// back. The client then starts the next server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Ending;
+
+impl std::fmt::Display for Ending {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the paddock server is ending")
+    }
+}
+
+impl std::error::Error for Ending {}
+
 /// The other side closed the connection where a frame was due.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Closed;

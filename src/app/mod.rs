@@ -131,5 +131,8 @@ pub fn run() -> Result<()> {
     for warning in &config.warnings {
         eprintln!("paddock: {warning}");
     }
-    result
+    match result? {
+        Some(farewell) => anyhow::bail!(farewell),
+        None => Ok(()),
+    }
 }

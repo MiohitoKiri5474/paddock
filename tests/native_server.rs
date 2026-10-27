@@ -385,6 +385,63 @@ fn read_frame(stream: &mut UnixStream) -> Option<Vec<u8>> {
 }
 
 #[test]
+fn pasting_into_a_program_that_never_reads_leaves_paddock_free_to_detach() {
+    let sandbox = native();
+    let mut paddock = ready(&sandbox);
+    // Raw mode: the PTY takes no more input once its queue is full.
+    paddock.type_line("stty raw -echo; echo FLOOD''-READY; sleep 60");
+    paddock.wait_for_text("FLOOD-READY");
+    // Many pastes: far more input than the program will ever take.
+    let paste = [b"\x1b[200~".as_slice(), &[b'x'; 16 << 10], b"\x1b[201~"].concat();
+    let flood = paddock.send_in_background(paste.repeat(200));
+    // paddock takes it all: it never waits on the program.
+    wait_until("paddock to take the whole paste", || flood.is_finished());
+
+    // Still answering keys: it detaches.
+    let _ = paddock.send_in_background(b"\x01d".to_vec()).join();
+    assert!(paddock.wait_exit());
+    let again = sandbox.launch();
+    again.wait_for_text("FLOOD-READY");
+}
+
+#[test]
+fn a_paddock_stalled_a_moment_under_heavy_output_stays_attached() {
+    let sandbox = native();
+    let mut paddock = ready(&sandbox);
+    paddock.type_line("seq 1 1000000; echo ALL''-DONE");
+    let start = Instant::now();
+    paddock.stall_until(|| start.elapsed() > Duration::from_secs(2));
+    paddock.wait_for_text("ALL-DONE");
+    paddock.type_line("echo still-here");
+    paddock.wait_for_text("still-here\n");
+}
+
+#[test]
+fn a_paddock_the_server_lets_go_says_so() {
+    let sandbox = native();
+    let mut paddock = ready(&sandbox);
+    paddock.type_line("yes");
+    // Stopped while output piles up, until the server gives up on it.
+    let log = sandbox.state_dir().join("server.log");
+    let start = Instant::now();
+    paddock.stall_until(|| {
+        assert!(start.elapsed() < Duration::from_secs(60), "never let go");
+        std::fs::read_to_string(&log).is_ok_and(|l| l.contains("it stopped reading"))
+    });
+    assert!(!paddock.wait_exit(), "it fails");
+    paddock.wait_for("the farewell", |_| {
+        paddock
+            .full_screen()
+            .contains("lost the connection to the paddock server")
+    });
+    // The shell runs on: a new paddock attaches to it.
+    let mut again = sandbox.launch();
+    again.send(b"\x03");
+    again.type_line("echo back");
+    again.wait_for_text("back\n");
+}
+
+#[test]
 fn a_request_after_attaching_closes_the_connection_unanswered() {
     let sandbox = native();
     let paddock = ready(&sandbox);

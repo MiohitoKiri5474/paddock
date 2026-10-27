@@ -3,7 +3,7 @@
 //! every request that only reads or renames; making and ending terminals
 //! is the server's ([`super::server`]), as it starts their threads.
 
-use super::protocol::{Answer, Frame, Message, Notice, Request};
+use super::protocol::{self, Answer, Frame, Message, Notice, Request};
 use super::terminal::HostedTerminal;
 use super::unsupported;
 use crate::backend::{
@@ -12,14 +12,20 @@ use crate::backend::{
 use anyhow::{anyhow, bail, Result};
 use ratatui::layout::Rect;
 use std::os::unix::net::UnixStream;
-use std::sync::mpsc::{self, SyncSender, TrySendError};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::{self, Sender};
+use std::sync::Arc;
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-/// How many frames wait for the attached client at most (each at most a
-/// read of output, so a few MiB): one that falls this far behind has
-/// stopped reading, and is let go.
-pub const QUEUE: usize = 256;
+/// Bytes queued for the attached client past which it is behind: a client
+/// that stays behind for [`GRACE`] has stopped reading (not just paused a
+/// moment), and is let go.
+const BEHIND: usize = 16 << 20;
+const GRACE: Duration = Duration::from_secs(5);
+/// Bytes queued past which the client is let go at once, so a program
+/// writing fast never grows the server without bound meanwhile.
+const MAX_QUEUED: usize = 128 << 20;
 
 pub struct Space {
     pub id: SpaceId,
@@ -39,13 +45,62 @@ pub struct Subscriber {
     /// Which connection it is.
     pub conn: u64,
     pub space: SpaceId,
-    pub tx: SyncSender<Frame>,
-    pub writer: JoinHandle<()>,
+    tx: Sender<Frame>,
+    writer: JoinHandle<()>,
+    /// Bytes queued and not yet written.
+    queued: Arc<AtomicUsize>,
+    /// Since when it has been [`BEHIND`].
+    behind: Option<Instant>,
     /// Its connection, which only letting it go closes.
-    pub stream: UnixStream,
+    stream: UnixStream,
 }
 
 impl Subscriber {
+    /// Connection `conn` (`stream`) as the client attached to `space`,
+    /// with its writer thread.
+    pub fn new(conn: u64, space: SpaceId, stream: &UnixStream) -> Result<Self> {
+        let mut out = stream.try_clone()?;
+        let (tx, rx) = mpsc::channel::<Frame>();
+        let queued = Arc::new(AtomicUsize::new(0));
+        let written = Arc::clone(&queued);
+        // It never closes the connection: whoever lets the client go does.
+        let writer = std::thread::spawn(move || {
+            for frame in rx {
+                if protocol::write(&mut out, &frame).is_err() {
+                    return;
+                }
+                written.fetch_sub(size(&frame), Ordering::Relaxed);
+            }
+        });
+        Ok(Self {
+            conn,
+            space,
+            tx,
+            writer,
+            queued,
+            behind: None,
+            stream: stream.try_clone()?,
+        })
+    }
+
+    /// Queue `frame`; `Err` with why if the client is to be let go.
+    pub fn queue(&mut self, frame: Frame) -> Result<(), &'static str> {
+        let size = size(&frame);
+        let queued = self.queued.fetch_add(size, Ordering::Relaxed) + size;
+        if self.tx.send(frame).is_err() {
+            return Err("it went away");
+        }
+        if queued <= BEHIND {
+            self.behind = None;
+            return Ok(());
+        }
+        let since = *self.behind.get_or_insert_with(Instant::now);
+        if queued > MAX_QUEUED || since.elapsed() > GRACE {
+            return Err("it stopped reading");
+        }
+        Ok(())
+    }
+
     /// Let the client go once it has read what it was sent, or after
     /// `wait`: close its connection, which also ends a writer stuck on a
     /// client that does not read.
@@ -61,6 +116,14 @@ impl Subscriber {
         });
         let _ = finished.recv_timeout(wait);
         let _ = stream.shutdown(std::net::Shutdown::Both);
+    }
+}
+
+/// About how many bytes `frame` takes queued.
+fn size(frame: &Frame) -> usize {
+    match frame {
+        Frame::Bytes { data, .. } => data.len(),
+        Frame::Message(_) => 64,
     }
 }
 
@@ -110,19 +173,15 @@ impl State {
     }
 
     /// Queue `frame` for the attached client, if it is attached to
-    /// `space` (to any space if `None`). A client whose queue is full has
-    /// stopped reading, and one whose writer failed has gone: either is
-    /// let go, so its frames never pile up.
+    /// `space` (to any space if `None`). A client that has stopped reading
+    /// (see [`BEHIND`]), or whose writer failed, is let go, so its frames
+    /// never pile up.
     pub fn send(&mut self, space: Option<&SpaceId>, frame: Frame) {
-        let Some(s) = &self.attached else { return };
+        let Some(s) = &mut self.attached else { return };
         if space.is_some_and(|space| s.space != *space) {
             return;
         }
-        let why = match s.tx.try_send(frame) {
-            Ok(()) => return,
-            Err(TrySendError::Full(_)) => "it stopped reading",
-            Err(TrySendError::Disconnected(_)) => "it went away",
-        };
+        let Err(why) = s.queue(frame) else { return };
         if let Some(s) = self.attached.take() {
             eprintln!("paddock server: letting connection {} go: {why}", s.conn);
             std::thread::spawn(move || s.let_go(Duration::ZERO));
