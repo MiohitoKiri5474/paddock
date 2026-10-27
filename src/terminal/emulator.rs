@@ -1,15 +1,17 @@
 //! A terminal emulator for one terminal's raw output (alacritty_terminal,
 //! ADR 0005), with our own scrollback.
 
-use alacritty_terminal::event::VoidListener;
+use alacritty_terminal::event::{Event as TermEvent, EventListener};
 use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Column, Line, Point, Side};
 use alacritty_terminal::selection::{Selection, SelectionRange, SelectionType};
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::{Config, Term, TermMode};
 use alacritty_terminal::vte::ansi::{Color as AnsiColor, NamedColor, Processor};
+use std::sync::{Arc, Mutex};
 
 mod copy;
+mod snapshot;
 pub use copy::{Found, Motion, Spot};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -71,17 +73,45 @@ impl Dimensions for Size {
     }
 }
 
+/// Where an emulator's replies to terminal queries (DA, `CSI ? u`) go: kept
+/// for the program only by the one emulator that answers it (the native
+/// server's), dropped by the app's, whose host already answers.
+#[derive(Clone, Default)]
+pub struct Replies(Option<Arc<Mutex<Vec<u8>>>>);
+
+impl EventListener for Replies {
+    fn send_event(&self, event: TermEvent) {
+        if let (Some(kept), TermEvent::PtyWrite(text)) = (&self.0, event) {
+            let mut kept = kept.lock().unwrap_or_else(|e| e.into_inner());
+            kept.extend_from_slice(text.as_bytes());
+        }
+    }
+}
+
 pub struct Emulator {
-    term: Term<VoidListener>,
+    term: Term<Replies>,
+    /// The terminal's listener too: where its replies are kept.
+    replies: Replies,
     parser: Processor,
     /// Where the current selection started.
     anchor: Option<Point>,
 }
 
 impl Emulator {
-    /// `VoidListener` drops the emulator's replies to terminal queries: tmux
-    /// already answers them for the program.
+    /// An emulator that drops its replies to terminal queries: the host
+    /// (tmux, or paddock's server) already answers them for the program.
     pub fn new(cols: u16, rows: u16, scrollback: usize) -> Self {
+        Self::with_replies(cols, rows, scrollback, Replies::default())
+    }
+
+    /// An emulator that keeps its replies to terminal queries, until
+    /// [`Self::take_replies`]: the one that answers the program.
+    pub fn answering(cols: u16, rows: u16, scrollback: usize) -> Self {
+        let kept = Replies(Some(Arc::default()));
+        Self::with_replies(cols, rows, scrollback, kept)
+    }
+
+    fn with_replies(cols: u16, rows: u16, scrollback: usize, replies: Replies) -> Self {
         let config = Config {
             scrolling_history: scrollback,
             kitty_keyboard: true,
@@ -92,7 +122,8 @@ impl Emulator {
             rows: rows.into(),
         };
         Self {
-            term: Term::new(config, &size, VoidListener),
+            term: Term::new(config, &size, replies.clone()),
+            replies,
             parser: Processor::new(),
             anchor: None,
         }
@@ -100,6 +131,16 @@ impl Emulator {
 
     pub fn feed(&mut self, bytes: &[u8]) {
         self.parser.advance(&mut self.term, bytes);
+    }
+
+    /// The replies to terminal queries fed since the last call, for the
+    /// program; none unless [`Self::answering`].
+    pub fn take_replies(&mut self) -> Vec<u8> {
+        let Replies(Some(kept)) = &self.replies else {
+            return Vec::new();
+        };
+        let mut kept = kept.lock().unwrap_or_else(|e| e.into_inner());
+        std::mem::take(&mut *kept)
     }
 
     pub fn resize(&mut self, cols: u16, rows: u16) {
