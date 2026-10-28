@@ -51,6 +51,7 @@ impl App {
                     current: i == self.current,
                     path: place.map(|p| home.show(&p.path)),
                     branch: place.and_then(|p| p.branch.clone()),
+                    status: place.and_then(|p| p.status),
                     pr,
                     linked: false,
                 }

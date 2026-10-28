@@ -526,6 +526,7 @@ mod tests {
             current: true,
             path: Some("~/project/api".into()),
             branch: Some("feat/login".into()),
+            status: None,
             pr: None,
             linked: false,
         };

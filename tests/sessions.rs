@@ -207,8 +207,8 @@ fn agents_of_every_space_are_listed_with_their_space_and_tab() {
     start("space-1:2", "s3", "/w/idle", "Stop");
     start("space-1:3", "s4", "/w/waiting", "PermissionRequest");
 
-    // Sorted by state; the turn that ended out of sight is done; the
-    // session that ended is not listed.
+    // In tab order, never by state; the turn that ended out of sight is
+    // done; the session that ended is not listed.
     wait_for_lines(
         &paddock,
         &[
@@ -217,11 +217,11 @@ fn agents_of_every_space_are_listed_with_their_space_and_tab() {
             space("space-2", false),
             at_home(),
             " AGENTS".into(),
-            agent("waiting", "waiting"),
+            agent("running", "running"),
             place("space-1", "claude"),
             agent("idle", "done"),
             place("space-1", "claude"),
-            agent("running", "running"),
+            agent("waiting", "waiting"),
             place("space-1", "claude"),
         ],
     );

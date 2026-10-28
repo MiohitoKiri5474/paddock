@@ -12,6 +12,7 @@ use crate::paths::HomePaths;
 use crate::sessions::{agents, log, HookRecord};
 use crate::worktree::space_dir;
 use anyhow::Result;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
@@ -73,8 +74,11 @@ pub struct Watched {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Place {
     pub path: String,
-    /// `None` outside a git repository.
+    /// `None` outside a git repository; the short commit on a detached
+    /// HEAD.
     pub branch: Option<String>,
+    /// `branch` is a branch, not a detached HEAD's commit.
+    pub on_branch: bool,
     /// The working tree and its repository's main checkout; `None`
     /// outside a git repository.
     pub tree: Option<git::WorkingTree>,
@@ -84,6 +88,11 @@ pub struct Place {
     /// What is checked out at the root (as `branch` at `path`); `None`
     /// outside a git checkout.
     pub root_branch: Option<String>,
+    /// The status of `branch` in `path` (uncommitted changes, ahead and
+    /// behind upstream), read on the watcher's thread only (see
+    /// [`read_watched`]); `None` until then, outside a repository and on
+    /// a detached HEAD.
+    pub status: Option<git::Status>,
 }
 
 impl Place {
@@ -99,6 +108,19 @@ impl Place {
         Some((self.path.clone(), self.branch.clone()?))
     }
 
+    /// The directory and the branch checked out there, if on a branch:
+    /// the key its status is read by, shared with a task on that branch
+    /// there.
+    pub fn status_key(&self) -> Option<(String, String)> {
+        self.pr_key().filter(|_| self.on_branch)
+    }
+
+    /// Whether `other` is the same directory and branch, so its status
+    /// still applies.
+    pub fn same_checkout(&self, other: &Place) -> bool {
+        self.path == other.path && self.branch == other.branch
+    }
+
     /// The root and what is checked out there, as the finder shows them
     /// (home as `~`): a branch always belongs to the directory beside it.
     pub fn root_shown(&self, home: &HomePaths) -> (String, Option<String>) {
@@ -107,10 +129,14 @@ impl Place {
 }
 
 /// Space `id`'s directory, root and what is checked out in each, read
-/// now; `None` if the backend cannot say.
+/// now; `None` if the backend cannot say. Not the branch's status, which
+/// [`places`] adds off the UI thread.
 pub fn place(backend: &Backend, id: &SpaceId) -> Option<Place> {
     let path = space_dir(backend, id)?;
-    let branch = git::head(&path);
+    // `git::head`, keeping whether it is a branch.
+    let current = git::current_branch(&path);
+    let on_branch = current.is_some();
+    let branch = current.or_else(|| git::short_commit(&path));
     let tree = git::working_tree(&path);
     let root = backend.root(id);
     let root_branch = match &root {
@@ -120,18 +146,12 @@ pub fn place(backend: &Backend, id: &SpaceId) -> Option<Place> {
     Some(Place {
         path,
         branch,
+        on_branch,
         tree,
         root,
         root_branch,
+        status: None,
     })
-}
-
-/// Read each of `spaces`' place.
-fn places(backend: &Backend, spaces: &[SpaceId]) -> Vec<(SpaceId, Place)> {
-    spaces
-        .iter()
-        .filter_map(|id| Some((id.clone(), place(backend, id)?)))
-        .collect()
 }
 
 /// The hook event log of `backend` (see [`log::path`]).
@@ -224,7 +244,22 @@ pub fn start(
 /// Read what `watched` asks for (spaces' places, tasks' git status, and
 /// their details if wanted) and send it. Returns false once nobody listens.
 fn read_watched(backend: &Backend, watched: &Watched, events: &Sender<Event>) -> bool {
-    let read = places(backend, &watched.spaces);
+    // One status read per directory and branch each poll, shared by the
+    // spaces and the tasks.
+    let mut statuses: HashMap<(String, String), git::Status> = HashMap::new();
+    let read: Vec<(SpaceId, Place)> = watched
+        .spaces
+        .iter()
+        .filter_map(|id| {
+            let place = place(backend, id)?;
+            let status = place.status_key().map(|key| {
+                *statuses
+                    .entry(key)
+                    .or_insert_with_key(|(dir, branch)| git::checked_out_status(dir, branch))
+            });
+            Some((id.clone(), Place { status, ..place }))
+        })
+        .collect();
     if !read.is_empty() && events.send(Event::Spaces(read)).is_err() {
         return false;
     }
@@ -234,7 +269,12 @@ fn read_watched(backend: &Backend, watched: &Watched, events: &Sender<Event>) ->
     }
     let read = tasks
         .iter()
-        .map(|(dir, branch)| ((dir.clone(), branch.clone()), git::status(dir, branch)))
+        .map(|key| {
+            let status = *statuses
+                .entry(key.clone())
+                .or_insert_with_key(|(dir, branch)| git::status(dir, branch));
+            (key.clone(), status)
+        })
         .collect();
     if events.send(Event::Git(read)).is_err() {
         return false;
@@ -254,14 +294,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn only_a_space_on_a_branch_has_its_status_read() {
+        let place = |branch: Option<&str>, on_branch| Place {
+            path: "/w/api".into(),
+            branch: branch.map(str::to_string),
+            on_branch,
+            tree: None,
+            root: None,
+            root_branch: None,
+            status: None,
+        };
+        let key = Some(("/w/api".to_string(), "main".to_string()));
+        assert_eq!(place(Some("main"), true).status_key(), key);
+        assert_eq!(place(Some("1a2b3c4"), false).status_key(), None, "detached");
+        assert_eq!(place(None, false).status_key(), None, "no repository");
+        // `C-a r` keeps a status only for the same directory and branch.
+        assert!(place(Some("main"), true).same_checkout(&place(Some("main"), true)));
+        assert!(!place(Some("main"), true).same_checkout(&place(Some("dev"), true)));
+    }
+
+    #[test]
     fn a_space_shows_its_root_as_stored_with_what_is_checked_out_there() {
         let home = HomePaths::new();
         let place = |root: Option<&str>, root_branch: Option<&str>| Place {
             path: "/w/api".into(),
             branch: Some("main".into()),
+            on_branch: true,
             tree: None,
             root: root.map(str::to_string),
             root_branch: root_branch.map(str::to_string),
+            status: None,
         };
         // Made before roots: its directory is its root.
         assert_eq!(

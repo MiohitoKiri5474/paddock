@@ -399,13 +399,14 @@ fn subagent_work_done_while_paddock_is_closed_appears_on_reopen() {
     }
     hook("SubagentStop-subagent", "SubagentStop", AGENT_A);
 
+    // In tree order, not by state: the finished one stays first.
     let mut again = ready(&sandbox);
     wait_for_list(
         &mut again,
         &[
             &session("running"),
-            &sub("fix/b", "running"),
             &sub(FIX_A, "done"),
+            &sub("fix/b", "running"),
         ],
     );
 }

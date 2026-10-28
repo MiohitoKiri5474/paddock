@@ -432,6 +432,49 @@ fn the_sidebar_marks_a_spaces_pr_with_the_dashboard_closed() {
 }
 
 #[test]
+fn the_sidebar_shows_a_spaces_uncommitted_changes_after_its_branch() {
+    let sandbox = Sandbox::new();
+    sandbox.set_gh("[]");
+    let dir = home_repo(&sandbox);
+    // `one` was `x`: one line removed, two added, and an untracked file of
+    // three lines counts as added.
+    std::fs::write(dir.join("one"), "a\nb\n").unwrap();
+    std::fs::write(dir.join("new"), "1\n2\n3\n").unwrap();
+    let paddock = in_home_repo(&sandbox);
+    wait_for_place(&paddock, "the changes", |l| l == "~/r feat/x +5 −1");
+    let rows = paddock.sidebar();
+    let (y, line) = rows
+        .iter()
+        .enumerate()
+        .find(|(_, l)| l.contains("+5"))
+        .expect("drawn");
+    let at = |c: char| line.chars().position(|x| x == c).unwrap() as u16;
+    assert_eq!(paddock.colors(y as u16, at('+')).0, vt100::Color::Idx(2));
+    assert_eq!(paddock.colors(y as u16, at('−')).0, vt100::Color::Idx(1));
+    // Committed, the working tree is clean: nothing after the branch.
+    git(&dir, &["add", "."]);
+    git(&dir, &["commit", "-q", "-m", "edit"]);
+    wait_for_place(&paddock, "clean", |l| l == "~/r feat/x");
+}
+
+#[test]
+fn a_detached_space_shows_its_commit_without_line_changes() {
+    let sandbox = Sandbox::new();
+    sandbox.set_gh("[]");
+    let dir = home_repo(&sandbox);
+    git(&dir, &["switch", "-q", "--detach"]);
+    std::fs::write(dir.join("one"), "a\nb\n").unwrap();
+    let paddock = in_home_repo(&sandbox);
+    // The short commit stands for the branch; its status comes with it, so
+    // once it shows, nothing follows it.
+    wait_for_place(&paddock, "the detached commit", |l| {
+        l.split(' ').count() == 2 && !l.contains("feat/x")
+    });
+    let line = space_place(&paddock);
+    assert!(!line.contains('+') && !line.contains('−'), "{line}");
+}
+
+#[test]
 fn with_the_sidebar_hidden_and_the_dashboard_closed_gh_is_never_asked() {
     let sandbox = Sandbox::new();
     sandbox.write_config("[github]\nrefresh_secs = 1\n");
