@@ -96,14 +96,18 @@ impl App {
     /// directory; a backend that keeps the current space is told it
     /// instead, when it changed.
     pub(super) fn save(&mut self) -> Result<()> {
-        let mut space = self.current_space().map(|i| i.id.clone());
-        if self.backend.keeps_current() {
-            let told = std::mem::take(&mut space);
-            if let Some(id) = told.filter(|id| self.told_current.as_ref() != Some(id)) {
-                self.backend.set_current_space(&id)?;
-                self.told_current = Some(id);
+        let current = self.current_space().map(|i| i.id.clone());
+        let space = if !self.backend.keeps_current() {
+            current
+        } else {
+            if current.is_some() && current != self.told_current {
+                if let Some(id) = &current {
+                    self.backend.set_current_space(id)?;
+                }
+                self.told_current = current;
             }
-        }
+            None
+        };
         let saved = Saved {
             space,
             sidebar: self.sidebar_wish,

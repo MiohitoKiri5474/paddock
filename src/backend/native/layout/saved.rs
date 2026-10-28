@@ -59,6 +59,20 @@ impl<T> SavedTree<T> {
         }
     }
 
+    /// Its terminals, in the tree's order, to change.
+    pub fn terminals_mut(&mut self) -> Vec<&mut T> {
+        let mut out = Vec::new();
+        self.walk_mut(&mut out);
+        out
+    }
+
+    fn walk_mut<'a>(&'a mut self, out: &mut Vec<&'a mut T>) {
+        match self {
+            Self::Terminal(t) => out.push(t),
+            Self::Split { cells, .. } => cells.iter_mut().for_each(|c| c.node.walk_mut(out)),
+        }
+    }
+
     /// An error unless the tree is one a layout can hold: every row of
     /// two cells or more, as a row left with one gives way to it.
     pub fn check(&self) -> Result<()> {
@@ -75,7 +89,7 @@ impl<T> SavedTree<T> {
 impl Layout {
     /// The tree as `layout.json` keeps it, each terminal as `f` makes it.
     pub fn save<T>(&self, f: &mut impl FnMut(&TerminalId) -> T) -> SavedTree<T> {
-        save(&self.root, f)
+        saved_node(&self.root, f)
     }
 
     /// The layout `saved` holds, its terminals already given their ids;
@@ -84,12 +98,13 @@ impl Layout {
     pub fn restore(saved: SavedTree<TerminalId>) -> Result<Self> {
         saved.check()?;
         Ok(Self {
-            root: restore(saved),
+            root: node_from(saved),
         })
     }
 }
 
-fn save<T>(node: &Node, f: &mut impl FnMut(&TerminalId) -> T) -> SavedTree<T> {
+/// `node` as a saved tree, each terminal as `f` makes it.
+fn saved_node<T>(node: &Node, f: &mut impl FnMut(&TerminalId) -> T) -> SavedTree<T> {
     match node {
         Node::Leaf(t) => SavedTree::Terminal(f(t)),
         Node::Split { axis, cells } => SavedTree::Split {
@@ -98,14 +113,15 @@ fn save<T>(node: &Node, f: &mut impl FnMut(&TerminalId) -> T) -> SavedTree<T> {
                 .iter()
                 .map(|c| SavedCell {
                     weight: c.weight,
-                    node: save(&c.node, f),
+                    node: saved_node(&c.node, f),
                 })
                 .collect(),
         },
     }
 }
 
-fn restore(saved: SavedTree<TerminalId>) -> Node {
+/// The node a checked saved tree holds.
+fn node_from(saved: SavedTree<TerminalId>) -> Node {
     match saved {
         SavedTree::Terminal(t) => Node::Leaf(t),
         SavedTree::Split { axis, cells } => Node::Split {
@@ -114,7 +130,7 @@ fn restore(saved: SavedTree<TerminalId>) -> Node {
                 .into_iter()
                 .map(|c| Cell {
                     weight: c.weight,
-                    node: restore(c.node),
+                    node: node_from(c.node),
                 })
                 .collect(),
         },

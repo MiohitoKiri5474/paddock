@@ -56,7 +56,7 @@ struct Shared {
     /// The shells' environment.
     env: Vec<(String, String)>,
     connections: AtomicU64,
-    /// Writes `layout.json`; always locked after `state`.
+    /// Writes `layout.json`; locked after `state`, if both are.
     saver: Mutex<Saver>,
 }
 
@@ -92,12 +92,12 @@ pub fn serve() -> Result<()> {
     });
     // Before any signal is handled: one that ends the server mid-way
     // would save half the layout.
-    if let Some(layout) = saved::load(&paths.state_dir) {
+    {
         let mut state = shared.lock();
         let mut start = |state: &State, space: &SpaceId, id, cwd: &Path, size: (u16, u16)| {
             start_terminal(&shared, state, space, id, LoginShell, cwd, size)
         };
-        restore::spaces(&mut state, layout, &mut start);
+        restore::from_file(&paths.state_dir, &mut state, &mut start);
     }
     watch_signals(&shared)?;
     let names = Arc::clone(&shared);
@@ -214,25 +214,31 @@ fn close(shared: &Shared, state: &mut State) {
     }
 }
 
-/// Write the layout to `layout.json` now, if it changed.
+/// Write the layout to `layout.json` now, if it changed, and no more.
 fn flush_layout(shared: &Shared, state: &State) {
+    let layout = saved::snapshot(state).read_dirs();
     let mut saver = shared.saver.lock().unwrap_or_else(|e| e.into_inner());
-    if let Err(e) = saver.flush(saved::snapshot(state)) {
+    if let Err(e) = saver.flush(layout) {
         eprintln!("paddock server: {e:#}");
     }
 }
 
 /// Offer the layout to `layout.json` every [`SAVE_POLL`], until the
 /// server is ending. A terminal's directory is read here too, as no
-/// notice says it changed.
+/// notice says it changed: with the state let go, as is the file. (A
+/// layout taken before the server began to end is never written after
+/// its last: the saver is flushed then, and takes no more.)
 fn save_layout(shared: &Shared) {
     loop {
         std::thread::sleep(SAVE_POLL);
-        let state = shared.lock();
-        if state.closing {
-            return;
-        }
-        let layout = saved::snapshot(&state);
+        let snapshot = {
+            let state = shared.lock();
+            if state.closing {
+                return;
+            }
+            saved::snapshot(&state)
+        };
+        let layout = snapshot.read_dirs();
         let mut saver = shared.saver.lock().unwrap_or_else(|e| e.into_inner());
         if let Err(e) = saver.offer(layout, Instant::now()) {
             eprintln!("paddock server: {e:#}");
@@ -737,6 +743,9 @@ fn end_space(state: &mut State, space: &SpaceId) -> Option<Subscriber> {
     let gone = state.spaces.remove(i);
     for term in &gone.terminals {
         term.hang_up();
+    }
+    if state.current.as_ref() == Some(space) {
+        state.current = None;
     }
     state.notify(space, Notice::Ended);
     // Nothing follows its end.

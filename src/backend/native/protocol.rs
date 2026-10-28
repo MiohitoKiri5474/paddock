@@ -370,14 +370,24 @@ pub struct OtherVersion {
     pub version: u32,
 }
 
+impl OtherVersion {
+    /// Which version the running server speaks, and this paddock.
+    pub fn mismatch(&self) -> String {
+        let Self { pid, version } = self;
+        format!(
+            "the running paddock server (pid {pid}) speaks protocol version {version}, \
+             and this paddock speaks {VERSION}"
+        )
+    }
+}
+
 impl std::fmt::Display for OtherVersion {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let Self { pid, version } = self;
+        let pid = self.pid;
         write!(
             f,
-            "the running paddock server (pid {pid}) speaks protocol version {version}, \
-             and this paddock speaks {VERSION}: close every terminal in it, or end it \
-             (kill {pid}), and start paddock again"
+            "{}: close every terminal in it, or end it (kill {pid}), and start paddock again",
+            self.mismatch()
         )
     }
 }

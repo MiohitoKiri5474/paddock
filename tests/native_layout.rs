@@ -269,3 +269,71 @@ fn restarting_signals_nothing_when_the_lock_names_another_pid() {
     // test's own child.
     unsafe { libc::kill(older as i32, libc::SIGKILL) };
 }
+
+/// A hook payload recorded from Claude Code: a prompt, in `/tmp/repo`.
+const PROMPT_SUBMIT: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/spikes/02-subagent-worktree/fixtures/UserPromptSubmit.json"
+);
+
+/// Whether the sidebar lists an agent (its kind beside its place).
+fn shows_the_agent(paddock: &Paddock) -> bool {
+    paddock.sidebar().iter().any(|l| l.ends_with("claude"))
+}
+
+/// A server killed outright saves nothing as it ends: the next one
+/// rebuilds what it last wrote, and the agent that ran is not listed.
+#[test]
+fn a_killed_server_restores_from_its_last_save_and_its_agents_end() {
+    let sandbox = native();
+    let dir = sandbox.path("home/proj");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut paddock = ready(&sandbox);
+    split_in(&mut paddock, &sandbox, &dir);
+    let payload = std::fs::read_to_string(PROMPT_SUBMIT).unwrap();
+    sandbox.hook("space-1:0.1", "UserPromptSubmit", &payload);
+    paddock.wait_for("the agent", |_| shows_the_agent(&paddock));
+    wait_for_saved(&sandbox, 1, "/proj\"");
+    let before = shape(&sandbox, "", "");
+    let pid = server_pid(&sandbox.state_dir()).expect("a server");
+
+    // SAFETY: kill has no memory-safety preconditions; `pid` holds the
+    // sandbox's server lock.
+    unsafe { libc::kill(pid, libc::SIGKILL) };
+    let start = Instant::now();
+    while alive(pid) {
+        assert!(start.elapsed() < harness::TIMEOUT, "the server ended");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    drop(paddock);
+    let again = sandbox.launch();
+
+    again.wait_for_text("restored 1 space");
+    assert_eq!(shape(&sandbox, "", ""), before);
+    again.wait_for("the sidebar", |_| {
+        again.sidebar().iter().any(|l| l.contains("AGENTS"))
+    });
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(!shows_the_agent(&again), "{}", again.full_screen());
+}
+
+/// Only the app's start rebuilds a saved layout: the CLI's commands that
+/// read start no server for it.
+#[test]
+fn the_cli_starts_no_server_to_rebuild_the_layout() {
+    let sandbox = native();
+    let mut paddock = ready(&sandbox);
+    wait_for_saved(&sandbox, 1, "space-1");
+    stop_server(&sandbox.state_dir());
+    assert!(paddock.wait_exit());
+
+    for args in [&["debug", "state", "--json"][..], &["worktree", "list"]] {
+        // Outside a repository, `worktree list` fails; it still checks
+        // the server first.
+        sandbox.run(args, &[], "");
+    }
+
+    let pid = server_pid(&sandbox.state_dir());
+    assert!(!pid.is_some_and(alive), "no server started");
+    assert!(sandbox.state_dir().join("layout.json").exists(), "kept");
+}

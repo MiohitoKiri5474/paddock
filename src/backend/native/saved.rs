@@ -1,23 +1,28 @@
 //! `layout.json` in the state directory (ADR 0008): the server's spaces
-//! in order, each with its name, root, size, current tab and floats, its
-//! tabs with their names (and whether each is automatic), focus, zoom and
-//! tree of splits with their shares, each terminal by its directory, and
-//! the space paddock showed last. No terminal id is kept: a restored
-//! terminal is a new one, so it inherits no agent session.
+//! in order, each with its name, root, size and current tab, its tabs
+//! with their names (and whether each is automatic), focus, zoom and tree
+//! of splits with their shares, each terminal by its directory, and the
+//! space paddock showed last. No terminal id is kept: a restored terminal
+//! is a new one, so it inherits no agent session. Floats are left out:
+//! their keys make them again when wanted.
 //!
 //! The server writes it whenever it changes ([`Saver`]), at most once
 //! every [`GAP`], by an atomic replace; a server with no space left
-//! removes it, so the next starts clean. A server that starts and finds
-//! it rebuilds the layout from it (see `server::restore`). Floats are
-//! kept but not restarted, as no program but a shell is.
+//! removes it, so the next starts clean. The layout is taken with the
+//! server's state locked ([`snapshot`]), but its directories are read,
+//! and the file written, after ([`Snapshot::read_dirs`]). A server that
+//! starts and finds it rebuilds the layout from it (see
+//! [`super::restore`]).
 
 use super::layout::SavedTree;
 use super::space::Space;
 use super::state::State;
-use crate::backend::TerminalId;
+use super::terminal::{DirReader, HostedTerminal};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::io::Write;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -45,8 +50,6 @@ pub struct SavedSpace {
     /// Which of `tabs` is current.
     pub current: usize,
     pub tabs: Vec<SavedTab>,
-    #[serde(default)]
-    pub floats: Vec<SavedFloat>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -64,12 +67,6 @@ pub struct SavedTab {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SavedTerminal {
     /// Its program's directory when last saved.
-    pub dir: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SavedFloat {
-    pub key: String,
     pub dir: String,
 }
 
@@ -110,39 +107,66 @@ impl SavedSpace {
     }
 }
 
-/// What `layout.json` keeps of `state`.
-pub fn snapshot(state: &State) -> SavedLayout {
+/// What `layout.json` keeps of `state`, but its terminals' directories,
+/// which [`Snapshot::read_dirs`] reads once the state is let go.
+pub struct Snapshot {
+    layout: SavedLayout,
+    /// Where to read each terminal's directory, in the layout's order,
+    /// and the directory to keep while it cannot be read.
+    dirs: Vec<(Option<DirReader>, String)>,
+}
+
+/// Take what `layout.json` keeps of `state`, with it locked: no read of
+/// a directory, nor of the file.
+pub fn snapshot(state: &State) -> Snapshot {
     let current = state.current.as_ref();
-    SavedLayout {
+    let mut dirs = Vec::new();
+    let spaces = state.spaces.iter().map(|s| saved_space(s, &mut dirs));
+    let layout = SavedLayout {
         version: VERSION,
         current: current.and_then(|c| state.spaces.iter().position(|s| s.id == *c)),
-        spaces: state.spaces.iter().map(space).collect(),
+        spaces: spaces.collect(),
+    };
+    Snapshot { layout, dirs }
+}
+
+impl Snapshot {
+    /// The layout, each terminal's directory read: its foreground
+    /// program's, else its shell's, else (a shell not started yet, or
+    /// gone) its space's root.
+    pub fn read_dirs(self) -> SavedLayout {
+        let Self { mut layout, dirs } = self;
+        let mut dirs = dirs.into_iter();
+        let terminals = layout.spaces.iter_mut().flat_map(|s| &mut s.tabs);
+        for terminal in terminals.flat_map(|t| t.splits.terminals_mut()) {
+            if let Some((reader, root)) = dirs.next() {
+                terminal.dir = reader.and_then(DirReader::read).unwrap_or(root);
+            }
+        }
+        layout
     }
 }
 
-fn space(space: &Space) -> SavedSpace {
-    // A terminal whose directory cannot be read (its shell not started
-    // yet) is kept in the space's root.
-    let dir = |id: &TerminalId| {
-        let hosted = space.hosted(id).and_then(|t| t.dir());
-        hosted.unwrap_or_else(|| space.root.clone())
-    };
+/// `space` as `layout.json` keeps it, each terminal's directory left to
+/// read from what it pushes on `dirs`.
+fn saved_space(space: &Space, dirs: &mut Vec<(Option<DirReader>, String)>) -> SavedSpace {
     let tabs = space.tabs.iter().map(|tab| {
         let terminals = tab.terminals();
+        let focus = terminals.iter().position(|t| t == tab.active());
+        let splits = tab.layout().save(&mut |id| {
+            let reader = space.hosted(id).map(HostedTerminal::dir_reader);
+            dirs.push((reader, space.root.clone()));
+            SavedTerminal {
+                dir: space.root.clone(),
+            }
+        });
         SavedTab {
             name: tab.name().to_string(),
             auto_name: tab.auto_name(),
             zoomed: tab.zoomed(),
-            focus: terminals
-                .iter()
-                .position(|t| t == tab.active())
-                .unwrap_or(0),
-            splits: tab.layout().save(&mut |id| SavedTerminal { dir: dir(id) }),
+            focus: focus.unwrap_or(0),
+            splits,
         }
-    });
-    let floats = space.floats.iter().map(|f| SavedFloat {
-        key: f.key.clone(),
-        dir: dir(&f.terminal),
     });
     SavedSpace {
         name: space.name.clone(),
@@ -150,33 +174,33 @@ fn space(space: &Space) -> SavedSpace {
         size: space.size,
         current: space.current,
         tabs: tabs.collect(),
-        floats: floats.collect(),
     }
 }
 
 /// The layout saved in `dir`; `None` if there is none, or the file is
 /// empty. One that cannot be read, or holds no layout the server can
-/// rebuild, is renamed aside (`layout.json.bad-<seconds>`), never
-/// deleted, and why is logged: the server starts clean.
+/// rebuild, is set aside ([`set_aside`]): the server starts clean.
 pub fn load(dir: &Path) -> Option<SavedLayout> {
-    let path = dir.join(FILE);
-    match read(&path) {
-        Ok(saved) => saved,
-        Err(e) => {
-            let at = SystemTime::now().duration_since(UNIX_EPOCH);
-            let stem = format!("{FILE}.bad-{}", at.unwrap_or_default().as_secs());
-            // Another set aside within the same second is kept too.
-            let bad = std::iter::once(stem.clone())
-                .chain((1..).map(|n| format!("{stem}-{n}")))
-                .map(|name| dir.join(name))
-                .find(|p| !p.exists())
-                .unwrap_or_else(|| dir.join(&stem));
-            match std::fs::rename(&path, &bad) {
-                Ok(()) => eprintln!("paddock server: {e:#}; kept as {}", bad.display()),
-                Err(r) => eprintln!("paddock server: {e:#}; cannot keep it aside: {r}"),
-            }
-            None
-        }
+    read(&dir.join(FILE)).unwrap_or_else(|e| {
+        set_aside(dir, &e);
+        None
+    })
+}
+
+/// Rename `layout.json` in `dir` aside, to `layout.json.bad-<seconds>`
+/// (`-<n>` after it for another within the same second), never deleting
+/// it, and log why (`e`).
+pub fn set_aside(dir: &Path, e: &anyhow::Error) {
+    let at = SystemTime::now().duration_since(UNIX_EPOCH);
+    let stem = format!("{FILE}.bad-{}", at.unwrap_or_default().as_secs());
+    let bad = std::iter::once(stem.clone())
+        .chain((1..).map(|n| format!("{stem}-{n}")))
+        .map(|name| dir.join(name))
+        .find(|p| !p.exists())
+        .unwrap_or_else(|| dir.join(&stem));
+    match std::fs::rename(dir.join(FILE), &bad) {
+        Ok(()) => eprintln!("paddock server: {e:#}; kept as {}", bad.display()),
+        Err(r) => eprintln!("paddock server: {e:#}; cannot keep it aside: {r}"),
     }
 }
 
@@ -209,31 +233,52 @@ fn write(dir: &Path, layout: &SavedLayout) -> Result<()> {
             _ => Ok(()),
         };
     }
-    let tmp = dir.join(format!("{FILE}.tmp"));
-    let text = serde_json::to_string_pretty(layout).context("cannot encode the layout")?;
-    std::fs::write(&tmp, text).with_context(|| format!("cannot write {}", tmp.display()))?;
+    let tmp = dir.join(format!("{FILE}.{}.tmp", std::process::id()));
+    let text = serde_json::to_vec_pretty(layout).context("cannot encode the layout")?;
+    let written = (|| {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&tmp)?;
+        file.write_all(&text)?;
+        // On disk before it replaces the old one: a reboot is one reason
+        // to restore.
+        file.sync_all()
+    })();
+    written.with_context(|| format!("cannot write {}", tmp.display()))?;
     std::fs::rename(&tmp, &path).with_context(|| format!("cannot write {}", path.display()))
 }
 
 /// Writes the layout to `layout.json` when it changes, at most once
 /// every [`GAP`]: the server offers it often, and only a change is
-/// written.
+/// written. Once flushed (the server ends), it writes no more.
 pub struct Saver {
     dir: PathBuf,
     /// The layout last written, and when.
     last: Option<(SavedLayout, Instant)>,
+    sealed: bool,
 }
 
 impl Saver {
     /// A saver into the state directory `dir`, which has written nothing
     /// yet.
     pub fn new(dir: PathBuf) -> Self {
-        Self { dir, last: None }
+        Self {
+            dir,
+            last: None,
+            sealed: false,
+        }
     }
 
     /// Whether `layout`, offered at `now`, is to be written: it is not
-    /// the one last written, and [`GAP`] has passed since that.
+    /// the one last written, and [`GAP`] has passed since that, and the
+    /// saver has not been flushed.
     fn due(&self, layout: &SavedLayout, now: Instant) -> bool {
+        if self.sealed {
+            return false;
+        }
         match &self.last {
             None => true,
             Some((last, at)) => last != layout && now.duration_since(*at) >= GAP,
@@ -249,9 +294,13 @@ impl Saver {
         Ok(true)
     }
 
-    /// Write `layout` at once unless it is the one last written: the
-    /// server ends, and nothing follows.
+    /// Write `layout` at once unless it is the one last written, and
+    /// write nothing after: the server ends.
     pub fn flush(&mut self, layout: SavedLayout) -> Result<()> {
+        if self.sealed {
+            return Ok(());
+        }
+        self.sealed = true;
         if self.last.as_ref().is_some_and(|(last, _)| *last == layout) {
             return Ok(());
         }
@@ -298,10 +347,6 @@ mod tests {
                         axis: Axis::Columns,
                         cells: vec![cell("/w/api", 30), cell("/w/api/src", 49)],
                     },
-                }],
-                floats: vec![SavedFloat {
-                    key: "G".into(),
-                    dir: "/w/api".into(),
                 }],
             }],
         }
@@ -399,5 +444,9 @@ mod tests {
         assert!(!saver.offer(layout("c"), start + GAP).unwrap());
         saver.flush(layout("c")).unwrap();
         assert_eq!(load(dir.path()), Some(layout("c")), "flushed at once");
+        let later = start + GAP * 4;
+        assert!(!saver.offer(layout("d"), later).unwrap(), "none after");
+        saver.flush(layout("d")).unwrap();
+        assert_eq!(load(dir.path()), Some(layout("c")), "flushed once");
     }
 }

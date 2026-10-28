@@ -34,7 +34,7 @@ mod tab;
 mod terminal;
 
 pub use client::{Attached, Client};
-pub use protocol::{OtherVersion, VERSION as PROTOCOL_VERSION};
+pub use protocol::OtherVersion;
 pub use server::serve;
 
 use crate::paths::Paths;

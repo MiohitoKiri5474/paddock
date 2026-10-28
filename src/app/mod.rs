@@ -36,7 +36,7 @@ use crossterm::event as ct;
 use signal_hook::consts::SIGTERM;
 use signal_hook::iterator::Signals;
 use std::collections::HashMap;
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::sync::{mpsc, Arc};
 
 /// Everything the event loop waits on, from the backend and from the outer
@@ -138,31 +138,32 @@ pub fn run() -> Result<()> {
     }
 }
 
-/// Get the backend ready ([`Backend::prepare`]). A server that speaks
-/// another protocol version is said so, with an offer to restart it
-/// (ADR 0007): on yes it ends, programs and all, and a new one rebuilds
-/// its layout; on no paddock stops with the same words.
+/// Get the backend ready ([`Backend::prepare`]) and bring back a saved
+/// layout ([`Backend::resume`]). A server that speaks another protocol
+/// version is said so, with an offer to restart it (ADR 0007): on yes it
+/// ends, programs and all, and a new one rebuilds its layout; on no, or
+/// with no terminal to ask on, paddock stops with the same words.
 fn prepare(backend: &Backend) -> Result<()> {
-    let Err(e) = backend.prepare() else {
-        return Ok(());
-    };
-    let Some(other) = e.downcast_ref::<OtherVersion>() else {
-        return Err(e);
-    };
-    if !ask_to_restart(other)? {
-        return Err(e);
+    if let Err(e) = backend.prepare() {
+        let Some(other) = e.downcast_ref::<OtherVersion>() else {
+            return Err(e);
+        };
+        if !ask_to_restart(other)? {
+            return Err(e);
+        }
+        backend.restart(other)?;
+        backend.prepare()?;
     }
-    backend.restart(other)?;
-    backend.prepare()
+    backend.resume()
 }
 
 fn ask_to_restart(other: &OtherVersion) -> Result<bool> {
+    if !std::io::stdin().is_terminal() {
+        return Ok(false);
+    }
     print!(
-        "The running paddock server (pid {}) speaks protocol version {}, and this paddock \
-         speaks {}.\nRestart it? Its programs end; its layout comes back. [y/N] ",
-        other.pid,
-        other.version,
-        backend::PROTOCOL_VERSION
+        "paddock: {}.\nRestart it? Its programs end; its layout comes back. [y/N] ",
+        other.mismatch()
     );
     std::io::stdout().flush()?;
     let mut answer = String::new();
