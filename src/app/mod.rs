@@ -79,11 +79,12 @@ pub fn run() -> Result<()> {
         return Ok(());
     };
     let state_dir = paths.state_dir.clone();
-    // Shown and repeated on leaving as the config's warnings are.
+    // Shown and repeated on leaving as the config's warnings are, first,
+    // so the tab bar's width does not cut it off.
     if config.backend == BackendKind::Native {
-        config
-            .warnings
-            .extend(backend::old_tmux_server_notice(&paths));
+        if let Some(notice) = backend::old_tmux_server_notice(&paths) {
+            config.warnings.insert(0, notice);
+        }
     }
     let backend = Backend::new(paths, config.backend);
     prepare(&backend)?;

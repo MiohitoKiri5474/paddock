@@ -9,9 +9,9 @@ mod harness;
 use harness::backend::NATIVE;
 use harness::{Paddock, Sandbox, PROMPT};
 
-/// The start of the notice, as the tab bar shows it (cut to its width,
-/// after the default keys' warning).
-const NOTICE: &str = "an older paddock";
+/// The start of the notice, as the tab bar shows it first (cut to its
+/// width, before the default keys' warning).
+const NOTICE: &str = "an older paddock's tmux server still runs";
 /// Its end, printed whole on leaving: the sandbox's socket.
 const CLOSE: &str = "Close it with: tmux -L paddock-test kill-server";
 
