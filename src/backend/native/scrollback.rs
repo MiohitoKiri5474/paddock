@@ -64,6 +64,14 @@ pub fn save_all(state_dir: &Path, state: &mut State) {
             }
         }
     }
+    // The renames on disk too: a reboot is one reason to restore.
+    let dir = dir(state_dir);
+    match std::fs::File::open(&dir).and_then(|d| d.sync_all()) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            eprintln!("paddock server: cannot sync {}: {e}", dir.display());
+        }
+        _ => {}
+    }
 }
 
 /// Write `text` as `key`'s file, its newest [`MAX`] bytes, replacing the
