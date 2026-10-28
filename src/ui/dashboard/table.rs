@@ -254,8 +254,8 @@ pub fn task(task: &TaskRow, details: Option<&Details>, pr: Option<&Pr>, now: u64
         .as_ref()
         .map(|s| s.state.label().to_string())
         .unwrap_or_default();
-    cells.text[Column::Changes.index()] = shown.changes().unwrap_or_default();
-    cells.text[Column::AheadBehind.index()] = shown.arrows;
+    cells.text[Column::AheadBehind.index()] = shown.arrows.clone();
+    cells.text[Column::Changes.index()] = shown.line_changes().unwrap_or_default();
     if let Some(b) = base {
         cells.text[Column::Base.index()] = format!("+{} −{}", b.added, b.removed);
         cells.text[Column::Files.index()] = b.files.to_string();

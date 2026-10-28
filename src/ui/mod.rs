@@ -17,21 +17,24 @@ use ratatui::style::{Color, Modifier, Style};
 /// Marks an agent state: in the sidebar and before a tab's name.
 pub const STATE_DOT: &str = "●";
 
-/// A git [`Status`] as the dashboard and the sidebar write it: uncommitted
-/// lines as `+a` and `−r` (both, unless both are zero), and commits ahead
+/// What goes between `+a` and `−r`, and between them and the arrows.
+pub const STATUS_SEP: &str = " ";
+
+/// A git [`Status`] as the dashboard and the sidebar write it: its line
+/// changes as `+a` and `−r` (both, unless both are zero), and commits ahead
 /// of and behind upstream as `↑n` and `↓n` (each left out at zero). Each
-/// part apart, so a caller can colour it.
+/// part apart, so a caller can colour it; [`STATUS_SEP`] between them.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StatusText {
     /// `+a` and `−r`, if there are uncommitted changes.
-    pub changes: Option<(String, String)>,
+    pub added_removed: Option<(String, String)>,
     /// `↑n`, then `↓n`, those not zero.
     pub arrows: String,
 }
 
 impl StatusText {
     pub fn of(status: &Status) -> Self {
-        let changes = status
+        let added_removed = status
             .changes
             .filter(|&c| c != (0, 0))
             .map(|(added, removed)| (format!("+{added}"), format!("−{removed}")));
@@ -43,12 +46,17 @@ impl StatusText {
             .filter(|&(_, n)| n > 0)
             .map(|(arrow, n)| format!("{arrow}{n}"))
             .collect();
-        Self { changes, arrows }
+        Self {
+            added_removed,
+            arrows,
+        }
     }
 
     /// `+a −r`, if there are uncommitted changes.
-    pub fn changes(&self) -> Option<String> {
-        self.changes.as_ref().map(|(a, r)| format!("{a} {r}"))
+    pub fn line_changes(&self) -> Option<String> {
+        self.added_removed
+            .as_ref()
+            .map(|(a, r)| format!("{a}{STATUS_SEP}{r}"))
     }
 }
 

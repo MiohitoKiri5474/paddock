@@ -21,15 +21,16 @@
 //! A space's dot shows the most urgent state of the agents in it (none
 //! without agents); its second line, dim, shows its directory and the git
 //! branch checked out there. After both, uncut, come the branch's status
-//! (as the dashboard writes it: uncommitted lines `+200` in green and `−10`
+//! (as the dashboard writes it: its line changes `+200` in green and `−10`
 //! in red, then commits ahead of and behind upstream `↑2↓1`, dim; parts at
-//! zero left out, nothing for a detached HEAD or outside a repository),
-//! then, at the end, the branch's pull request: its number in its state's
-//! colour and its checks mark (`✓`, `✗`, `•`). Each shows only where it
-//! fits whole; short of room for both, the PR mark goes first, so the
-//! diff stays (the mark still shows alone when only it fits). The status
-//! is read on the git thread with the directory and branch, never per
-//! frame. A space in a linked worktree is
+//! zero left out, nothing for a detached HEAD or outside a repository; no
+//! colour on the selected, reversed, line), then, two cells or more on, at
+//! the end, the branch's pull request: its number in its state's colour
+//! and its checks mark (`✓`, `✗`, `•`). Each shows only where it fits
+//! whole; short of room for both, the PR mark goes first, so the status
+//! stays (the mark still shows alone when only it fits). The status is
+//! read on the git thread with the directory and branch, never per frame.
+//! A space in a linked worktree is
 //! listed one cell further in, under its repository's main-checkout space,
 //! or under a dim header with the repository's name when no space is in
 //! the main checkout:
@@ -53,7 +54,7 @@
 //! AGENTS under their own header, dim, in label order, their second line
 //! naming their branch (else their directory).
 
-use super::{pr_style, StatusText, STATE_DOT};
+use super::{pr_style, StatusText, STATE_DOT, STATUS_SEP};
 use crate::git::Status;
 use crate::github::Pr;
 use crate::sessions::{AgentKind, State};
@@ -328,9 +329,16 @@ impl Sidebar<'_> {
                 // After the whole place (the directory and branch are never
                 // cut for them): the branch's status, where it fits whole,
                 // then the PR's mark at the end, where it fits after that.
-                // Short of room for both, the mark goes first.
+                // Short of room for both, the mark goes first. On the
+                // selected (reversed) line the status keeps no colour, which
+                // would turn into a background there.
                 let mut used = place_width(path, branch);
-                let parts = s.status.as_ref().map(status_parts).unwrap_or_default();
+                let coloured = !base.add_modifier.contains(Modifier::REVERSED);
+                let parts = s
+                    .status
+                    .as_ref()
+                    .map(|st| status_parts(st, coloured))
+                    .unwrap_or_default();
                 let width: usize = parts.iter().map(|(t, _)| t.width()).sum();
                 if !parts.is_empty() && used + PART_GAP.width() + width <= room {
                     let mut at = x.saturating_add(cells(used));
@@ -338,7 +346,9 @@ impl Sidebar<'_> {
                     for (text, style) in &parts {
                         at = put(at, text, *style);
                     }
-                    used += PART_GAP.width() + width;
+                    // The mark keeps two cells from the status too, as
+                    // `end_x` keeps one or more.
+                    used += PART_GAP.width() + width + 1;
                 }
                 let Some(pr) = &s.pr else {
                     return;
@@ -368,25 +378,34 @@ impl Sidebar<'_> {
     }
 }
 
-/// What goes between a space's branch and its status.
+/// What goes between a space's branch and its status, and between its
+/// status and the PR mark.
 const PART_GAP: &str = "  ";
 
 /// A space's branch status as drawn after its branch, piece by piece: its
-/// uncommitted lines added (green) and removed (red), then its commits
-/// ahead of and behind upstream (dim), as the dashboard writes them (see
-/// [`StatusText`]). Empty when there is nothing to show.
-fn status_parts(status: &Status) -> Vec<(String, Style)> {
+/// line changes added (green) and removed (red), then its commits ahead of
+/// and behind upstream (dim), as the dashboard writes them (see
+/// [`StatusText`]); without colour unless `coloured`. Empty when there is
+/// nothing to show.
+fn status_parts(status: &Status, coloured: bool) -> Vec<(String, Style)> {
     let text = StatusText::of(status);
     let dim = Style::default().add_modifier(Modifier::DIM);
+    let colour = |c: Color| {
+        if coloured {
+            Style::default().fg(c)
+        } else {
+            Style::default()
+        }
+    };
     let mut parts = Vec::new();
-    if let Some((added, removed)) = text.changes {
-        parts.push((added, Style::default().fg(Color::Green)));
-        parts.push((" ".to_string(), dim));
-        parts.push((removed, Style::default().fg(Color::Red)));
+    if let Some((added, removed)) = text.added_removed {
+        parts.push((added, colour(Color::Green)));
+        parts.push((STATUS_SEP.to_string(), dim));
+        parts.push((removed, colour(Color::Red)));
     }
     if !text.arrows.is_empty() {
         if !parts.is_empty() {
-            parts.push((" ".to_string(), dim));
+            parts.push((STATUS_SEP.to_string(), dim));
         }
         parts.push((text.arrows, dim));
     }
@@ -883,14 +902,15 @@ mod tests {
         };
         let line = |width| second_line(s.clone(), width).0;
         let place = "   ~/p/paddock  feat/x";
-        let diff = "  +200 −10 ↑2↓1";
-        // Room for all: the diff after the branch, the mark at the end.
-        assert_eq!(line(45), format!("{place}{diff} #42 ✓"));
-        assert_eq!(line(50), format!("{place}{diff}{}#42 ✓", " ".repeat(6)));
-        // A cell short for the mark: the mark goes, the diff stays.
-        assert_eq!(line(44), format!("{place}{diff}"));
-        assert_eq!(line(39), format!("{place}{diff}"));
-        // Short of room for the diff whole: it goes, the mark fits alone.
+        let status = "  +200 −10 ↑2↓1";
+        // Room for all: the status after the branch, the mark at the end,
+        // two cells or more after it.
+        assert_eq!(line(46), format!("{place}{status}  #42 ✓"));
+        assert_eq!(line(50), format!("{place}{status}{}#42 ✓", " ".repeat(6)));
+        // A cell short for the mark: the mark goes, the status stays.
+        assert_eq!(line(45), format!("{place}{status}"));
+        assert_eq!(line(39), format!("{place}{status}"));
+        // Short of room for the status whole: it goes, the mark fits alone.
         assert_eq!(line(38), format!("{place}{}#42 ✓", " ".repeat(9)));
         assert_eq!(line(30), format!("{place} #42 ✓"));
         // Neither: the place alone, uncut.
@@ -909,6 +929,27 @@ mod tests {
         };
         let (_, buf) = second_line(current, 45);
         assert_eq!(buf[(24, 2)].bg, GREY, "the current background stays");
+    }
+
+    #[test]
+    fn a_selected_spaces_status_has_no_colour_to_turn_into_a_background() {
+        let s = SpaceLine {
+            status: Some(Status {
+                ahead_behind: None,
+                changes: Some((3, 1)),
+            }),
+            ..on("~/r", "main", None)
+        };
+        let area = Rect::new(0, 0, 30, 3);
+        let mut buf = Buffer::empty(area);
+        render(&entries(&[s]), &[], Some(0), GREY, area, &mut buf);
+        let line = text(&buf, 2);
+        assert_eq!(line.trim_end_matches([' ', '│']), "   ~/r  main  +3 −1");
+        for x in [14, 17] {
+            let cell = &buf[(x, 2)];
+            assert!(cell.modifier.contains(Modifier::REVERSED), "selected");
+            assert_eq!((cell.fg, cell.bg), (Color::Reset, Color::Reset), "{x}");
+        }
     }
 
     #[test]

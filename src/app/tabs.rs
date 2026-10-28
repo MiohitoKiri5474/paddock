@@ -281,9 +281,14 @@ impl App {
         // Read again now, so the finder is never stale, even for a space
         // whose place the background read has not reached yet.
         // The branch's status is not read here, on the UI thread: the last
-        // one stays until the background read brings a new one.
+        // one stays until the background read brings a new one, unless the
+        // directory or branch changed, which it no longer describes.
         if let Some(place) = watch::place(&self.backend, &id) {
-            let status = self.places.get(&id).and_then(|p| p.status);
+            let status = self
+                .places
+                .get(&id)
+                .filter(|old| old.same_checkout(&place))
+                .and_then(|old| old.status);
             self.places.insert(id, watch::Place { status, ..place });
         }
         Ok(())

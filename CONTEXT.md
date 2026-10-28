@@ -159,7 +159,7 @@ A repository's first working tree, the one `git clone` or `git init` made; the o
 _Avoid_: main worktree, root repo
 
 **Line changes**:
-Uncommitted lines added and removed in a task's working tree, shown as `+30 −144`.
+Uncommitted lines added and removed in a working tree, shown as `+30 −144`: a task's on the dashboard, and a space's (on its branch) in the sidebar, after its branch.
 _Avoid_: diff
 
 **Base diff**:
