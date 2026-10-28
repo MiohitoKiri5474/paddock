@@ -159,8 +159,8 @@ struct Sandbox {
 struct Terminal {
     /// Its hook variables, as the backend gives them.
     hook_env: Vec<(String, String)>,
-    /// The backend's instance id, which names its event log.
-    instance: u32,
+    /// The backend's hook event log.
+    event_log: PathBuf,
 }
 
 impl Sandbox {
@@ -196,12 +196,19 @@ impl Sandbox {
             let mut paddock = self.base.launch();
             paddock.wait_for_text(harness::PROMPT);
             let state = self.base.state();
-            let instance = state.instance.expect("the backend's instance id");
+            let event_log = state
+                .event_log
+                .clone()
+                .expect("the backend's event log")
+                .into();
             let first = state.terminal("space-1").expect("paddock's terminal");
             let hook_env = first.hook_env.clone().into_iter().collect();
             paddock.detach_keys();
             assert!(paddock.wait_exit());
-            Terminal { hook_env, instance }
+            Terminal {
+                hook_env,
+                event_log,
+            }
         })
     }
 
@@ -266,21 +273,25 @@ impl Sandbox {
     /// started.
     fn events(&self) -> Vec<String> {
         match self.terminal.get() {
-            Some(t) => self.events_in(&format!("{}.jsonl", t.instance)),
+            Some(t) => events_at(&t.event_log),
             None => Vec::new(),
         }
     }
 
     /// The events recorded in the log named `name`, in order.
     fn events_in(&self, name: &str) -> Vec<String> {
-        let log = self.path("state/paddock/events").join(name);
-        let Ok(body) = std::fs::read_to_string(&log) else {
-            return Vec::new();
-        };
-        body.lines()
-            .map(|l| text(&serde_json::from_str(l).unwrap(), "event", "record"))
-            .collect()
+        events_at(&self.path("state/paddock/events").join(name))
     }
+}
+
+/// The events recorded in the log at `log`, in order.
+fn events_at(log: &Path) -> Vec<String> {
+    let Ok(body) = std::fs::read_to_string(log) else {
+        return Vec::new();
+    };
+    body.lines()
+        .map(|l| text(&serde_json::from_str(l).unwrap(), "event", "record"))
+        .collect()
 }
 
 #[test]
@@ -464,9 +475,7 @@ fn a_hook_naming_claude_records_as_claudes_and_an_unknown_one_stays_silent() {
     run(&["hook", "--agent", "claude", "Stop"]);
     run(&["hook", "SessionEnd"]);
     assert_eq!(sandbox.events(), ["Stop", "SessionEnd"]);
-    let log = format!("state/paddock/events/{}.jsonl", sandbox.terminal().instance);
-    let log = sandbox.path(&log);
-    let log = std::fs::read_to_string(log).unwrap();
+    let log = std::fs::read_to_string(&sandbox.terminal().event_log).unwrap();
     assert!(!log.contains("kind"), "Claude's lines as before: {log}");
 
     run(&["hook", "--agent", "nope", "Stop"]);

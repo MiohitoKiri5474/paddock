@@ -4,7 +4,9 @@
 //! running and says so ([`NotRunning`]), or, if it only asks, has nothing
 //! for an answer. A server this paddock cannot talk to is an error.
 
-use super::protocol::{self, Answer, Closed, Ending, Frame, Message, Notice, Refusal, Request};
+use super::protocol::{
+    self, Answer, Closed, Ending, Frame, Message, Notice, Peer, Refusal, Request,
+};
 use super::server::log_path;
 use super::socket_path;
 use crate::backend::env::clean_env;
@@ -82,11 +84,11 @@ impl Client {
 
     /// A connection to the running server, past the hello; an error if
     /// none runs or it speaks another protocol version.
-    fn connect(&self) -> Result<(UnixStream, u32)> {
+    fn connect(&self) -> Result<(UnixStream, Peer)> {
         let socket = socket_path(&self.paths)?;
         let mut stream = UnixStream::connect(&socket).context(NotRunning)?;
-        let pid = protocol::hello(&mut stream, true)?;
-        Ok((stream, pid))
+        let server = protocol::hello(&mut stream, true, 0)?;
+        Ok((stream, server))
     }
 
     fn request(&self, request: Request) -> Result<Answer> {
@@ -102,13 +104,25 @@ impl Client {
         match UnixStream::connect(socket) {
             // None runs (a socket left behind refuses).
             Err(_) => Ok(()),
-            Ok(mut stream) => protocol::hello(&mut stream, true).map(drop),
+            Ok(mut stream) => protocol::hello(&mut stream, true, 0).map(drop),
         }
     }
 
-    /// The server's instance id: its pid.
+    /// The server's instance id, new each time a server starts; an error
+    /// if its hello gave none (0), which names no event log.
     pub fn instance(&self) -> Result<u32> {
-        self.connect().map(|(_, pid)| pid)
+        self.connect().and_then(|(_, server)| instance_of(server))
+    }
+
+    /// The running server's instance id; `None` if none runs; an error if
+    /// one runs that gave none (see [`Self::instance`]) or that this
+    /// paddock cannot talk to.
+    pub fn running_instance(&self) -> Result<Option<u32>> {
+        match self.connect() {
+            Ok((_, server)) => instance_of(server).map(Some),
+            Err(e) if no_server(&e) => Ok(None),
+            Err(e) => Err(e),
+        }
     }
 
     /// Start the server unless one runs, and wait until it listens.
@@ -405,5 +419,33 @@ impl Attached {
         // The server may be gone already; nothing to do then.
         let _ = protocol::write(&mut self.stream, &frame);
         let _ = self.stream.shutdown(std::net::Shutdown::Both);
+    }
+}
+
+/// The instance id `server`'s hello gave; an error for none (0), which
+/// names no event log.
+fn instance_of(server: Peer) -> Result<u32> {
+    if server.instance == 0 {
+        bail!(
+            "the paddock server (pid {}) gave no instance id in its hello",
+            server.pid
+        );
+    }
+    Ok(server.instance)
+}
+
+#[cfg(test)]
+mod instance_tests {
+    use super::*;
+
+    #[test]
+    fn a_hello_without_an_instance_id_is_an_error() {
+        let peer = |instance| Peer { pid: 7, instance };
+        assert_eq!(instance_of(peer(42)).unwrap(), 42);
+        let err = instance_of(peer(0)).unwrap_err().to_string();
+        assert!(
+            err.contains("no instance id") && err.contains("pid 7"),
+            "{err}"
+        );
     }
 }

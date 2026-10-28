@@ -573,7 +573,7 @@ fn record(args: &[&str]) -> Result<()> {
     let paths = Paths::resolve(var)?;
     // Outside paddock's terminals, an external session: kept by session
     // id, in a log of its own.
-    let (log_path, pane) = match backend::hook_terminal(var, &paths.socket) {
+    let (log_path, pane) = match backend::hook_terminal(var, &paths) {
         Some(t) => (
             log::path(&paths.state_dir, t.instance),
             t.terminal.to_string(),

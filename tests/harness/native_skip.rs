@@ -1,7 +1,6 @@
 //! The tests the native backend cannot pass yet, each with the tickets
 //! (41: tabs, splits, zoom, resizing; 42: more spaces, floats, finder,
-//! worktrees, roots; 43: agents and hooks) whose part of the backend it
-//! needs. A ticket that lands takes its number off every entry, and
+//! worktrees, roots) whose part of the backend it needs. A ticket that lands takes its number off every entry, and
 //! deletes the entries left with none.
 //!
 //! A native run skips them: `scripts/test-native.sh` turns each into a
@@ -14,97 +13,77 @@
 pub const NATIVE_NEEDS: &[(&str, &[&str])] = &[
     (
         "agy::an_agy_session_goes_idle_working_waiting_done_then_ends_at_the_shell",
-        &["41", "43"],
+        &["41"],
     ),
-    (
-        "agy::an_agy_session_ends_when_its_terminal_closes",
-        &["41", "43"],
-    ),
+    ("agy::an_agy_session_ends_when_its_terminal_closes", &["41"]),
     (
         "agy::reports_from_other_programs_or_without_a_session_change_nothing",
-        &["41", "43"],
-    ),
-    ("agy::the_same_report_after_a_hook_shows_again", &["43"]),
-    (
-        "agy::a_report_right_after_the_start_hook_waits_for_its_session",
-        &["43"],
-    ),
-    (
-        "agy::a_report_just_before_its_session_starts_belongs_to_it_live_and_on_replay",
-        &["43"],
-    ),
-    (
-        "agy::reports_from_a_terminal_without_an_agy_session_are_not_recorded",
-        &["43"],
+        &["41"],
     ),
     (
         "agy::agy_quitting_without_a_prompt_does_not_notify",
-        &["41", "43"],
+        &["41"],
     ),
     (
         "attention::waiting_and_finished_turns_notify_once_each",
-        &["41", "43"],
+        &["41"],
     ),
     (
         "attention::the_terminal_you_look_at_never_notifies",
-        &["41", "43"],
+        &["41"],
     ),
     (
         "attention::events_while_paddock_is_closed_never_notify",
-        &["41", "43"],
+        &["41"],
     ),
     (
         "attention::c_a_a_cycles_through_sessions_that_need_you",
-        &["41", "42", "43"],
+        &["41", "42"],
     ),
     (
         "attention::c_a_a_focuses_the_split_running_the_session",
-        &["41", "43"],
+        &["41"],
     ),
     (
         "attention::a_turn_finished_out_of_sight_is_done_until_you_look_at_it",
-        &["41", "43"],
+        &["41"],
     ),
     (
         "attention::a_turn_finished_in_a_split_hidden_by_a_zoom_is_done_until_unzoomed",
-        &["41", "43"],
+        &["41"],
     ),
     (
         "attention::c_a_a_to_a_split_hidden_by_a_zoom_gives_the_layout_back_focused_there",
-        &["41", "43"],
-    ),
-    (
-        "attention::a_turn_finished_in_view_is_idle_at_once",
-        &["43"],
+        &["41"],
     ),
     (
         "attention::a_notifier_that_fails_says_so_in_a_notice",
-        &["41", "43"],
+        &["41"],
     ),
     (
         "attention::finished_turns_can_stop_notifying_while_waits_still_do",
-        &["41", "43"],
+        &["41"],
     ),
     (
         "attention::waits_can_stop_notifying_while_finished_turns_still_do",
-        &["41", "43"],
+        &["41"],
     ),
     (
         "attention::turning_waits_off_silences_a_subagents_wait_too",
-        &["41", "43"],
+        &["41"],
     ),
     (
         "close_fork::x_closes_an_idle_session_without_asking",
-        &["41", "43"],
+        &["41"],
     ),
-    ("close_fork::x_asks_while_claude_is_running", &["41", "43"]),
+    ("close_fork::x_asks_while_claude_is_running", &["41"]),
     (
         "close_fork::the_question_shows_even_with_many_tabs",
-        &["41", "43"],
+        &["41"],
     ),
     (
         "close_fork::x_on_a_space_with_a_waiting_claude_asks_then_closes_the_space",
-        &["41", "42", "43"],
+        &["41", "42"],
     ),
     (
         "close_fork::x_on_a_quiet_space_closes_it_without_asking",
@@ -112,19 +91,15 @@ pub const NATIVE_NEEDS: &[(&str, &[&str])] = &[
     ),
     (
         "close_fork::f_forks_the_session_into_a_new_tab_in_its_directory",
-        &["41", "43"],
+        &["41"],
     ),
     (
         "close_fork::f_on_a_space_forks_its_agent_into_a_new_tab_of_that_space",
-        &["41", "42", "43"],
-    ),
-    (
-        "close_fork::closing_the_only_pane_of_a_spaces_only_tab_asks_to_close_the_space",
-        &["43"],
+        &["41", "42"],
     ),
     (
         "close_fork::a_busy_close_asked_from_the_sidebar_gives_the_sidebar_back",
-        &["41", "43"],
+        &["41"],
     ),
     (
         "copy_mode::the_wheel_scrolls_the_copy_view_and_direct_chords_do_not_fire",
@@ -135,64 +110,47 @@ pub const NATIVE_NEEDS: &[(&str, &[&str])] = &[
         &["41"],
     ),
     ("copy_mode::copy_mode_works_in_the_float_shown", &["42"]),
-    ("dashboard::rows_are_tagged_with_their_agents_kind", &["43"]),
-    (
-        "dashboard::o_opens_the_dashboard_and_esc_closes_it",
-        &["43"],
-    ),
     (
         "dashboard::slash_filters_the_list_enter_keeps_the_filter_and_esc_clears_it",
-        &["41", "43"],
-    ),
-    (
-        "dashboard::the_list_sits_above_the_preview_and_the_keys_at_the_bottom",
-        &["43"],
+        &["41"],
     ),
     (
         "dashboard::j_and_k_move_and_enter_jumps_to_the_rows_terminal",
-        &["41", "43"],
+        &["41"],
     ),
     (
         "dashboard::d_dismisses_a_row_and_it_stays_gone_after_reopening",
-        &["41", "43"],
+        &["41"],
     ),
     (
         "dashboard::a_closed_terminals_session_leaves_and_the_selection_moves_to_the_next",
-        &["41", "43"],
+        &["41"],
     ),
     (
         "dashboard::a_session_whose_claude_quit_leaves_while_its_terminal_stays",
-        &["41", "43"],
+        &["41"],
     ),
     (
         "dashboard::the_preview_shows_the_selected_terminal_live",
-        &["41", "43"],
+        &["41"],
     ),
     (
         "dashboard::i_types_into_the_previewed_terminal_and_esc_is_never_sent",
-        &["41", "43"],
+        &["41"],
     ),
     (
         "dashboard::esc_and_a_key_in_one_read_leave_interactive_preview_unsent",
-        &["41", "43"],
+        &["41"],
     ),
     (
         "dashboard::x_asks_while_claude_runs_then_returns_to_the_dashboard",
-        &["41", "43"],
+        &["41"],
     ),
     (
         "dashboard::a_click_outside_the_close_question_cancels_it_back_to_the_dashboard",
-        &["41", "43"],
+        &["41"],
     ),
-    ("dashboard::f_forks_the_selected_session", &["41", "43"]),
-    (
-        "external::an_external_session_shows_dim_and_last_with_its_state_and_branch",
-        &["43"],
-    ),
-    (
-        "external::external_false_hides_the_group_and_its_notifications",
-        &["43"],
-    ),
+    ("dashboard::f_forks_the_selected_session", &["41"]),
     (
         "finder::g_opens_the_finder_and_typing_a_tabs_name_then_enter_shows_it",
         &["41", "42"],
@@ -259,9 +217,8 @@ pub const NATIVE_NEEDS: &[(&str, &[&str])] = &[
     ),
     (
         "gemini::a_gemini_session_goes_working_waiting_idle_then_ends",
-        &["41", "43"],
+        &["41"],
     ),
-    ("gemini::fork_refuses_a_gemini_session", &["43"]),
     (
         "keys::a_remapped_command_works_and_its_old_key_does_not",
         &["41"],
@@ -283,18 +240,6 @@ pub const NATIVE_NEEDS: &[(&str, &[&str])] = &[
     ),
     ("mouse::the_plus_after_the_tabs_opens_a_tab", &["41"]),
     ("mouse::the_wheel_over_the_tab_bar_switches_tabs", &["41"]),
-    (
-        "plugin::the_plugin_hooks_alone_record_every_event_once",
-        &["43"],
-    ),
-    (
-        "plugin::the_plugin_and_settings_hooks_together_record_every_event_once",
-        &["43"],
-    ),
-    (
-        "plugin::a_hook_naming_claude_records_as_claudes_and_an_unknown_one_stays_silent",
-        &["43"],
-    ),
     (
         "prompt::a_new_space_asks_for_its_name_and_enter_keeps_the_default",
         &["42"],
@@ -347,45 +292,35 @@ pub const NATIVE_NEEDS: &[(&str, &[&str])] = &[
     ),
     ("resize::a_zoomed_tab_has_no_border_to_drag", &["41"]),
     ("resize::equalize_evens_out_splits_after_a_resize", &["41"]),
-    ("sessions::hook_events_drive_the_agent_row", &["43"]),
     (
         "sessions::agents_of_every_space_are_listed_with_their_space_and_tab",
-        &["41", "42", "43"],
+        &["41", "42"],
     ),
-    (
-        "sessions::events_recorded_while_paddock_is_closed_appear_on_reopen",
-        &["43"],
-    ),
-    ("sessions::claude_agents_corrects_missed_events", &["43"]),
     (
         "sessions::c_a_w_selects_the_current_space_and_esc_leaves_without_switching",
         &["42"],
     ),
     (
         "sessions::enter_on_an_agent_jumps_to_its_space_tab_and_pane",
-        &["41", "42", "43"],
+        &["41", "42"],
     ),
     (
         "sessions::c_a_s_starts_on_the_current_space_when_no_agent_is_focused",
-        &["41", "42", "43"],
+        &["41", "42"],
     ),
     (
         "sessions::the_focused_agent_has_the_current_background",
-        &["41", "43"],
+        &["41"],
     ),
     (
         "sessions::c_a_s_starts_on_the_focused_agent_even_with_the_sidebar_hidden",
-        &["41", "43"],
+        &["41"],
     ),
     (
         "sessions::clicking_an_agent_row_jumps_to_its_pane",
-        &["41", "42", "43"],
+        &["41", "42"],
     ),
-    (
-        "sessions::x_on_an_agent_row_closes_its_pane",
-        &["41", "42", "43"],
-    ),
-    ("sessions::parallel_hooks_never_interleave_records", &["43"]),
+    ("sessions::x_on_an_agent_row_closes_its_pane", &["41", "42"]),
     ("sessions::dragging_the_border_resizes_the_sidebar", &["42"]),
     (
         "sessions::a_click_on_the_border_without_a_drag_is_a_click_on_the_row",
@@ -499,52 +434,20 @@ pub const NATIVE_NEEDS: &[(&str, &[&str])] = &[
         &["41", "42"],
     ),
     (
-        "tasks::switching_branches_adds_a_task_row_for_each_branch",
-        &["43"],
-    ),
-    (
-        "tasks::task_rows_show_ahead_behind_and_line_changes",
-        &["43"],
-    ),
-    (
         "tasks::no_rows_for_the_default_branch_or_shells_without_claude",
-        &["41", "43"],
-    ),
-    (
-        "tasks::parallel_subagents_show_as_task_rows_from_running_to_done",
-        &["43"],
-    ),
-    (
-        "tasks::subagent_work_done_while_paddock_is_closed_appears_on_reopen",
-        &["43"],
+        &["41"],
     ),
     (
         "tasks::a_session_that_ends_while_paddock_is_closed_is_gone_with_its_tasks_on_reopen",
-        &["41", "43"],
-    ),
-    (
-        "tasks::j_skips_branch_rows_and_d_dismisses_them_with_the_session",
-        &["43"],
-    ),
-    (
-        "tasks::d_on_a_session_row_hides_it_with_its_tasks_until_claude_reports_again",
-        &["43"],
+        &["41"],
     ),
     (
         "tasks::a_closed_terminals_rows_leave_at_once_and_stay_gone_after_reopening",
-        &["41", "43"],
+        &["41"],
     ),
     (
         "tasks::a_session_whose_claude_quit_leaves_with_its_task_rows",
-        &["41", "43"],
-    ),
-    (
-        "tasks::a_new_conversation_in_the_same_terminal_keeps_its_task_rows",
-        &["43"],
-    ),
-    (
-        "tasks::j_skips_subagent_rows_and_d_on_the_session_takes_them_along",
-        &["43"],
+        &["41"],
     ),
     (
         "worktree_cli::new_makes_a_worktree_and_a_space_that_a_running_paddock_shows",

@@ -9,6 +9,7 @@
 
 mod border;
 mod env;
+mod hook_vars;
 mod ids;
 mod native;
 mod structure;
@@ -95,20 +96,63 @@ pub struct Replay {
     pub bytes: Vec<u8>,
 }
 
+/// A running host, which names its hook event log (see
+/// [`crate::sessions::log::path`]): its backend, and the id that backend
+/// gives each start of its server (tmux: the server's pid; native: a
+/// random number). The two backends' ids may coincide, so the kind is
+/// part of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Instance {
+    pub kind: BackendKind,
+    pub id: u32,
+}
+
 /// The terminal of paddock's that a process (an agent's hook, `paddock
-/// worktree`) runs in, and the instance id of the backend hosting it.
+/// worktree`) runs in, and the instance of the backend hosting it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HookTerminal {
-    pub instance: u32,
+    pub instance: Instance,
     pub terminal: TerminalId,
 }
 
+/// Variables a terminal multiplexer other than tmux sets in its panes: a
+/// process that has one runs in that multiplexer, even one started in a
+/// native terminal (which passed its variables on).
+const NESTED_VARS: &[&str] = &["STY", "ZELLIJ"];
+
 /// The terminal of paddock's a process runs in, from its environment as
-/// `var` reads it; `None` outside paddock's terminals, or in those of a
-/// backend on another socket than `socket`. Only tmux's terminals tell so
-/// far (the native backend's join in ticket 43).
-pub fn hook_terminal(var: impl Fn(&str) -> Option<String>, socket: &str) -> Option<HookTerminal> {
-    tmux::hook_terminal(var, socket)
+/// `var` reads it (an empty value counts as unset); `None` outside
+/// paddock's terminals, or in those of a backend other than the one under
+/// `paths`. A set `TMUX` decides: the process runs in a tmux pane,
+/// paddock's (`TMUX_PANE`) or one of the user's own tmux (an external
+/// session, even when that tmux was started in a native terminal). Else
+/// the native server's variables (`PADDOCK_PANE`, `PADDOCK_SOCKET`,
+/// `PADDOCK_INSTANCE`) do, unless a variable of [`NESTED_VARS`] says the
+/// process runs in another multiplexer. Native terminals never have
+/// `TMUX` (their environment is clean), so there theirs come first. Reads
+/// only the environment, but for resolving symlinks in a socket path that
+/// does not match as written: every agent hook on the machine runs it.
+pub fn hook_terminal(var: impl Fn(&str) -> Option<String>, paths: &Paths) -> Option<HookTerminal> {
+    let var = |k: &str| var(k).filter(|v| !v.is_empty());
+    if var("TMUX").is_some() {
+        return tmux::hook_terminal(var, &paths.socket);
+    }
+    if NESTED_VARS.iter().any(|k| var(k).is_some()) {
+        return None;
+    }
+    native::hook_terminal(var, paths)
+}
+
+/// A variable lookup, as [`hook_terminal`] takes one, over `pairs`.
+#[cfg(test)]
+pub fn test_vars<K: AsRef<str>, V: AsRef<str>>(
+    pairs: &[(K, V)],
+) -> impl Fn(&str) -> Option<String> {
+    let pairs: Vec<(String, String)> = pairs
+        .iter()
+        .map(|(k, v)| (k.as_ref().to_owned(), v.as_ref().to_owned()))
+        .collect();
+    move |k| pairs.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone())
 }
 
 /// The process that hosts paddock's terminals, which outlive the app.
@@ -161,13 +205,35 @@ impl Backend {
         }
     }
 
-    /// The host's instance id, which names its hook event log (see
+    /// The running host's instance, as [`Self::instance`]; `None` if no
+    /// host runs, and an error, unlike there, only for one that runs and
+    /// cannot say (a native server whose hello gave no instance id).
+    pub fn running_instance(&self) -> Result<Option<Instance>> {
+        Ok(match self {
+            Self::Tmux(t) => t.pid().ok().map(|id| Instance {
+                kind: BackendKind::Tmux,
+                id,
+            }),
+            Self::Native(n) => n.running_instance()?.map(|id| Instance {
+                kind: BackendKind::Native,
+                id,
+            }),
+        })
+    }
+
+    /// The running host's instance, which names its hook event log (see
     /// [`crate::sessions::log::path`]); an error if it does not run.
-    pub fn instance(&self) -> Result<u32> {
-        match self {
-            Self::Tmux(t) => t.pid(),
-            Self::Native(n) => n.instance(),
-        }
+    pub fn instance(&self) -> Result<Instance> {
+        Ok(match self {
+            Self::Tmux(t) => Instance {
+                kind: BackendKind::Tmux,
+                id: t.pid()?,
+            },
+            Self::Native(n) => Instance {
+                kind: BackendKind::Native,
+                id: n.instance()?,
+            },
+        })
     }
 
     /// The spaces, oldest first; none if the host does not run.
@@ -484,5 +550,91 @@ impl Connection {
             Self::Tmux(c) => c.detach(),
             Self::Native(a) => a.detach(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    const NATIVE_SOCKET: &str = "/Users/me/.local/state/paddock/server.sock";
+    const TMUX: &str = "/private/tmp/tmux-501/paddock,4242,0";
+    const USERS_TMUX: &str = "/private/tmp/tmux-501/default,999,0";
+
+    fn paths() -> Paths {
+        Paths {
+            socket: "paddock".into(),
+            state_dir: PathBuf::from("/Users/me/.local/state/paddock"),
+            config_dir: PathBuf::from("/Users/me/.config/paddock"),
+        }
+    }
+
+    fn lookup(pairs: &[(&str, &str)]) -> Option<(BackendKind, u32, String)> {
+        let t = hook_terminal(test_vars(pairs), &paths())?;
+        Some((t.instance.kind, t.instance.id, t.terminal.to_string()))
+    }
+
+    fn native(socket: &str) -> Vec<(&str, &str)> {
+        vec![
+            ("PADDOCK_PANE", "%5"),
+            ("PADDOCK_SOCKET", socket),
+            ("PADDOCK_INSTANCE", "77"),
+        ]
+    }
+
+    fn with(
+        mut vars: Vec<(&'static str, &'static str)>,
+        more: &[(&'static str, &'static str)],
+    ) -> Vec<(&'static str, &'static str)> {
+        vars.extend_from_slice(more);
+        vars
+    }
+
+    const IN_NATIVE: Option<(BackendKind, u32, &str)> = Some((BackendKind::Native, 77, "%5"));
+
+    fn owned(t: Option<(BackendKind, u32, &str)>) -> Option<(BackendKind, u32, String)> {
+        t.map(|(k, id, pane)| (k, id, pane.to_string()))
+    }
+
+    #[test]
+    fn a_native_terminal_is_read_from_paddocks_variables() {
+        assert_eq!(lookup(&native(NATIVE_SOCKET)), owned(IN_NATIVE));
+    }
+
+    #[test]
+    fn a_tmux_terminal_is_read_from_tmuxs_variables() {
+        let tmux = [("TMUX", TMUX), ("TMUX_PANE", "%3")];
+        assert_eq!(lookup(&tmux), Some((BackendKind::Tmux, 4242, "%3".into())));
+    }
+
+    #[test]
+    fn a_tmux_started_in_a_native_terminal_runs_external_sessions() {
+        let nested = with(
+            native(NATIVE_SOCKET),
+            &[("TMUX", USERS_TMUX), ("TMUX_PANE", "%0")],
+        );
+        assert_eq!(lookup(&nested), None, "the user's own tmux");
+        let ours = with(
+            native(NATIVE_SOCKET),
+            &[("TMUX", TMUX), ("TMUX_PANE", "%3")],
+        );
+        assert_eq!(lookup(&ours), Some((BackendKind::Tmux, 4242, "%3".into())));
+        let empty = with(native(NATIVE_SOCKET), &[("TMUX", ""), ("TMUX_PANE", "")]);
+        assert_eq!(lookup(&empty), owned(IN_NATIVE), "empty is unset");
+    }
+
+    #[test]
+    fn screen_or_zellij_started_in_a_native_terminal_runs_external_sessions() {
+        for var in ["STY", "ZELLIJ"] {
+            let nested = with(native(NATIVE_SOCKET), &[(var, "1")]);
+            assert_eq!(lookup(&nested), None, "{var}");
+        }
+    }
+
+    #[test]
+    fn another_servers_variables_fall_back_to_none() {
+        assert_eq!(lookup(&native("/tmp/elsewhere/paddock/server.sock")), None);
+        assert_eq!(lookup(&[]), None, "outside paddock's terminals");
     }
 }

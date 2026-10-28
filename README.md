@@ -138,7 +138,7 @@ agy sends no hook when it quits: its session ends when its terminal closes, or w
 
 What agy sessions get: their row, dot, tab marker, state, branch and task rows (its first workspace stands in for the directory), `C-a a`, notifications, the EXTERNAL group and the AGENT tag `agy`. What stays Claude Code's alone: fork, subagent rows and the `claude agents --json` snapshot. An external agy session lives on its hooks alone: no status reports reach paddock from another terminal, so it is never waiting, and with no end event and no snapshot it leaves once nothing has been heard of it for `[dashboard] external_timeout` minutes (after it quit, or idle at its prompt), until its next hook.
 
-Not checked yet, as agy needs a sign-in: that agy's hooks run with the terminal's `TMUX` and `TMUX_PANE`, by which paddock tells which terminal an event comes from. If they don't, every agy session shows under EXTERNAL, even one running in a paddock terminal, and is never waiting (its status reports find no session in that terminal). Please report it if you see that.
+Not checked yet, as agy needs a sign-in: that agy's hooks run with the terminal's `PADDOCK_PANE` and `PADDOCK_SOCKET` (or, on the tmux backend, `TMUX` and `TMUX_PANE`), by which paddock tells which terminal an event comes from. If they don't, every agy session shows under EXTERNAL, even one running in a paddock terminal, and is never waiting (its status reports find no session in that terminal). Please report it if you see that.
 
 ## Use
 
