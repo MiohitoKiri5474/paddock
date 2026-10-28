@@ -1,5 +1,5 @@
-//! What the native server holds: its spaces ([`Space`]), and the one
-//! client attached to a space. It answers every request that reads, or
+//! What the native server holds: its spaces ([`Space`]), and the client
+//! attached to each (paddock attaches every space). It answers every request that reads, or
 //! changes a layout or a name; making and ending terminals is the
 //! server's ([`super::server`]), as it starts their threads. A change to
 //! the attached space's structure tells its client ([`Notice::Changed`]),
@@ -21,7 +21,7 @@ use std::sync::mpsc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-/// Bytes queued for the attached client past which it is behind: a client
+/// Bytes queued for an attached client past which it is behind: a client
 /// that stays behind for [`GRACE`] has stopped reading (not just paused a
 /// moment), and is let go.
 const BEHIND: usize = 16 << 20;
@@ -30,7 +30,7 @@ const GRACE: Duration = Duration::from_secs(5);
 /// writing fast never grows the server without bound meanwhile.
 const MAX_QUEUED: usize = 128 << 20;
 
-/// The attached client: frames for it go through `queue`, in order, to
+/// The client attached to a space: frames for it go through `queue`, in order, to
 /// a thread that writes them.
 pub struct Subscriber {
     /// Which connection it is.
@@ -115,7 +115,8 @@ pub struct State {
     instance: u32,
     next_id: u64,
     pub spaces: Vec<Space>,
-    pub attached: Option<Subscriber>,
+    /// The client attached to each space, one at most per space.
+    pub attached: Vec<Subscriber>,
     /// A terminal ran: once none is left, the server ends.
     pub started: bool,
     /// The server is ending: it takes no new space.
@@ -131,7 +132,7 @@ impl State {
             instance,
             next_id: 0,
             spaces: Vec::new(),
-            attached: None,
+            attached: Vec::new(),
             started: false,
             closing: false,
         }
@@ -161,6 +162,15 @@ impl State {
     pub fn space(&self, id: &SpaceId) -> Result<&Space> {
         let found = self.spaces.iter().find(|s| s.id == *id);
         found.ok_or_else(|| anyhow!("no space {id}"))
+    }
+
+    /// An error if a space is named `name` already, in tmux's words,
+    /// which paddock shows.
+    pub fn check_space_name(&self, name: &str) -> Result<()> {
+        if self.spaces.iter().any(|s| s.name == name) {
+            bail!("duplicate session: {name}");
+        }
+        Ok(())
     }
 
     pub fn space_mut(&mut self, id: &SpaceId) -> Result<&mut Space> {
@@ -198,31 +208,44 @@ impl State {
         found.ok_or_else(|| anyhow!("no terminal {terminal}"))
     }
 
-    /// Queue `frame` for the attached client, if it is attached to
-    /// `space` (to any space if `None`). A client that has stopped reading
-    /// (see [`BEHIND`]), or whose writer failed, is let go, so its frames
-    /// never pile up.
-    pub fn send(&mut self, space: Option<&SpaceId>, frame: Frame) {
-        let Some(s) = &mut self.attached else { return };
-        if space.is_some_and(|space| s.space != *space) {
+    /// Queue `frame` for the client attached to `space`, if any. A client
+    /// that has stopped reading (see [`BEHIND`]), or whose writer failed,
+    /// is let go, so its frames never pile up.
+    pub fn send(&mut self, space: &SpaceId, frame: Frame) {
+        let Some(s) = self.attached.iter_mut().find(|s| s.space == *space) else {
             return;
-        }
+        };
         let Err(why) = s.queue(frame) else { return };
-        if let Some(s) = self.attached.take() {
-            eprintln!("paddock server: letting connection {} go: {why}", s.conn);
+        eprintln!("paddock server: letting connection {} go: {why}", s.conn);
+        if let Some(s) = self.detach_space(space) {
             std::thread::spawn(move || s.let_go(Duration::ZERO));
         }
     }
 
-    /// Tell the client attached to `space`, if any.
-    pub fn notify(&mut self, space: &SpaceId, notice: Notice) {
-        self.send(Some(space), Frame::Message(Message::Notice(notice)));
+    /// Take out the client of connection `conn`, if it is attached.
+    pub fn detach(&mut self, conn: u64) -> Option<Subscriber> {
+        let i = self.attached.iter().position(|s| s.conn == conn)?;
+        Some(self.attached.remove(i))
     }
 
-    /// Tell the attached client a space was made or ended.
+    /// Take out the client attached to `space`, if any.
+    pub fn detach_space(&mut self, space: &SpaceId) -> Option<Subscriber> {
+        let i = self.attached.iter().position(|s| s.space == *space)?;
+        Some(self.attached.remove(i))
+    }
+
+    /// Tell the client attached to `space`, if any.
+    pub fn notify(&mut self, space: &SpaceId, notice: Notice) {
+        self.send(space, Frame::Message(Message::Notice(notice)));
+    }
+
+    /// Tell every attached client a space was made or ended, as each
+    /// space's connection hears it on tmux.
     pub fn notify_spaces(&mut self) {
-        let notice = Message::Notice(Notice::SpacesChanged);
-        self.send(None, Frame::Message(notice));
+        let spaces: Vec<SpaceId> = self.attached.iter().map(|s| s.space.clone()).collect();
+        for space in spaces {
+            self.notify(&space, Notice::SpacesChanged);
+        }
     }
 
     pub fn structure(&self, id: &SpaceId) -> Result<Structure> {
@@ -285,15 +308,20 @@ impl State {
         }
     }
 
-    /// Every terminal of space `id`, in its tabs' order.
+    /// Every terminal of space `id`, in its tabs' order, then its
+    /// floats'.
     fn space_terminals(&self, id: &SpaceId) -> Result<Vec<SpaceTerminal>> {
         let space = self.space(id)?;
-        let ids = space.tabs.iter().flat_map(Tab::terminals);
-        let terminals = ids.filter_map(|t| space.hosted(&t));
-        let listed = terminals.map(|h| SpaceTerminal {
-            id: h.id.clone(),
-            path: h.dir().unwrap_or_default(),
-            float: false,
+        let tabs = space.tabs.iter().flat_map(Tab::terminals);
+        let tabs = tabs.map(|t| (t, false));
+        let floats = space.floats.iter().map(|f| (f.terminal.clone(), true));
+        let listed = tabs.chain(floats).filter_map(|(t, float)| {
+            let h = space.hosted(&t)?;
+            Some(SpaceTerminal {
+                id: h.id.clone(),
+                path: h.dir().unwrap_or_default(),
+                float,
+            })
         });
         Ok(listed.collect())
     }
@@ -368,6 +396,9 @@ impl State {
             ),
             Request::SpaceName(id) => Answer::Text(Some(self.space(&id)?.name.clone())),
             Request::RenameSpace(id, name) => {
+                if self.space(&id)?.name != name {
+                    self.check_space_name(&name)?;
+                }
                 self.space_mut(&id)?.name = name;
                 self.notify(&id, Notice::Changed);
                 Answer::Done

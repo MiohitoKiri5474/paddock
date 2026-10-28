@@ -4,8 +4,7 @@
 //! [`Event`] on its [`Connection`]. Two backends fill it in, picked by
 //! `[backend] kind`: tmux (ADR 0001), whose commands, formats,
 //! notifications and ids stay in [`tmux`], and paddock's own server, in
-//! [`native`], which hosts one space with its tabs and splits so far. Nothing
-//! outside this module knows which one runs.
+//! [`native`]. Nothing outside this module knows which one runs.
 
 mod border;
 mod env;
@@ -356,7 +355,7 @@ impl Backend {
     ) -> Result<FloatId> {
         match self {
             Self::Tmux(t) => t.new_float(space.as_str(), cwd, command, key),
-            Self::Native(_) => Err(native::unsupported("floats")),
+            Self::Native(n) => n.new_float(space, cwd, command, key),
         }
     }
 
@@ -364,7 +363,7 @@ impl Backend {
     pub fn close_float(&self, float: &FloatId) -> Result<()> {
         match self {
             Self::Tmux(t) => t.kill_window(float.as_str()),
-            Self::Native(_) => Err(native::unsupported("floats")),
+            Self::Native(n) => n.close_float(float),
         }
     }
 
@@ -538,7 +537,7 @@ impl Connection {
     pub fn resize_float(&mut self, float: &FloatId, (cols, rows): (u16, u16)) -> Result<()> {
         match self {
             Self::Tmux(c) => c.resize_window(float.as_str(), cols, rows),
-            Self::Native(_) => Err(native::unsupported("floats")),
+            Self::Native(a) => a.resize_float(float, (cols, rows)),
         }
     }
 

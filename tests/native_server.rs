@@ -689,6 +689,38 @@ fn a_request_after_attaching_closes_the_connection_unanswered() {
     }
 }
 
+/// Ticket 42: a space has at most one float per key; another space has
+/// its own.
+#[test]
+fn a_space_takes_one_float_per_key() {
+    let sandbox = native();
+    let mut paddock = ready(&sandbox);
+    paddock.command(b"C\r");
+    wait_until("two spaces", || sandbox.state().spaces.len() == 2);
+    let spaces: Vec<String> = sandbox.state().spaces.into_iter().map(|s| s.id).collect();
+    let cwd = sandbox.path("").to_string_lossy().into_owned();
+    let new_float = |space: &str| {
+        let (mut stream, _) = connect(&sandbox);
+        let request = format!(
+            r#"{{"Request":{{"NewFloat":{{"space":"{space}","cwd":"{cwd}","command":"sleep 30","key":"G"}}}}}}"#
+        );
+        send_message(&mut stream, &request);
+        String::from_utf8_lossy(&read_frame(&mut stream).expect("a reply")).into_owned()
+    };
+
+    assert!(new_float(&spaces[0]).contains("Float"));
+    let again = new_float(&spaces[0]);
+    assert!(again.contains("a float on G already"), "{again}");
+    assert!(new_float(&spaces[1]).contains("Float"), "the other space's");
+    let floats: Vec<usize> = sandbox
+        .state()
+        .spaces
+        .iter()
+        .map(|s| s.floats.len())
+        .collect();
+    assert_eq!(floats, [1, 1]);
+}
+
 /// The test functions in a test file's source: the `fn` after each
 /// `#[test]`, past any other attributes. Tests in a nested module would
 /// be named by its path, which this does not read: it refuses them.

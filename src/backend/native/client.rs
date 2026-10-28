@@ -15,7 +15,7 @@ use super::socket_path;
 use crate::backend::border::{Anchor, Border};
 use crate::backend::env::clean_env;
 use crate::backend::{
-    Event, ListedSpace, Replay, SpaceId, SpaceTerminal, Structure, TabId, TerminalDetails,
+    Event, FloatId, ListedSpace, Replay, SpaceId, SpaceTerminal, Structure, TabId, TerminalDetails,
     TerminalId,
 };
 use crate::input::Direction;
@@ -275,6 +275,29 @@ impl Client {
         })
     }
 
+    pub fn new_float(
+        &self,
+        space: &SpaceId,
+        cwd: &Path,
+        command: &str,
+        key: &str,
+    ) -> Result<FloatId> {
+        let request = Request::NewFloat {
+            space: space.clone(),
+            cwd: cwd.into(),
+            command: command.into(),
+            key: key.into(),
+        };
+        match self.request(request)? {
+            Answer::Float(id) => Ok(id),
+            other => Err(unexpected(&other)),
+        }
+    }
+
+    pub fn close_float(&self, float: &FloatId) -> Result<()> {
+        self.done(Request::CloseFloat(float.clone()))
+    }
+
     pub fn swap_tabs(&self, a: &TabId, b: &TabId) -> Result<()> {
         self.done(Request::SwapTabs(a.clone(), b.clone()))
     }
@@ -525,6 +548,12 @@ impl Attached {
     pub fn resize(&mut self, size: (u16, u16)) -> Result<()> {
         let frame = Frame::Message(Message::Request(Request::Resize(size)));
         protocol::write(&mut self.stream, &frame)
+    }
+
+    /// Show float `float` at `size`, apart from the tabs.
+    pub fn resize_float(&mut self, float: &FloatId, size: (u16, u16)) -> Result<()> {
+        let request = Request::ResizeFloat(float.clone(), size);
+        protocol::write(&mut self.stream, &Frame::Message(Message::Request(request)))
     }
 
     /// Leave the space running on the server.

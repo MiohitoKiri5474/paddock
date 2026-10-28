@@ -11,13 +11,13 @@
 
 use super::axis::Axis;
 use super::protocol::{self, Answer, Ending, Frame, Message, Notice, Refusal, Request};
-use super::space::Space;
+use super::space::{Float, Space};
 use super::state::{State, Subscriber};
 use super::tab::Tab;
 use super::terminal::{dir_name, HostedTerminal, Input, Sent, INPUT_MAX};
-use super::{lock, pty, socket_path, unsupported, LOG};
+use super::{lock, pty, socket_path, LOG};
 use crate::backend::env::{clean_env, AGY_STATUS_VAR};
-use crate::backend::{SpaceId, TabId, TerminalId};
+use crate::backend::{FloatId, SpaceId, TabId, TerminalId};
 use crate::paths::Paths;
 use anyhow::{bail, Context, Result};
 use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
@@ -101,7 +101,7 @@ pub fn serve() -> Result<()> {
                 eprintln!("paddock server: connection {conn}: {e:#}");
             }
             // Its writer ends; nobody reads what is left.
-            drop(shared.lock().attached.take_if(|s| s.conn == conn));
+            drop(shared.lock().detach(conn));
         });
     }
     Ok(())
@@ -161,7 +161,7 @@ fn watch_signals(shared: &Arc<Shared>) -> Result<()> {
     Ok(())
 }
 
-/// Hang every shell up, tell the attached client its space ended (with
+/// Hang every shell up, tell each attached client its space ended (with
 /// its last frames), remove the socket and exit.
 fn shut_down(shared: &Shared) -> ! {
     let attached = {
@@ -170,13 +170,18 @@ fn shut_down(shared: &Shared) -> ! {
         for (_, term) in state.terminals() {
             hang_up(term.pid);
         }
-        if let Some(space) = state.attached.as_ref().map(|s| s.space.clone()) {
+        let spaces: Vec<SpaceId> = state.attached.iter().map(|s| s.space.clone()).collect();
+        for space in spaces {
             state.notify(&space, Notice::Ended);
         }
-        state.attached.take()
+        std::mem::take(&mut state.attached)
     };
-    if let Some(attached) = attached {
-        attached.let_go(LAST_WORDS);
+    let letting: Vec<_> = attached
+        .into_iter()
+        .map(|s| std::thread::spawn(move || s.let_go(LAST_WORDS)))
+        .collect();
+    for thread in letting {
+        let _ = thread.join();
     }
     std::process::exit(0)
 }
@@ -232,10 +237,13 @@ fn serve_connection(shared: &Arc<Shared>, conn: u64, mut stream: UnixStream) -> 
                 resize(shared, conn, size);
                 continue;
             }
+            Request::ResizeFloat(float, size) => {
+                resize_float(shared, conn, &float, size);
+                continue;
+            }
             Request::Detach => {
-                let mut state = shared.lock();
                 // Its writer ends; the client closes the connection.
-                drop(state.attached.take_if(|s| s.conn == conn));
+                drop(shared.lock().detach(conn));
                 continue;
             }
             // Once attached, the connection is the writer's: a reply here
@@ -259,6 +267,13 @@ fn serve_connection(shared: &Arc<Shared>, conn: u64, mut stream: UnixStream) -> 
                 columns,
                 cwd,
             } => split(shared, &terminal, columns, &cwd),
+            Request::NewFloat {
+                space,
+                cwd,
+                command,
+                key,
+            } => new_float(shared, &space, &cwd, &command, &key),
+            Request::CloseFloat(float) => close_float(shared, &float),
             Request::CloseSpace(space) => close_space(shared, &space),
             Request::CloseTerminal(terminal) => close_terminal(shared, &terminal),
             request => shared.lock().answer(request),
@@ -357,7 +372,8 @@ fn input(
 
 /// Make connection `conn` the attached client of `space`, shown at
 /// `size`: its reply, then each terminal's snapshot, then their output,
-/// all through a writer thread of its own. Any other client is let go.
+/// all through a writer thread of its own. Any other client of `space`
+/// is let go.
 fn attach(
     shared: &Shared,
     conn: u64,
@@ -388,7 +404,8 @@ fn attach(
         // A new client: it has had no time to fall behind.
         let _ = subscriber.queue(frame);
     }
-    let old = state.attached.replace(subscriber);
+    let old = state.detach_space(space);
+    state.attached.push(subscriber);
     drop(state);
     if let Some(old) = old {
         std::thread::spawn(move || old.let_go(LAST_WORDS));
@@ -399,7 +416,7 @@ fn attach(
 /// Show the space connection `conn` attached at `size`.
 fn resize(shared: &Shared, conn: u64, size: (u16, u16)) {
     let mut state = shared.lock();
-    let Some(space) = state.attached.as_ref().filter(|s| s.conn == conn) else {
+    let Some(space) = state.attached.iter().find(|s| s.conn == conn) else {
         return;
     };
     let space = space.space.clone();
@@ -411,25 +428,48 @@ fn resize(shared: &Shared, conn: u64, size: (u16, u16)) {
     state.notify(&space, Notice::Changed);
 }
 
+/// Show float `float` of the space connection `conn` attached at `size`.
+fn resize_float(shared: &Shared, conn: u64, float: &FloatId, size: (u16, u16)) {
+    let mut state = shared.lock();
+    let Some(space) = state.attached.iter().find(|s| s.conn == conn) else {
+        return;
+    };
+    let space = space.space.clone();
+    let Ok(s) = state.space_mut(&space) else {
+        return;
+    };
+    let Some(terminal) = s.float(float).map(|f| f.terminal.clone()) else {
+        return;
+    };
+    let Some(term) = s.terminals.iter_mut().find(|t| t.id == terminal) else {
+        return;
+    };
+    if term.size == size {
+        return;
+    }
+    if let Err(e) = term.resize(size) {
+        eprintln!("paddock server: {e:#}");
+    }
+    state.notify(&space, Notice::Changed);
+}
+
 /// A new tab named after `cwd`, holding `terminal`, with a new id.
 fn new_tab_for(state: &mut State, cwd: &Path, terminal: TerminalId) -> Tab {
     let tab = TabId::new(format!("@{}", state.next()));
     Tab::new(tab, dir_name(&cwd.to_string_lossy()), terminal)
 }
 
-/// Start the one space: a shell in `cwd`, at `size`.
+/// Start a space named `name`: a shell in `cwd`, at `size`.
 fn new_space(shared: &Arc<Shared>, name: &str, cwd: &Path, size: (u16, u16)) -> Result<Answer> {
     let mut state = shared.lock();
     if state.closing {
         return Err(Ending.into());
     }
-    if !state.spaces.is_empty() {
-        bail!(unsupported("more than one space"));
-    }
+    state.check_space_name(name)?;
     let space = SpaceId::new(format!("${}", state.next()));
     let terminal = TerminalId::new(format!("%{}", state.next()));
     let tab = new_tab_for(&mut state, cwd, terminal.clone());
-    let term = start_terminal(shared, &state, &space, terminal, cwd, size)?;
+    let term = start_terminal(shared, &state, &space, terminal, None, cwd, size)?;
     let root = cwd.to_string_lossy().into_owned();
     let made = Space::new(space.clone(), name.to_string(), root, tab, term);
     state.spaces.push(made);
@@ -445,11 +485,39 @@ fn new_tab(shared: &Arc<Shared>, space: &SpaceId, cwd: &Path) -> Result<Answer> 
     let size = state.space(space)?.size;
     let terminal = TerminalId::new(format!("%{}", state.next()));
     let tab = new_tab_for(&mut state, cwd, terminal.clone());
-    let term = start_terminal(shared, &state, space, terminal.clone(), cwd, size)?;
+    let term = start_terminal(shared, &state, space, terminal.clone(), None, cwd, size)?;
     let s = state.space_mut(space)?;
     s.push_tab(tab, term);
     state.notify(space, Notice::Changed);
     Ok(Answer::Terminal(terminal))
+}
+
+/// Open a float on `key` in `space`, running `command` in `cwd` at the
+/// space's size until the client sizes it to its box. It closes when the
+/// command exits, which may be at once: it is still made, and never a tab.
+fn new_float(
+    shared: &Arc<Shared>,
+    space: &SpaceId,
+    cwd: &Path,
+    command: &str,
+    key: &str,
+) -> Result<Answer> {
+    let mut state = shared.lock();
+    let s = state.space(space)?;
+    s.check_float_key(key)?;
+    let size = s.size;
+    let float = FloatId::new(format!("@{}", state.next()));
+    let terminal = TerminalId::new(format!("%{}", state.next()));
+    let id = terminal.clone();
+    let term = start_terminal(shared, &state, space, id, Some(command), cwd, size)?;
+    let made = Float {
+        id: float.clone(),
+        key: key.to_string(),
+        terminal,
+    };
+    state.space_mut(space)?.push_float(made, term);
+    state.notify(space, Notice::Changed);
+    Ok(Answer::Float(float))
 }
 
 /// Split `target` (side by side if `columns`): a shell in `cwd` takes the
@@ -466,7 +534,7 @@ fn split(shared: &Arc<Shared>, target: &TerminalId, columns: bool, cwd: &Path) -
     tab.split(target, terminal.clone(), Axis::of(columns), size)?;
     let place = tab.splits(size).into_iter().find(|p| p.id == terminal);
     let place = place.map_or(size, |p| (p.rect.width, p.rect.height));
-    let started = start_terminal(shared, &state, &space, terminal.clone(), cwd, place);
+    let started = start_terminal(shared, &state, &space, terminal.clone(), None, cwd, place);
     let s = state.space_mut(&space)?;
     match started {
         Ok(term) => s.terminals.push(term),
@@ -490,8 +558,8 @@ fn follow_names(shared: &Shared) {
     }
 }
 
-/// A shell on a new PTY in `cwd`, with the hook variables of terminal
-/// `id`, and its threads. Called with the state locked (`state`), so its
+/// A shell on a new PTY in `cwd` (running `command`, for a float), with
+/// the hook variables of terminal `id`, and its threads. Called with the state locked (`state`), so its
 /// reader waits until the terminal is in it (and no other shell starts
 /// meanwhile, see [`pty::spawn`]).
 fn start_terminal(
@@ -499,6 +567,7 @@ fn start_terminal(
     state: &State,
     space: &SpaceId,
     id: TerminalId,
+    command: Option<&str>,
     cwd: &Path,
     size: (u16, u16),
 ) -> Result<HostedTerminal> {
@@ -509,7 +578,7 @@ fn start_terminal(
         .cloned()
         .chain(state.hook_env(&id))
         .collect();
-    let mut pty = pty::spawn(&shared.shell, cwd, &shared.home, size, &env)?;
+    let mut pty = pty::spawn(&shared.shell, command, cwd, &shared.home, size, &env)?;
     let ready = (|| {
         let input = Input::start(&id, pty.master.try_clone()?);
         let reader = pty.master.try_clone()?;
@@ -561,7 +630,7 @@ fn read_output(
             terminal: id.clone(),
             data: buf[..n].to_vec(),
         };
-        state.send(Some(space), frame);
+        state.send(space, frame);
     }
 }
 
@@ -582,13 +651,8 @@ fn wait_for_exit(
     let mut state = shared.lock();
     let mut ended = None;
     if let Ok(s) = state.space_mut(space) {
-        let empty = s.remove(id);
-        if empty {
-            state.spaces.retain(|s| s.id != *space);
-            state.notify(space, Notice::Ended);
-            // Nothing follows its end.
-            ended = state.attached.take_if(|s| s.space == *space);
-            state.notify_spaces();
+        if s.remove(id) {
+            ended = end_space(&mut state, space);
         } else {
             state.notify(space, Notice::Changed);
         }
@@ -606,11 +670,46 @@ fn wait_for_exit(
     }
 }
 
-fn close_space(shared: &Shared, space: &SpaceId) -> Result<Answer> {
-    let state = shared.lock();
-    for term in &state.space(space)?.terminals {
+/// Take `space` out at once, as tmux's `kill-session` does, hanging up
+/// what still runs in it (its floats, when its last tab has closed):
+/// tell its client it ended, and every client that a space did. Returns
+/// its client, to let go once it has read its last frames.
+fn end_space(state: &mut State, space: &SpaceId) -> Option<Subscriber> {
+    let i = state.spaces.iter().position(|s| s.id == *space)?;
+    let gone = state.spaces.remove(i);
+    for term in &gone.terminals {
         hang_up(term.pid);
     }
+    state.notify(space, Notice::Ended);
+    // Nothing follows its end.
+    let ended = state.detach_space(space);
+    state.notify_spaces();
+    ended
+}
+
+/// End `space` at once; its shells' exits follow (and the server's, with
+/// the last space).
+fn close_space(shared: &Shared, space: &SpaceId) -> Result<Answer> {
+    let mut state = shared.lock();
+    state.space(space)?;
+    let ended = end_space(&mut state, space);
+    drop(state);
+    if let Some(ended) = ended {
+        std::thread::spawn(move || ended.let_go(LAST_WORDS));
+    }
+    Ok(Answer::Done)
+}
+
+fn close_float(shared: &Shared, float: &FloatId) -> Result<Answer> {
+    let state = shared.lock();
+    let found = state.spaces.iter().find_map(|s| {
+        let f = s.float(float)?;
+        s.hosted(&f.terminal)
+    });
+    let Some(term) = found else {
+        bail!("no float {float}");
+    };
+    hang_up(term.pid);
     Ok(Answer::Done)
 }
 

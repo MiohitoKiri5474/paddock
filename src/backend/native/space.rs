@@ -1,12 +1,22 @@
 //! One space on the native server: its tabs in order, the current one and
-//! those current before it, the size its tabs are shown at, and its
-//! terminals. Every change to a tab's layout ends with [`Space::lay_out`],
+//! those current before it, the size its tabs are shown at, its floats,
+//! and its terminals. Every change to a tab's layout ends with [`Space::lay_out`],
 //! which sizes each terminal's PTY to the place it is drawn in.
 
 use super::tab::Tab;
 use super::terminal::HostedTerminal;
-use crate::backend::{SpaceId, Structure, TabId, TerminalId};
-use anyhow::{anyhow, Result};
+use crate::backend::{FloatId, SpaceId, Split, Structure, TabId, TerminalId};
+use anyhow::{anyhow, bail, Result};
+use ratatui::layout::Rect;
+
+/// A float: one terminal running a program, on its key, never a tab. Its
+/// terminal keeps the size it was last given, apart from the tabs'.
+pub struct Float {
+    pub id: FloatId,
+    /// Its key, as [`crate::input::keymap::Key::name`] writes it.
+    pub key: String,
+    pub terminal: TerminalId,
+}
 
 pub struct Space {
     pub id: SpaceId,
@@ -20,7 +30,9 @@ pub struct Space {
     /// The tabs current before, the latest last: closing the current tab
     /// goes back to the latest of them, as tmux does.
     previous: Vec<TabId>,
-    /// Every terminal of its tabs.
+    /// Its floats, oldest first.
+    pub floats: Vec<Float>,
+    /// Every terminal of its tabs and floats.
     pub terminals: Vec<HostedTerminal>,
 }
 
@@ -41,6 +53,7 @@ impl Space {
             tabs: vec![tab],
             current: 0,
             previous: Vec::new(),
+            floats: Vec::new(),
             terminals: vec![terminal],
         }
     }
@@ -63,9 +76,43 @@ impl Space {
             name: self.name.clone(),
             tabs: (0..self.tabs.len()).map(|i| self.tab_view(i)).collect(),
             current: self.current,
-            floats: Vec::new(),
+            floats: self.floats.iter().map(|f| self.float_view(f)).collect(),
             float_active: false,
         }
+    }
+
+    /// Float `float` as the backend's interface shows it: its terminal
+    /// fills it.
+    fn float_view(&self, float: &Float) -> crate::backend::Float {
+        let (width, height) = self.hosted(&float.terminal).map_or(self.size, |t| t.size);
+        crate::backend::Float {
+            id: float.id.clone(),
+            key: float.key.clone(),
+            splits: vec![Split {
+                id: float.terminal.clone(),
+                rect: Rect::new(0, 0, width, height),
+            }],
+            active: float.terminal.clone(),
+        }
+    }
+
+    /// An error if the space has a float on `key` already: one per key.
+    pub fn check_float_key(&self, key: &str) -> Result<()> {
+        if self.floats.iter().any(|f| f.key == key) {
+            bail!("{} has a float on {key} already", self.id);
+        }
+        Ok(())
+    }
+
+    /// Add `float`, whose program runs in `terminal`.
+    pub fn push_float(&mut self, float: Float, terminal: HostedTerminal) {
+        self.floats.push(float);
+        self.terminals.push(terminal);
+    }
+
+    /// The float `float`.
+    pub fn float(&self, float: &FloatId) -> Option<&Float> {
+        self.floats.iter().find(|f| f.id == *float)
     }
 
     pub fn tab(&self, tab: &TabId) -> Option<usize> {
@@ -112,10 +159,12 @@ impl Space {
         self.select(self.tabs.len() - 1);
     }
 
-    /// Forget `terminal`, whose shell has exited: its tab gives its place
-    /// to the others, and goes with its last terminal. The terminal goes
-    /// either way, as its shell has. True if the space has no tab left.
+    /// Forget `terminal`, whose program has exited: its tab gives its
+    /// place to the others, and goes with its last terminal; a float goes
+    /// with its terminal. The terminal goes either way, as its program
+    /// has. True if the space has no tab left: it ends, its floats too.
     pub fn remove(&mut self, terminal: &TerminalId) -> bool {
+        self.floats.retain(|f| f.terminal != *terminal);
         if let Some(i) = self.tab_of(terminal) {
             match self.tabs[i].remove(terminal, self.size) {
                 Ok(true) => self.lay_out_tab(i),

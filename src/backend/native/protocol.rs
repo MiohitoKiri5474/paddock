@@ -18,13 +18,14 @@
 //! client sends a [`Request`] and reads its [`Message::Reply`]; one
 //! connection can ask many. After [`Request::Attach`] the connection
 //! carries the space: its reply, snapshots, output and [`Notice`]s from
-//! the server, and only input, [`Request::Resize`] and [`Request::Detach`]
-//! from the client, which get no reply (the server closes a connection
+//! the server, and only input, [`Request::Resize`],
+//! [`Request::ResizeFloat`] and [`Request::Detach`] from the client,
+//! which get no reply (the server closes a connection
 //! that asks anything else then).
 
 use super::axis::Axis;
 use super::layout::BorderHit;
-use crate::backend::TerminalId;
+use crate::backend::{FloatId, TerminalId};
 use crate::backend::{ListedSpace, SpaceId, SpaceTerminal, Structure, TabId, TerminalDetails};
 use crate::input::Direction;
 use anyhow::{bail, Context, Result};
@@ -133,6 +134,15 @@ pub enum Request {
         len: u16,
     },
     CloseTerminal(TerminalId),
+    /// A float on `key` in the space, running `command` in `cwd`; it
+    /// closes when the command exits. At most one per key in a space.
+    NewFloat {
+        space: SpaceId,
+        cwd: PathBuf,
+        command: String,
+        key: String,
+    },
+    CloseFloat(FloatId),
     TerminalDir(TerminalId),
     SpaceOf(TerminalId),
     TerminalCommands,
@@ -146,6 +156,9 @@ pub enum Request {
     },
     /// Show the attached space at `size` (no reply).
     Resize((u16, u16)),
+    /// Show a float of the attached space at `size`, apart from its
+    /// tabs' (no reply).
+    ResizeFloat(FloatId, (u16, u16)),
     /// Let the attached space go (no reply).
     Detach,
     /// End every terminal and the server.
@@ -194,6 +207,8 @@ pub enum Answer {
     Space(SpaceId),
     /// A terminal just started.
     Terminal(TerminalId),
+    /// A float just started.
+    Float(FloatId),
     Border(Option<BorderHit>),
     /// The space holding a terminal; `None` if no space does.
     SpaceOf(Option<SpaceId>),
@@ -409,6 +424,13 @@ mod tests {
                 start: 0,
             },
         ))))));
+        round_trip(Frame::Message(Message::Request(Request::ResizeFloat(
+            FloatId::new("@4"),
+            (60, 20),
+        ))));
+        round_trip(Frame::Message(Message::Reply(Ok(Answer::Float(
+            FloatId::new("@4"),
+        )))));
         round_trip(Frame::Message(Message::Reply(Ok(Answer::Pids(
             HashMap::from([(42, TerminalId::new("%1"))]),
         )))));
