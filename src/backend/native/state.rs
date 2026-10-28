@@ -443,3 +443,47 @@ impl State {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The notices the client on `stream` reads, until none comes for a
+    /// moment.
+    fn notices(stream: &mut UnixStream) -> Vec<Notice> {
+        stream
+            .set_read_timeout(Some(Duration::from_millis(200)))
+            .unwrap();
+        let mut got = Vec::new();
+        while let Ok(Some(frame)) = protocol::read(stream, protocol::FROM_SERVER) {
+            if let Frame::Message(Message::Notice(n)) = frame {
+                got.push(n);
+            }
+        }
+        got
+    }
+
+    #[test]
+    fn each_space_has_its_own_client_and_every_client_hears_of_spaces() {
+        let mut state = State::new(PathBuf::from("/tmp/server.sock"), 1);
+        let (one, two) = (SpaceId::new("$1"), SpaceId::new("$2"));
+        let (server_a, mut client_a) = UnixStream::pair().unwrap();
+        let (server_b, mut client_b) = UnixStream::pair().unwrap();
+        let a = Subscriber::new(1, one.clone(), &server_a).unwrap();
+        let b = Subscriber::new(2, two.clone(), &server_b).unwrap();
+        state.attached.extend([a, b]);
+
+        state.notify(&one, Notice::Changed);
+        state.notify_spaces();
+
+        assert_eq!(
+            notices(&mut client_a),
+            [Notice::Changed, Notice::SpacesChanged]
+        );
+        assert_eq!(notices(&mut client_b), [Notice::SpacesChanged]);
+        assert_eq!(state.detach(2).map(|s| s.conn), Some(2));
+        assert!(state.detach(2).is_none(), "taken out once");
+        assert_eq!(state.detach_space(&one).map(|s| s.conn), Some(1));
+        assert!(state.attached.is_empty());
+    }
+}

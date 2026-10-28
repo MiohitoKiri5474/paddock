@@ -232,3 +232,71 @@ impl Space {
         changed
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::pty::{self, Pty};
+    use super::super::terminal::Input;
+    use super::*;
+
+    /// Terminal `id` running `sleep 30` at `size`, and its PTY, whose
+    /// program the test kills.
+    fn hosted(id: &str, size: (u16, u16)) -> (HostedTerminal, Pty) {
+        let env = [("PATH".to_string(), "/usr/bin:/bin".to_string())];
+        let dir = std::env::temp_dir();
+        let pty = pty::spawn("/bin/sh", Some("sleep 30"), &dir, &dir, size, &env).unwrap();
+        let id = TerminalId::new(id);
+        let input = Input::start(&id, pty.master.try_clone().unwrap());
+        (HostedTerminal::new(id, &pty, input, size).unwrap(), pty)
+    }
+
+    /// A space of one tab holding `%1`, at 80x24, with a float on `G`
+    /// holding `%2`, at 40x10.
+    fn with_a_float() -> (Space, Vec<Pty>) {
+        let (tab_term, tab_pty) = hosted("%1", (80, 24));
+        let tab = Tab::new(TabId::new("@1"), "t".into(), TerminalId::new("%1"));
+        let mut space = Space::new(SpaceId::new("$1"), "s".into(), "/".into(), tab, tab_term);
+        let (float_term, float_pty) = hosted("%2", (40, 10));
+        let float = Float {
+            id: FloatId::new("@2"),
+            key: "G".into(),
+            terminal: TerminalId::new("%2"),
+        };
+        space.push_float(float, float_term);
+        (space, vec![tab_pty, float_pty])
+    }
+
+    fn kill(ptys: Vec<Pty>) {
+        for mut pty in ptys {
+            let _ = pty.child.kill();
+            let _ = pty.child.wait();
+        }
+    }
+
+    #[test]
+    fn a_float_is_never_a_tab_and_shows_its_own_size() {
+        let (space, ptys) = with_a_float();
+        let s = space.structure();
+        assert_eq!(s.tabs.len(), 1);
+        assert_eq!(s.floats.len(), 1);
+        assert_eq!(s.floats[0].key, "G");
+        assert_eq!(s.floats[0].active, "%2");
+        assert_eq!(s.floats[0].splits[0].rect, Rect::new(0, 0, 40, 10));
+        assert!(!s.float_active);
+        assert!(space.check_float_key("G").is_err(), "one per key");
+        assert!(space.check_float_key("H").is_ok());
+        kill(ptys);
+    }
+
+    #[test]
+    fn a_float_goes_with_its_program_and_the_space_with_its_last_tab() {
+        let (mut space, ptys) = with_a_float();
+        assert!(!space.remove(&TerminalId::new("%2")), "the tab is left");
+        assert!(space.structure().floats.is_empty());
+        assert_eq!(space.terminals.len(), 1);
+
+        let (mut space, more) = with_a_float();
+        assert!(space.remove(&TerminalId::new("%1")), "no tab left");
+        kill(ptys.into_iter().chain(more).collect());
+    }
+}

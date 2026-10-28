@@ -148,8 +148,8 @@ pub enum Request {
     TerminalCommands,
     TerminalPids,
     TerminalDetails,
-    /// Take this connection as the one attached client of the space,
-    /// shown at `size`: any other attached client is let go.
+    /// Take this connection as the client attached to the space, shown
+    /// at `size`: any other client of that space is let go.
     Attach {
         space: SpaceId,
         size: (u16, u16),
