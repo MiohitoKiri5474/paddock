@@ -6,7 +6,7 @@ mod harness;
 
 use harness::backend::{alive, server_pid, NATIVE};
 use harness::native_skip::NATIVE_NEEDS;
-use harness::stall::{finished, SEND_TIMEOUT};
+use harness::stall::{finished, wait_with_progress, SEND_TIMEOUT};
 use harness::{Paddock, Sandbox, PROMPT};
 use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -38,20 +38,14 @@ fn wait_until(what: &str, done: impl Fn() -> bool) {
 /// many MiB through a terminal take a while under load, so only
 /// [`harness::TIMEOUT`] without growing fails, saying `what`.
 fn wait_for_len(path: &Path, len: u64, what: &str) {
-    let size = || std::fs::metadata(path).map_or(0, |m| m.len());
-    let mut grown = (size(), Instant::now());
-    while grown.0 != len {
-        assert!(
-            grown.0 < len && grown.1.elapsed() < harness::TIMEOUT,
-            "{what}: {} bytes of {len}",
-            grown.0
-        );
-        std::thread::sleep(Duration::from_millis(20));
-        let now = size();
-        if now != grown.0 {
-            grown = (now, Instant::now());
-        }
-    }
+    wait_with_progress(
+        || std::fs::metadata(path).map_or(0, |m| m.len()),
+        |&size| {
+            assert!(size <= len, "{what}: {size} bytes, past {len}");
+            size == len
+        },
+        |size| format!("{what}: {size} bytes of {len}"),
+    );
 }
 
 #[test]
@@ -654,30 +648,21 @@ fn stopping_the_server_ends_paddock_without_a_lost_connection() {
     );
 }
 
-/// The longest [`wait_while_streaming`] waits, changes or not.
-const STREAMING_MAX: Duration = Duration::from_secs(120);
-
 /// Wait until `text` shows, as long as the screen still changes: under
 /// load, drawing much output can take longer than [`harness::TIMEOUT`],
 /// which then counts from the last change. A paddock let go, or stuck,
 /// stops changing.
 fn wait_while_streaming(paddock: &Paddock, text: &str) {
-    let mut last = paddock.screen();
-    let (start, mut changed) = (Instant::now(), Instant::now());
-    while !last.contains(text) {
-        assert!(start.elapsed() < STREAMING_MAX, "still no {text}");
-        assert!(
-            changed.elapsed() < harness::TIMEOUT,
-            "no {text} and no change for {:?}; screen:\n{}",
-            harness::TIMEOUT,
-            paddock.full_screen()
-        );
-        std::thread::sleep(Duration::from_millis(20));
-        let now = paddock.screen();
-        if now != last {
-            (last, changed) = (now, Instant::now());
-        }
-    }
+    wait_with_progress(
+        || paddock.screen(),
+        |screen| screen.contains(text),
+        |_| {
+            format!(
+                "no {text}, no longer changing; screen:\n{}",
+                paddock.full_screen()
+            )
+        },
+    );
 }
 
 #[test]

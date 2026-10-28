@@ -183,10 +183,11 @@ fn watch_signals(shared: &Arc<Shared>) -> Result<()> {
 /// Hang every shell up, tell each attached client its space ended (with
 /// its last frames), remove the socket and exit, once every client being
 /// let go has read its last frames (or [`LAST_WORDS`] has passed). Only one
-/// caller ends the server: another (the last two shells ending together)
-/// waits here until it exits, rather than exiting while a client is still
-/// let go.
+/// caller ends the server: another (a float's command ending after its
+/// space ended with its last tab) waits here until it exits, rather than
+/// exiting while a client is still let go.
 fn shut_down(shared: &Shared) -> ! {
+    /// Held by the caller ending the server, through its exit.
     static ENDING: Mutex<()> = Mutex::new(());
     let _ending = ENDING.lock().unwrap_or_else(|e| e.into_inner());
     let leaving = {
@@ -433,6 +434,11 @@ fn attach(
 ) -> Result<()> {
     let mut subscriber = Subscriber::new(conn, space.clone(), stream)?;
     let mut state = shared.lock();
+    // Once ending, the server waits only for the clients it is letting go:
+    // one attached now would be cut off by its exit.
+    if state.closing {
+        return Err(Ending.into());
+    }
     let shown = state.space_mut(space)?;
     shown.size = size;
     shown.lay_out();
@@ -705,9 +711,7 @@ fn wait_for_exit(
     let mut state = shared.lock();
     if let Ok(s) = state.space_mut(space) {
         if s.remove(id) {
-            if let Some(ended) = end_space(&mut state, space) {
-                state.let_go(ended, LAST_WORDS);
-            }
+            end_space(&mut state, space);
         } else {
             state.notify(space, Notice::Changed);
         }
@@ -737,10 +741,12 @@ fn reaped(shared: &Shared, space: &SpaceId, id: &TerminalId) {
 
 /// Take `space` out at once, as tmux's `kill-session` does, hanging up
 /// what still runs in it (its floats, when its last tab has closed):
-/// tell its client it ended, and every client that a space did. Returns
-/// its client, to let go once it has read its last frames.
-fn end_space(state: &mut State, space: &SpaceId) -> Option<Subscriber> {
-    let i = state.spaces.iter().position(|s| s.id == *space)?;
+/// tell its client it ended, and every client that a space did, and let
+/// its client go once it has read its last frames.
+fn end_space(state: &mut State, space: &SpaceId) {
+    let Some(i) = state.spaces.iter().position(|s| s.id == *space) else {
+        return;
+    };
     let gone = state.spaces.remove(i);
     for term in &gone.terminals {
         term.hang_up();
@@ -750,9 +756,10 @@ fn end_space(state: &mut State, space: &SpaceId) -> Option<Subscriber> {
     }
     state.notify(space, Notice::Ended);
     // Nothing follows its end.
-    let ended = state.detach_space(space);
+    if let Some(ended) = state.detach_space(space) {
+        state.let_go(ended, LAST_WORDS);
+    }
     state.notify_spaces();
-    ended
 }
 
 /// End `space` at once; its shells' exits follow. True if it was the
@@ -762,9 +769,7 @@ fn end_space(state: &mut State, space: &SpaceId) -> Option<Subscriber> {
 fn close_space(shared: &Shared, space: &SpaceId) -> Result<bool> {
     let mut state = shared.lock();
     state.space(space)?;
-    if let Some(ended) = end_space(&mut state, space) {
-        state.let_go(ended, LAST_WORDS);
-    }
+    end_space(&mut state, space);
     let last = state.spaces.is_empty();
     if last {
         close(shared, &mut state);

@@ -15,6 +15,8 @@ pub const SEND_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Input being sent by [`Paddock::send_in_background`].
 pub struct Sending {
+    /// The thread sending it, which ends once all is sent (or paddock is
+    /// gone).
     thread: JoinHandle<()>,
     /// Bytes paddock has taken so far.
     sent: Arc<AtomicUsize>,
@@ -57,19 +59,40 @@ impl Paddock {
 /// under load, so only [`TIMEOUT`] with nothing taken fails, saying
 /// `what` (paddock stopped taking input).
 pub fn finished(send: Sending, what: &str) {
-    let mut taken = (0, Instant::now());
-    while !send.thread.is_finished() {
-        let now = send.sent.load(Ordering::Relaxed);
-        if now != taken.0 {
-            taken = (now, Instant::now());
-        }
-        assert!(
-            taken.1.elapsed() < TIMEOUT,
-            "paddock stopped taking {what} after {now} bytes"
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    wait_with_progress(
+        || send.sent.load(Ordering::Relaxed),
+        |_| send.thread.is_finished(),
+        |taken| format!("paddock stopped taking {what} after {taken} bytes"),
+    );
     send.thread.join().expect("the sending thread");
+}
+
+/// The longest [`wait_with_progress`] waits, progress or not.
+const PROGRESS_MAX: Duration = Duration::from_secs(120);
+
+/// Wait until `done` holds for what `progress` measures, as long as that
+/// keeps changing: much input or output takes a while under load, so only
+/// [`TIMEOUT`] without a change (or [`PROGRESS_MAX`] in all) fails, with
+/// `why` of the last measure. Returns the last measure.
+pub fn wait_with_progress<T: PartialEq>(
+    progress: impl Fn() -> T,
+    done: impl Fn(&T) -> bool,
+    why: impl Fn(&T) -> String,
+) -> T {
+    let start = Instant::now();
+    let mut last = progress();
+    let mut changed = Instant::now();
+    while !done(&last) {
+        let stuck = changed.elapsed() >= TIMEOUT || start.elapsed() >= PROGRESS_MAX;
+        assert!(!stuck, "{}", why(&last));
+        std::thread::sleep(Duration::from_millis(20));
+        let now = progress();
+        if now != last {
+            last = now;
+            changed = Instant::now();
+        }
+    }
+    last
 }
 
 fn signal(pid: u32, name: &str) {
