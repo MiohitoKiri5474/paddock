@@ -24,7 +24,7 @@ fn sizes(layout: &Layout, size: (u16, u16)) -> Vec<String> {
 fn assert_fills(layout: &Layout, size: (u16, u16)) {
     fn check(node: &Node, area: Rect) {
         if let Node::Split { axis, cells } = node {
-            let (rects, _) = cell_rects(cells, *axis, area);
+            let rects = cell_rects(cells, *axis, area);
             let used: u32 = rects.iter().map(|r| u32::from(axis.len(*r))).sum();
             let borders = u32::try_from(cells.len() - 1).unwrap();
             assert_eq!(used + borders, u32::from(axis.len(area)), "{node:?}");
@@ -214,8 +214,9 @@ fn equal_climbs_past_a_row_a_smallest_size_keeps_from_changing() {
     let after = sizes(&l, size);
     assert_eq!(after[..2], ["20x8", "19x2"], "the outer row evened");
     assert_fills(&l, size);
-    // At full height again, the column kept its share.
-    assert_eq!(sizes(&l, made)[1], "19x10");
+    // The resize key took the column's sizes drawn at 8 rows (2 over 5):
+    // at full height again, it keeps those shares.
+    assert_eq!(sizes(&l, made)[1], "19x5");
 }
 
 #[test]
@@ -283,8 +284,7 @@ fn shares_come_back_when_a_tab_squeezed_to_its_smallest_grows_again() {
     let mut l = deep();
     l.resize(&t(0), Direction::Right, 7, SIZE).unwrap();
     let before = sizes(&l, SIZE);
-    // Changes made while squeezed keep the shares they could not draw.
-    l.resize(&t(3), Direction::Left, 1, (4, 3)).unwrap();
+    // `=` while squeezed keeps the shares it could not draw.
     l.spread(&t(4), (4, 3)).unwrap();
     assert_fills(&l, (4, 3));
     assert_eq!(sizes(&l, SIZE), before);
@@ -292,6 +292,40 @@ fn shares_come_back_when_a_tab_squeezed_to_its_smallest_grows_again() {
     l.remove(&t(4), (5, 3)).unwrap();
     assert_eq!(sizes(&l, SIZE)[..2], before[..2]);
     assert_fills(&l, SIZE);
+}
+
+/// `%0 | %1` whose shares are 100 to 2: in 20 columns, %1 is squeezed
+/// to its one column, %0 drawn 18 wide.
+fn squeezed_row() -> Layout {
+    let cell = |weight, n| Cell {
+        weight,
+        node: Node::Leaf(t(n)),
+    };
+    let l = Layout {
+        root: Node::Split {
+            axis: COLUMNS,
+            cells: vec![cell(100, 0), cell(2, 1)],
+        },
+    };
+    assert_eq!(sizes(&l, (20, 5)), ["18x5", "1x5"]);
+    l
+}
+
+#[test]
+fn a_drag_in_a_squeezed_row_lands_where_it_was_dragged() {
+    let mut l = squeezed_row();
+    l.resize_to(&t(0), COLUMNS, 10, (20, 5)).unwrap();
+    assert_eq!(sizes(&l, (20, 5)), ["10x5", "9x5"]);
+}
+
+#[test]
+fn a_resize_key_in_a_squeezed_row_moves_the_border_drawn() {
+    let mut l = squeezed_row();
+    l.resize(&t(0), Direction::Left, 1, (20, 5)).unwrap();
+    assert_eq!(sizes(&l, (20, 5)), ["17x5", "2x5"]);
+    let mut l = squeezed_row();
+    l.split(&t(0), t(2), COLUMNS, (20, 5)).unwrap();
+    assert_eq!(sizes(&l, (20, 5)), ["9x5", "8x5", "1x5"]);
 }
 
 #[test]

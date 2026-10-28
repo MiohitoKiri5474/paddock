@@ -18,8 +18,10 @@
 //! the sizes it has at that size ([`Node::settle`]), so whatever was left
 //! over when it was last laid out at another size stays where it was
 //! drawn. A row too small to give each cell its share (each needs at
-//! least one cell) keeps its weights, so the shares come back once the
-//! tab grows again.
+//! least one cell) keeps its weights through `=` and a closed terminal,
+//! so the shares come back once the tab grows again; a change that moves
+//! cells (a split, the resize keys, a drag) takes the sizes drawn there,
+//! so it moves what is drawn.
 //!
 //! A tab smaller than its smallest layout (one cell per terminal, plus
 //! the borders) is laid out at that smallest size: no terminal is ever
@@ -84,7 +86,7 @@ impl Node {
         match self {
             Node::Leaf(t) => out.push((t.clone(), area)),
             Node::Split { axis, cells } => {
-                let (rects, _) = cell_rects(cells, *axis, area);
+                let rects = cell_rects(cells, *axis, area);
                 for (cell, rect) in cells.iter().zip(rects) {
                     cell.node.place(rect, out);
                 }
@@ -100,16 +102,18 @@ impl Node {
     }
 
     /// Make every weight below this node, laid out in `area`, the size
-    /// its cell has there; a row that had to give a cell more than its
-    /// share to keep it at its smallest keeps its weights.
-    fn settle(&mut self, area: Rect) {
+    /// its cell has there. With [`Squeezed::Keep`], a row that had to give
+    /// a cell more than its share to keep it at its smallest keeps its
+    /// weights instead.
+    fn settle(&mut self, area: Rect, squeezed: Squeezed) {
         if let Node::Split { axis, cells } = self {
-            let (rects, squeezed) = cell_rects(cells, *axis, area);
+            let (rects, short) = lay_cells(cells, *axis, area);
+            let keep = short && squeezed == Squeezed::Keep;
             for (cell, rect) in cells.iter_mut().zip(rects) {
-                if !squeezed {
+                if !keep {
                     cell.weight = u32::from(axis.len(rect));
                 }
-                cell.node.settle(rect);
+                cell.node.settle(rect, squeezed);
             }
         }
     }
@@ -163,7 +167,7 @@ impl Node {
     fn area_of(&self, path: &[usize], area: Rect) -> Rect {
         match (path.split_first(), self) {
             (Some((&i, rest)), Node::Split { axis, cells }) => {
-                let rect = cell_rects(cells, *axis, area).0[i];
+                let rect = cell_rects(cells, *axis, area)[i];
                 cells[i].node.area_of(rest, rect)
             }
             _ => area,
@@ -174,7 +178,7 @@ impl Node {
         let Node::Split { axis, cells } = self else {
             return None;
         };
-        let (rects, _) = cell_rects(cells, *axis, area);
+        let rects = cell_rects(cells, *axis, area);
         if let Some(i) = rects.iter().position(|r| contains(*r, x, y)) {
             return cells[i].node.border_at(rects[i], x, y);
         }
@@ -194,16 +198,32 @@ impl Node {
 }
 
 fn contains(r: Rect, x: u16, y: u16) -> bool {
-    Axis::Columns.start(r) <= x
-        && u32::from(x) < Axis::Columns.end(r)
-        && Axis::Rows.start(r) <= y
-        && u32::from(y) < Axis::Rows.end(r)
+    let (x, y) = (u32::from(x), u32::from(y));
+    let (left, top) = (u32::from(r.x), u32::from(r.y));
+    left <= x && x < left + u32::from(r.width) && top <= y && y < top + u32::from(r.height)
+}
+
+/// What [`Node::settle`] does with a squeezed row: one too small to give
+/// each cell its share, so a cell got more to keep it at its smallest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Squeezed {
+    /// Keep its weights, so the shares come back when the tab grows: for
+    /// changes that work on shares (`=`, closing a terminal).
+    Keep,
+    /// Make its weights the sizes drawn: for changes that work on cells
+    /// (a split, the resize keys, a drag), which must move what is drawn.
+    Drawn,
 }
 
 /// Where each cell of a row or column running along `axis` sits in
-/// `area`, and whether a cell got more than its share to keep it at its
-/// smallest (the row is squeezed).
-fn cell_rects(cells: &[Cell], axis: Axis, area: Rect) -> (Vec<Rect>, bool) {
+/// `area`.
+fn cell_rects(cells: &[Cell], axis: Axis, area: Rect) -> Vec<Rect> {
+    lay_cells(cells, axis, area).0
+}
+
+/// [`cell_rects`], and whether a cell got more than its share to keep it
+/// at its smallest (the row is squeezed).
+fn lay_cells(cells: &[Cell], axis: Axis, area: Rect) -> (Vec<Rect>, bool) {
     let weights: Vec<u32> = cells.iter().map(|c| c.weight).collect();
     let mins: Vec<u16> = cells.iter().map(|c| c.node.min(axis)).collect();
     let (sizes, squeezed) = distribute(&weights, &mins, axis.len(area));
@@ -330,7 +350,7 @@ impl Layout {
         if len < 3 {
             bail!("no room for a new split");
         }
-        self.root.settle(area);
+        self.root.settle(area, Squeezed::Drawn);
         let second = (len - 1) / 2;
         let first = len - 1 - second;
         let leaf = Cell {
@@ -369,7 +389,7 @@ impl Layout {
         let Some((&i, parent)) = path.split_last() else {
             return Ok(false);
         };
-        self.root.settle(self.area(size));
+        self.root.settle(self.area(size), Squeezed::Keep);
         let Node::Split { cells, .. } = self.root.at_mut(parent) else {
             unreachable!("a leaf's parent is a split");
         };
@@ -463,7 +483,7 @@ impl Layout {
         let Some((parent, i)) = self.holder(terminal, Axis::of_direction(dir), false)? else {
             return Ok(());
         };
-        self.root.settle(self.area(size));
+        self.root.settle(self.area(size), Squeezed::Drawn);
         let Node::Split { cells: row, .. } = self.root.at(&parent) else {
             return Ok(());
         };
@@ -489,7 +509,7 @@ impl Layout {
         let Some((parent, i)) = self.holder(terminal, axis, true)? else {
             return Ok(());
         };
-        self.root.settle(self.area(size));
+        self.root.settle(self.area(size), Squeezed::Drawn);
         let Node::Split { cells, .. } = self.root.at(&parent) else {
             return Ok(());
         };
@@ -512,30 +532,25 @@ impl Layout {
     pub fn spread(&mut self, terminal: &TerminalId, size: (u16, u16)) -> Result<()> {
         let path = self.path(terminal)?;
         let area = self.area(size);
-        self.root.settle(area);
+        self.root.settle(area, Squeezed::Keep);
         let before = self.place(size);
         for depth in (0..path.len()).rev() {
             let parent = &path[..depth];
-            let len_area = self.root.area_of(parent, area);
+            let parent_area = self.root.area_of(parent, area);
+            let saved = self.root.clone();
             let Node::Split { axis, cells } = self.root.at_mut(parent) else {
                 continue;
             };
-            let Some(sizes) = even(cells.len(), axis.len(len_area)) else {
+            let Some(sizes) = even(cells.len(), axis.len(parent_area)) else {
                 continue;
             };
-            let saved: Vec<u32> = cells.iter().map(|c| c.weight).collect();
             for (cell, len) in cells.iter_mut().zip(sizes) {
                 cell.weight = u32::from(len);
             }
             if self.place(size) != before {
                 return Ok(());
             }
-            let Node::Split { cells, .. } = self.root.at_mut(parent) else {
-                continue;
-            };
-            for (cell, weight) in cells.iter_mut().zip(saved) {
-                cell.weight = weight;
-            }
+            self.root = saved;
         }
         Ok(())
     }

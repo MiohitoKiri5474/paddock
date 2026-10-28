@@ -1,5 +1,7 @@
 //! paddock as the native server's client: one short connection per
-//! request, and one long one for the attached space ([`Attached`]). Only
+//! request (but one kept for a border drag's many, see
+//! [`Client::drag_border`]), and one long one for the attached space
+//! ([`Attached`]). Only
 //! making a space starts the server; every other request finds none
 //! running and says so ([`NotRunning`]), or, if it only asks, has nothing
 //! for an answer. A server this paddock cannot talk to is an error.

@@ -10,6 +10,7 @@ use crate::input::Direction;
 use anyhow::Result;
 use ratatui::layout::Rect;
 
+#[derive(Clone)]
 pub struct Tab {
     pub id: TabId,
     name: String,

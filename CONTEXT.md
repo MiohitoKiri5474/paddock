@@ -18,14 +18,14 @@ _Avoid_: root (alone), home, base (that is a branch), project directory
 The space whose tabs the tab bar shows. It has its own background in the sidebar.
 
 **Tab**:
-One page of a space, holding one or more terminals arranged as splits. It is a tmux window of the space's session.
+One page of a space, holding one or more terminals arranged as splits. On tmux it is a window of the space's session; on native, a tab of the paddock server's.
 
 **Split**:
-A terminal sharing its tab with others, beside or above them. It is a tmux pane; tmux keeps the layout and the sizes, which `C-a H/J/K/L` and dragging the border between two splits change.
+A terminal sharing its tab with others, beside or above them. `C-a H/J/K/L` and dragging the border between two splits change their sizes. On tmux it is a pane, and tmux keeps the layout and the sizes; on native, the paddock server keeps them in its layout tree, with each split's share of its row or column.
 _Avoid_: window (that is a tab)
 
 **Zoom**:
-A split filling its tab for a while (`C-a z`), the others hidden but running; the tab bar marks the tab with a `Z`. It is tmux's `resize-pane -Z`, so it lives in tmux.
+A split filling its tab for a while (`C-a z`), the others hidden but running; the tab bar marks the tab with a `Z`. On tmux it is `resize-pane -Z`, so it lives in tmux; on native, the paddock server keeps it with the tab's layout tree.
 _Avoid_: maximise, fullscreen
 
 **Terminal**:

@@ -460,6 +460,8 @@ fn split(shared: &Arc<Shared>, target: &TerminalId, columns: bool, cwd: &Path) -
     let s = state.space_of_mut(target)?;
     let (space, size) = (s.id.clone(), s.size);
     let i = s.tab_index(target)?;
+    // To put back as it was, zoom and shares, if the shell does not start.
+    let before = s.tabs[i].clone();
     let tab = &mut s.tabs[i];
     tab.split(target, terminal.clone(), Axis::of(columns), size)?;
     let place = tab.splits(size).into_iter().find(|p| p.id == terminal);
@@ -469,8 +471,9 @@ fn split(shared: &Arc<Shared>, target: &TerminalId, columns: bool, cwd: &Path) -
     match started {
         Ok(term) => s.terminals.push(term),
         Err(e) => {
-            // Its place goes back.
-            s.remove(&terminal);
+            if let Some(tab) = s.tabs.get_mut(i) {
+                *tab = before;
+            }
             return Err(e);
         }
     }
