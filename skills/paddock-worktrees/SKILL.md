@@ -41,7 +41,7 @@ Otherwise, work where you are.
 
 3. Work in the returned `path`. A `cd` alone may not last to the next command: start each shell command with `cd <path> &&`, and give file tools absolute paths under `path`. Do not edit the original tree for this task.
 
-4. Delete it only when the user asks, or when its row in `paddock worktree list --json` has `"merged": true` (git's check; `pr` only reports what GitHub says of its pull request). Run `rm` from the main checkout (the row with `"main": true`), never from inside the worktree:
+4. Delete it only when the user asks, or when its row in `paddock worktree list --json` has `"merged": true` (git's check; `pr` only reports what GitHub says of its pull request). In both cases, ask the user before each `rm` and wait for a yes. Run `rm` from the main checkout (the row with `"main": true`), never from inside the worktree:
 
    ```sh
    cd <main checkout path> && paddock worktree rm <row's path> --json
@@ -49,7 +49,7 @@ Otherwise, work where you are.
 
    Pass the row's absolute `path` from `list --json`, not the branch name: a branch named like a directory in the repository is refused as ambiguous (exit 1).
 
-   This closes its spaces, removes the worktree and deletes the branch with `git branch -d`. An unmerged branch is kept, with a notice on stderr. `rm` is never pre-approved.
+   This closes its spaces, removes the worktree and deletes the branch with `git branch -d`. An unmerged branch is kept, with a notice on stderr. `rm` is never pre-approved: ask first, even for a merged worktree.
 
 ## Never
 

@@ -53,6 +53,25 @@ fn frontmatter(path: &Path) -> Vec<(String, String)> {
         .collect()
 }
 
+/// The value of `key` in a SKILL.md's frontmatter, if it has one.
+fn frontmatter_field(path: &Path, key: &str) -> Option<String> {
+    frontmatter(path)
+        .into_iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v)
+}
+
+/// The names of the entries in `dir`, sorted.
+fn dir_names(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
 #[test]
 fn the_marketplace_lists_the_paddock_plugin_and_every_skill_has_frontmatter() {
     let root = Path::new(ROOT);
@@ -78,34 +97,22 @@ fn the_marketplace_lists_the_paddock_plugin_and_every_skill_has_frontmatter() {
         text(&manifest, "description", "plugin.json");
         text(&manifest, "version", "plugin.json");
 
-        let mut skills: Vec<String> = std::fs::read_dir(dir.join("skills"))
-            .unwrap()
-            .flatten()
-            .map(|e| e.file_name().to_string_lossy().into_owned())
-            .collect();
-        skills.sort();
+        let skills = dir_names(&dir.join("skills"));
         assert_eq!(
             skills,
             ["paddock-worktrees", "worktree-list", "worktree-new"]
         );
         for skill in &skills {
             let path = dir.join("skills").join(skill).join("SKILL.md");
-            let fields = frontmatter(&path);
             let get = |k: &str| {
-                fields
-                    .iter()
-                    .find(|(key, _)| key == k)
-                    .map(|(_, v)| v.as_str())
+                frontmatter_field(&path, k)
                     .filter(|v| !v.is_empty())
                     .unwrap_or_else(|| panic!("{}: no {k}", path.display()))
             };
-            assert_eq!(get("name"), skill, "name matches its directory");
+            assert_eq!(get("name"), *skill, "name matches its directory");
             get("description");
             // `rm` is never pre-approved: the user confirms each delete.
-            let allowed = fields
-                .iter()
-                .find(|(k, _)| k == "allowed-tools")
-                .map_or("", |(_, v)| v.as_str());
+            let allowed = frontmatter_field(&path, "allowed-tools").unwrap_or_default();
             assert!(!allowed.contains("rm"), "{skill}: {allowed}");
             assert!(!allowed.contains("worktree *"), "{skill}: {allowed}");
         }
@@ -147,14 +154,8 @@ fn the_gemini_extension_has_its_manifest_skill_and_commands_and_no_hooks() {
         assert!(!root.join(path).exists(), "{path} at the repository root");
     }
 
-    let mut skills: Vec<String> = std::fs::read_dir(root.join("skills"))
-        .unwrap()
-        .flatten()
-        .map(|e| e.file_name().to_string_lossy().into_owned())
-        .collect();
-    skills.sort();
     assert_eq!(
-        skills,
+        dir_names(&root.join("skills")),
         ["paddock-worktrees"],
         "user-only skills are commands"
     );
@@ -164,12 +165,7 @@ fn the_gemini_extension_has_its_manifest_skill_and_commands_and_no_hooks() {
     assert_eq!(keys, ["name", "description"], "what Gemini and agy read");
     assert_eq!(fields[0].1, "paddock-worktrees");
 
-    let mut commands: Vec<String> = std::fs::read_dir(root.join("commands/paddock"))
-        .unwrap()
-        .flatten()
-        .map(|e| e.file_name().to_string_lossy().into_owned())
-        .collect();
-    commands.sort();
+    let commands = dir_names(&root.join("commands/paddock"));
     assert_eq!(commands, ["worktree-list.toml", "worktree-new.toml"]);
     for name in &commands {
         let command = gemini_command(name);
@@ -183,6 +179,18 @@ fn the_gemini_extension_has_its_manifest_skill_and_commands_and_no_hooks() {
         assert!(!prompt.contains("worktree rm"), "{name}");
         assert!(!prompt.contains("--discard"), "{name}");
     }
+    // The branch is typed by the user: one single-quoted argument, checked
+    // before anything runs.
+    let prompt = gemini_command("worktree-new.toml")["prompt"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        prompt.contains("paddock worktree new '<branch>' --json"),
+        "{prompt}"
+    );
+    assert!(prompt.contains("`A-Za-z0-9._/-`"), "{prompt}");
+    assert!(!prompt.contains("new {{args}}"), "{prompt}");
 }
 
 #[test]
@@ -194,13 +202,7 @@ fn every_agents_copy_of_the_instructions_says_the_same() {
         skill_body(&claude.join("paddock-worktrees/SKILL.md")),
         "skills/paddock-worktrees and the Claude plugin's"
     );
-    let description = |path: &Path| {
-        frontmatter(path)
-            .into_iter()
-            .find(|(k, _)| k == "description")
-            .map(|(_, v)| v)
-            .unwrap()
-    };
+    let description = |path: &Path| frontmatter_field(path, "description").unwrap();
     assert_eq!(
         description(&root.join("skills/paddock-worktrees/SKILL.md")),
         description(&claude.join("paddock-worktrees/SKILL.md")),
