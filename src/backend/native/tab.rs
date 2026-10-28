@@ -9,6 +9,7 @@ use crate::backend::{Split, TabId, TerminalId};
 use crate::input::Direction;
 use anyhow::Result;
 use ratatui::layout::Rect;
+use std::collections::HashSet;
 
 #[derive(Clone)]
 pub struct Tab {
@@ -71,11 +72,12 @@ impl Tab {
     /// [`Self::focus_order`] gave it), if that names each of them once
     /// and ends with the focused one; else as it was.
     pub fn with_focus_order(mut self, order: Vec<TerminalId>) -> Self {
-        let mut given = order.clone();
-        let mut held = self.focused.clone();
-        given.sort();
-        held.sort();
-        if given == held && order.last() == Some(&self.active) {
+        // Each of its terminals once: as many, all its own, none twice.
+        let distinct: HashSet<_> = order.iter().collect();
+        let each_once = order.len() == self.focused.len()
+            && distinct.len() == order.len()
+            && order.iter().all(|t| self.layout.contains(t));
+        if each_once && order.last() == Some(&self.active) {
             self.focused = order;
         }
         self
@@ -274,6 +276,25 @@ mod tests {
         let mut tab = Tab::new(TabId::new("@1"), "home".into(), t(0));
         tab.split(&t(0), t(1), Axis::Columns, SIZE).unwrap();
         tab
+    }
+
+    #[test]
+    fn a_focus_order_is_taken_only_if_it_names_each_terminal_once_ending_with_the_focused() {
+        let mut tab = split();
+        tab.split(&t(1), t(2), Axis::Columns, SIZE).unwrap();
+        assert_eq!(tab.focus_order(), [t(0), t(1), t(2)]);
+        let kept = [t(0), t(1), t(2)];
+        for bad in [
+            vec![t(1), t(0)],
+            vec![t(0), t(0), t(2)],
+            vec![t(0), t(9), t(2)],
+            vec![t(2), t(0), t(1)],
+        ] {
+            let tab = tab.clone().with_focus_order(bad.clone());
+            assert_eq!(tab.focus_order(), kept, "{bad:?}");
+        }
+        let tab = tab.with_focus_order(vec![t(1), t(0), t(2)]);
+        assert_eq!(tab.focus_order(), [t(1), t(0), t(2)]);
     }
 
     #[test]

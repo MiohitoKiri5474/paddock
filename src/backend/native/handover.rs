@@ -25,13 +25,12 @@ use anyhow::{bail, ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
-use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
-use std::os::fd::{AsRawFd, RawFd};
+use std::io::{BufWriter, ErrorKind, Read, Seek, SeekFrom, Write};
+use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 /// The record's format: a new binary refuses a record of another. A
@@ -43,8 +42,8 @@ pub const FORMAT: u32 = 1;
 pub const PROBE_OK: &str = "paddock handover ok";
 /// How long the probe gets.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
-/// How long the probe's output gets to be read once it has exited.
-const PROBE_OUTPUT: Duration = Duration::from_secs(1);
+/// The most of each of the probe's outputs kept.
+const PROBE_OUTPUT: usize = 64 << 10;
 /// The record, in the state directory only until it is open.
 const FILE: &str = "handover.tmp";
 /// The longest header read: far more than any server holds.
@@ -118,10 +117,27 @@ pub struct HandedTerminal {
     pub snapshot: usize,
 }
 
-/// What `state` hands over, with it locked, holding its lock on `lock`
-/// and listening on `listener`; each terminal's snapshot taken now, in
-/// the record's order.
-pub fn record(state: &mut State, lock: RawFd, listener: RawFd) -> (Record, Vec<Vec<u8>>) {
+/// The descriptors a server holds as long as it runs, which a handover
+/// passes on: its lock and its listening socket.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Held {
+    pub lock: RawFd,
+    pub listener: RawFd,
+}
+
+impl Held {
+    pub fn of(lock: &impl AsRawFd, listener: &impl AsRawFd) -> Self {
+        Self {
+            lock: lock.as_raw_fd(),
+            listener: listener.as_raw_fd(),
+        }
+    }
+}
+
+/// What `state` hands over, with it locked, holding `held`; each
+/// terminal's snapshot taken now, in the record's order.
+pub fn record(state: &mut State, held: Held) -> (Record, Vec<Vec<u8>>) {
+    let Held { lock, listener } = held;
     let mut snapshots = Vec::new();
     let spaces = state.spaces.iter_mut();
     let spaces = spaces.map(|s| handed_space(s, &mut snapshots)).collect();
@@ -387,10 +403,14 @@ pub fn probe(exe: &Path, record: &mut File) -> Result<()> {
         .stderr(Stdio::piped())
         .spawn()
         .with_context(|| format!("cannot run {}", exe.display()))?;
-    let out = read_all(child.stdout.take());
-    let err = read_all(child.stderr.take());
+    // Read here, without waiting, and closed with the probe's end: a
+    // program it left running with them open keeps nothing of ours.
+    let mut out = Output::new(child.stdout.take().map(OwnedFd::from))?;
+    let mut err = Output::new(child.stderr.take().map(OwnedFd::from))?;
     let start = Instant::now();
     let status = loop {
+        out.drain();
+        err.drain();
         if let Some(status) = child.try_wait()? {
             break status;
         }
@@ -406,11 +426,11 @@ pub fn probe(exe: &Path, record: &mut File) -> Result<()> {
         std::thread::sleep(Duration::from_millis(10));
     };
     record.seek(SeekFrom::Start(0))?;
-    let out = out.recv_timeout(PROBE_OUTPUT).unwrap_or_default();
+    // What it wrote before it exited.
+    let (out, err) = (out.finish(), err.finish());
     if status.success() && out.lines().any(|l| l == PROBE_OK) {
         return Ok(());
     }
-    let err = err.recv_timeout(PROBE_OUTPUT).unwrap_or_default();
     let why = err.lines().map(str::trim).find(|l| !l.is_empty());
     let why = why.map_or_else(
         || status.to_string(),
@@ -419,17 +439,56 @@ pub fn probe(exe: &Path, record: &mut File) -> Result<()> {
     bail!("{} cannot take over: {why}", exe.display())
 }
 
-/// What `pipe` gives until it closes, read by a thread of its own.
-fn read_all(pipe: Option<impl Read + Send + 'static>) -> mpsc::Receiver<String> {
-    let (tx, rx) = mpsc::channel();
-    if let Some(mut pipe) = pipe {
-        std::thread::spawn(move || {
-            let mut text = String::new();
-            let _ = pipe.read_to_string(&mut text);
-            let _ = tx.send(text);
-        });
+/// One of the probe's output pipes, read without waiting: the first
+/// [`PROBE_OUTPUT`] bytes kept, the rest read and dropped.
+struct Output {
+    pipe: Option<File>,
+    text: Vec<u8>,
+}
+
+impl Output {
+    fn new(pipe: Option<OwnedFd>) -> Result<Self> {
+        if let Some(fd) = &pipe {
+            let fd = fd.as_raw_fd();
+            // SAFETY: fcntl with F_GETFL and F_SETFL only reads and sets
+            // the descriptor's status flags.
+            let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+            if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0
+            {
+                return Err(std::io::Error::last_os_error()).context("cannot read the probe");
+            }
+        }
+        Ok(Self {
+            pipe: pipe.map(File::from),
+            text: Vec::new(),
+        })
     }
-    rx
+
+    /// Read what waits in the pipe, until it closes or holds no more now.
+    fn drain(&mut self) {
+        let Some(pipe) = &mut self.pipe else {
+            return;
+        };
+        let mut buf = [0; 4096];
+        loop {
+            match pipe.read(&mut buf) {
+                Ok(0) => break self.pipe = None,
+                Ok(n) => {
+                    let room = PROBE_OUTPUT.saturating_sub(self.text.len());
+                    self.text.extend_from_slice(&buf[..n.min(room)]);
+                }
+                Err(e) if e.kind() == ErrorKind::Interrupted => {}
+                Err(e) if e.kind() == ErrorKind::WouldBlock => break,
+                Err(_) => break self.pipe = None,
+            }
+        }
+    }
+
+    /// What it gave, its last bytes read; the pipe closed.
+    fn finish(mut self) -> String {
+        self.drain();
+        String::from_utf8_lossy(&self.text).into_owned()
+    }
 }
 
 /// Become `exe`, the server that takes `record` over and answers on the

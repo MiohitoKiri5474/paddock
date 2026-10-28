@@ -3,7 +3,6 @@
 //! program's terminal queries (DA and `CSI ? u` through alacritty,
 //! XTVERSION here), and makes the snapshot a client attaches with.
 
-use super::handover::HandedTerminal;
 use super::pty::{self, Pty};
 use super::queue::Queue;
 use crate::backend::TerminalId;
@@ -151,8 +150,9 @@ impl HostedTerminal {
     }
 
     /// Terminal `id` with a fresh emulator, its program `pid` on the PTY
-    /// `master` (`tty`).
-    fn hosting(
+    /// `master` (`tty`): one just started, or one another server handed
+    /// over (ADR 0009), whose screen [`Self::replay`] then rebuilds.
+    pub fn hosting(
         id: TerminalId,
         pid: u32,
         tty: String,
@@ -174,25 +174,14 @@ impl HostedTerminal {
         }
     }
 
-    /// A terminal another server handed over (ADR 0009), as `handed`
-    /// says, on its PTY `master`: its emulator rebuilt from `snapshot`
-    /// ([`Self::snapshot`]'s). What the snapshot makes the emulator
-    /// answer is dropped: the program asked nothing.
-    pub fn adopt(handed: HandedTerminal, master: File, input: Input, snapshot: &[u8]) -> Self {
-        let mut term = Self::hosting(
-            handed.id,
-            handed.pid,
-            handed.tty,
-            master,
-            input,
-            handed.size,
-        );
-        term.exited = handed.exited;
-        term.keys.feed(snapshot);
-        term.emulator.feed(snapshot);
-        let _ = term.emulator.take_replies();
-        term.scanner.feed(snapshot, term.size.1);
-        term
+    /// Rebuild its fresh emulator from `snapshot` ([`Self::snapshot`]'s,
+    /// from the server that handed it over). What the snapshot makes the
+    /// emulator answer is dropped: the program asked nothing.
+    pub fn replay(&mut self, snapshot: &[u8]) {
+        self.keys.feed(snapshot);
+        self.emulator.feed(snapshot);
+        let _ = self.emulator.take_replies();
+        self.scanner.feed(snapshot, self.size.1);
     }
 
     /// Hang up its program and its process group, as closing its

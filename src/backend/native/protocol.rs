@@ -78,9 +78,15 @@ pub enum Upgrade {
     /// From a client, in place of its hello: hand every terminal to the
     /// binary `exe`, which then runs as the server.
     Ask { exe: PathBuf },
+    /// From the server: `exe` read what it is handed, and the server
+    /// becomes it now. `Done` or `Refused` follows, unless the new server
+    /// fails before it can answer.
+    Probed,
     /// From the server, once `exe` runs as it, still as pid `pid`.
     Done { pid: u32 },
-    /// From the server, which runs on unchanged: why it did not hand over.
+    /// From the server: why it did not hand over. Before `Probed`, or
+    /// after it from a failed `exec`, the server runs on unchanged; from
+    /// the new server, it could not take over, and has ended.
     Refused(String),
 }
 
@@ -527,6 +533,7 @@ mod tests {
         round_trip(Frame::Upgrade(Upgrade::Ask {
             exe: "/opt/homebrew/bin/paddock".into(),
         }));
+        round_trip(Frame::Upgrade(Upgrade::Probed));
         round_trip(Frame::Upgrade(Upgrade::Done { pid: 42 }));
         round_trip(Frame::Upgrade(Upgrade::Refused("no".into())));
     }
@@ -538,6 +545,7 @@ mod tests {
         let body = |u: Upgrade| encode(&Frame::Upgrade(u)).unwrap()[4..].to_vec();
         let ask = body(Upgrade::Ask { exe: "/p".into() });
         assert_eq!(ask, b"\x03{\"Ask\":{\"exe\":\"/p\"}}");
+        assert_eq!(body(Upgrade::Probed), b"\x03\"Probed\"");
         assert_eq!(
             body(Upgrade::Done { pid: 7 }),
             b"\x03{\"Done\":{\"pid\":7}}"

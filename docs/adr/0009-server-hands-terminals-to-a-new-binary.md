@@ -1,25 +1,38 @@
 # The server hands its terminals to a new binary by exec
 
-Takes up the "possible later" of [ADR 0007](0007-native-backend-with-a-server.md): handing PTYs to the new binary on upgrade. Until now, upgrading meant restarting the server. That ended every program, and only the layout came back ([ADR 0008](0008-layout-saved-and-restored.md)). Now `paddock server upgrade` asks the running server to hand everything to the binary it runs as. Agents, editors and builds keep running, with their screens and scrollback.
+Takes up the "possible later" of [ADR 0007](0007-native-backend-with-a-server.md): handing PTYs to the new binary on upgrade. Until now, upgrading meant restarting the server. That ended every program, and only the layout came back ([ADR 0008](0008-layout-saved-and-restored.md)). Now `paddock server upgrade` asks the running server to hand everything to a new binary: the one the command runs as, or the one it names. Agents, editors and builds keep running, with their screens and scrollback.
 
 ## How it goes
 
-1. **The request skips the version check.** The upgrade runs exactly when client and server speak different protocol versions (ticket 51), so it cannot be a `Request` behind the hello. The client reads the server's hello, whatever its version, and instead of its own hello sends one frame of kind 3, `Upgrade::Ask { exe }`, with the binary to hand over to. The server answers on the same connection with `Upgrade::Done { pid }` or `Upgrade::Refused(why)`. This frame is frozen: it never changes with `protocol::VERSION`. A server from before this ADR reads an unknown frame kind and closes the connection. The client then says the server cannot hand over, and paddock can still offer the restart.
-2. **Freeze.** The server takes its state lock and keeps it to the end. With the lock held:
+1. **The request skips the version check.** The upgrade runs exactly when client and server speak different protocol versions (ticket 51), so it cannot be a `Request` behind the hello.
+   - The client reads the server's hello, whatever its version. Instead of its own hello, it sends one frame of kind 3, `Upgrade::Ask { exe }`, naming the binary to hand over to by an absolute path. The probe runs from `/` and `exec` from the server's directory, so the server refuses a relative path.
+   - The server answers on the same connection. It sends `Upgrade::Probed` just before `exec`, then `Upgrade::Done { pid }` or `Upgrade::Refused(why)`.
+   - This frame is frozen: it never changes with `protocol::VERSION`.
+   - A server from before this ADR reads an unknown frame kind and closes the connection before answering. The client says the server cannot hand over (`NoHandover`), and paddock can still offer the restart.
+   - A connection that ends after `Probed`, a broken frame, or no answer within 60 s is not that case. The client says what happened instead: past `Probed`, the server may have ended.
+   - The server hands over to one binary at a time.
+2. **The probe.** The server takes a record of what it holds (see step 4), with its state locked only while it does so. It runs `<exe> server --check-handover` with that record on stdin, for at most 10 s, and serves on meanwhile.
+   - Only exit 0 with `paddock handover ok` on stdout counts as a yes.
+   - A binary that does not know the format, or an older paddock that prints its usage, refuses. The first line of its stderr goes back to the command.
+   - The server reads the probe's output without waiting, and closes it when the probe ends or is killed. A program the probe left running holds nothing of the server's.
+3. **Freeze.** Once the probe says yes, the server takes its state lock and keeps it to the end. With the lock held:
    - No reader holds output it has not fed: readers wait for output with `poll`, outside the lock, and read it only once they hold the lock. So what they have not read stays in the PTY for the next server to read.
    - No waiter has reaped a program it has not marked: a waiter sees an exit with `waitid(…, WNOWAIT)`, which leaves the program unreaped, and reaps it and marks its terminal under the lock.
    - Every program has taken all its queued input. If some input still waits, the server lets go of the lock and looks again, for up to 2 s. Then it refuses ("input still waits for vim in %3"), rather than lose part of a paste.
-   - `layout.json`'s writer is idle: the server also holds its lock.
-3. **The record.** The server writes what it hands over to a temp file in the state directory, removed as soon as it is open. The record has its own version (`handover::FORMAT`), apart from the client protocol, so two paddocks of different protocol versions can hand over as long as the new one reads the old one's format. It holds:
-   - the instance id, the next id, the current space and the restored count;
+   - `layout.json`'s writer is idle: the server also holds its lock. It writes the layout as it is now, whatever the 250 ms gap, so a new server that fails leaves the next one the layout of the moment of the switch.
+
+   So the server stalls for the freeze, the second record and the `exec`, not for the probe.
+4. **The record.** The server writes what it hands over to a temp file in the state directory, removed as soon as it is open. The record has its own version (`handover::FORMAT`), apart from the client protocol, so two paddocks of different protocol versions can hand over as long as the new one reads the old one's format. It holds:
+   - the instance id, the last id given, the current space and the restored count;
    - every space, tab and float with their ids, names, trees, shares, focus, focus order and zoom;
    - every terminal's id, shell pid, tty, size, whether it was reaped, and the number of its PTY's master descriptor;
    - the descriptors of `server.lock` and the listening socket;
    - each terminal's snapshot: the bytes a client attaches with (scrollback, both screens, cursor, modes, scroll region, modifyOtherKeys), as raw blobs after the JSON header.
 
+   The probe reads the record taken before the freeze, and the new image reads the one taken during it. The two differ only in content (output since, a new tab), never in format or kind, and both pass the same checks. A content-only difference is all the probe cannot vouch for.
+
    So that every later paddock can still take over from this one, the format changes by two rules. A field added to the header gets a default (`#[serde(default)]`), and the format stays the same. A change that cannot work that way bumps `FORMAT`, and the new paddock keeps a reader for the format before it.
-4. **The probe.** The server runs `<exe> server --check-handover` with the record on stdin, for at most 10 s. Only exit 0 with `paddock handover ok` on stdout counts as a yes. A binary that does not know the format, or an older paddock that prints its usage, refuses, and its words go back to the command.
-5. **Exec.** The server clears close-on-exec on these descriptors, which keep their numbers:
+5. **Exec.** The server sends `Probed`. It then clears close-on-exec on these descriptors, which keep their numbers:
    - the lock;
    - the listening socket;
    - every PTY master;
@@ -39,25 +52,37 @@ Takes up the "possible later" of [ADR 0007](0007-native-backend-with-a-server.md
 
 | Step | Failure | What happens |
 | --- | --- | --- |
-| Request | Server from before this ADR | It closes the connection; the command says it cannot hand over |
-| Request | Server ending | `Refused`, nothing changes |
+| Request | Server from before this ADR | It closes the connection; the command says it cannot hand over, and how to restart instead |
+| Request | Server ending, or a relative path | `Refused`, nothing changes |
+| Probe | Cannot write the record; binary missing, refuses, prints no token, or runs past 10 s (killed and reaped) | `Refused(its words)`: the old server serves on, unchanged |
 | Freeze | Input still waits after 2 s | `Refused("input still waits for … in …")`, the lock is let go |
-| Record | Cannot write the temp file | `Refused(why)`, the lock is let go |
-| Probe | Binary missing, refuses, prints no token, or runs past 10 s (killed and reaped) | `Refused(its words)`, the lock is let go: the old server serves on, unchanged |
-| Exec | `exec` returns an error | Close-on-exec is put back, `Refused(why)`, the lock is let go |
-| Take over | The new image cannot rebuild what the probe accepted (out of descriptors or memory) | It answers `Refused(why)` and exits. The programs are hung up as their PTYs close. `layout.json`, written by the old image at most 250 ms before, rebuilds the layout at the next start, as after a crash |
+| Freeze | Cannot write the record or `layout.json` | `Refused(why)`, the lock is let go |
+| Exec | `exec` returns an error | Close-on-exec is put back, `Refused(why)` after `Probed`, the lock is let go: the old server serves on |
+| Take over | The new image cannot rebuild what the probe accepted (out of descriptors or memory) | It answers `Refused(why)` (saying it has ended) and exits. The programs are hung up as their PTYs close. `layout.json`, written just before `exec`, rebuilds the layout at the next start, as after a crash |
+| Take over | The new image dies before answering | The command says the server ended as it took over (see `server.log`) |
 
-Every step before exec leaves the old server running as it was. After exec, nothing can go back: the old image is gone, and its binary may be too (a package manager replaces it). The probe makes this last row a matter of resources only.
+Every step before exec leaves the old server running as it was. After exec, nothing can go back: the old image is gone, and its binary may be too (a package manager replaces it). The probe makes the last two rows a matter of resources only.
+
+## Testing
+
+The harness tests hand over to the same binary and to a copy of it: the copy shows that the record and the descriptors really pass into another binary. On the client side, fake servers stand in for the cases below:
+
+- one speaking protocol version 999;
+- one from before this ADR;
+- one that ends after `Probed`.
+
+A real handover between two protocol versions, or two record formats, needs two releases built from different sources. That cannot be tested until a second paddock with this ADR exists. Until then, the frozen frame is pinned byte for byte by a unit test, and a record of another format is refused by number.
 
 ## Considered options
 
 - **Pass the descriptors to a new process over a Unix socket (`SCM_RIGHTS`).** The old server could keep running until the new one said it was ready, so every failure would leave it unchanged. But the programs would stay children of the old process. When it exits, launchd adopts them, and macOS has no subreaper to make the new server their parent. The new server could only watch them with `kqueue`, and could signal a pid already reaped and reused, which paddock never does. The lock and the socket would also have to change hands between two processes.
+- **Probe the frozen record**: the probe would vouch for the very record the new image reads, but the server would stall for up to 10 s while it runs.
 - **Restart, as before** ([ADR 0007](0007-native-backend-with-a-server.md)): stays for servers that cannot hand over.
 - **Keep the old client attached through the switch**: its connection would have to pass to the new image, mid-frame, and the old client may not speak the new protocol anyway. A paddock that attaches after the switch sees the same screens.
 
 ## Consequences
 
-- `paddock server upgrade` hands the running server to the binary it is run as. Ticket 51's prompt calls the same thing (`Backend::upgrade`).
+- `paddock server upgrade [<binary>]` hands the running server to the binary it is run as, or to `<binary>`. Ticket 51's prompt calls the same thing (`Backend::upgrade`).
 - An attached paddock loses its connection at the switch and quits saying so. The next launch attaches to the same terminals.
 - What a snapshot does not carry is lost at the switch, as on reattach: charsets, the title and hyperlinks.
 - A signal that comes between `exec` and the new image's handlers takes the default action: SIGTERM ends the server without hanging its shells up in order.

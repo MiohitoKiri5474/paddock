@@ -24,7 +24,7 @@ pub use structure::{Float, Split, Structure, Tab};
 use crate::config::BackendKind;
 use crate::input::Direction;
 use crate::paths::Paths;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
@@ -209,18 +209,19 @@ impl Backend {
         }
     }
 
-    /// Hand the running native server's terminals to this paddock's own
-    /// binary, which then runs as it, whatever protocol version it
-    /// speaks (ADR 0009): its pid. An error says why not, and the server
-    /// runs on unchanged ([`NoHandover`] if it cannot hand over at all,
-    /// so [`Self::restart`] is left). An error on tmux.
-    pub fn upgrade(&self) -> Result<u32> {
+    /// Hand the running native server's terminals to the paddock binary
+    /// `exe` (an absolute path; this paddock's own is
+    /// [`std::env::current_exe`]), which then runs as it, whatever
+    /// protocol version it speaks (ADR 0009): its pid. An error says why
+    /// not. Most leave the server running unchanged, [`NoHandover`]
+    /// among them (it cannot hand over at all, so [`Self::restart`] is
+    /// left); but an error once `exe` ran, a refusal that says the new
+    /// server could not take over, or an answer that never came, means
+    /// the server has ended with every program in it. An error on tmux.
+    pub fn upgrade(&self, exe: &Path) -> Result<u32> {
         match self {
             Self::Tmux(_) => anyhow::bail!("the tmux backend has no paddock server to upgrade"),
-            Self::Native(n) => {
-                let exe = std::env::current_exe().context("cannot find paddock's own binary")?;
-                n.upgrade(&exe)
-            }
+            Self::Native(n) => n.upgrade(exe),
         }
     }
 

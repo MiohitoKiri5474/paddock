@@ -106,11 +106,18 @@ fn a_handover_the_new_binary_refuses_leaves_the_old_server_serving() {
     .unwrap();
     std::fs::set_permissions(&refuser, std::fs::Permissions::from_mode(0o755)).unwrap();
 
-    // Asked whatever protocol version the server speaks: no hello sent.
-    let reply = ask_upgrade(&sandbox, &refuser);
+    let refuser = refuser.to_string_lossy().into_owned();
 
-    assert!(reply.contains("Refused"), "{reply}");
-    assert!(reply.contains("cannot read this record"), "{reply}");
+    let out = sandbox.run(&["server", "upgrade", &refuser], &[], "");
+
+    assert!(!out.status.success(), "{out:?}");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains(&format!(
+            "{refuser} cannot take over: cannot read this record"
+        )),
+        "{err}"
+    );
     assert_eq!(server_pid(&sandbox.state_dir()), Some(server));
     assert_eq!(sandbox.shells(), shells, "the same shells");
     // The paddock attached all along still works.
@@ -118,9 +125,9 @@ fn a_handover_the_new_binary_refuses_leaves_the_old_server_serving() {
     paddock.wait_for_text("after-refusal\n");
 }
 
-/// Ask the sandbox's server, past its hello, to hand over to `exe`; its
-/// answer, kind byte first.
-fn ask_upgrade(sandbox: &Sandbox, exe: &Path) -> String {
+/// Ask the sandbox's server, past its hello but sending none, to hand
+/// over to `exe`; its answers, each an upgrade frame (kind 3).
+fn ask_upgrade(sandbox: &Sandbox, exe: &Path) -> Vec<String> {
     let mut stream = UnixStream::connect(sandbox.state_dir().join("server.sock")).unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(30)))
@@ -128,9 +135,30 @@ fn ask_upgrade(sandbox: &Sandbox, exe: &Path) -> String {
     assert!(read_frame(&mut stream).is_some(), "the server's hello");
     let ask = format!(r#"{{"Ask":{{"exe":"{}"}}}}"#, exe.display());
     send_frame(&mut stream, 3, &ask);
-    let reply = read_frame(&mut stream).expect("an answer");
-    assert_eq!(reply[0], 3, "an upgrade frame");
-    String::from_utf8_lossy(&reply[1..]).into_owned()
+    let mut answers = Vec::new();
+    while let Some(reply) = read_frame(&mut stream) {
+        assert_eq!(reply[0], 3, "an upgrade frame");
+        let reply = String::from_utf8_lossy(&reply[1..]).into_owned();
+        let last = reply != r#""Probed""#;
+        answers.push(reply);
+        if last {
+            break;
+        }
+    }
+    answers
+}
+
+#[test]
+fn a_binary_named_by_a_relative_path_is_refused() {
+    let sandbox = native();
+    let _paddock = ready(&sandbox);
+    let server = server_pid(&sandbox.state_dir()).expect("a server");
+
+    let answers = ask_upgrade(&sandbox, Path::new("paddock"));
+
+    assert_eq!(answers.len(), 1, "{answers:?}");
+    assert!(answers[0].contains("not an absolute path"), "{answers:?}");
+    assert_eq!(server_pid(&sandbox.state_dir()), Some(server));
 }
 
 #[test]
@@ -148,9 +176,10 @@ fn another_binary_takes_the_terminals_over() {
     let copy = sandbox.path("paddock-next");
     std::fs::copy(env!("CARGO_BIN_EXE_paddock"), &copy).unwrap();
 
-    let reply = ask_upgrade(&sandbox, &copy);
+    let answers = ask_upgrade(&sandbox, &copy);
 
-    assert_eq!(reply, format!(r#"{{"Done":{{"pid":{server}}}}}"#));
+    let done = format!(r#"{{"Done":{{"pid":{server}}}}}"#);
+    assert_eq!(answers, [r#""Probed""#.to_string(), done]);
     let ps = Command::new("ps")
         .args(["-o", "command=", "-p", &server.to_string()])
         .output()
@@ -209,6 +238,19 @@ fn a_server_too_old_to_hand_over_says_to_restart_it() {
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("(pid 4242) gave no answer"), "{err}");
     assert!(err.contains("restart it"), "{err}");
+}
+
+#[test]
+fn a_server_that_ends_as_it_takes_over_is_not_called_too_old() {
+    let sandbox = native();
+    fake_server(&sandbox, Some(r#""Probed""#));
+
+    let out = sandbox.run(&["server", "upgrade"], &[], "");
+
+    assert!(!out.status.success(), "{out:?}");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("ended as it took over"), "{err}");
+    assert!(!err.contains("too old"), "{err}");
 }
 
 #[test]

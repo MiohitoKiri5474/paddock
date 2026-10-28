@@ -13,7 +13,7 @@
 //! can hand everything to a new binary (ADR 0009, [`handover`]).
 
 use super::axis::Axis;
-use super::handover::{self, HandedTerminal};
+use super::handover::{self, HandedTerminal, Held};
 use super::protocol::{self, Answer, Ending, Frame, Message, Notice, Refusal, Request, Upgrade};
 use super::pty::Program::{self, LoginShell};
 use super::saved::{self, Saver};
@@ -67,16 +67,15 @@ struct Shared {
     /// Writes `layout.json`; locked after `state`, if both are.
     saver: Mutex<Saver>,
     state_dir: PathBuf,
-    /// The descriptors holding the server lock and listening on its
-    /// socket, which an upgrade hands over.
-    lock_fd: RawFd,
-    listener_fd: RawFd,
+    /// Its lock's and listening socket's descriptors, which an upgrade
+    /// hands over.
+    held: Held,
 }
 
 impl Shared {
     /// A server's shared parts, from its environment: holding `state`,
-    /// its lock on `lock_fd` and listening on `listener_fd`.
-    fn new(state: State, paths: &Paths, lock_fd: RawFd, listener_fd: RawFd) -> Self {
+    /// its lock and listening socket on `held`.
+    fn new(state: State, paths: &Paths, held: Held) -> Self {
         let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
         let mut env = clean_env(std::env::vars());
         env.push(("COLORTERM".into(), "truecolor".into()));
@@ -89,8 +88,7 @@ impl Shared {
             connections: AtomicU64::new(0),
             saver: Mutex::new(Saver::new(paths.state_dir.clone())),
             state_dir: paths.state_dir.clone(),
-            lock_fd,
-            listener_fd,
+            held,
         }
     }
 
@@ -112,8 +110,8 @@ pub fn serve() -> Result<()> {
     };
     let listener = bind(&socket)?;
     let state = State::new(socket, new_instance());
-    let fds = (lock.as_raw_fd(), listener.as_raw_fd());
-    let shared = Arc::new(Shared::new(state, &paths, fds.0, fds.1));
+    let held = Held::of(&lock, &listener);
+    let shared = Arc::new(Shared::new(state, &paths, held));
     // Before any signal is handled: one that ends the server mid-way
     // would save half the layout.
     {
@@ -155,7 +153,10 @@ pub fn take_over(record: &str, conn: &str) -> Result<()> {
             run(&shared, &listener, lock)
         }
         Err(e) => {
-            let why = format!("the new paddock server could not take over: {e:#}");
+            let why = format!(
+                "the new paddock server could not take over, and has ended with every \
+                 program in it (the next paddock rebuilds the layout): {e:#}"
+            );
             let _ = protocol::write(&mut conn, &Frame::Upgrade(Upgrade::Refused(why)));
             Err(e)
         }
@@ -171,8 +172,8 @@ fn adopt(record: File) -> Result<(Arc<Shared>, UnixListener, File)> {
     let lock = File::from(take_fd(record.lock)?);
     let listener = UnixListener::from(take_fd(record.listener)?);
     let state = State::handed(socket, record.instance, record.last_id);
-    let fds = (lock.as_raw_fd(), listener.as_raw_fd());
-    let shared = Arc::new(Shared::new(state, &paths, fds.0, fds.1));
+    let held = Held::of(&lock, &listener);
+    let shared = Arc::new(Shared::new(state, &paths, held));
     {
         let mut state = shared.lock();
         let mut adopt = |space: &SpaceId, handed: HandedTerminal, snapshot: &[u8]| {
@@ -206,10 +207,18 @@ fn adopt_terminal(
     let master = File::from(take_fd(handed.master)?);
     let input = Input::start(&handed.id, master.try_clone()?);
     let reader = master.try_clone()?;
-    let (id, pid) = (handed.id.clone(), handed.pid);
-    let waiting = (!handed.exited).then_some(pid);
-    let term = HostedTerminal::adopt(handed, master, input, snapshot);
-    watch(shared, space, id, reader, waiting);
+    let HandedTerminal {
+        id,
+        pid,
+        tty,
+        size,
+        exited,
+        ..
+    } = handed;
+    let mut term = HostedTerminal::hosting(id.clone(), pid, tty, master, input, size);
+    term.exited = exited;
+    term.replay(snapshot);
+    watch(shared, space, id, reader, (!exited).then_some(pid));
     Ok(term)
 }
 
@@ -468,7 +477,8 @@ fn reply(answer: Result<Answer>) -> Frame {
 
 /// Hand every terminal to the binary `exe`, which this process becomes
 /// (ADR 0009); it answers on `stream`. Returns only if it did not: the
-/// server, unchanged, says why on `stream`.
+/// server, unchanged, says why on `stream` (after `Probed`, if its
+/// `exec` failed).
 fn upgrade(shared: &Shared, stream: &mut UnixStream, exe: &Path) -> Result<()> {
     let Err(e) = hand_over(shared, stream, exe);
     let why = format!("{e:#}");
@@ -479,15 +489,40 @@ fn upgrade(shared: &Shared, stream: &mut UnixStream, exe: &Path) -> Result<()> {
     protocol::write(stream, &Frame::Upgrade(Upgrade::Refused(why)))
 }
 
-/// Freeze the server, write what it holds, have `exe` check it, and
-/// become `exe`. Every error leaves the server as it was.
-fn hand_over(shared: &Shared, stream: &UnixStream, exe: &Path) -> Result<Infallible> {
+/// Have `exe` check a record of what the server holds, then freeze the
+/// server, write what it holds, save the layout, and become `exe`. Every
+/// error leaves the server as it was. One upgrade at a time.
+fn hand_over(shared: &Shared, stream: &mut UnixStream, exe: &Path) -> Result<Infallible> {
+    static UPGRADING: Mutex<()> = Mutex::new(());
+    let _one = UPGRADING.lock().unwrap_or_else(|e| e.into_inner());
+    // The probe runs from `/`, and `exec` from the server's directory.
+    if !exe.is_absolute() {
+        bail!("{} is not an absolute path", exe.display());
+    }
+    // The probe reads the record as it is now, with the state let go:
+    // the server serves on while it runs (up to 10 s).
+    let mut probed = {
+        let mut state = shared.lock();
+        if state.closing {
+            return Err(Ending.into());
+        }
+        let (record, snapshots) = handover::record(&mut state, shared.held);
+        drop(state);
+        handover::write(&shared.state_dir, &record, &snapshots)?
+    };
+    handover::probe(exe, &mut probed)?;
+    drop(probed);
     let mut state = freeze(shared)?;
-    // `layout.json` is never left half written.
-    let _saver = shared.saver.lock().unwrap_or_else(|e| e.into_inner());
-    let (record, snapshots) = handover::record(&mut state, shared.lock_fd, shared.listener_fd);
-    let mut file = handover::write(&shared.state_dir, &record, &snapshots)?;
-    handover::probe(exe, &mut file)?;
+    // `layout.json` is never left half written, and holds the layout as
+    // it is now: a new server that fails leaves it for the next.
+    let mut saver = shared.saver.lock().unwrap_or_else(|e| e.into_inner());
+    let (record, snapshots) = handover::record(&mut state, shared.held);
+    let file = handover::write(&shared.state_dir, &record, &snapshots)?;
+    let layout = saved::snapshot(&state).read_dirs();
+    saver
+        .write_now(layout)
+        .context("cannot save the layout before handing over")?;
+    protocol::write(stream, &Frame::Upgrade(Upgrade::Probed))?;
     eprintln!("paddock server: handing over to {}", exe.display());
     let fds = record.descriptors();
     Err(handover::exec(exe, &file, stream.as_raw_fd(), &fds))

@@ -82,6 +82,16 @@ fn no_server(e: &anyhow::Error) -> bool {
         || e.downcast_ref::<Closed>().is_some()
 }
 
+/// Whether `e` is a read that waited past its timeout.
+fn timed_out(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<std::io::Error>().is_some_and(|e| {
+        matches!(
+            e.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+        )
+    })
+}
+
 /// A closure taking the value of answer `variant`, and giving any other
 /// answer back.
 macro_rules! pick {
@@ -219,8 +229,11 @@ impl Client {
     /// Ask the running server, whatever protocol version it speaks, to
     /// hand every terminal to the binary `exe`, which then runs as it
     /// (ADR 0009): the server's pid, the same as before. An error says
-    /// why not; the server then runs on unchanged ([`NoHandover`] if it
-    /// cannot hand over at all, so it has to be restarted instead).
+    /// why not. A refusal from the old server, or [`NoHandover`] (it
+    /// cannot hand over at all, so it has to be restarted instead), leaves
+    /// it running unchanged; but once `exe` runs, a refusal from it, or
+    /// the connection ending, means the server has ended, and every
+    /// program in it.
     pub fn upgrade(&self, exe: &Path) -> Result<u32> {
         let socket = socket_path(&self.paths)?;
         let mut stream = UnixStream::connect(socket).context(NotRunning)?;
@@ -232,15 +245,29 @@ impl Client {
         };
         let ask = Upgrade::Ask { exe: exe.into() };
         protocol::write(&mut stream, &Frame::Upgrade(ask))?;
-        // A server from before ADR 0009 closes the connection at a frame
-        // it does not know.
-        let answer = protocol::read(&mut stream, protocol::FROM_SERVER)
-            .ok()
-            .flatten();
-        match answer {
-            Some(Frame::Upgrade(Upgrade::Done { pid })) => Ok(pid),
-            Some(Frame::Upgrade(Upgrade::Refused(why))) => Err(Refused(why).into()),
-            _ => Err(NoHandover { pid: server }.into()),
+        let mut probed = false;
+        loop {
+            match protocol::read(&mut stream, protocol::FROM_SERVER) {
+                Ok(Some(Frame::Upgrade(Upgrade::Probed))) => probed = true,
+                Ok(Some(Frame::Upgrade(Upgrade::Done { pid }))) => return Ok(pid),
+                Ok(Some(Frame::Upgrade(Upgrade::Refused(why)))) => return Err(Refused(why).into()),
+                Ok(Some(other)) => {
+                    bail!("the paddock server answered the upgrade with {other:?}")
+                }
+                // A server from before ADR 0009 closes the connection at a
+                // frame it does not know.
+                Ok(None) if !probed => return Err(NoHandover { pid: server }.into()),
+                Ok(None) => bail!(
+                    "the paddock server (pid {server}) ended as it took over, without an \
+                     answer: its programs may have ended (see server.log)"
+                ),
+                Err(e) if timed_out(&e) => bail!(
+                    "the paddock server (pid {server}) gave no answer to the upgrade within \
+                     {} s (see server.log)",
+                    UPGRADE_TIMEOUT.as_secs()
+                ),
+                Err(e) => return Err(e.context("a broken answer to the upgrade")),
+            }
         }
     }
 
