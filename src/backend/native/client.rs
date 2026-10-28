@@ -187,6 +187,8 @@ impl Client {
             }
             std::thread::sleep(POLL);
         }
+        // An ending server removes its socket; one killed leaves it.
+        let _ = std::fs::remove_file(socket_path(&self.paths)?);
         Ok(())
     }
 

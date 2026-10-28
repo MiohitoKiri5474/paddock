@@ -164,7 +164,13 @@ pub fn load(dir: &Path) -> Option<SavedLayout> {
         Ok(saved) => saved,
         Err(e) => {
             let at = SystemTime::now().duration_since(UNIX_EPOCH);
-            let bad = dir.join(format!("{FILE}.bad-{}", at.unwrap_or_default().as_secs()));
+            let stem = format!("{FILE}.bad-{}", at.unwrap_or_default().as_secs());
+            // Another set aside within the same second is kept too.
+            let bad = std::iter::once(stem.clone())
+                .chain((1..).map(|n| format!("{stem}-{n}")))
+                .map(|name| dir.join(name))
+                .find(|p| !p.exists())
+                .unwrap_or_else(|| dir.join(&stem));
             match std::fs::rename(&path, &bad) {
                 Ok(()) => eprintln!("paddock server: {e:#}; kept as {}", bad.display()),
                 Err(r) => eprintln!("paddock server: {e:#}; cannot keep it aside: {r}"),
@@ -355,6 +361,16 @@ mod tests {
             let aside = std::fs::read_to_string(dir.path().join(&kept[0])).unwrap();
             assert_eq!(aside, text, "kept whole");
         }
+    }
+
+    #[test]
+    fn two_unreadable_layouts_in_one_second_are_both_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        for text in ["one", "two"] {
+            std::fs::write(dir.path().join(FILE), text).unwrap();
+            assert_eq!(load(dir.path()), None);
+        }
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
     }
 
     #[test]

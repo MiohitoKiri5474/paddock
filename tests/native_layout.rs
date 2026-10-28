@@ -147,9 +147,8 @@ fn a_server_ended_with_its_last_shell_leaves_nothing_to_restore() {
 }
 
 /// Listen as an older server would: it answers every hello with its
-/// own, version 999 and pid 4242, and holds no lock (its process gone,
-/// its socket left).
-fn fake_older_server(sandbox: &Sandbox) {
+/// own, version 999 and pid `pid`.
+fn fake_older_server(sandbox: &Sandbox, pid: u32) {
     let listener = UnixListener::bind(sandbox.state_dir().join("server.sock")).unwrap();
     std::thread::spawn(move || {
         for stream in listener.incoming() {
@@ -160,30 +159,64 @@ fn fake_older_server(sandbox: &Sandbox) {
             }
             let mut body = vec![0; u32::from_be_bytes(len) as usize];
             let _ = stream.read_exact(&mut body);
-            let hello = br#"{"Hello":{"version":999,"pid":4242}}"#;
+            let hello = format!(r#"{{"Hello":{{"version":999,"pid":{pid}}}}}"#);
             let len = u32::try_from(hello.len() + 1).unwrap().to_be_bytes();
             let _ = stream.write_all(&len);
             let _ = stream.write_all(&[0]);
-            let _ = stream.write_all(hello);
+            let _ = stream.write_all(hello.as_bytes());
         }
     });
 }
 
-#[test]
-fn restarting_a_server_of_another_version_restores_its_layout() {
-    let sandbox = native();
-    let dir = sandbox.path("home/proj");
-    std::fs::create_dir_all(&dir).unwrap();
-    let mut paddock = ready(&sandbox);
-    split_in(&mut paddock, &sandbox, &dir);
-    wait_for_saved(&sandbox, 1, "/proj\"");
-    let real_dir = real(&dir);
-    let before = shape(&sandbox, "", "");
+/// A process holding the server lock, as an older server would: a
+/// `sleep` whose pid the lock names, the lock let go once it ends.
+fn lock_holder(sandbox: &Sandbox) -> u32 {
+    use std::os::fd::AsRawFd;
+    let mut child = std::process::Command::new("sleep")
+        .arg("60")
+        .spawn()
+        .unwrap();
+    let mut lock = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(sandbox.state_dir().join("server.lock"))
+        .unwrap();
+    // SAFETY: flock on a descriptor `lock` owns, held until it drops.
+    let taken = unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    assert_eq!(taken, 0, "the lock is free");
+    writeln!(lock, "{}", child.id()).unwrap();
+    let pid = child.id();
+    std::thread::spawn(move || {
+        let _ = child.wait();
+        drop(lock);
+    });
+    pid
+}
+
+/// A space with a renamed tab split in two, saved, and its server ended:
+/// the layout a server of another version left. Returns its shape.
+fn left_by_an_older_server(sandbox: &Sandbox, dir: &Path) -> Vec<String> {
+    std::fs::create_dir_all(dir).unwrap();
+    let mut paddock = ready(sandbox);
+    split_in(&mut paddock, sandbox, dir);
+    wait_for_saved(sandbox, 1, "/proj\"");
+    let before = shape(sandbox, "", "");
     let pid = server_pid(&sandbox.state_dir()).expect("a server");
     stop_server(&sandbox.state_dir());
     assert!(paddock.wait_exit());
     assert!(!alive(pid));
-    fake_older_server(&sandbox);
+    before
+}
+
+/// Its process gone and its socket left: the socket goes, and the next
+/// server restores the layout.
+#[test]
+fn restarting_a_server_of_another_version_restores_its_layout() {
+    let sandbox = native();
+    let dir = sandbox.path("home/proj");
+    let before = left_by_an_older_server(&sandbox, &dir);
+    fake_older_server(&sandbox, 4242);
 
     let mut again = sandbox.launch();
     again.wait_for_text("Restart it?");
@@ -194,7 +227,45 @@ fn restarting_a_server_of_another_version_restores_its_layout() {
     assert_eq!(shape(&sandbox, "", ""), before);
     assert_eq!(
         sandbox.terminal("space-1:0.1").dir.as_deref(),
-        Some(real_dir.as_str())
+        Some(real(&dir).as_str())
     );
     assert!(server_pid(&sandbox.state_dir()).is_some_and(alive));
+}
+
+/// Still running and holding the lock: it is ended, then restored from.
+#[test]
+fn restarting_ends_the_server_holding_the_lock() {
+    let sandbox = native();
+    let before = left_by_an_older_server(&sandbox, &sandbox.path("home/proj"));
+    let older = lock_holder(&sandbox);
+    fake_older_server(&sandbox, older);
+
+    let mut again = sandbox.launch();
+    again.wait_for_text("Restart it?");
+    again.type_line("y");
+
+    again.wait_for_text("restored 1 space");
+    assert!(!alive(older as i32), "the older server ended");
+    assert_eq!(shape(&sandbox, "", ""), before);
+}
+
+/// A hello naming another pid than the lock's holder: nothing is
+/// signalled, and paddock says why it stops.
+#[test]
+fn restarting_signals_nothing_when_the_lock_names_another_pid() {
+    let sandbox = native();
+    std::fs::create_dir_all(sandbox.state_dir()).unwrap();
+    let older = lock_holder(&sandbox);
+    fake_older_server(&sandbox, 4242);
+
+    let mut again = sandbox.launch();
+    again.wait_for_text("Restart it?");
+    again.type_line("y");
+
+    again.wait_for_text("the server lock names pid");
+    assert!(!again.wait_exit(), "paddock fails");
+    assert!(alive(older as i32), "left running");
+    // SAFETY: kill has no memory-safety preconditions; `older` is this
+    // test's own child.
+    unsafe { libc::kill(older as i32, libc::SIGKILL) };
 }
