@@ -434,6 +434,18 @@ mod tests {
             .map(|&(l, st, e, sp)| (l.into(), st, e, sp.into()))
             .collect();
         assert_eq!(got, want);
+        // `api` starts waiting: it stays where it was.
+        s.apply(&record(
+            "PermissionRequest",
+            external_key("e1"),
+            "e1",
+            "/w/api",
+        ));
+        let labels: Vec<String> = rows(&s, &TaskStatus::new(), panes(), Some(externals))
+            .into_iter()
+            .map(|r| r.label)
+            .collect();
+        assert_eq!(labels, ["mine", "api", "web"]);
         let all = rows(&s, &TaskStatus::new(), panes(), Some(externals));
         assert_eq!(all[1].main_branch(), Some("feat/x"));
         assert_eq!(rows(&s, &TaskStatus::new(), panes(), None).len(), 1);
