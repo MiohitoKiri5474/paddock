@@ -15,6 +15,7 @@
 //!   program.
 //! - [`protocol`]: the frames between them.
 
+mod axis;
 mod client;
 mod layout;
 mod protocol;

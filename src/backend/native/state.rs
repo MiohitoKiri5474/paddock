@@ -8,6 +8,7 @@
 use super::protocol::{self, Answer, Frame, Message, Notice, Request};
 use super::queue::Queue;
 use super::space::Space;
+use super::tab::Tab;
 use super::terminal::HostedTerminal;
 use crate::backend::{
     ListedSpace, SpaceId, SpaceTerminal, Structure, TabId, TerminalDetails, TerminalId,
@@ -194,34 +195,47 @@ impl State {
         self.space(id).map(Space::structure)
     }
 
-    /// Change the space holding `terminal` with `change`, then size its
-    /// terminals to their places and tell its client.
+    /// Change the tab holding `terminal` with `change`, given the tab and
+    /// its space's size; if that changed what it shows, size its
+    /// terminals to their places and tell its client. A change that fails
+    /// or does nothing tells nobody.
     fn change(
         &mut self,
         terminal: &TerminalId,
-        change: impl FnOnce(&mut Space) -> Result<()>,
+        change: impl FnOnce(&mut Tab, (u16, u16)) -> Result<()>,
     ) -> Result<Answer> {
         let space = self.space_of_mut(terminal)?;
-        let result = change(space);
-        space.lay_out();
-        let id = space.id.clone();
-        self.notify(&id, Notice::Changed);
+        let i = space.tab_index(terminal)?;
+        let before = space.tab_view(i);
+        let size = space.size;
+        let result = change(&mut space.tabs[i], size);
+        if space.tab_view(i) != before {
+            space.lay_out_tab(i);
+            let id = space.id.clone();
+            self.notify(&id, Notice::Changed);
+        }
         result.map(|()| Answer::Done)
     }
 
     /// Change the space holding tab `tab` (its index `i` there) with
-    /// `change`, then size its terminals and tell its client.
+    /// `change`; if that changed its structure, size that tab's terminals
+    /// and tell its client.
     fn change_tab(
         &mut self,
         tab: &TabId,
         change: impl FnOnce(&mut Space, usize) -> Result<()>,
     ) -> Result<Answer> {
         let (space, i) = self.tab_mut(tab)?;
-        change(space, i)?;
-        space.lay_out();
-        let id = space.id.clone();
-        self.notify(&id, Notice::Changed);
-        Ok(Answer::Done)
+        let before = space.structure();
+        let result = change(space, i);
+        if space.structure() != before {
+            if let Some(i) = space.tab(tab) {
+                space.lay_out_tab(i);
+            }
+            let id = space.id.clone();
+            self.notify(&id, Notice::Changed);
+        }
+        result.map(|()| Answer::Done)
     }
 
     /// Name every tab that follows what runs in it, telling the attached
@@ -240,7 +254,7 @@ impl State {
     /// Every terminal of space `id`, in its tabs' order.
     fn space_terminals(&self, id: &SpaceId) -> Result<Vec<SpaceTerminal>> {
         let space = self.space(id)?;
-        let ids = space.tabs.iter().flat_map(|t| t.terminals());
+        let ids = space.tabs.iter().flat_map(Tab::terminals);
         let terminals = ids.filter_map(|t| space.hosted(&t));
         let listed = terminals.map(|h| SpaceTerminal {
             id: h.id.clone(),
@@ -250,13 +264,13 @@ impl State {
         Ok(listed.collect())
     }
 
-    /// The answer to a request that changes a tab or its splits; `None`
-    /// for any other request.
+    /// The answer to a request that changes a tab or its splits, as
+    /// `Ok(Ok(answer))`; any other request comes back as `Ok(Err(request))`
+    /// for [`Self::answer`] to answer.
     fn answer_layout(&mut self, request: Request) -> Result<Result<Answer, Request>> {
         Ok(Ok(match request {
             Request::RenameTab(tab, name) => self.change_tab(&tab, |space, i| {
-                space.tabs[i].name = name;
-                space.tabs[i].auto_name = false;
+                space.tabs[i].rename(name);
                 Ok(())
             })?,
             Request::Select(tab, terminal) => self.change_tab(&tab, |space, i| {
@@ -279,35 +293,25 @@ impl State {
                 let (space, i) = self.tab_mut(&tab)?;
                 Answer::Border(space.tabs[i].border_at(x, y, space.size))
             }
-            Request::FocusTowards(t, dir) => self.change(&t, |s| {
-                let size = s.size;
-                s.tab_mut_of(&t)?.focus_towards(&t, dir, size);
+            Request::FocusTowards(t, dir) => self.change(&t, |tab, size| {
+                tab.focus_towards(&t, dir, size);
                 Ok(())
             })?,
-            Request::Spread(t) => self.change(&t, |s| {
-                let size = s.size;
-                s.tab_mut_of(&t)?.spread(&t, size)
-            })?,
-            Request::Zoom(t) => self.change(&t, |s| {
-                s.tab_mut_of(&t)?.zoom(&t);
+            Request::Spread(t) => self.change(&t, |tab, size| tab.spread(&t, size))?,
+            Request::Zoom(t) => self.change(&t, |tab, _| {
+                tab.zoom(&t);
                 Ok(())
             })?,
             Request::ResizeSplit {
                 terminal: t,
                 dir,
                 cells,
-            } => self.change(&t, |s| {
-                let size = s.size;
-                s.tab_mut_of(&t)?.resize(&t, dir, cells, size)
-            })?,
+            } => self.change(&t, |tab, size| tab.resize(&t, dir, cells, size))?,
             Request::DragBorder {
                 terminal: t,
-                columns,
-                size: cells,
-            } => self.change(&t, |s| {
-                let size = s.size;
-                s.tab_mut_of(&t)?.resize_to(&t, columns, cells, size)
-            })?,
+                axis,
+                len,
+            } => self.change(&t, |tab, size| tab.resize_to(&t, axis, len, size))?,
             other => return Ok(Err(other)),
         }))
     }

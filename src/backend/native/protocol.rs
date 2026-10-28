@@ -22,7 +22,8 @@
 //! from the client, which get no reply (the server closes a connection
 //! that asks anything else then).
 
-use super::layout::Found;
+use super::axis::Axis;
+use super::layout::BorderHit;
 use crate::backend::TerminalId;
 use crate::backend::{ListedSpace, SpaceId, SpaceTerminal, Structure, TabId, TerminalDetails};
 use crate::input::Direction;
@@ -121,12 +122,12 @@ pub enum Request {
         x: u16,
         y: u16,
     },
-    /// Size the cell ending in `terminal` (a [`Found`] border's) to
-    /// `size` along the border's axis.
+    /// Size the cell ending in `terminal` (a [`BorderHit`]'s) to `len`
+    /// along `axis`.
     DragBorder {
         terminal: TerminalId,
-        columns: bool,
-        size: u16,
+        axis: Axis,
+        len: u16,
     },
     CloseTerminal(TerminalId),
     TerminalDir(TerminalId),
@@ -190,7 +191,7 @@ pub enum Answer {
     Space(SpaceId),
     /// A terminal just started.
     Terminal(TerminalId),
-    Border(Option<Found>),
+    Border(Option<BorderHit>),
     /// The space holding a terminal; `None` if no space does.
     SpaceOf(Option<SpaceId>),
     Spaces(Vec<ListedSpace>),
@@ -385,9 +386,9 @@ mod tests {
             cells: 2,
         })));
         round_trip(Frame::Message(Message::Reply(Ok(Answer::Border(Some(
-            Found {
+            BorderHit {
                 terminal: TerminalId::new("%3"),
-                columns: true,
+                axis: Axis::Columns,
                 start: 0,
             },
         ))))));

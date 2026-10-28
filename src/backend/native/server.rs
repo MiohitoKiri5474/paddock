@@ -9,6 +9,7 @@
 //! exactly the output before it, and everything after it reaches the
 //! client after the snapshot: no byte lost or doubled.
 
+use super::axis::Axis;
 use super::protocol::{self, Answer, Ending, Frame, Message, Notice, Refusal, Request};
 use super::space::Space;
 use super::state::{State, Subscriber};
@@ -41,7 +42,7 @@ const DRAIN: Duration = Duration::from_millis(500);
 /// How long a new server waits for an ending one's lock.
 const LOCK_WAIT: Duration = Duration::from_secs(3);
 /// How often tabs named after what runs in them look again.
-const NAMES: Duration = Duration::from_millis(300);
+const TAB_NAME_POLL: Duration = Duration::from_millis(300);
 
 struct Shared {
     state: Mutex<State>,
@@ -398,7 +399,7 @@ fn resize(shared: &Shared, conn: u64, size: (u16, u16)) {
     state.notify(&space, Notice::Changed);
 }
 
-/// A new tab named after `cwd`, holding `terminal`, and its id.
+/// A new tab named after `cwd`, holding `terminal`, with a new id.
 fn new_tab_for(state: &mut State, cwd: &Path, terminal: TerminalId) -> Tab {
     let tab = TabId::new(format!("@{}", state.next()));
     Tab::new(tab, dir_name(&cwd.to_string_lossy()), terminal)
@@ -446,8 +447,9 @@ fn split(shared: &Arc<Shared>, target: &TerminalId, columns: bool, cwd: &Path) -
     let terminal = TerminalId::new(format!("%{}", state.next()));
     let s = state.space_of_mut(target)?;
     let (space, size) = (s.id.clone(), s.size);
-    let tab = s.tab_mut_of(target)?;
-    tab.split(target, terminal.clone(), columns, size)?;
+    let i = s.tab_index(target)?;
+    let tab = &mut s.tabs[i];
+    tab.split(target, terminal.clone(), Axis::of(columns), size)?;
     let place = tab.splits(size).into_iter().find(|p| p.id == terminal);
     let place = place.map_or(size, |p| (p.rect.width, p.rect.height));
     let started = start_terminal(shared, &space, terminal.clone(), cwd, place);
@@ -460,15 +462,15 @@ fn split(shared: &Arc<Shared>, target: &TerminalId, columns: bool, cwd: &Path) -
             return Err(e);
         }
     }
-    s.lay_out();
+    s.lay_out_tab(i);
     state.notify(&space, Notice::Changed);
     Ok(Answer::Terminal(terminal))
 }
 
-/// Name the tabs that follow what runs in them, every [`NAMES`].
+/// Name the tabs that follow what runs in them, every [`TAB_NAME_POLL`].
 fn follow_names(shared: &Shared) {
     loop {
-        std::thread::sleep(NAMES);
+        std::thread::sleep(TAB_NAME_POLL);
         shared.lock().follow_names();
     }
 }
@@ -557,7 +559,6 @@ fn wait_for_exit(
     let mut ended = None;
     if let Ok(s) = state.space_mut(space) {
         let empty = s.remove(id);
-        s.lay_out();
         if empty {
             state.spaces.retain(|s| s.id != *space);
             state.notify(space, Notice::Ended);

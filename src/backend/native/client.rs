@@ -4,6 +4,7 @@
 //! running and says so ([`NotRunning`]), or, if it only asks, has nothing
 //! for an answer. A server this paddock cannot talk to is an error.
 
+use super::axis::Axis;
 use super::protocol::{self, Answer, Closed, Ending, Frame, Message, Notice, Refusal, Request};
 use super::server::log_path;
 use super::socket_path;
@@ -21,6 +22,7 @@ use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// No server runs (nothing listens on its socket).
@@ -75,11 +77,16 @@ const POLL: Duration = Duration::from_millis(20);
 #[derive(Clone, Debug)]
 pub struct Client {
     paths: Paths,
+    /// The connection border drags share (see [`Self::drag_border`]).
+    drag: Arc<Mutex<Option<UnixStream>>>,
 }
 
 impl Client {
     pub fn new(paths: Paths) -> Self {
-        Self { paths }
+        Self {
+            paths,
+            drag: Arc::default(),
+        }
     }
 
     /// A connection to the running server, past the hello; an error if
@@ -285,19 +292,52 @@ impl Client {
             y,
         };
         match self.request(request)? {
-            Answer::Border(found) => {
-                Ok(found.map(|f| Border::new(f.terminal, f.columns, Anchor::Before(f.start))))
-            }
+            Answer::Border(hit) => Ok(hit.map(|hit| {
+                let anchor = Anchor::Before(hit.start);
+                Border::new(hit.terminal, hit.axis.is_columns(), anchor)
+            })),
             other => Err(unexpected(&other)),
         }
     }
 
+    /// Move `border` to where the cell before it is `size` cells. A drag
+    /// sends many of these (at most one every 40 ms, see
+    /// `app::splits`): they share one connection, kept for drags.
     pub fn drag_border(&self, border: &Border, size: u16) -> Result<()> {
-        self.done(Request::DragBorder {
+        let request = Request::DragBorder {
             terminal: border.terminal.clone(),
-            columns: border.columns(),
-            size,
-        })
+            axis: Axis::of(border.columns()),
+            len: size,
+        };
+        match self.drag_request(&request)? {
+            Answer::Done => Ok(()),
+            other => Err(unexpected(&other)),
+        }
+    }
+
+    /// Ask `request` on the connection kept for drags, opening it when
+    /// there is none. A connection that fails (the server ended, or a new
+    /// one runs) is dropped, and the request asked once more on a new one:
+    /// moving a border to a size twice moves it once.
+    fn drag_request(&self, request: &Request) -> Result<Answer> {
+        let mut kept = self.drag.lock().unwrap_or_else(|e| e.into_inner());
+        let frame = Frame::Message(Message::Request(request.clone()));
+        let mut last = None;
+        for _ in 0..2 {
+            let stream = match kept.as_mut() {
+                Some(stream) => stream,
+                None => kept.insert(self.connect()?.0),
+            };
+            let asked = protocol::write(stream, &frame).and_then(|()| read_reply(stream));
+            match asked {
+                Err(e) if e.downcast_ref::<Refused>().is_none() => {
+                    *kept = None;
+                    last = Some(e);
+                }
+                answer => return answer,
+            }
+        }
+        Err(last.unwrap_or_else(|| anyhow!("no answer from the paddock server")))
     }
 
     /// The server's answer to `request`, taken by `pick`; `None` if no

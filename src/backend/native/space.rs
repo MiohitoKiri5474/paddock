@@ -45,18 +45,23 @@ impl Space {
         }
     }
 
-    pub fn structure(&self) -> Structure {
-        let tabs = self.tabs.iter().map(|tab| crate::backend::Tab {
+    /// Tab `i` as the backend's interface shows it.
+    pub fn tab_view(&self, i: usize) -> crate::backend::Tab {
+        let tab = &self.tabs[i];
+        crate::backend::Tab {
             id: tab.id.clone(),
-            name: tab.name.clone(),
-            auto_name: tab.auto_name,
+            name: tab.name().to_string(),
+            auto_name: tab.auto_name(),
             splits: tab.splits(self.size),
             active: tab.active().clone(),
             zoomed: tab.zoomed(),
-        });
+        }
+    }
+
+    pub fn structure(&self) -> Structure {
         Structure {
             name: self.name.clone(),
-            tabs: tabs.collect(),
+            tabs: (0..self.tabs.len()).map(|i| self.tab_view(i)).collect(),
             current: self.current,
             floats: Vec::new(),
             float_active: false,
@@ -76,11 +81,10 @@ impl Space {
         self.terminals.iter().find(|t| t.id == *terminal)
     }
 
-    /// The tab holding `terminal`, to change.
-    pub fn tab_mut_of(&mut self, terminal: &TerminalId) -> Result<&mut Tab> {
+    /// The index of the tab holding `terminal`; an error if none does.
+    pub fn tab_index(&self, terminal: &TerminalId) -> Result<usize> {
         let i = self.tab_of(terminal);
-        let i = i.ok_or_else(|| anyhow!("no terminal {terminal} in {}", self.id))?;
-        Ok(&mut self.tabs[i])
+        i.ok_or_else(|| anyhow!("no terminal {terminal} in {}", self.id))
     }
 
     /// Make tab `i` the current one.
@@ -109,18 +113,17 @@ impl Space {
     }
 
     /// Forget `terminal`, whose shell has exited: its tab gives its place
-    /// to the others, and goes with its last terminal. True if the space
-    /// has no tab left.
+    /// to the others, and goes with its last terminal. The terminal goes
+    /// either way, as its shell has. True if the space has no tab left.
     pub fn remove(&mut self, terminal: &TerminalId) -> bool {
-        self.terminals.retain(|t| t.id != *terminal);
-        let Some(i) = self.tab_of(terminal) else {
-            return self.tabs.is_empty();
-        };
-        match self.tabs[i].remove(terminal, self.size) {
-            Ok(true) => {}
-            Ok(false) => self.close_tab(i),
-            Err(e) => eprintln!("paddock server: {e:#}"),
+        if let Some(i) = self.tab_of(terminal) {
+            match self.tabs[i].remove(terminal, self.size) {
+                Ok(true) => self.lay_out_tab(i),
+                Ok(false) => self.close_tab(i),
+                Err(e) => eprintln!("paddock server: {e:#}"),
+            }
         }
+        self.terminals.retain(|t| t.id != *terminal);
         self.tabs.is_empty()
     }
 
@@ -143,8 +146,17 @@ impl Space {
 
     /// Size every terminal's PTY to its place in its tab.
     pub fn lay_out(&mut self) {
-        let places: Vec<_> = self.tabs.iter().flat_map(|t| t.splits(self.size)).collect();
-        for split in places {
+        for i in 0..self.tabs.len() {
+            self.lay_out_tab(i);
+        }
+    }
+
+    /// Size the PTYs of tab `i`'s terminals to their places.
+    pub fn lay_out_tab(&mut self, i: usize) {
+        let Some(tab) = self.tabs.get(i) else {
+            return;
+        };
+        for split in tab.splits(self.size) {
             let Some(term) = self.terminals.iter_mut().find(|t| t.id == split.id) else {
                 continue;
             };
@@ -158,15 +170,14 @@ impl Space {
     /// terminal. True if a name changed.
     pub fn follow_names(&mut self) -> bool {
         let mut changed = false;
-        for tab in self.tabs.iter_mut().filter(|t| t.auto_name) {
+        for tab in &mut self.tabs {
+            if !tab.auto_name() {
+                continue;
+            }
             let active = tab.active();
             let found = self.terminals.iter().find(|t| t.id == *active);
-            let Some(name) = found.and_then(HostedTerminal::auto_name) else {
-                continue;
-            };
-            if tab.name != name {
-                tab.name = name;
-                changed = true;
+            if let Some(name) = found.and_then(HostedTerminal::auto_name) {
+                changed |= tab.follow(name);
             }
         }
         changed
