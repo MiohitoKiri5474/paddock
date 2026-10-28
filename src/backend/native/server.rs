@@ -181,22 +181,27 @@ fn watch_signals(shared: &Arc<Shared>) -> Result<()> {
 }
 
 /// Hang every shell up, tell each attached client its space ended (with
-/// its last frames), remove the socket and exit.
+/// its last frames), remove the socket and exit, once every client being
+/// let go has read its last frames (or [`LAST_WORDS`] has passed). Only one
+/// caller ends the server: another (the last two shells ending together)
+/// waits here until it exits, rather than exiting while a client is still
+/// let go.
 fn shut_down(shared: &Shared) -> ! {
-    let attached = {
+    static ENDING: Mutex<()> = Mutex::new(());
+    let _ending = ENDING.lock().unwrap_or_else(|e| e.into_inner());
+    let leaving = {
         let mut state = shared.lock();
         close(shared, &mut state);
         for (_, term) in state.terminals() {
             term.hang_up();
         }
         state.notify_all(&Notice::Ended);
-        std::mem::take(&mut state.attached)
+        for s in std::mem::take(&mut state.attached) {
+            state.let_go(s, LAST_WORDS);
+        }
+        state.take_leaving()
     };
-    let letting: Vec<_> = attached
-        .into_iter()
-        .map(|s| std::thread::spawn(move || s.let_go(LAST_WORDS)))
-        .collect();
-    for thread in letting {
+    for thread in leaving {
         let _ = thread.join();
     }
     std::process::exit(0)
@@ -449,12 +454,10 @@ fn attach(
         // A new client: it has had no time to fall behind.
         let _ = subscriber.queue(frame);
     }
-    let old = state.detach_space(space);
-    state.attached.push(subscriber);
-    drop(state);
-    if let Some(old) = old {
-        std::thread::spawn(move || old.let_go(LAST_WORDS));
+    if let Some(old) = state.detach_space(space) {
+        state.let_go(old, LAST_WORDS);
     }
+    state.attached.push(subscriber);
     Ok(())
 }
 
@@ -700,10 +703,11 @@ fn wait_for_exit(
     // The reader only drops its end.
     let _ = drained.recv_timeout(DRAIN);
     let mut state = shared.lock();
-    let mut ended = None;
     if let Ok(s) = state.space_mut(space) {
         if s.remove(id) {
-            ended = end_space(&mut state, space);
+            if let Some(ended) = end_space(&mut state, space) {
+                state.let_go(ended, LAST_WORDS);
+            }
         } else {
             state.notify(space, Notice::Changed);
         }
@@ -713,9 +717,6 @@ fn wait_for_exit(
         close(shared, &mut state);
     }
     drop(state);
-    if let Some(ended) = ended {
-        ended.let_go(LAST_WORDS);
-    }
     if last {
         shut_down(shared);
     }
@@ -761,14 +762,12 @@ fn end_space(state: &mut State, space: &SpaceId) -> Option<Subscriber> {
 fn close_space(shared: &Shared, space: &SpaceId) -> Result<bool> {
     let mut state = shared.lock();
     state.space(space)?;
-    let ended = end_space(&mut state, space);
+    if let Some(ended) = end_space(&mut state, space) {
+        state.let_go(ended, LAST_WORDS);
+    }
     let last = state.spaces.is_empty();
     if last {
         close(shared, &mut state);
-    }
-    drop(state);
-    if let Some(ended) = ended {
-        std::thread::spawn(move || ended.let_go(LAST_WORDS));
     }
     Ok(last)
 }

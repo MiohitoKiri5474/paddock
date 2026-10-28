@@ -126,6 +126,8 @@ pub struct State {
     /// How many spaces the server rebuilt from `layout.json` when it
     /// started, until a client takes the number to say so.
     pub restored: Option<usize>,
+    /// The threads letting clients go (see [`Self::let_go`]).
+    leaving: Vec<JoinHandle<()>>,
 }
 
 impl State {
@@ -142,6 +144,7 @@ impl State {
             closing: false,
             current: None,
             restored: None,
+            leaving: Vec::new(),
         }
     }
 
@@ -225,8 +228,24 @@ impl State {
         let Err(why) = s.queue(frame) else { return };
         eprintln!("paddock server: letting connection {} go: {why}", s.conn);
         if let Some(s) = self.detach_space(space) {
-            std::thread::spawn(move || s.let_go(Duration::ZERO));
+            self.let_go(s, Duration::ZERO);
         }
+    }
+
+    /// Let client `s` go ([`Subscriber::let_go`]) on a thread of its own,
+    /// which whoever ends the server waits for ([`Self::take_leaving`]):
+    /// ending it at once would cut the client off before it reads its last
+    /// frames, its space's end among them.
+    pub fn let_go(&mut self, s: Subscriber, wait: Duration) {
+        self.leaving.retain(|t| !t.is_finished());
+        self.leaving
+            .push(std::thread::spawn(move || s.let_go(wait)));
+    }
+
+    /// The threads still letting clients go, for the server's end to wait
+    /// for.
+    pub fn take_leaving(&mut self) -> Vec<JoinHandle<()>> {
+        std::mem::take(&mut self.leaving)
     }
 
     /// Take out the first attached client `which` picks, if any.
@@ -520,5 +539,30 @@ mod tests {
         assert!(state.detach(2).is_none(), "taken out once");
         assert_eq!(state.detach_space(&one).map(|s| s.conn), Some(1));
         assert!(state.attached.is_empty());
+    }
+
+    #[test]
+    fn a_client_let_go_has_read_its_end_once_its_thread_is_joined() {
+        let mut state = State::new(PathBuf::from("/tmp/server.sock"), 1);
+        let space = SpaceId::new("$1");
+        let (server, mut client) = UnixStream::pair().unwrap();
+        state
+            .attached
+            .push(Subscriber::new(1, space.clone(), &server).unwrap());
+        state.notify(&space, Notice::Ended);
+        let ended = state.detach_space(&space).unwrap();
+        state.let_go(ended, Duration::from_secs(5));
+
+        // What the server's end does before it exits.
+        for thread in state.take_leaving() {
+            thread.join().unwrap();
+        }
+        assert!(state.take_leaving().is_empty(), "taken once");
+        // Everything was written before the connection closed.
+        client.set_nonblocking(true).unwrap();
+        let first = protocol::read(&mut client, protocol::FROM_SERVER).unwrap();
+        assert_eq!(first, Some(Frame::Message(Message::Notice(Notice::Ended))));
+        let end = protocol::read(&mut client, protocol::FROM_SERVER).unwrap();
+        assert_eq!(end, None, "then the connection closed");
     }
 }
