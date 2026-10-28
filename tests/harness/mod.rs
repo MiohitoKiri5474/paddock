@@ -265,6 +265,17 @@ impl Sandbox {
             .expect("run tmux")
     }
 
+    /// Start the sandbox's tmux server as an older paddock left it
+    /// running, or end it (`running` false). Like every tmux call here, it
+    /// is on the sandbox's socket, never the user's.
+    pub fn old_tmux_server(&self, running: bool) {
+        if running {
+            self.tmux(&["-f", "/dev/null", "new-session", "-d", "sleep 600"]);
+        } else {
+            self.tmux(&["kill-server"]);
+        }
+    }
+
     /// Write paddock's `config.toml`, after the `[backend]` table the
     /// run picks (see [`backend`]) unless `text` has its own.
     pub fn write_config(&self, text: &str) {

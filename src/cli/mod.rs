@@ -1,5 +1,5 @@
 //! `paddock worktree`: what `C-a W`, `C-a O` and sidebar `x` do, for an
-//! agent or a script. It drives the hidden tmux server directly, so it
+//! agent or a script. It drives paddock's backend directly, so it
 //! works whether the app is open or not (a running paddock attaches the
 //! spaces it makes and drops the ones it closes). Nothing prompts, reads
 //! stdin or needs a terminal: output goes to stdout (`--json` for a
@@ -33,7 +33,7 @@ options:
 exit codes:
   0  ok
   1  usage or config error
-  2  git or tmux error (git's reason on stderr)
+  2  git or backend error (git's reason on stderr)
   3  refused for a risk (stderr names it); nothing changed
   4  timeout; nothing deleted
 ";

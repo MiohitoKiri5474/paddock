@@ -27,7 +27,7 @@ pub use dashboard::DashboardFilter;
 pub use rows::{Row, RowId, TaskDetails, TaskPrs, TaskRow};
 
 use crate::backend::{self, Backend, OtherVersion, SpaceId, TerminalId};
-use crate::config::Config;
+use crate::config::{BackendKind, Config};
 use crate::git::{Details, Status};
 use crate::paths::Paths;
 use crate::sessions::{Agent, HookRecord};
@@ -74,11 +74,17 @@ pub enum Event {
 pub fn run() -> Result<()> {
     let paths = Paths::from_env()?;
     // Read the config before touching the screen, so errors print normally.
-    let config = Config::load(&paths.config_dir)?;
+    let mut config = Config::load(&paths.config_dir)?;
     let Some(_instance) = crate::instance::claim(&paths.state_dir)? else {
         return Ok(());
     };
     let state_dir = paths.state_dir.clone();
+    // Shown and repeated on leaving as the config's warnings are.
+    if config.backend == BackendKind::Native {
+        config
+            .warnings
+            .extend(backend::old_tmux_server_notice(&paths));
+    }
     let backend = Backend::new(paths, config.backend);
     prepare(&backend)?;
     let start_dir = std::env::current_dir().context("no current directory")?;

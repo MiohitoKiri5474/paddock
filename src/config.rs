@@ -48,7 +48,7 @@
 //! refresh_secs = 60          # how often to ask gh for each repository's PRs; 0: never
 //!
 //! [backend]
-//! kind = "tmux"              # or "native" (experimental): what hosts the terminals
+//! kind = "native"            # or "tmux" (legacy, until v0.2): what hosts the terminals
 //! ```
 //!
 //! `paddock keys` prints every action with its default keys.
