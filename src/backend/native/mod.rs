@@ -11,12 +11,14 @@
 //! - [`space`], [`tab`] and [`layout`]: a space's tabs, a tab's focus and
 //!   zoom, and its tree of splits.
 //! - [`terminal`] and [`pty`]: one terminal, its shell and its emulator.
+//! - [`hook`]: the variables that tell a process which terminal it runs in.
 //! - [`queue`]: the queues to the threads that write to a client or a
 //!   program.
 //! - [`protocol`]: the frames between them.
 
 mod axis;
 mod client;
+mod hook;
 mod layout;
 mod protocol;
 mod pty;
@@ -50,6 +52,16 @@ const MAX_SOCKET_PATH: usize = 103;
 /// The error for what the native backend cannot do yet.
 pub fn unsupported(what: &str) -> anyhow::Error {
     anyhow::anyhow!("not on the native backend yet: {what}")
+}
+
+/// The native terminal a process runs in, from its environment as `var`
+/// reads it (see [`hook::terminal`]); `None` outside the terminals of the
+/// server under `paths`.
+pub fn hook_terminal(
+    var: impl Fn(&str) -> Option<String>,
+    paths: &Paths,
+) -> Option<crate::backend::HookTerminal> {
+    hook::terminal(var, &socket_path(paths).ok()?)
 }
 
 /// The server's socket under `paths`; an error if the path is too long for

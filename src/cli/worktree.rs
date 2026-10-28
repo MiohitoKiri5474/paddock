@@ -4,7 +4,7 @@
 //! of it goes through the rules the app uses ([`crate::worktree`]).
 
 use super::{rm, Code, Command, Fail, Invocation};
-use crate::backend::{self, Backend, HookTerminal, SpaceId, TerminalId};
+use crate::backend::{self, Backend, HookTerminal, Instance, SpaceId, TerminalId};
 use crate::config::Config;
 use crate::git::{self, WorkingTree, Worktree};
 use crate::github::{self, Checks, Pr, Prs, Review};
@@ -72,7 +72,7 @@ impl Context {
         let cwd = std::env::current_dir()
             .map_err(|e| Fail::new(Code::Usage, format!("no current directory: {e}")))?;
         let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
-        let caller = backend::hook_terminal(var, &paths.socket);
+        let caller = backend::hook_terminal(var, &paths);
         let backend = Backend::configured(paths.clone())
             .map_err(|e| Fail::new(Code::Usage, format!("{e:#}")))?;
         // What runs where comes back empty from a host paddock cannot talk
@@ -114,9 +114,11 @@ impl Context {
     }
 
     /// The backend's instance id (see [`Backend::instance`]); `None` if
-    /// it does not run.
-    pub fn instance(&self) -> Option<u32> {
-        self.backend.instance().ok()
+    /// it does not run, an error if it runs and cannot say.
+    pub fn instance(&self) -> Result<Option<Instance>, Fail> {
+        self.backend
+            .running_instance()
+            .map_err(|e| Fail::new(Code::Usage, format!("{e:#}")))
     }
 
     /// Every space in the backend, oldest first.
@@ -136,7 +138,7 @@ impl Context {
     /// backend (with paddock's settings) if it does not run. Returns the
     /// space's name as the backend gave it (tmux writes `.` and `:` as `_`).
     pub fn new_space(&self, name: &str, dir: &Path) -> anyhow::Result<String> {
-        if self.instance().is_none() {
+        if self.backend.running_instance()?.is_none() {
             self.backend.prepare()?;
         }
         let space = self.backend.new_space(name, dir, SPACE_SIZE)?;
@@ -144,7 +146,7 @@ impl Context {
     }
 
     /// The caller's pane, if they run in a terminal of this backend.
-    pub fn caller_terminal(&self, instance: Option<u32>) -> Option<TerminalId> {
+    pub fn caller_terminal(&self, instance: Option<Instance>) -> Option<TerminalId> {
         let caller = self.caller.as_ref()?;
         (Some(caller.instance) == instance).then(|| caller.terminal.clone())
     }
@@ -153,7 +155,7 @@ impl Context {
     /// the hook event log of the running server replayed, then what
     /// `claude agents --json` says of Claude's, and why Claude's word is
     /// missing if it did not answer in time.
-    pub fn sessions(&self, instance: Option<u32>) -> (Sessions, Option<Fail>) {
+    pub fn sessions(&self, instance: Option<Instance>) -> (Sessions, Option<Fail>) {
         let mut sessions = Sessions::default();
         let Some(instance) = instance else {
             return (sessions, None);
@@ -394,7 +396,7 @@ fn list(cx: &Context, from: Option<&Path>, json: bool) -> Result<(), Fail> {
     let directory = config.worktrees.directory;
     // One `gh` call for the repository, while the rest is read.
     let asked = ask_prs(&tree.main, config.github_refresh);
-    let instance = cx.instance();
+    let instance = cx.instance()?;
     // `list` only reports: Claude not answering leaves the hook log's word.
     let (sessions, _) = cx.sessions(instance);
     let spaces = cx.spaces();

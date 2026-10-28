@@ -52,8 +52,8 @@ fn the_server_hosts_the_shell_in_the_sandbox_and_answers_debug_state() {
         ["server.sock"],
         "only the server's socket"
     );
-    let state = sandbox.state();
-    assert_eq!(state.instance, Some(u32::try_from(pid).unwrap()));
+    // Its instance id and event log: tests/native_hooks.rs.
+    assert!(sandbox.state().instance.is_some());
     let terminal = sandbox.terminal("space-1");
     assert!(terminal
         .tty

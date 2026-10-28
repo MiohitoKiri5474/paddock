@@ -20,6 +20,9 @@ pub struct State {
     /// The backend's instance id, which names the hook event log; `None`
     /// when it does not run.
     pub instance: Option<u32>,
+    /// The path of that hook event log; `None` when the backend does not
+    /// run.
+    pub event_log: Option<String>,
     /// Oldest first.
     pub spaces: Vec<Space>,
 }

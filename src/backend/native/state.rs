@@ -5,6 +5,7 @@
 //! the attached space's structure tells its client ([`Notice::Changed`]),
 //! which reads it again.
 
+use super::hook;
 use super::protocol::{self, Answer, Frame, Message, Notice, Request};
 use super::queue::Queue;
 use super::space::Space;
@@ -15,6 +16,7 @@ use crate::backend::{
 };
 use anyhow::{anyhow, bail, Result};
 use std::os::unix::net::UnixStream;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -106,8 +108,11 @@ fn size(frame: &Frame) -> usize {
     }
 }
 
-#[derive(Default)]
 pub struct State {
+    /// The server's socket and instance id, which its terminals' hook
+    /// variables name (see [`super::hook`]).
+    socket: PathBuf,
+    instance: u32,
     next_id: u64,
     pub spaces: Vec<Space>,
     pub attached: Option<Subscriber>,
@@ -118,6 +123,35 @@ pub struct State {
 }
 
 impl State {
+    /// The state of a server listening on `socket`, with instance id
+    /// `instance`, before its first space.
+    pub fn new(socket: PathBuf, instance: u32) -> Self {
+        Self {
+            socket,
+            instance,
+            next_id: 0,
+            spaces: Vec::new(),
+            attached: None,
+            started: false,
+            closing: false,
+        }
+    }
+
+    /// The server's socket.
+    pub fn socket(&self) -> &Path {
+        &self.socket
+    }
+
+    /// The server's instance id (see [`crate::backend::Instance`]).
+    pub fn instance(&self) -> u32 {
+        self.instance
+    }
+
+    /// The variables that tell a process it runs in terminal `id`.
+    pub fn hook_env(&self, id: &TerminalId) -> Vec<(String, String)> {
+        hook::env(&self.socket, self.instance, id)
+    }
+
     /// A number for a new id, never used before by this server.
     pub fn next(&mut self) -> u64 {
         self.next_id += 1;
@@ -370,7 +404,7 @@ impl State {
                         pid: h.pid,
                         tty: h.tty.clone(),
                         scrollback: u32::try_from(h.scrollback()).unwrap_or(u32::MAX),
-                        hook_env: Vec::new(),
+                        hook_env: self.hook_env(&h.id),
                     })
                     .collect(),
             ),

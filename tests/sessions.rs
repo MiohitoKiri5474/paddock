@@ -488,9 +488,8 @@ fn parallel_hooks_never_interleave_records() {
             s.spawn(|| sandbox.hook("space-1", "Stop", &big));
         }
     });
-    let pid = sandbox.state().instance.expect("the instance id");
-    let log = std::fs::read_to_string(sandbox.path(&format!("state/paddock/events/{pid}.jsonl")))
-        .expect("event log");
+    let log = sandbox.state().event_log.expect("the backend's event log");
+    let log = std::fs::read_to_string(log).expect("event log");
     let lines: Vec<&str> = log.lines().collect();
     assert_eq!(lines.len(), 16);
     for l in lines {

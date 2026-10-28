@@ -63,10 +63,13 @@ pub enum Frame {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Message {
-    /// The first frame each side sends: its protocol version and its pid.
+    /// The first frame each side sends: its protocol version, its pid and,
+    /// from the server, its instance id (a client sends 0).
     Hello {
         version: u32,
         pid: u32,
+        #[serde(default)]
+        instance: u32,
     },
     Request(Request),
     /// The answer to a request, or why there is none.
@@ -333,17 +336,31 @@ fn take_id(body: &[u8]) -> Result<(TerminalId, &[u8])> {
     Ok((TerminalId::new(id), &body[len..]))
 }
 
-/// Send our hello and read theirs: the other side's pid, or an error if it
-/// speaks another version. `server` names the other side in that error.
-pub fn hello(stream: &mut (impl Read + Write), server: bool) -> Result<u32> {
+/// The other side, as its hello tells.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Peer {
+    pub pid: u32,
+    /// The server's instance id; 0 from a client.
+    pub instance: u32,
+}
+
+/// Send our hello, with our `instance` id (0 from a client), and read
+/// theirs; an error if it speaks another version. `server` names the
+/// other side in that error.
+pub fn hello(stream: &mut (impl Read + Write), server: bool, instance: u32) -> Result<Peer> {
     let ours = Message::Hello {
         version: VERSION,
         pid: std::process::id(),
+        instance,
     };
     write(stream, &Frame::Message(ours))?;
     match read(stream, FROM_CLIENT)? {
-        Some(Frame::Message(Message::Hello { version, pid })) if version == VERSION => Ok(pid),
-        Some(Frame::Message(Message::Hello { version, pid })) if server => bail!(
+        Some(Frame::Message(Message::Hello {
+            version,
+            pid,
+            instance,
+        })) if version == VERSION => Ok(Peer { pid, instance }),
+        Some(Frame::Message(Message::Hello { version, pid, .. })) if server => bail!(
             "the running paddock server (pid {pid}) speaks protocol version {version}, \
              and this paddock speaks {VERSION}: close every terminal in it, or end it \
              (kill {pid}), and start paddock again"
@@ -432,14 +449,21 @@ mod tests {
     #[test]
     fn hello_returns_the_other_sides_pid_or_names_its_version() {
         let (mut a, mut b) = UnixStream::pair().unwrap();
-        let other = std::thread::spawn(move || hello(&mut b, false).unwrap());
-        assert_eq!(hello(&mut a, true).unwrap(), std::process::id());
-        assert_eq!(other.join().unwrap(), std::process::id());
+        let other = std::thread::spawn(move || hello(&mut b, false, 77).unwrap());
+        let ours = std::process::id();
+        let server = hello(&mut a, true, 0).unwrap();
+        assert_eq!((server.pid, server.instance), (ours, 77));
+        let client = other.join().unwrap();
+        assert_eq!((client.pid, client.instance), (ours, 0));
 
         let (mut a, mut b) = UnixStream::pair().unwrap();
-        let old = Message::Hello { version: 0, pid: 7 };
+        let old = Message::Hello {
+            version: 0,
+            pid: 7,
+            instance: 9,
+        };
         write(&mut b, &Frame::Message(old)).unwrap();
-        let err = hello(&mut a, true).unwrap_err().to_string();
+        let err = hello(&mut a, true, 0).unwrap_err().to_string();
         assert!(err.contains("pid 7") && err.contains("version 0"), "{err}");
     }
 }

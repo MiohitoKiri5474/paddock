@@ -1,7 +1,7 @@
 #!/bin/sh
 # The app-level suite on the native backend: every test file but the unit
 # tests, without the tmux-only tests (tmux_only_*) and those that wait for
-# tickets 42-43 (tests/harness/native_skip.rs). Arguments go to cargo test,
+# ticket 42 (tests/harness/native_skip.rs). Arguments go to cargo test,
 # before its `--`.
 set -eu
 cd "$(dirname "$0")/.."
