@@ -1,6 +1,7 @@
 //! Which of paddock's terminals a process runs in, from the variables tmux
 //! sets in every pane, and those variables for a pane.
 
+use crate::backend::hook_vars::{digits, terminal_id_ok};
 use crate::backend::{HookTerminal, Instance, TerminalId};
 use crate::config::BackendKind;
 use std::path::Path;
@@ -12,12 +13,10 @@ pub fn terminal(var: impl Fn(&str) -> Option<String>, socket: &str) -> Option<Ho
     let (tmux, pane) = (var("TMUX")?, var("TMUX_PANE")?);
     let mut parts = tmux.rsplitn(3, ',');
     let _index = parts.next()?;
-    let id = parts.next()?.parse().ok()?;
+    let id = digits(parts.next()?)?;
     let path = parts.next()?;
     let ours = Path::new(path).file_name()? == socket;
-    let pane_ok = pane
-        .strip_prefix('%')
-        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+    let pane_ok = terminal_id_ok(&pane);
     (ours && pane_ok).then(|| HookTerminal {
         instance: Instance {
             kind: BackendKind::Tmux,

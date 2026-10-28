@@ -114,9 +114,11 @@ impl Context {
     }
 
     /// The backend's instance id (see [`Backend::instance`]); `None` if
-    /// it does not run.
-    pub fn instance(&self) -> Option<Instance> {
-        self.backend.instance().ok()
+    /// it does not run, an error if it runs and cannot say.
+    pub fn instance(&self) -> Result<Option<Instance>, Fail> {
+        self.backend
+            .running_instance()
+            .map_err(|e| Fail::new(Code::Usage, format!("{e:#}")))
     }
 
     /// Every space in the backend, oldest first.
@@ -136,7 +138,7 @@ impl Context {
     /// backend (with paddock's settings) if it does not run. Returns the
     /// space's name as the backend gave it (tmux writes `.` and `:` as `_`).
     pub fn new_space(&self, name: &str, dir: &Path) -> anyhow::Result<String> {
-        if self.instance().is_none() {
+        if self.backend.running_instance()?.is_none() {
             self.backend.prepare()?;
         }
         let space = self.backend.new_space(name, dir, SPACE_SIZE)?;
@@ -394,7 +396,7 @@ fn list(cx: &Context, from: Option<&Path>, json: bool) -> Result<(), Fail> {
     let directory = config.worktrees.directory;
     // One `gh` call for the repository, while the rest is read.
     let asked = ask_prs(&tree.main, config.github_refresh);
-    let instance = cx.instance();
+    let instance = cx.instance()?;
     // `list` only reports: Claude not answering leaves the hook log's word.
     let (sessions, _) = cx.sessions(instance);
     let spaces = cx.spaces();

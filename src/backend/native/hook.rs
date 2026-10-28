@@ -1,6 +1,7 @@
 //! Which of paddock's terminals a process runs in, from the variables the
 //! native server sets in every terminal, and those variables for one.
 
+use crate::backend::hook_vars::{digits, terminal_id_ok};
 use crate::backend::{HookTerminal, Instance, TerminalId};
 use crate::config::BackendKind;
 use std::path::{Path, PathBuf};
@@ -20,7 +21,7 @@ const INSTANCE: &str = "PADDOCK_INSTANCE";
 pub fn terminal(var: impl Fn(&str) -> Option<String>, socket: &Path) -> Option<HookTerminal> {
     let (pane, path) = (var(PANE)?, var(SOCKET)?);
     let id = digits(&var(INSTANCE)?).filter(|&id| id > 0)?;
-    let pane_ok = pane.strip_prefix('%').and_then(digits).is_some();
+    let pane_ok = terminal_id_ok(&pane);
     (pane_ok && same_socket(Path::new(&path), socket)).then(|| HookTerminal {
         instance: Instance {
             kind: BackendKind::Native,
@@ -28,12 +29,6 @@ pub fn terminal(var: impl Fn(&str) -> Option<String>, socket: &Path) -> Option<H
         },
         terminal: TerminalId::new(pane),
     })
-}
-
-/// `text` as a number, if it is only ASCII digits (no sign, no spaces).
-fn digits(text: &str) -> Option<u32> {
-    let plain = !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit());
-    plain.then(|| text.parse().ok()).flatten()
 }
 
 /// Whether `a` and `b` name the same socket: as written (no system call:

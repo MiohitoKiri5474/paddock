@@ -114,6 +114,17 @@ impl Client {
         self.connect().and_then(|(_, server)| instance_of(server))
     }
 
+    /// The running server's instance id; `None` if none runs; an error if
+    /// one runs that gave none (see [`Self::instance`]) or that this
+    /// paddock cannot talk to.
+    pub fn running_instance(&self) -> Result<Option<u32>> {
+        match self.connect() {
+            Ok((_, server)) => instance_of(server).map(Some),
+            Err(e) if no_server(&e) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
     /// Start the server unless one runs, and wait until it listens.
     fn start(&self) -> Result<()> {
         if self.connect().is_ok() {

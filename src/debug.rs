@@ -160,7 +160,7 @@ pub fn print_state() -> Result<()> {
     let paths = Paths::from_env()?;
     let backend = Backend::configured(paths.clone())?;
     backend.check()?;
-    let instance = backend.instance().ok();
+    let instance = backend.running_instance()?;
     let log = instance.map(|i| (i.id, log::path(&paths.state_dir, i)));
     // A space that ends between the list and its read is left out.
     let spaces: Vec<SpaceSnapshot> = backend

@@ -9,6 +9,7 @@
 
 mod border;
 mod env;
+mod hook_vars;
 mod ids;
 mod native;
 mod structure;
@@ -202,6 +203,22 @@ impl Backend {
             Self::Tmux(t) => t.apply_config(),
             Self::Native(_) => Ok(()),
         }
+    }
+
+    /// The running host's instance, as [`Self::instance`]; `None` if no
+    /// host runs, and an error, unlike there, only for one that runs and
+    /// cannot say (a native server whose hello gave no instance id).
+    pub fn running_instance(&self) -> Result<Option<Instance>> {
+        Ok(match self {
+            Self::Tmux(t) => t.pid().ok().map(|id| Instance {
+                kind: BackendKind::Tmux,
+                id,
+            }),
+            Self::Native(n) => n.running_instance()?.map(|id| Instance {
+                kind: BackendKind::Native,
+                id,
+            }),
+        })
     }
 
     /// The running host's instance, which names its hook event log (see

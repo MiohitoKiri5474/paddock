@@ -49,7 +49,7 @@ pub(super) fn rm(
     never_deleted(cx, &found)?;
     let spaces = cx.spaces();
     let closing = shared::spaces_in(&cx.backend, &ids(&spaces), &found.w.path)?;
-    let instance = cx.instance();
+    let instance = cx.instance()?;
     not_the_caller_s(cx, &found, &closing, instance)?;
     let confirmed = check(cx, &found, &spaces, &closing, instance, discard)?;
     let target = WorktreeSpace {
