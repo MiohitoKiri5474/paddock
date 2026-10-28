@@ -57,7 +57,7 @@ paddock tracks Claude sessions through Claude Code hooks. Install the paddock pl
 /plugin install paddock@paddock
 ```
 
-Then restart running Claude sessions. The plugin's hooks run `paddock` from your `PATH`, so make sure `which paddock` finds it in the shell you start Claude from (Homebrew and `cargo install` put it there). Without `paddock` on `PATH` the hooks do nothing, quietly. The plugin also carries the worktree skills (see [Claude Code plugin](#claude-code-plugin)).
+Then restart running Claude sessions. The plugin's hooks run `paddock` from your `PATH`, so make sure `which paddock` finds it in the shell you start Claude from (Homebrew and `cargo install` put it there). Without `paddock` on `PATH` the hooks do nothing, quietly. The plugin also carries the worktree skills (see [Worktree skills for agents](#worktree-skills-for-agents)).
 
 **Fallback, without the plugin**: write the hooks into `~/.claude/settings.json` instead.
 
@@ -108,7 +108,7 @@ Name each agent whose hooks you installed (drop `--agent gemini` or `--agent agy
 
 ### Connect Gemini CLI
 
-paddock tracks Gemini CLI sessions (hooks need Gemini CLI 0.26 or newer; tested with 0.64) through Gemini's hooks in `~/.gemini/settings.json` (`$GEMINI_CLI_HOME/.gemini/settings.json` if set). There is no plugin for Gemini: install the hooks with paddock.
+paddock tracks Gemini CLI sessions (hooks need Gemini CLI 0.26 or newer; tested with 0.64) through Gemini's hooks in `~/.gemini/settings.json` (`$GEMINI_CLI_HOME/.gemini/settings.json` if set). paddock's Gemini extension carries the worktree skill and commands but no hooks (see [Worktree skills for agents](#worktree-skills-for-agents)): install the hooks with paddock.
 
 ```sh
 cp ~/.gemini/settings.json ~/.gemini/settings.json.bak
@@ -122,7 +122,7 @@ What Gemini sessions get: their row, dot, tab marker, state (running after a pro
 
 ### Connect Antigravity CLI
 
-paddock tracks Antigravity CLI (`agy`; tested with 1.4.3) sessions through agy's hooks in `~/.gemini/config/hooks.json`, a file keyed by hook name, and, in paddock's terminals, through the status agy reports to its terminal (OSC 7501, agy 1.4.0 or newer). There is no plugin for agy: install the hooks with paddock.
+paddock tracks Antigravity CLI (`agy`; tested with 1.4.3) sessions through agy's hooks in `~/.gemini/config/hooks.json`, a file keyed by hook name, and, in paddock's terminals, through the status agy reports to its terminal (OSC 7501, agy 1.4.0 or newer). paddock's agy plugin carries the worktree skill but no hooks (see [Worktree skills for agents](#worktree-skills-for-agents)): install the hooks with paddock.
 
 ```sh
 cp ~/.gemini/config/hooks.json ~/.gemini/config/hooks.json.bak   # if you have one
@@ -406,16 +406,41 @@ paddock worktree rm feat/x             # close its spaces, remove it, delete the
 - `rm` refuses, naming the risk, when the worktree has uncommitted changes (unless `--discard-changes`), commits not in its base (unless `--discard-commits`; a detached HEAD's too), an agent running or waiting in it (floats included), or when it is the main checkout, a worktree paddock did not make, or holds the caller's current directory or terminal. It removes with `git worktree remove` (`--force` only with `--discard-changes`) and deletes the branch with `git branch -d`: an unmerged branch is kept, with a notice.
 - Exit codes: `0` ok, `1` usage or config error, `2` git or tmux error (git's reason on stderr), `3` refused for a risk, `4` timeout (nothing deleted). Errors are one line on stderr.
 
-## Claude Code plugin
+## Worktree skills for agents
 
-This repository is also a Claude Code plugin marketplace. Its `paddock` plugin carries paddock's hooks (see [Connect Claude Code](#connect-claude-code)) and a skill, `paddock-worktrees`, that teaches Claude when and how to use `paddock worktree` (check `list` first, work in the path `new` returns, delete only when asked or merged, never pass `--discard-*` without your say-so, and ask you on exit code 3), plus two slash commands, `/paddock:worktree-new <branch>` and `/paddock:worktree-list`. In Claude Code:
+Each agent paddock tracks gets a skill, `paddock-worktrees`, that teaches it when and how to use `paddock worktree` (check `list` first, work in the path `new` returns, delete only when asked or merged, never pass `--discard-*` without your say-so, and ask you on exit code 3), and, where the agent loads commands, two commands to run `paddock worktree new <branch>` and `paddock worktree list`. Each needs `paddock` on your `PATH`.
+
+### Claude Code
+
+This repository is a Claude Code plugin marketplace. Its `paddock` plugin carries paddock's hooks (see [Connect Claude Code](#connect-claude-code)), the skill, and two slash commands, `/paddock:worktree-new <branch>` and `/paddock:worktree-list`. In Claude Code:
 
 ```text
 /plugin marketplace add MiohitoKiri5474/paddock
 /plugin install paddock@paddock
 ```
 
-The plugin needs `paddock` on your `PATH`.
+### Gemini CLI
+
+The repository is also a Gemini CLI extension (`gemini-extension.json` at its root; checked with `gemini extensions validate`, Gemini CLI 0.65). It carries the skill and two commands, `/paddock:worktree-new <branch>` and `/paddock:worktree-list`, and no hooks: those come from `paddock hooks install --agent gemini` (see [Connect Gemini CLI](#connect-gemini-cli)). From your shell:
+
+```sh
+gemini extensions install https://github.com/MiohitoKiri5474/paddock
+gemini extensions update paddock      # after a paddock release
+gemini extensions uninstall paddock
+```
+
+Gemini copies the whole repository into `~/.gemini/extensions/paddock`; restart running Gemini sessions afterwards.
+
+### Antigravity CLI
+
+agy installs the same extension as a plugin, converting it on install (`agy plugin validate`, agy 1.4.5, reports it as a Gemini CLI extension that `plugin install` converts). It gets the skill, not the commands (agy plugins load no `commands/`), so ask agy in words. From your shell:
+
+```sh
+agy plugin install https://github.com/MiohitoKiri5474/paddock
+agy plugin uninstall paddock
+```
+
+Restart running agy sessions afterwards. Do not give agy the Claude Code plugin (`agy plugin import claude`, or `plugins/paddock` as a local plugin): agy would run its Claude hooks, and paddock would record agy's events as a Claude session's.
 
 ## Files
 
@@ -438,6 +463,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test                          # unit + end-to-end tests (real tmux on a temp socket)
 claude plugin validate --strict .   # the plugin marketplace, in full (cargo test checks the basics)
 claude plugin validate --strict plugins/paddock
+gemini extensions validate .        # the Gemini extension (agy installs it too)
 ```
 
 CI runs the unit tests on macOS and uploads a release binary when they pass. Pushing a `v*` tag that matches the version in `Cargo.toml` builds the Apple Silicon tarball and opens a draft pre-release.

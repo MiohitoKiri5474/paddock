@@ -3,6 +3,8 @@
 //! manifests parse, names match, sources exist, and every skill has
 //! frontmatter with a name and a description. Ticket 27: the plugin's hooks
 //! run silently, and with `paddock hooks install`'s record each event once.
+//! The repository root is also a Gemini CLI extension (Antigravity CLI
+//! installs it too): its manifest, commands and its copies of the skill.
 
 mod harness;
 
@@ -107,6 +109,136 @@ fn the_marketplace_lists_the_paddock_plugin_and_every_skill_has_frontmatter() {
             assert!(!allowed.contains("rm"), "{skill}: {allowed}");
             assert!(!allowed.contains("worktree *"), "{skill}: {allowed}");
         }
+    }
+}
+
+/// What follows a SKILL.md's frontmatter.
+fn skill_body(path: &Path) -> String {
+    let text = std::fs::read_to_string(path).unwrap();
+    let rest = text
+        .strip_prefix("---\n")
+        .unwrap_or_else(|| panic!("{}: no frontmatter", path.display()));
+    let (_, body) = rest
+        .split_once("\n---\n")
+        .unwrap_or_else(|| panic!("{}: frontmatter not closed", path.display()));
+    body.to_string()
+}
+
+/// A command file of the Gemini extension, parsed.
+fn gemini_command(name: &str) -> toml::Table {
+    let path = Path::new(ROOT).join("commands/paddock").join(name);
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    text.parse()
+        .unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+}
+
+// The repository root is also a Gemini CLI extension, which Antigravity CLI
+// installs by converting it: the same skill as the Claude plugin's, and its
+// two commands. It carries no hooks (`paddock hooks install` writes those).
+
+#[test]
+fn the_gemini_extension_has_its_manifest_skill_and_commands_and_no_hooks() {
+    let root = Path::new(ROOT);
+    let manifest = read_json(&root.join("gemini-extension.json"));
+    assert_eq!(text(&manifest, "name", "gemini-extension.json"), "paddock");
+    text(&manifest, "description", "gemini-extension.json");
+    assert!(manifest.get("contextFileName").is_none(), "no context file");
+    for path in ["hooks", "GEMINI.md", "AGENTS.md", "plugin.json"] {
+        assert!(!root.join(path).exists(), "{path} at the repository root");
+    }
+
+    let mut skills: Vec<String> = std::fs::read_dir(root.join("skills"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    skills.sort();
+    assert_eq!(
+        skills,
+        ["paddock-worktrees"],
+        "user-only skills are commands"
+    );
+    let path = root.join("skills/paddock-worktrees/SKILL.md");
+    let fields = frontmatter(&path);
+    let keys: Vec<&str> = fields.iter().map(|(k, _)| k.as_str()).collect();
+    assert_eq!(keys, ["name", "description"], "what Gemini and agy read");
+    assert_eq!(fields[0].1, "paddock-worktrees");
+
+    let mut commands: Vec<String> = std::fs::read_dir(root.join("commands/paddock"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    commands.sort();
+    assert_eq!(commands, ["worktree-list.toml", "worktree-new.toml"]);
+    for name in &commands {
+        let command = gemini_command(name);
+        let keys: Vec<&str> = command.keys().map(String::as_str).collect();
+        assert_eq!(keys, ["description", "prompt"], "{name}");
+        for key in keys {
+            let value = command[key].as_str().unwrap_or("");
+            assert!(!value.trim().is_empty(), "{name}: {key}");
+        }
+        let prompt = command["prompt"].as_str().unwrap();
+        assert!(!prompt.contains("worktree rm"), "{name}");
+        assert!(!prompt.contains("--discard"), "{name}");
+    }
+}
+
+#[test]
+fn every_agents_copy_of_the_instructions_says_the_same() {
+    let root = Path::new(ROOT);
+    let claude = root.join("plugins/paddock/skills");
+    assert_eq!(
+        skill_body(&root.join("skills/paddock-worktrees/SKILL.md")),
+        skill_body(&claude.join("paddock-worktrees/SKILL.md")),
+        "skills/paddock-worktrees and the Claude plugin's"
+    );
+    let description = |path: &Path| {
+        frontmatter(path)
+            .into_iter()
+            .find(|(k, _)| k == "description")
+            .map(|(_, v)| v)
+            .unwrap()
+    };
+    assert_eq!(
+        description(&root.join("skills/paddock-worktrees/SKILL.md")),
+        description(&claude.join("paddock-worktrees/SKILL.md")),
+    );
+    // Gemini's `{{args}}` is Claude's `$ARGUMENTS`.
+    for (toml_name, skill) in [
+        ("worktree-new.toml", "worktree-new"),
+        ("worktree-list.toml", "worktree-list"),
+    ] {
+        let command = gemini_command(toml_name);
+        let claude_skill = claude.join(skill).join("SKILL.md");
+        assert_eq!(
+            command["prompt"].as_str().unwrap().trim(),
+            skill_body(&claude_skill)
+                .replace("$ARGUMENTS", "{{args}}")
+                .trim(),
+            "{toml_name} and the Claude plugin's {skill}"
+        );
+        assert_eq!(
+            command["description"].as_str().unwrap(),
+            description(&claude_skill),
+            "{toml_name}"
+        );
+    }
+}
+
+#[test]
+fn every_manifest_has_the_crates_version() {
+    let root = Path::new(ROOT);
+    for path in [
+        "plugins/paddock/.claude-plugin/plugin.json",
+        "gemini-extension.json",
+    ] {
+        assert_eq!(
+            text(&read_json(&root.join(path)), "version", path),
+            env!("CARGO_PKG_VERSION"),
+            "{path}: bump it with Cargo.toml"
+        );
     }
 }
 
