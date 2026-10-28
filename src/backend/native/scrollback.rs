@@ -172,8 +172,10 @@ fn read(path: &Path) -> Result<Option<(Vec<u8>, SystemTime)>> {
     Ok(Some((text, saved)))
 }
 
-/// `text`'s newest [`MAX`] bytes, from the first line that starts in
-/// them; with none (one long line), from the first whole character.
+/// `text`'s newest [`MAX`] bytes, from the first line that starts within
+/// [`LINE_SEEK`] of the cut; else (a long line cut, `cat` of a minified
+/// file) from the first whole character, an SGR sequence cut in two
+/// left out.
 fn tail(text: &[u8]) -> &[u8] {
     if text.len() <= MAX {
         return text;
@@ -183,12 +185,29 @@ fn tail(text: &[u8]) -> &[u8] {
         return &text[cut..];
     }
     let rest = &text[cut..];
-    if let Some(i) = rest.iter().position(|&b| b == b'\n') {
+    let near = &rest[..rest.len().min(LINE_SEEK)];
+    if let Some(i) = near.iter().position(|&b| b == b'\n') {
         return &rest[i + 1..];
     }
     // UTF-8 continuation bytes are 0b10xx_xxxx.
     let start = rest.iter().position(|&b| b & 0xc0 != 0x80);
-    &rest[start.unwrap_or(rest.len())..]
+    without_cut_sgr(&rest[start.unwrap_or(rest.len())..])
+}
+
+/// How far past a cut [`tail`] looks for a line's start.
+const LINE_SEEK: usize = 4 << 10;
+
+/// `text` without the end of an SGR sequence it starts with (`[1;31m`,
+/// `31m`, `;31m`), left by a cut.
+fn without_cut_sgr(text: &[u8]) -> &[u8] {
+    let params = text
+        .iter()
+        .take(64)
+        .position(|&b| !(b.is_ascii_digit() || b == b';' || b == b':' || b == b'['));
+    match params {
+        Some(n) if n > 0 && text[n] == b'm' => &text[n + 1..],
+        _ => text,
+    }
 }
 
 /// `text` as only text and colours, so the emulator it is fed to
@@ -286,16 +305,22 @@ fn csi(chars: &mut Chars<'_>) -> String {
 }
 
 /// Read past a control string, to its BEL, `ESC \` or ST (or the text's
-/// end).
+/// end). An `ESC` not followed by `\` ends the string too, but is left
+/// to start the next sequence.
 fn skip_string(chars: &mut Chars<'_>) {
-    while let Some(c) = chars.next() {
-        match c {
-            '\x07' | '\u{9c}' => return,
-            '\x1b' => {
-                chars.next_if_eq(&'\\');
-                return;
+    while let Some(&c) = chars.peek() {
+        if c == '\x1b' {
+            let mut ahead = chars.clone();
+            ahead.next();
+            if ahead.peek() == Some(&'\\') {
+                chars.next();
+                chars.next();
             }
-            _ => {}
+            return;
+        }
+        chars.next();
+        if matches!(c, '\x07' | '\u{9c}') {
+            return;
         }
     }
 }
@@ -416,6 +441,29 @@ mod tests {
     fn escape_sequences_and_c1_strings_go_whole_and_a_control_after_esc_stays() {
         let text = "a\x1b(Bb\x1b#8c\u{9b}32md\u{9b}6ne\u{9d}0;title\u{9c}f\u{90}q\x1b\\g\x1b\nh";
         assert_eq!(clean(text.as_bytes()), "abc\x1b[32mdefg\nh\x1b[0m\r\n");
+    }
+
+    #[test]
+    fn an_esc_that_ends_a_string_starts_the_next_sequence() {
+        let text = b"a\x1b]0;title\x1b[31mred";
+        assert_eq!(clean(text), "a\x1b[31mred\x1b[0m\r\n");
+    }
+
+    #[test]
+    fn a_long_line_cut_far_from_its_end_keeps_its_text() {
+        // `cat` of a minified file: one line longer than kept, coloured,
+        // then a prompt on a line of its own.
+        let long = "\x1b[0;31m".to_string() + &"abcdefg".repeat(MAX / 5);
+        let text = long + "\r\n$ ";
+        let kept = tail(text.as_bytes());
+        assert!(kept.len() > MAX - 64, "most of the long line kept");
+        assert!(kept.starts_with(b"abcdefg") || kept[0].is_ascii_lowercase());
+        assert!(kept.ends_with(b"\r\n$ "));
+        // A cut inside an SGR sequence leaves none of it.
+        assert_eq!(without_cut_sgr(b"1;31mtext"), b"text");
+        assert_eq!(without_cut_sgr(b"[0mtext"), b"text");
+        assert_eq!(without_cut_sgr(b"42 text"), b"42 text");
+        assert_eq!(without_cut_sgr(b"mtext"), b"mtext");
     }
 
     #[test]

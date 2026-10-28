@@ -130,15 +130,16 @@ fn rebuild_tab(
         let cwd = Path::new(&saved.dir);
         let mut term = start(state, space, terminal.clone(), cwd, size)?;
         // With the state locked, so before its shell's first output.
-        match saved.scrollback.as_deref().map(ScrollbackName::parse) {
-            Some(Some(name)) => {
-                if let Some(text) = scrollback::load(dir, &name) {
-                    term.seed(&text);
+        if let Some(raw) = saved.scrollback.as_deref() {
+            match ScrollbackName::parse(raw) {
+                Some(name) => {
+                    if let Some(text) = scrollback::load(dir, &name) {
+                        term.seed(&text);
+                    }
+                    term.saved_as = name;
                 }
-                term.saved_as = name;
+                None => eprintln!("paddock server: no scrollback named {raw:?}"),
             }
-            Some(None) => eprintln!("paddock server: no scrollback named {:?}", saved.scrollback),
-            None => {}
         }
         terminals.push(term);
     }
