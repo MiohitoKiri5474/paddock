@@ -145,13 +145,15 @@ fn hook_events_drive_the_agent_row() {
 /// What a case is called, the hook's extra environment, and its event.
 type Case<'a> = (&'a str, &'a [(&'a str, &'a str)], &'a str);
 
+/// tmux-only: the variables a hook outside paddock's terminals may see are
+/// tmux's (another server's `TMUX`, or paddock's without `TMUX_PANE`).
 #[test]
-fn hooks_outside_paddock_say_nothing_and_go_to_the_external_log() {
+fn tmux_only_hooks_outside_paddock_say_nothing_and_go_to_the_external_log() {
     let sandbox = Sandbox::new();
     let _paddock = ready(&sandbox);
-    let pid = sandbox.display("space-1", "#{pid}");
+    let pid = sandbox.state().instance.expect("the instance id");
     let foreign = format!("/tmp/tmux-501/default,{pid},0");
-    let ours = sandbox.display("space-1", "#{socket_path},#{pid},0");
+    let ours = sandbox.terminal("space-1").hook_env["TMUX"].clone();
     let foreign_env = [("TMUX", foreign.as_str()), ("TMUX_PANE", "%0")];
     let no_pane = [("TMUX", ours.as_str())];
     let cases: [Case; 4] = [
@@ -205,8 +207,8 @@ fn agents_of_every_space_are_listed_with_their_space_and_tab() {
     start("space-1:2", "s3", "/w/idle", "Stop");
     start("space-1:3", "s4", "/w/waiting", "PermissionRequest");
 
-    // Sorted by state; the turn that ended out of sight is done; the
-    // session that ended is not listed.
+    // In tab order, never by state; the turn that ended out of sight is
+    // done; the session that ended is not listed.
     wait_for_lines(
         &paddock,
         &[
@@ -215,11 +217,11 @@ fn agents_of_every_space_are_listed_with_their_space_and_tab() {
             space("space-2", false),
             at_home(),
             " AGENTS".into(),
-            agent("waiting", "waiting"),
+            agent("running", "running"),
             place("space-1", "claude"),
             agent("idle", "done"),
             place("space-1", "claude"),
-            agent("running", "running"),
+            agent("waiting", "waiting"),
             place("space-1", "claude"),
         ],
     );
@@ -267,10 +269,7 @@ fn claude_agents_corrects_missed_events() {
 fn claude_agents_finds_sessions_no_hook_reported() {
     let sandbox = Sandbox::new();
     let paddock = ready(&sandbox);
-    let shell: u32 = sandbox
-        .display("space-1", "#{pane_pid}")
-        .parse()
-        .expect("pane pid");
+    let shell = sandbox.terminal("space-1").pid.expect("the shell's pid");
 
     sandbox.set_agents(
         &json!([{"sessionId": "found", "cwd": "/w/older", "status": "waiting", "pid": shell}])
@@ -333,14 +332,11 @@ fn agent_in_another_space(sandbox: &Sandbox) -> Paddock {
     paddock
 }
 
-/// Wait until pane `target` shows `text`, as tmux has it.
-fn wait_in_pane(sandbox: &Sandbox, target: &str, text: &str) {
-    let capture = || sandbox.tmux(&["capture-pane", "-p", "-t", target]);
-    let start = std::time::Instant::now();
-    while !capture().contains(text) {
-        assert!(start.elapsed() < harness::TIMEOUT, "pane:\n{}", capture());
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
+/// Wait until the terminal shown prints `text`, and check it is space-1's
+/// tab `tab` (from 0), current there as the backend has it.
+fn wait_in_tab(paddock: &Paddock, sandbox: &Sandbox, tab: usize, text: &str) {
+    paddock.wait_for_text(&format!("{text}\n"));
+    assert_eq!(sandbox.space("space-1").current, tab);
 }
 
 #[test]
@@ -358,7 +354,7 @@ fn enter_on_an_agent_jumps_to_its_space_tab_and_pane() {
     // Looked at now: the done turn is idle.
     paddock.wait_for("idle", |_| paddock.full_screen().contains("idle"));
     paddock.type_line("echo typed-after-the-jump");
-    wait_in_pane(&sandbox, "space-1:1", "typed-after-the-jump");
+    wait_in_tab(&paddock, &sandbox, 1, "typed-after-the-jump");
 }
 
 #[test]
@@ -452,7 +448,7 @@ fn clicking_an_agent_row_jumps_to_its_pane() {
 
     paddock.wait_for_current_tab("2:● claude");
     paddock.type_line("echo typed-after-the-click");
-    wait_in_pane(&sandbox, "space-1:1", "typed-after-the-click");
+    wait_in_tab(&paddock, &sandbox, 1, "typed-after-the-click");
 }
 
 #[test]
@@ -464,21 +460,17 @@ fn x_on_an_agent_row_closes_its_pane() {
     paddock.send(b"jx");
 
     paddock.wait_for("its tab closed", |_| {
-        sandbox
-            .tmux(&["list-windows", "-t", "space-1"])
-            .lines()
-            .count()
-            == 1
+        sandbox.space("space-1").tabs.len() == 1
     });
-    assert_eq!(sandbox.session_names(), ["space-1", "space-2"]);
+    assert_eq!(sandbox.space_names(), ["space-1", "space-2"]);
 }
 
-/// Wait until space-1's pane is `cols` wide on the hidden server.
+/// Wait until space-1's terminal is `cols` wide in the backend.
 fn wait_for_width(sandbox: &Sandbox, cols: u16) {
     let start = std::time::Instant::now();
-    let width = || sandbox.display("space-1", "#{pane_width}");
+    let width = || sandbox.terminal("space-1").width;
     while start.elapsed() < harness::TIMEOUT {
-        if width() == cols.to_string() {
+        if width() == cols {
             return;
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
@@ -496,9 +488,8 @@ fn parallel_hooks_never_interleave_records() {
             s.spawn(|| sandbox.hook("space-1", "Stop", &big));
         }
     });
-    let pid = sandbox.display("space-1", "#{pid}");
-    let log = std::fs::read_to_string(sandbox.path(&format!("state/paddock/events/{pid}.jsonl")))
-        .expect("event log");
+    let log = sandbox.state().event_log.expect("the backend's event log");
+    let log = std::fs::read_to_string(log).expect("event log");
     let lines: Vec<&str> = log.lines().collect();
     assert_eq!(lines.len(), 16);
     for l in lines {
@@ -600,7 +591,7 @@ fn dragging_the_border_resizes_the_sidebar() {
     wait_for_width(&sandbox, harness::COLS - 40);
     paddock.type_line("echo still-in-two");
     paddock.wait_for_text("still-in-two\n");
-    assert_eq!(sandbox.display("space-2", "#{pane_width}"), "60");
+    assert_eq!(sandbox.terminal("space-2").width, 60);
 }
 
 #[test]

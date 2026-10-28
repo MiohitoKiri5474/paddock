@@ -1,6 +1,5 @@
-//! The running app: connect to the hidden server, show its sessions as
-//! spaces with their windows as tabs, and pass input to the focused
-//! pane until the user detaches.
+//! The running app: connect to the backend, show its spaces and their
+//! tabs, and pass input to the focused terminal until the user detaches.
 
 mod attention;
 mod copy;
@@ -27,24 +26,26 @@ mod worktrees;
 pub use dashboard::DashboardFilter;
 pub use rows::{Row, RowId, TaskDetails, TaskPrs, TaskRow};
 
+use crate::backend::{self, Backend, OldTmuxServer, OtherVersion, SpaceId, TerminalId};
 use crate::config::Config;
 use crate::git::{Details, Status};
 use crate::paths::Paths;
 use crate::sessions::{Agent, HookRecord};
-use crate::tmux::{Message, Server};
 use anyhow::{Context, Result};
 use crossterm::event as ct;
 use signal_hook::consts::SIGTERM;
 use signal_hook::iterator::Signals;
 use std::collections::HashMap;
+use std::io::{IsTerminal, Write};
 use std::sync::{mpsc, Arc};
 
-/// Everything the event loop waits on, from tmux and from the outer terminal.
+/// Everything the event loop waits on, from the backend and from the outer
+/// terminal.
 pub enum Event {
-    /// A control message from the client of space (tmux session) `session` (`$N`).
-    Tmux {
-        session: String,
-        msg: Message,
+    /// What space `space`'s connection reported.
+    Backend {
+        space: SpaceId,
+        event: backend::Event,
     },
     Input(ct::Event),
     /// Asked to detach (SIGTERM), e.g. by a second launch taking over.
@@ -53,15 +54,14 @@ pub enum Event {
     Hooks(Vec<HookRecord>),
     /// A `claude agents --json` snapshot and when it was taken (ms).
     Agents(u64, Vec<Agent>),
-    /// Each pane's `pane_current_command`, by pane id, and when it was
-    /// read (ms).
-    Commands(u64, HashMap<String, String>),
+    /// Each terminal's foreground command, and when it was read (ms).
+    Commands(u64, HashMap<TerminalId, String>),
     /// Git status just read for tasks, by `(directory, branch)`.
     Git(Vec<((String, String), Status)>),
     /// Dashboard details just read for tasks, by `(directory, branch)`.
     Details(Vec<((String, String), Details)>),
-    /// Each space's directory and branch just read, by tmux session id.
-    Spaces(Vec<(String, watch::Place)>),
+    /// Each space's directory and branch just read.
+    Spaces(Vec<(SpaceId, watch::Place)>),
     /// Pull requests just read for the dashboard's tasks, by
     /// `(directory, branch)`; `None` for none.
     Prs(prs::PrUpdate),
@@ -78,9 +78,23 @@ pub fn run() -> Result<()> {
     let Some(_instance) = crate::instance::claim(&paths.state_dir)? else {
         return Ok(());
     };
+    let old_tmux = OldTmuxServer::find(&paths, config.backend);
+    let result = run_claimed(paths, &config, old_tmux.as_ref().map(OldTmuxServer::notice));
+    // Printed however paddock ends, after the screen is given back, and
+    // only then remembered as told.
+    if let Some(old) = old_tmux {
+        eprintln!("paddock: {}", old.notice());
+        old.told();
+    }
+    result
+}
+
+/// [`run`] once this paddock is the only one: `notice`, if any, shows in
+/// the tab bar before the config's warnings, so its width does not cut it.
+fn run_claimed(paths: Paths, config: &Config, notice: Option<String>) -> Result<()> {
     let state_dir = paths.state_dir.clone();
-    let server = Server::new(paths);
-    server.write_config()?;
+    let backend = Backend::new(paths, config.backend);
+    prepare(&backend)?;
     let start_dir = std::env::current_dir().context("no current directory")?;
 
     let (tx, rx) = mpsc::channel();
@@ -96,17 +110,23 @@ pub fn run() -> Result<()> {
     let (screen_guard, mut screen) = screen::ScreenGuard::enter()?;
     let size = screen.size().context("cannot read the terminal size")?;
     let mut app = state::App::start(
-        server,
-        &config,
+        backend,
+        config,
         (size.width, size.height),
         tx.clone(),
         start_dir,
         state_dir.clone(),
     )?;
-    let events_log = watch::server_log(&app.server, &state_dir)?;
+    if let Some(notice) = notice {
+        app.notice = Some(match app.notice.take() {
+            Some(others) => format!("{notice}; {others}"),
+            None => notice,
+        });
+    }
+    let events_log = watch::server_log(&app.backend, &state_dir)?;
     app.events_log = Some(events_log.clone());
     let git = watch::start(
-        &app.server,
+        &app.backend,
         events_log,
         Arc::clone(&app.agy_running),
         &state_dir,
@@ -132,5 +152,42 @@ pub fn run() -> Result<()> {
     for warning in &config.warnings {
         eprintln!("paddock: {warning}");
     }
-    result
+    match result? {
+        Some(farewell) => anyhow::bail!(farewell),
+        None => Ok(()),
+    }
+}
+
+/// Get the backend ready ([`Backend::prepare`]) and bring back a saved
+/// layout ([`Backend::resume`]). A server that speaks another protocol
+/// version is said so, with an offer to restart it (ADR 0007): on yes it
+/// ends, programs and all, and a new one rebuilds its layout; on no, or
+/// with no terminal to ask on, paddock stops with the same words.
+fn prepare(backend: &Backend) -> Result<()> {
+    if let Err(e) = backend.prepare() {
+        let Some(other) = e.downcast_ref::<OtherVersion>() else {
+            return Err(e);
+        };
+        if !ask_to_restart(other)? {
+            return Err(e);
+        }
+        backend.restart(other)?;
+        backend.prepare()?;
+    }
+    backend.resume()
+}
+
+fn ask_to_restart(other: &OtherVersion) -> Result<bool> {
+    if !std::io::stdin().is_terminal() {
+        return Ok(false);
+    }
+    print!(
+        "paddock: {}.\nRestart it? Its programs end; its layout comes back. [y/N] ",
+        other.mismatch()
+    );
+    std::io::stdout().flush()?;
+    let mut answer = String::new();
+    std::io::stdin().read_line(&mut answer)?;
+    let answer = answer.trim();
+    Ok(answer.eq_ignore_ascii_case("y") || answer.eq_ignore_ascii_case("yes"))
 }

@@ -1,27 +1,31 @@
-//! Sidebar spaces and their tabs, kept in tmux (ADR 0006): a space is a tmux
-//! session, a tab one of its windows. paddock asks tmux to change them and
-//! reads them back when tmux reports a change.
+//! Sidebar spaces and their tabs, kept in the backend (ADR 0006). paddock
+//! asks the backend to change them and reads them back when it reports a
+//! change.
 
-use super::rows::{pane_only, EXTERNAL_CLOSE, EXTERNAL_FORK, EXTERNAL_OPEN};
+use super::rows::{EXTERNAL_CLOSE, EXTERNAL_FORK, EXTERNAL_OPEN};
 use super::space::clamp;
 use super::state::{is_session_id, next_name, App, CloseTarget, Mode, NameTarget, Renamed};
 use super::watch;
+use crate::backend::{SpaceId, TerminalId};
 use crate::paths::HomePaths;
 use crate::sessions::{AgentKind, State};
+use crate::shell::quote;
 use crate::terminal::Terminal;
-use crate::tmux::server::quote;
 use anyhow::{bail, Result};
 use std::path::PathBuf;
 
 /// New spaces are named `space-N` until the user renames them.
 const SPACE_STEM: &str = "space-";
 
+/// What acting on a row says when its terminal closed meanwhile.
+const TERMINAL_CLOSED: &str = "that terminal is closed";
+
 impl App {
     /// The name a new space gets unless the user picks one: the first free
     /// `space-N`.
     pub fn new_space_name(&self) -> String {
-        let sessions = self.server.sessions();
-        next_name(SPACE_STEM, sessions.iter().map(|s| s.name.as_str()))
+        let spaces = self.backend.spaces();
+        next_name(SPACE_STEM, spaces.iter().map(|s| s.name.as_str()))
     }
 
     /// Start a shell in a new space named [`Self::new_space_name`].
@@ -41,31 +45,31 @@ impl App {
     /// the sidebar and make it current.
     pub fn new_space_in(&mut self, name: &str, dir: PathBuf) -> Result<()> {
         let area = self.area();
-        let session = self
-            .server
-            .new_session(name, &dir, clamp((area.width, area.height)))?;
-        if let Err(e) = self.attach(&session.id) {
+        let space = self
+            .backend
+            .new_space(name, &dir, clamp((area.width, area.height)))?;
+        if let Err(e) = self.attach(&space) {
             // Best effort: never leave a shell running out of sight.
-            let _ = self.server.kill_session(&session.id);
+            let _ = self.backend.close_space(&space);
             return Err(e);
         }
         self.current = self.spaces.len() - 1;
         Ok(())
     }
 
-    /// Attach, as spaces at the end of the sidebar, the sessions made on
-    /// the hidden server by someone else (`paddock worktree new`, `tmux
-    /// new-session`); the current space stays. Every space's client hears
-    /// of a new session, so one already attached is skipped. A session
-    /// that ended before it could be attached is no news.
-    pub(super) fn attach_new_sessions(&mut self) {
-        let known: Vec<String> = self.spaces.iter().map(|s| s.id.clone()).collect();
-        for session in self.server.sessions() {
-            if known.contains(&session.id) {
+    /// Attach, at the end of the sidebar, the spaces made in the backend by
+    /// someone else (`paddock worktree new`, or by hand); the
+    /// current space stays. Every space's connection hears of a new space,
+    /// so one already attached is skipped. A space that ended before it
+    /// could be attached is no news.
+    pub(super) fn attach_new_spaces(&mut self) {
+        let known: Vec<SpaceId> = self.spaces.iter().map(|s| s.id.clone()).collect();
+        for space in self.backend.spaces() {
+            if known.contains(&space.id) {
                 continue;
             }
-            if let Err(e) = self.attach(&session.id) {
-                let alive = self.server.sessions().iter().any(|s| s.id == session.id);
+            if let Err(e) = self.attach(&space.id) {
+                let alive = self.backend.spaces().iter().any(|s| s.id == space.id);
                 if alive {
                     self.notice = Some(format!("{e:#}"));
                 }
@@ -83,63 +87,64 @@ impl App {
     }
 
     /// Start a shell in `dir` in a new tab of space `id`, current in it.
-    /// Returns its pane id.
-    fn open_tab(&mut self, id: &str, dir: PathBuf) -> Result<String> {
-        let pane = self.server.new_window(id, &dir)?;
+    /// Returns its terminal.
+    fn open_tab(&mut self, id: &SpaceId, dir: PathBuf) -> Result<TerminalId> {
+        let pane = self.backend.new_tab(id, &dir)?;
         self.refresh(id)?;
         Ok(pane)
     }
 
-    /// [`Self::refresh`] after tmux reported a change, showing a failure as
-    /// a notice unless the space has just ended (its exit follows and takes
-    /// the space away).
-    pub(super) fn refresh_reported(&mut self, id: &str) {
+    /// [`Self::refresh`] after the backend reported a change, showing a
+    /// failure as a notice unless the space has just ended (its end follows
+    /// and takes the space away).
+    pub(super) fn refresh_reported(&mut self, id: &SpaceId) {
         if let Err(e) = self.refresh(id) {
-            let alive = self.server.sessions().iter().any(|s| s.id == id);
+            let alive = self.backend.spaces().iter().any(|s| s.id == *id);
             if let Some(message) = refresh_failure(&e, alive) {
                 self.notice = Some(message);
             }
         }
     }
 
-    /// Read space `id`'s windows and panes again from tmux: new panes get a
-    /// terminal (they start empty, so there is nothing to seed), ended ones
-    /// lose theirs, and every terminal takes its pane's size. Floats' panes
-    /// count too; a float that ended is no longer shown.
-    pub(super) fn refresh(&mut self, id: &str) -> Result<()> {
-        let Some(i) = self.spaces.iter().position(|it| it.id == id) else {
+    /// Read space `id`'s tabs and splits again from the backend: new
+    /// terminals get an emulator (they start empty, so there is nothing to
+    /// replay), ended ones lose theirs, and every emulator takes its
+    /// terminal's size. Floats' terminals count too; a float that ended is
+    /// no longer shown.
+    pub(super) fn refresh(&mut self, id: &SpaceId) -> Result<()> {
+        let Some(i) = self.spaces.iter().position(|it| it.id == *id) else {
             return Ok(());
         };
-        let structure = self.server.structure(id)?;
-        if structure.windows.is_empty() && !structure.floats.is_empty() {
-            // The last tab closed and only floats keep the session: the
+        let structure = self.backend.structure(id)?;
+        if structure.tabs.is_empty() && !structure.floats.is_empty() {
+            // The last tab closed and only floats keep the space: the
             // space closes with its last tab, its floats with it.
-            return self.server.kill_session(id);
+            return self.backend.close_space(id);
         }
         if structure.float_active {
-            // A float is never the current window: tmux made it current
-            // when the current tab closed, so show the tab before it.
-            if let Some(tab) = structure.windows.get(structure.current) {
-                self.server.select(&tab.id, None)?;
+            // A float is never the current tab: the backend made it
+            // current when the current tab closed, so show the tab before it.
+            if let Some(tab) = structure.tabs.get(structure.current) {
+                self.backend.select(&tab.id, None)?;
             }
         }
         self.remember_float_panes(&structure);
         let mut kept = Vec::new();
-        for pane in structure.all_windows().flat_map(|w| &w.panes) {
-            let size = clamp((pane.rect.width, pane.rect.height));
+        for split in structure.splits() {
+            let size = clamp((split.rect.width, split.rect.height));
             self.terminals
-                .entry(pane.id.clone())
+                .entry(split.id.clone())
                 .or_insert_with(|| Terminal::new(size))
                 .resize(size);
-            kept.push(pane.id.as_str());
+            kept.push(&split.id);
         }
-        let gone: Vec<String> = self.spaces[i]
-            .panes()
-            .filter(|p| !kept.contains(p))
-            .map(str::to_string)
+        let gone: Vec<TerminalId> = self.spaces[i]
+            .terminals()
+            .filter(|t| !kept.contains(t))
+            .cloned()
             .collect();
-        for pane in gone {
-            self.terminals.remove(&pane);
+        for terminal in gone {
+            self.terminals.remove(&terminal);
         }
         self.spaces[i].structure = structure;
         self.forget_ended_float_noting_quick_exit();
@@ -152,12 +157,12 @@ impl App {
         let Some(space) = self.current_space_mut() else {
             return Ok(());
         };
-        let Some(window) = space.windows().get(index).map(|w| w.id.clone()) else {
+        let Some(tab) = space.tabs().get(index).map(|t| t.id.clone()) else {
             return Ok(());
         };
-        // Show it at once; tmux confirms with a notification.
+        // Show it at once; the backend confirms with an event.
         space.structure.current = index;
-        self.server.select(&window, None)
+        self.backend.select(&tab, None)
     }
 
     /// The next (`forward`) or previous tab of the current space, wrapping.
@@ -165,7 +170,7 @@ impl App {
         let Some(space) = self.current_space() else {
             return Ok(());
         };
-        let n = space.windows().len();
+        let n = space.tabs().len();
         if n == 0 {
             return Ok(());
         }
@@ -175,7 +180,7 @@ impl App {
     }
 
     /// Move the current tab `step` places (`-1` left, `1` right) within its
-    /// space, swapping it with its neighbour in tmux; at either end nothing
+    /// space, swapping it with its neighbour in the backend; at either end nothing
     /// moves.
     pub fn move_tab(&mut self, step: isize) -> Result<()> {
         let Some(space) = self.current_space() else {
@@ -184,16 +189,13 @@ impl App {
         let at = space.structure.current;
         let Some(to) = at
             .checked_add_signed(step)
-            .filter(|&i| i < space.windows().len())
+            .filter(|&i| i < space.tabs().len())
         else {
             return Ok(());
         };
-        let (from, to_id) = (
-            space.windows()[at].id.clone(),
-            space.windows()[to].id.clone(),
-        );
+        let (from, to_id) = (space.tabs()[at].id.clone(), space.tabs()[to].id.clone());
         let id = space.id.clone();
-        self.server.swap_windows(&from, &to_id)?;
+        self.backend.swap_tabs(&from, &to_id)?;
         self.refresh(&id)
     }
 
@@ -204,26 +206,30 @@ impl App {
         }
     }
 
-    /// Bring pane `pane` to the screen: its space and tab become current and
-    /// it gets the focus.
+    /// Bring the terminal a session row names to the screen: its space and
+    /// tab become current and it gets the focus.
     pub fn jump_to(&mut self, pane: &str) {
-        if let Err(e) = pane_only(pane, EXTERNAL_OPEN) {
-            self.notice = Some(e.to_string());
-            return;
-        }
-        let Some(i) = self.space_of(pane) else {
+        let terminal = match self.row_terminal(pane, EXTERNAL_OPEN) {
+            Ok(Some(terminal)) => terminal,
+            Ok(None) => return,
+            Err(e) => {
+                self.notice = Some(e.to_string());
+                return;
+            }
+        };
+        let Some(i) = self.space_of(&terminal) else {
             return;
         };
         self.current = i;
         let space = &mut self.spaces[i];
-        let Some(w) = space.window_of(pane) else {
+        let Some(t) = space.tab_of(&terminal) else {
             return;
         };
-        space.structure.current = w;
-        let window = &mut space.structure.windows[w];
-        window.focus(pane);
-        let id = window.id.clone();
-        self.report(|app| app.server.select(&id, Some(pane)));
+        space.structure.current = t;
+        let tab = &mut space.structure.tabs[t];
+        tab.focus(&terminal);
+        let id = tab.id.clone();
+        self.report(|app| app.backend.select(&id, Some(&terminal)));
     }
 
     /// Act on a name typed into the prompt for `target`: rename the current
@@ -241,17 +247,18 @@ impl App {
         }
     }
 
-    /// Rename the current tab or space in tmux, so the name survives
-    /// reattaching. tmux may adjust a session name (it replaces `.` and `:`).
+    /// Rename the current tab or space in the backend, so the name survives
+    /// reattaching. The backend may adjust a space name (tmux replaces `.`
+    /// and `:`).
     fn rename(&mut self, what: Renamed, name: &str) -> Result<()> {
         let Some(space) = self.current_space() else {
             return Ok(());
         };
         let id = space.id.clone();
         match what {
-            Renamed::Space => self.server.rename_session(&id, name)?,
-            Renamed::Tab => match space.current_window() {
-                Some(w) => self.server.rename_window(&w.id, name)?,
+            Renamed::Space => self.backend.rename_space(&id, name)?,
+            Renamed::Tab => match space.current_tab() {
+                Some(tab) => self.backend.rename_tab(&tab.id, name)?,
                 None => return Ok(()),
             },
         }
@@ -261,20 +268,28 @@ impl App {
     /// `C-a R`: make the focused terminal's directory the current space's
     /// root, saying so in a notice.
     pub fn set_root(&mut self) -> Result<()> {
-        let (Some(pane), Some(space)) = (self.current_pane(), self.current_space()) else {
+        let (Some(pane), Some(space)) = (self.current_terminal(), self.current_space()) else {
             return Ok(());
         };
         let (id, name) = (space.id.clone(), space.name().to_string());
-        let Some(dir) = self.dir_of(&pane)? else {
+        let Some(dir) = self.dir_of(&pane) else {
             bail!("the focused terminal's directory is unknown: the space root stays");
         };
-        self.server.set_root(&id, &dir)?;
+        self.backend.set_root(&id, &dir)?;
         let root = dir.to_string_lossy();
         self.notice = Some(format!("{name}'s root: {}", HomePaths::new().show(&root)));
         // Read again now, so the finder is never stale, even for a space
         // whose place the background read has not reached yet.
-        if let Some(place) = watch::place(&self.server, &id) {
-            self.places.insert(id, place);
+        // The branch's status is not read here, on the UI thread: the last
+        // one stays until the background read brings a new one, unless the
+        // directory or branch changed, which it no longer describes.
+        if let Some(place) = watch::place(&self.backend, &id) {
+            let status = self
+                .places
+                .get(&id)
+                .filter(|old| old.same_checkout(&place))
+                .and_then(|old| old.status);
+            self.places.insert(id, watch::Place { status, ..place });
         }
         Ok(())
     }
@@ -285,45 +300,47 @@ impl App {
         let space = self.current_space();
         match target {
             NameTarget::Rename(Renamed::Space) => space.map(|i| i.name().to_string()),
-            NameTarget::Rename(Renamed::Tab) => space
-                .and_then(|i| i.current_window())
-                .map(|w| w.name.clone()),
+            NameTarget::Rename(Renamed::Tab) => {
+                space.and_then(|i| i.current_tab()).map(|t| t.name.clone())
+            }
             NameTarget::NewSpace => Some(self.new_space_name()),
             NameTarget::NewWorktree(_) => None,
         }
         .unwrap_or_default()
     }
 
-    /// End pane `pane`, first asking if an agent there is running or
-    /// waiting.
-    /// tmux closes its tab with its last pane, and its space with its last
-    /// tab, and reports each.
+    /// End the terminal a session row names, first asking if an agent
+    /// there is running or waiting.
+    /// The backend closes its tab with its last terminal, and its space
+    /// with its last tab, and reports each.
     pub fn close(&mut self, pane: &str) -> Result<()> {
-        pane_only(pane, EXTERNAL_CLOSE)?;
+        let Some(terminal) = self.row_terminal(pane, EXTERNAL_CLOSE)? else {
+            bail!(TERMINAL_CLOSED);
+        };
         match self.session_in(pane).map(|s| s.state) {
             Some(state @ (State::Running | State::Waiting)) => {
-                self.ask_close(CloseTarget::Pane(pane.to_string()), state);
+                self.ask_close(CloseTarget::Terminal(terminal), state);
                 Ok(())
             }
-            _ => self.server.kill_pane(pane),
+            _ => self.backend.close_terminal(&terminal),
         }
     }
 
     /// End space `id` with all its tabs, first asking if an agent is
     /// running or waiting in any of its panes.
-    pub fn close_space(&mut self, id: &str) -> Result<()> {
+    pub fn close_space(&mut self, id: &SpaceId) -> Result<()> {
         let busy = self
             .rows()
             .into_iter()
-            .filter(|r| r.space == id)
+            .filter(|r| r.space == id.as_str())
             .map(|r| r.state)
             .find(|s| matches!(s, State::Running | State::Waiting));
         match busy {
             Some(state) => {
-                self.ask_close(CloseTarget::Space(id.to_string()), state);
+                self.ask_close(CloseTarget::Space(id.clone()), state);
                 Ok(())
             }
-            None => self.server.kill_session(id),
+            None => self.backend.close_space(id),
         }
     }
 
@@ -341,8 +358,8 @@ impl App {
     /// Close what a close question was about, once the user said yes.
     pub(super) fn close_now(&mut self, target: &CloseTarget) -> Result<()> {
         match target {
-            CloseTarget::Pane(pane) => self.server.kill_pane(pane),
-            CloseTarget::Space(id) => self.server.kill_session(id),
+            CloseTarget::Terminal(terminal) => self.backend.close_terminal(terminal),
+            CloseTarget::Space(id) => self.backend.close_space(id),
             CloseTarget::Worktree { target, confirmed } => {
                 self.remove_worktree_space(target, confirmed.as_ref())
             }
@@ -354,7 +371,7 @@ impl App {
     /// --fork-session`, typed into the new shell so the tab stays when
     /// Claude exits.
     pub fn fork(&mut self, pane: &str) -> Result<()> {
-        pane_only(pane, EXTERNAL_FORK)?;
+        let terminal = self.row_terminal(pane, EXTERNAL_FORK)?;
         let session = self.session_in(pane);
         // Only Claude continues a copy of a conversation.
         if session.is_some_and(|s| s.kind != AgentKind::Claude) {
@@ -370,12 +387,14 @@ impl App {
         if !is_session_id(&session_id) {
             bail!("unexpected Claude session id");
         }
-        let Some(i) = self.space_of(pane) else {
-            bail!("that terminal is closed");
+        let Some((i, terminal)) = terminal.and_then(|t| Some((self.space_of(&t)?, t))) else {
+            bail!(TERMINAL_CLOSED);
         };
         let dir = match cwd.map(PathBuf::from).filter(|p| p.is_dir()) {
             Some(dir) => dir,
-            None => self.dir_of(pane)?.unwrap_or_else(|| self.start_dir.clone()),
+            None => self
+                .dir_of(&terminal)
+                .unwrap_or_else(|| self.start_dir.clone()),
         };
         let id = self.spaces[i].id.clone();
         let new = self.open_tab(&id, dir)?;
@@ -384,14 +403,13 @@ impl App {
         self.input(&new, command.as_bytes())
     }
 
-    /// Forget a space whose tmux session ended. Returns whether any space is
-    /// left.
-    pub fn space_ended(&mut self, id: &str) -> bool {
-        let Some(i) = self.spaces.iter().position(|it| it.id == id) else {
+    /// Forget a space that ended. Returns whether any space is left.
+    pub fn space_ended(&mut self, id: &SpaceId) -> bool {
+        let Some(i) = self.spaces.iter().position(|it| it.id == *id) else {
             return !self.spaces.is_empty();
         };
         let space = self.spaces.remove(i);
-        for pane in space.panes() {
+        for pane in space.terminals() {
             self.terminals.remove(pane);
         }
         self.forget_ended_float_noting_quick_exit();
@@ -405,7 +423,7 @@ impl App {
 }
 
 /// What to tell the user when reading space structure failed with `e`:
-/// nothing if the space is gone (`alive` false), as its exit is on the way.
+/// nothing if the space is gone (`alive` false), as its end is on the way.
 fn refresh_failure(e: &anyhow::Error, alive: bool) -> Option<String> {
     alive.then(|| format!("{e:#}"))
 }
@@ -416,12 +434,9 @@ mod tests {
 
     #[test]
     fn a_failed_refresh_is_reported_unless_its_space_just_ended() {
-        let e = anyhow::anyhow!("tmux list-panes: no server");
-        assert_eq!(
-            refresh_failure(&e, true).as_deref(),
-            Some("tmux list-panes: no server")
-        );
-        // Its exit is on the way and takes the space away.
+        let e = anyhow::anyhow!("no server");
+        assert_eq!(refresh_failure(&e, true).as_deref(), Some("no server"));
+        // Its end is on the way and takes the space away.
         assert_eq!(refresh_failure(&e, false), None);
     }
 }

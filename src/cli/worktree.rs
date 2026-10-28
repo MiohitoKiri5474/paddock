@@ -4,13 +4,13 @@
 //! of it goes through the rules the app uses ([`crate::worktree`]).
 
 use super::{rm, Code, Command, Fail, Invocation};
+use crate::backend::{self, Backend, HookTerminal, Instance, SpaceId, TerminalId};
 use crate::config::Config;
 use crate::git::{self, WorkingTree, Worktree};
 use crate::github::{self, Checks, Pr, Prs, Review};
 use crate::hooks::now_ms;
 use crate::paths::{HomePaths, Paths};
 use crate::sessions::{agents, log, Agent, Sessions, State};
-use crate::tmux::Server;
 use crate::worktree::{self as shared, RISK_DEADLINE};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -22,47 +22,47 @@ const SPACE_SIZE: (u16, u16) = (80, 24);
 /// How long `claude agents --json` may take before it counts as late.
 const AGENTS_DEADLINE: Duration = Duration::from_secs(5);
 
-/// Where the command runs: the hidden server, paddock's paths, and who
-/// called it (their directory, and their tmux pane if they run in one).
+/// Where the command runs: the backend, paddock's paths, and who called
+/// it (their directory, and their terminal if they run in one).
 pub(super) struct Context {
-    pub server: Server,
+    pub backend: Backend,
     pub paths: Paths,
     pub cwd: PathBuf,
-    /// `$TMUX` and `$TMUX_PANE`, if set.
-    pub tmux: Option<(String, String)>,
+    /// The terminal of paddock's the command runs in, if any.
+    pub caller: Option<HookTerminal>,
     /// How long `rm`'s check of what it would lose may take.
     pub risk_deadline: Duration,
 }
 
-/// A space on the hidden server: its tmux session id and name, and its
-/// directory ([`shared::space_dir`]).
+/// A space in the backend: its id and name, and its directory
+/// ([`shared::space_dir`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Space {
-    pub id: String,
+    pub id: SpaceId,
     pub name: String,
     pub dir: Option<String>,
 }
 
 /// The name of space `id` among `spaces`, else the id itself.
-pub(super) fn name_of<'a>(spaces: &'a [Space], id: &'a str) -> &'a str {
+pub(super) fn name_of<'a>(spaces: &'a [Space], id: &'a SpaceId) -> &'a str {
     spaces
         .iter()
-        .find(|s| s.id == id)
-        .map_or(id, |s| s.name.as_str())
+        .find(|s| s.id == *id)
+        .map_or(id.as_str(), |s| s.name.as_str())
 }
 
 /// The ids of `spaces`.
-pub(super) fn ids(spaces: &[Space]) -> Vec<String> {
+pub(super) fn ids(spaces: &[Space]) -> Vec<SpaceId> {
     spaces.iter().map(|s| s.id.clone()).collect()
 }
 
 impl Context {
-    pub fn new(paths: Paths, cwd: PathBuf, tmux: Option<(String, String)>) -> Self {
+    pub fn new(backend: Backend, paths: Paths, cwd: PathBuf, caller: Option<HookTerminal>) -> Self {
         Self {
-            server: Server::new(paths.clone()),
+            backend,
             paths,
             cwd,
-            tmux,
+            caller,
             risk_deadline: RISK_DEADLINE,
         }
     }
@@ -72,8 +72,15 @@ impl Context {
         let cwd = std::env::current_dir()
             .map_err(|e| Fail::new(Code::Usage, format!("no current directory: {e}")))?;
         let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
-        let tmux = var("TMUX").zip(var("TMUX_PANE"));
-        Ok(Self::new(paths, cwd, tmux))
+        let caller = backend::hook_terminal(var, &paths);
+        let backend = Backend::configured(paths.clone())
+            .map_err(|e| Fail::new(Code::Usage, format!("{e:#}")))?;
+        // What runs where comes back empty from a host paddock cannot talk
+        // to, and `rm` must not take that for nothing busy.
+        backend
+            .check()
+            .map_err(|e| Fail::new(Code::Usage, format!("{e:#}")))?;
+        Ok(Self::new(backend, paths, cwd, caller))
     }
 
     /// The directory `--from` names, else the current one.
@@ -106,23 +113,21 @@ impl Context {
         self.config().map(|c| c.worktrees.directory)
     }
 
-    /// The hidden server's pid; `None` if it does not run.
-    pub fn server_pid(&self) -> Option<u32> {
-        self.server
-            .run(&["display-message", "-p", "#{pid}"])
-            .ok()?
-            .trim()
-            .parse()
-            .ok()
+    /// The backend's instance id (see [`Backend::instance`]); `None` if
+    /// it does not run, an error if it runs and cannot say.
+    pub fn instance(&self) -> Result<Option<Instance>, Fail> {
+        self.backend
+            .running_instance()
+            .map_err(|e| Fail::new(Code::Usage, format!("{e:#}")))
     }
 
-    /// Every space on the hidden server, oldest first.
+    /// Every space in the backend, oldest first.
     pub fn spaces(&self) -> Vec<Space> {
-        self.server
-            .sessions()
+        self.backend
+            .spaces()
             .into_iter()
             .map(|s| Space {
-                dir: shared::space_dir(&self.server, &s.id),
+                dir: shared::space_dir(&self.backend, &s.id),
                 id: s.id,
                 name: s.name,
             })
@@ -130,38 +135,37 @@ impl Context {
     }
 
     /// Start a shell in a new space named `name` in `dir`, starting the
-    /// server (with paddock's config) if it does not run. Returns the
-    /// space's name as tmux gave it (it writes `.` and `:` as `_`).
+    /// backend (with paddock's settings) if it does not run. Returns the
+    /// space's name as the backend gave it (tmux writes `.` and `:` as `_`).
     pub fn new_space(&self, name: &str, dir: &Path) -> anyhow::Result<String> {
-        if self.server_pid().is_none() {
-            self.server.write_config()?;
+        if self.backend.running_instance()?.is_none() {
+            self.backend.prepare()?;
         }
-        let session = self.server.new_session(name, dir, SPACE_SIZE)?;
-        self.server.display(&session.id, "#{session_name}")
+        let space = self.backend.new_space(name, dir, SPACE_SIZE)?;
+        self.backend.space_name(&space)
     }
 
-    /// The caller's pane, if they run in a terminal of this server.
-    pub fn caller_pane(&self, pid: Option<u32>) -> Option<String> {
-        let (tmux, pane) = self.tmux.as_ref()?;
-        let (theirs, pane) = log::terminal(tmux, pane, &self.paths.socket)?;
-        (Some(theirs) == pid).then_some(pane)
+    /// The caller's pane, if they run in a terminal of this backend.
+    pub fn caller_terminal(&self, instance: Option<Instance>) -> Option<TerminalId> {
+        let caller = self.caller.as_ref()?;
+        (Some(caller.instance) == instance).then(|| caller.terminal.clone())
     }
 
     /// The agent sessions in paddock's terminals, as the app knows them:
     /// the hook event log of the running server replayed, then what
     /// `claude agents --json` says of Claude's, and why Claude's word is
     /// missing if it did not answer in time.
-    pub fn sessions(&self, pid: Option<u32>) -> (Sessions, Option<Fail>) {
+    pub fn sessions(&self, instance: Option<Instance>) -> (Sessions, Option<Fail>) {
         let mut sessions = Sessions::default();
-        let Some(pid) = pid else {
+        let Some(instance) = instance else {
             return (sessions, None);
         };
-        let mut reader = log::Reader::new(log::path(&self.paths.state_dir, pid));
+        let mut reader = log::Reader::new(log::path(&self.paths.state_dir, instance));
         for record in reader.read_new() {
             sessions.apply(&record);
         }
         let taken = now_ms();
-        match fetch_agents(&self.server, AGENTS_DEADLINE) {
+        match fetch_agents(&self.backend, AGENTS_DEADLINE) {
             Ok(Some(list)) => sessions.reconcile(taken, &list),
             Ok(None) => {}
             Err(late) => return (sessions, Some(late)),
@@ -172,12 +176,12 @@ impl Context {
 
 /// `claude agents --json` (see [`agents::fetch`]), waiting at most
 /// `limit`; `Ok(None)` if Claude could not tell (not installed, say).
-fn fetch_agents(server: &Server, limit: Duration) -> Result<Option<Vec<Agent>>, Fail> {
+fn fetch_agents(backend: &Backend, limit: Duration) -> Result<Option<Vec<Agent>>, Fail> {
     let (tx, rx) = mpsc::channel();
-    let server = server.clone();
+    let backend = backend.clone();
     // Left to finish on its own if late.
     std::thread::spawn(move || {
-        let _ = tx.send(agents::fetch(&server));
+        let _ = tx.send(agents::fetch(&backend));
     });
     rx.recv_timeout(limit).map_err(|_| {
         Fail::new(
@@ -298,7 +302,7 @@ fn open(cx: &Context, from: Option<&Path>, target: &str, json: bool) -> Result<(
     let tree = cx.tree(from)?;
     let w = find(&tree, cx.base(from), target)?;
     let spaces = cx.spaces();
-    let open = shared::spaces_in(&cx.server, &ids(&spaces), &w.path)?;
+    let open = shared::spaces_in(&cx.backend, &ids(&spaces), &w.path)?;
     let repo = tree.repo();
     let space = match open.first() {
         Some(id) => {
@@ -310,7 +314,7 @@ fn open(cx: &Context, from: Option<&Path>, target: &str, json: bool) -> Result<(
         None => {
             let name = shared::space_name(repo, &tree.main, &w);
             cx.new_space(&name, Path::new(&w.path))
-                .map_err(|e| Fail::new(Code::Git, format!("{e:#}")))?
+                .map_err(|e| Fail::new(Code::GitOrBackend, format!("{e:#}")))?
         }
     };
     if json {
@@ -392,9 +396,9 @@ fn list(cx: &Context, from: Option<&Path>, json: bool) -> Result<(), Fail> {
     let directory = config.worktrees.directory;
     // One `gh` call for the repository, while the rest is read.
     let asked = ask_prs(&tree.main, config.github_refresh);
-    let pid = cx.server_pid();
+    let instance = cx.instance()?;
     // `list` only reports: Claude not answering leaves the hook log's word.
-    let (sessions, _) = cx.sessions(pid);
+    let (sessions, _) = cx.sessions(instance);
     let spaces = cx.spaces();
     // Each space's working tree, read once.
     let tops: Vec<Option<String>> = spaces
@@ -415,9 +419,9 @@ fn list(cx: &Context, from: Option<&Path>, json: bool) -> Result<(), Fail> {
             // As the sidebar: paddock does not follow an agent in a float.
             let agents = mine
                 .iter()
-                .flat_map(|s| shared::panes(&cx.server, &s.id))
+                .flat_map(|s| cx.backend.space_terminals(&s.id))
                 .filter(|p| !p.float)
-                .filter_map(|p| state_in(&sessions, &p.id))
+                .filter_map(|t| state_in(&sessions, t.id.as_str()))
                 .map(State::label)
                 .collect();
             let main = w.path == tree.main;
@@ -655,8 +659,8 @@ mod tests {
             name: "repo/feat/x".into(),
             dir: None,
         }];
-        assert_eq!(name_of(&spaces, "$1"), "repo/feat/x");
-        assert_eq!(name_of(&spaces, "$9"), "$9");
+        assert_eq!(name_of(&spaces, &"$1".into()), "repo/feat/x");
+        assert_eq!(name_of(&spaces, &"$9".into()), "$9");
         assert_eq!(ids(&spaces), ["$1"]);
     }
 }

@@ -1,5 +1,5 @@
 //! `paddock worktree`: what `C-a W`, `C-a O` and sidebar `x` do, for an
-//! agent or a script. It drives the hidden tmux server directly, so it
+//! agent or a script. It drives paddock's backend directly, so it
 //! works whether the app is open or not (a running paddock attaches the
 //! spaces it makes and drops the ones it closes). Nothing prompts, reads
 //! stdin or needs a terminal: output goes to stdout (`--json` for a
@@ -33,7 +33,7 @@ options:
 exit codes:
   0  ok
   1  usage or config error
-  2  git or tmux error (git's reason on stderr)
+  2  git or backend error (git's reason on stderr)
   3  refused for a risk (stderr names it); nothing changed
   4  timeout; nothing deleted
 ";
@@ -43,7 +43,7 @@ exit codes:
 pub enum Code {
     Ok = 0,
     Usage = 1,
-    Git = 2,
+    GitOrBackend = 2,
     Refused = 3,
     Late = 4,
 }
@@ -68,7 +68,7 @@ impl From<Failure> for Fail {
     fn from(f: Failure) -> Self {
         let code = match f {
             Failure::Invalid(_) => Code::Usage,
-            Failure::Git(_) | Failure::Tmux(_) => Code::Git,
+            Failure::Git(_) | Failure::Backend(_) => Code::GitOrBackend,
             Failure::Refused(_) => Code::Refused,
             Failure::Late(_) => Code::Late,
         };
@@ -416,8 +416,8 @@ mod tests {
     fn failures_map_to_their_exit_codes() {
         let code = |f: Failure| Fail::from(f).code;
         assert_eq!(code(Failure::Invalid("x".into())), Code::Usage);
-        assert_eq!(code(Failure::Git("x".into())), Code::Git);
-        assert_eq!(code(Failure::Tmux("x".into())), Code::Git);
+        assert_eq!(code(Failure::Git("x".into())), Code::GitOrBackend);
+        assert_eq!(code(Failure::Backend("x".into())), Code::GitOrBackend);
         assert_eq!(code(Failure::Refused("x".into())), Code::Refused);
         assert_eq!(code(Failure::Late("x".into())), Code::Late);
         assert_eq!(Code::Late as i32, 4);

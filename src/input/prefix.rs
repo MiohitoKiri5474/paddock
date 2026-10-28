@@ -38,9 +38,8 @@ pub enum Command {
     SplitRows,
     Focus(Direction),
     Equalise,
-    /// Move the focused split's border this way by [`RESIZE_STEP`]
-    /// (tmux's `resize-pane -L/-D/-U/-R`). Its keys work again without
-    /// the prefix for a while (`[keys] repeat_ms`).
+    /// Move the focused split's border this way by [`RESIZE_STEP`]. Its
+    /// keys work again without the prefix for a while (`[keys] repeat_ms`).
     Resize(Direction),
     /// Make the focused split fill its tab, or give the others their
     /// places back.
@@ -101,7 +100,7 @@ impl Command {
 }
 
 /// A direction to move focus in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Direction {
     Left,
     Down,

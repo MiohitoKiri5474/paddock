@@ -3,8 +3,13 @@
 //! manifests parse, names match, sources exist, and every skill has
 //! frontmatter with a name and a description. Ticket 27: the plugin's hooks
 //! run silently, and with `paddock hooks install`'s record each event once.
+//! The repository root is also a Gemini CLI extension (Antigravity CLI
+//! installs it too): its manifest, commands and its copies of the skill.
+
+mod harness;
 
 use serde_json::Value;
+use std::cell::OnceCell;
 use std::path::{Path, PathBuf};
 
 const ROOT: &str = env!("CARGO_MANIFEST_DIR");
@@ -48,6 +53,25 @@ fn frontmatter(path: &Path) -> Vec<(String, String)> {
         .collect()
 }
 
+/// The value of `key` in a SKILL.md's frontmatter, if it has one.
+fn frontmatter_field(path: &Path, key: &str) -> Option<String> {
+    frontmatter(path)
+        .into_iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v)
+}
+
+/// The names of the entries in `dir`, sorted.
+fn dir_names(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
 #[test]
 fn the_marketplace_lists_the_paddock_plugin_and_every_skill_has_frontmatter() {
     let root = Path::new(ROOT);
@@ -73,37 +97,150 @@ fn the_marketplace_lists_the_paddock_plugin_and_every_skill_has_frontmatter() {
         text(&manifest, "description", "plugin.json");
         text(&manifest, "version", "plugin.json");
 
-        let mut skills: Vec<String> = std::fs::read_dir(dir.join("skills"))
-            .unwrap()
-            .flatten()
-            .map(|e| e.file_name().to_string_lossy().into_owned())
-            .collect();
-        skills.sort();
+        let skills = dir_names(&dir.join("skills"));
         assert_eq!(
             skills,
             ["paddock-worktrees", "worktree-list", "worktree-new"]
         );
         for skill in &skills {
             let path = dir.join("skills").join(skill).join("SKILL.md");
-            let fields = frontmatter(&path);
             let get = |k: &str| {
-                fields
-                    .iter()
-                    .find(|(key, _)| key == k)
-                    .map(|(_, v)| v.as_str())
+                frontmatter_field(&path, k)
                     .filter(|v| !v.is_empty())
                     .unwrap_or_else(|| panic!("{}: no {k}", path.display()))
             };
-            assert_eq!(get("name"), skill, "name matches its directory");
+            assert_eq!(get("name"), *skill, "name matches its directory");
             get("description");
             // `rm` is never pre-approved: the user confirms each delete.
-            let allowed = fields
-                .iter()
-                .find(|(k, _)| k == "allowed-tools")
-                .map_or("", |(_, v)| v.as_str());
+            let allowed = frontmatter_field(&path, "allowed-tools").unwrap_or_default();
             assert!(!allowed.contains("rm"), "{skill}: {allowed}");
             assert!(!allowed.contains("worktree *"), "{skill}: {allowed}");
         }
+    }
+}
+
+/// What follows a SKILL.md's frontmatter.
+fn skill_body(path: &Path) -> String {
+    let text = std::fs::read_to_string(path).unwrap();
+    let rest = text
+        .strip_prefix("---\n")
+        .unwrap_or_else(|| panic!("{}: no frontmatter", path.display()));
+    let (_, body) = rest
+        .split_once("\n---\n")
+        .unwrap_or_else(|| panic!("{}: frontmatter not closed", path.display()));
+    body.to_string()
+}
+
+/// A command file of the Gemini extension, parsed.
+fn gemini_command(name: &str) -> toml::Table {
+    let path = Path::new(ROOT).join("commands/paddock").join(name);
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    text.parse()
+        .unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+}
+
+// The repository root is also a Gemini CLI extension, which Antigravity CLI
+// installs by converting it: the same skill as the Claude plugin's, and its
+// two commands. It carries no hooks (`paddock hooks install` writes those).
+
+#[test]
+fn the_gemini_extension_has_its_manifest_skill_and_commands_and_no_hooks() {
+    let root = Path::new(ROOT);
+    let manifest = read_json(&root.join("gemini-extension.json"));
+    assert_eq!(text(&manifest, "name", "gemini-extension.json"), "paddock");
+    text(&manifest, "description", "gemini-extension.json");
+    assert!(manifest.get("contextFileName").is_none(), "no context file");
+    for path in ["hooks", "GEMINI.md", "AGENTS.md", "plugin.json"] {
+        assert!(!root.join(path).exists(), "{path} at the repository root");
+    }
+
+    assert_eq!(
+        dir_names(&root.join("skills")),
+        ["paddock-worktrees"],
+        "user-only skills are commands"
+    );
+    let path = root.join("skills/paddock-worktrees/SKILL.md");
+    let fields = frontmatter(&path);
+    let keys: Vec<&str> = fields.iter().map(|(k, _)| k.as_str()).collect();
+    assert_eq!(keys, ["name", "description"], "what Gemini and agy read");
+    assert_eq!(fields[0].1, "paddock-worktrees");
+
+    let commands = dir_names(&root.join("commands/paddock"));
+    assert_eq!(commands, ["worktree-list.toml", "worktree-new.toml"]);
+    for name in &commands {
+        let command = gemini_command(name);
+        let keys: Vec<&str> = command.keys().map(String::as_str).collect();
+        assert_eq!(keys, ["description", "prompt"], "{name}");
+        for key in keys {
+            let value = command[key].as_str().unwrap_or("");
+            assert!(!value.trim().is_empty(), "{name}: {key}");
+        }
+        let prompt = command["prompt"].as_str().unwrap();
+        assert!(!prompt.contains("worktree rm"), "{name}");
+        assert!(!prompt.contains("--discard"), "{name}");
+    }
+    // The branch is typed by the user: one single-quoted argument, checked
+    // before anything runs.
+    let prompt = gemini_command("worktree-new.toml")["prompt"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        prompt.contains("paddock worktree new '<branch>' --json"),
+        "{prompt}"
+    );
+    assert!(prompt.contains("`A-Za-z0-9._/-`"), "{prompt}");
+    assert!(!prompt.contains("new {{args}}"), "{prompt}");
+}
+
+#[test]
+fn every_agents_copy_of_the_instructions_says_the_same() {
+    let root = Path::new(ROOT);
+    let claude = root.join("plugins/paddock/skills");
+    assert_eq!(
+        skill_body(&root.join("skills/paddock-worktrees/SKILL.md")),
+        skill_body(&claude.join("paddock-worktrees/SKILL.md")),
+        "skills/paddock-worktrees and the Claude plugin's"
+    );
+    let description = |path: &Path| frontmatter_field(path, "description").unwrap();
+    assert_eq!(
+        description(&root.join("skills/paddock-worktrees/SKILL.md")),
+        description(&claude.join("paddock-worktrees/SKILL.md")),
+    );
+    // Gemini's `{{args}}` is Claude's `$ARGUMENTS`.
+    for (toml_name, skill) in [
+        ("worktree-new.toml", "worktree-new"),
+        ("worktree-list.toml", "worktree-list"),
+    ] {
+        let command = gemini_command(toml_name);
+        let claude_skill = claude.join(skill).join("SKILL.md");
+        assert_eq!(
+            command["prompt"].as_str().unwrap().trim(),
+            skill_body(&claude_skill)
+                .replace("$ARGUMENTS", "{{args}}")
+                .trim(),
+            "{toml_name} and the Claude plugin's {skill}"
+        );
+        assert_eq!(
+            command["description"].as_str().unwrap(),
+            description(&claude_skill),
+            "{toml_name}"
+        );
+    }
+}
+
+#[test]
+fn every_manifest_has_the_crates_version() {
+    let root = Path::new(ROOT);
+    for path in [
+        "plugins/paddock/.claude-plugin/plugin.json",
+        "gemini-extension.json",
+    ] {
+        assert_eq!(
+            text(&read_json(&root.join(path)), "version", path),
+            env!("CARGO_PKG_VERSION"),
+            "{path}: bump it with Cargo.toml"
+        );
     }
 }
 
@@ -112,8 +249,6 @@ fn the_marketplace_lists_the_paddock_plugin_and_every_skill_has_frontmatter() {
 // `paddock hooks install` writes; these run its commands as Claude would.
 
 const PADDOCK: &str = env!("CARGO_BIN_EXE_paddock");
-const SOCKET: &str = "paddock-plugin-test";
-const SERVER_PID: &str = "4242";
 const PAYLOAD: &str = r#"{"session_id":"s1"}"#;
 
 fn plugin_hooks() -> Value {
@@ -145,22 +280,38 @@ fn events_of(commands: &[(String, String)]) -> Vec<String> {
     commands.iter().map(|(e, _)| e.clone()).collect()
 }
 
-/// HOME, state and PATH of their own, never the user's.
+/// HOME, state and PATH of their own, never the user's, in a harness
+/// sandbox, whose paddock and backend start the first time a command runs
+/// inside one of its terminals.
 struct Sandbox {
-    dir: tempfile::TempDir,
+    base: harness::Sandbox,
+    /// paddock's first terminal, once a command ran inside it.
+    terminal: OnceCell<Terminal>,
+}
+
+/// A terminal of paddock's, as a hook in it sees it.
+struct Terminal {
+    /// Its hook variables, as the backend gives them.
+    hook_env: Vec<(String, String)>,
+    /// The backend's hook event log.
+    event_log: PathBuf,
 }
 
 impl Sandbox {
     fn new() -> Self {
-        let dir = tempfile::tempdir().unwrap();
-        for d in ["home", "state", "bin", "work"] {
-            std::fs::create_dir(dir.path().join(d)).unwrap();
+        let base = harness::Sandbox::new();
+        // `bin` holds the harness's stubs: the hooks' PATH is `plugin-bin`.
+        for d in ["plugin-bin", "work"] {
+            std::fs::create_dir(base.path(d)).unwrap();
         }
-        Self { dir }
+        Self {
+            base,
+            terminal: OnceCell::new(),
+        }
     }
 
     fn path(&self, name: &str) -> PathBuf {
-        self.dir.path().join(name)
+        self.base.path(name)
     }
 
     fn settings(&self) -> PathBuf {
@@ -169,16 +320,40 @@ impl Sandbox {
 
     /// Put `paddock` on the sandbox's PATH.
     fn add_paddock(&self) {
-        std::os::unix::fs::symlink(PADDOCK, self.path("bin/paddock")).unwrap();
+        std::os::unix::fs::symlink(PADDOCK, self.path("plugin-bin/paddock")).unwrap();
     }
 
-    /// `program args`, with `stdin`, as if in a terminal of paddock's server.
+    /// paddock's first terminal; the first call runs paddock to start it,
+    /// then detaches.
+    fn terminal(&self) -> &Terminal {
+        self.terminal.get_or_init(|| {
+            let mut paddock = self.base.launch();
+            paddock.wait_for_text(harness::PROMPT);
+            let state = self.base.state();
+            let event_log = state
+                .event_log
+                .clone()
+                .expect("the backend's event log")
+                .into();
+            let first = state.terminal("space-1").expect("paddock's terminal");
+            let hook_env = first.hook_env.clone().into_iter().collect();
+            paddock.detach_keys();
+            assert!(paddock.wait_exit());
+            Terminal {
+                hook_env,
+                event_log,
+            }
+        })
+    }
+
+    /// `program args`, with `stdin`, outside paddock's terminals (as from
+    /// the user's own shell): paddock is not started for it.
     fn run(&self, program: &str, args: &[&str], stdin: &str) -> std::process::Output {
-        self.run_where(true, program, args, stdin)
+        self.run_where(false, program, args, stdin)
     }
 
     /// [`Self::run`], in a terminal of paddock's server if `inside`, else
-    /// outside any tmux (an external session).
+    /// outside paddock's terminals (an external session).
     fn run_where(
         &self,
         inside: bool,
@@ -187,19 +362,17 @@ impl Sandbox {
         stdin: &str,
     ) -> std::process::Output {
         use std::io::Write;
-        let path = format!("{}:/usr/bin:/bin", self.path("bin").display());
+        let path = format!("{}:/usr/bin:/bin", self.path("plugin-bin").display());
         let mut cmd = std::process::Command::new(program);
-        cmd.args(args).env_clear();
+        cmd.args(args).env_clear().envs(self.base.backend_env());
         if inside {
-            cmd.env("TMUX", format!("/nowhere/{SOCKET},{SERVER_PID},0"))
-                .env("TMUX_PANE", "%7");
+            cmd.envs(self.terminal().hook_env.iter().cloned());
         }
         let mut child = cmd
             .env("HOME", self.path("home"))
             .env("PATH", path)
-            .env("XDG_STATE_HOME", self.path("state"))
-            .env("XDG_CONFIG_HOME", self.path("home/.config"))
-            .env("PADDOCK_TMUX_SOCKET", SOCKET)
+            // The config of the paddock the hooks talk to.
+            .env("XDG_CONFIG_HOME", self.path("config"))
             .current_dir(self.path("work"))
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
@@ -229,20 +402,30 @@ impl Sandbox {
     }
 
     /// The events recorded, in order.
+    ///
+    /// Empty while no command ran inside paddock's terminal: paddock never
+    /// started.
     fn events(&self) -> Vec<String> {
-        self.events_in(&format!("{SERVER_PID}.jsonl"))
+        match self.terminal.get() {
+            Some(t) => events_at(&t.event_log),
+            None => Vec::new(),
+        }
     }
 
     /// The events recorded in the log named `name`, in order.
     fn events_in(&self, name: &str) -> Vec<String> {
-        let log = self.path("state/paddock/events").join(name);
-        let Ok(body) = std::fs::read_to_string(&log) else {
-            return Vec::new();
-        };
-        body.lines()
-            .map(|l| text(&serde_json::from_str(l).unwrap(), "event", "record"))
-            .collect()
+        events_at(&self.path("state/paddock/events").join(name))
     }
+}
+
+/// The events recorded in the log at `log`, in order.
+fn events_at(log: &Path) -> Vec<String> {
+    let Ok(body) = std::fs::read_to_string(log) else {
+        return Vec::new();
+    };
+    body.lines()
+        .map(|l| text(&serde_json::from_str(l).unwrap(), "event", "record"))
+        .collect()
 }
 
 #[test]
@@ -262,7 +445,7 @@ fn a_failing_paddock_on_path_never_reaches_claude() {
     let sandbox = Sandbox::new();
     // Some other `paddock`, or a broken one: prints, and exits 2, which
     // would block `Stop`.
-    let fake = sandbox.path("bin/paddock");
+    let fake = sandbox.path("plugin-bin/paddock");
     std::fs::write(&fake, "#!/bin/sh\necho out\necho err >&2\nexit 2\n").unwrap();
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -325,6 +508,8 @@ fn external_events_are_recorded_once_with_both_sources_installed() {
     assert!(out.status.success(), "{out:?}");
     let from_settings = hook_commands(&read_json(&sandbox.settings()));
     let from_plugin = hook_commands(&plugin_hooks());
+    // A running server, whose log must stay empty.
+    sandbox.terminal();
     for ((_, s), (_, p)) in from_settings.iter().zip(&from_plugin) {
         sandbox.fire_where(false, p);
         sandbox.fire_where(false, s);
@@ -417,15 +602,14 @@ fn hooks_install_refuses_an_unknown_agent_and_touches_nothing() {
 fn a_hook_naming_claude_records_as_claudes_and_an_unknown_one_stays_silent() {
     let sandbox = Sandbox::new();
     let run = |args: &[&str]| {
-        let out = sandbox.run(PADDOCK, args, PAYLOAD);
+        let out = sandbox.run_where(true, PADDOCK, args, PAYLOAD);
         assert!(out.status.success(), "{args:?}: {out:?}");
         assert!(out.stdout.is_empty() && out.stderr.is_empty(), "{out:?}");
     };
     run(&["hook", "--agent", "claude", "Stop"]);
     run(&["hook", "SessionEnd"]);
     assert_eq!(sandbox.events(), ["Stop", "SessionEnd"]);
-    let log = sandbox.path(&format!("state/paddock/events/{SERVER_PID}.jsonl"));
-    let log = std::fs::read_to_string(log).unwrap();
+    let log = std::fs::read_to_string(&sandbox.terminal().event_log).unwrap();
     assert!(!log.contains("kind"), "Claude's lines as before: {log}");
 
     run(&["hook", "--agent", "nope", "Stop"]);

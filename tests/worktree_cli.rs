@@ -101,15 +101,17 @@ fn made(sandbox: &Sandbox, dir: &Path, branch: &str) -> PathBuf {
     PathBuf::from(stdout(&out).trim())
 }
 
-/// The tmux session id (`$N`) of session `name`.
-fn session_id(sandbox: &Sandbox, name: &str) -> String {
-    sandbox
-        .tmux(&["list-sessions", "-F", "#{session_id}\t#{session_name}"])
-        .lines()
-        .filter_map(|l| l.split_once('\t'))
-        .find(|(_, n)| *n == name)
-        .map(|(id, _)| id.to_string())
-        .unwrap_or_else(|| panic!("no session {name}"))
+/// Leave a space named `name` running, made by paddock (its first space,
+/// renamed with `C-a $`), with paddock closed again.
+fn space_named(sandbox: &Sandbox, name: &str) {
+    let mut paddock = sandbox.launch();
+    paddock.wait_for_text(PROMPT);
+    paddock.command(b"$");
+    paddock.wait_for_popup("Rename space", "space-1");
+    paddock.send(format!("\x15{name}\r").as_bytes()); // C-u clears the old name
+    paddock.wait_for("the space renamed", |_| sandbox.space_names() == [name]);
+    paddock.detach_keys();
+    assert!(paddock.wait_exit());
 }
 
 /// Report Claude as running in the terminal of session `name`, whose
@@ -118,7 +120,7 @@ fn claude_runs_in(sandbox: &Sandbox, name: &str, cwd: &Path) {
     let payload = std::fs::read_to_string(format!("{SPIKE}/UserPromptSubmit.json"))
         .unwrap()
         .replace("\"/tmp/repo\"", &format!("{:?}", cwd.display()));
-    sandbox.hook(&session_id(sandbox, name), "UserPromptSubmit", &payload);
+    sandbox.hook(name, "UserPromptSubmit", &payload);
 }
 
 #[test]
@@ -145,8 +147,8 @@ fn new_makes_a_worktree_and_a_space_that_a_running_paddock_shows() {
         })
     );
     assert_eq!(git(&path, &["branch", "--show-current"]), "feat/x");
-    assert_eq!(sandbox.session_names(), ["space-1", "repo/feat/x"]);
-    let pane_dir = sandbox.display("repo/feat/x", "#{pane_current_path}");
+    assert_eq!(sandbox.space_names(), ["space-1", "repo/feat/x"]);
+    let pane_dir = sandbox.terminal("repo/feat/x").dir.unwrap_or_default();
     assert_eq!(PathBuf::from(pane_dir), path);
     paddock.wait_for("the new space in the sidebar", |_| {
         paddock.sidebar().iter().any(|r| r.trim() == "repo/feat/x")
@@ -161,7 +163,7 @@ fn new_makes_a_worktree_and_a_space_that_a_running_paddock_shows() {
     paddock.wait_for("the space gone from the sidebar", |_| {
         !paddock.sidebar().iter().any(|r| r.contains("feat/x"))
     });
-    assert_eq!(sandbox.session_names(), ["space-1"]);
+    assert_eq!(sandbox.space_names(), ["space-1"]);
 }
 
 #[test]
@@ -173,7 +175,7 @@ fn a_space_named_after_a_branch_keeps_a_hash() {
     let out = cli(&sandbox, &dir, &["new", "v#S", "--json"]);
     exits(&out, 0, "");
     assert_eq!(json(&out)["space"], "repo/v#S");
-    assert_eq!(sandbox.session_names(), ["repo/v#S"]);
+    assert_eq!(sandbox.space_names(), ["repo/v#S"]);
 }
 
 #[test]
@@ -183,12 +185,12 @@ fn new_starts_the_server_when_paddock_is_closed_and_no_space_makes_none() {
 
     let path = made(&sandbox, &dir, "feat/n");
     assert_eq!(path, real(&worktree(&sandbox, "feat/n")));
-    assert!(sandbox.session_names().is_empty(), "--no-space");
+    assert!(sandbox.space_names().is_empty(), "--no-space");
 
     let out = cli(&sandbox, &dir, &["new", "feat/s", "--json"]);
     exits(&out, 0, "");
     assert_eq!(json(&out)["space"], "repo/feat/s");
-    assert_eq!(sandbox.session_names(), ["repo/feat/s"]);
+    assert_eq!(sandbox.space_names(), ["repo/feat/s"]);
 }
 
 #[test]
@@ -219,12 +221,12 @@ fn an_existing_branch_is_checked_out_and_failures_make_nothing() {
 
     // The space cannot be made (its name is taken): the worktree and the
     // branch made for it go again.
-    sandbox.tmux(&["new-session", "-d", "-s", "repo/feat/z"]);
+    space_named(&sandbox, "repo/feat/z");
     let out = cli(&sandbox, &dir, &["new", "feat/z"]);
     exits(&out, 2, "duplicate session");
     assert!(!worktree(&sandbox, "feat/z").exists());
     assert!(!has_branch(&dir, "feat/z"));
-    assert_eq!(sandbox.session_names(), ["repo/feat/z"]);
+    assert_eq!(sandbox.space_names(), ["repo/feat/z"]);
 
     // Not in a repository.
     let out = cli(&sandbox, &sandbox.path("home"), &["new", "feat/q"]);
@@ -251,7 +253,7 @@ fn open_makes_a_space_once() {
             "space": "repo/feat/o",
         })
     );
-    assert_eq!(sandbox.session_names(), ["repo/feat/o"]);
+    assert_eq!(sandbox.space_names(), ["repo/feat/o"]);
 
     // Again, by path: it says so and changes nothing.
     let out = cli(&sandbox, &dir, &["open", &path.to_string_lossy()]);
@@ -261,7 +263,7 @@ fn open_makes_a_space_once() {
         stderr(&out).contains("already has a space: repo/feat/o"),
         "{out:?}"
     );
-    assert_eq!(sandbox.session_names(), ["repo/feat/o"]);
+    assert_eq!(sandbox.space_names(), ["repo/feat/o"]);
 
     exits(
         &cli(&sandbox, &dir, &["open", "nope"]),
@@ -528,15 +530,8 @@ fn rm_never_deletes_the_tree_its_caller_or_a_busy_claude_is_in() {
     );
 
     // Run from its space's terminal, with the directory elsewhere.
-    let id = session_id(&sandbox, "repo/feat/c");
-    let tmux = sandbox.display(&id, "#{socket_path},#{pid},0");
-    let pane = sandbox.display(&id, "#{pane_id}");
-    let out = sandbox.run_in(
-        &dir,
-        &["worktree", "rm", "feat/c"],
-        &[("TMUX", &tmux), ("TMUX_PANE", &pane)],
-        "",
-    );
+    let terminal = sandbox.terminal("repo/feat/c");
+    let out = sandbox.run_in(&dir, &["worktree", "rm", "feat/c"], &terminal.env(), "");
     exits(&out, 3, "calling terminal");
 
     // A Claude running in its space.
@@ -551,7 +546,7 @@ fn rm_never_deletes_the_tree_its_caller_or_a_busy_claude_is_in() {
         "agent running in space repo/feat/c",
     );
     assert!(path.is_dir());
-    assert_eq!(sandbox.session_names(), ["repo/feat/c"]);
+    assert_eq!(sandbox.space_names(), ["repo/feat/c"]);
 }
 
 #[test]
@@ -595,7 +590,7 @@ fn rm_goes_on_with_the_right_discard_flags_and_keeps_an_unmerged_branch() {
     assert_eq!(json(&out)["branch_deleted"], false);
     assert!(!ahead.exists());
     assert!(has_branch(&dir, "feat/ahead"), "never -D");
-    assert!(sandbox.session_names().is_empty());
+    assert!(sandbox.space_names().is_empty());
 }
 
 #[test]
@@ -621,22 +616,17 @@ fn rm_counts_a_busy_claude_in_a_float_and_list_leaves_floats_out() {
     let out = cli(&sandbox, &dir, &["new", "feat/f"]);
     exits(&out, 0, "");
     let path = real(&worktree(&sandbox, "feat/f"));
-    // A float of the space, marked as paddock marks one.
-    let id = session_id(&sandbox, "repo/feat/f");
-    let target = format!("{id}:");
-    let path_arg = path.to_string_lossy();
-    sandbox.tmux(&[
-        "new-window",
-        "-d",
-        "-n",
-        "fl",
-        "-t",
-        &target,
-        "-c",
-        &path_arg,
-    ]);
-    let float = format!("{id}:fl");
-    sandbox.tmux(&["set-option", "-w", "-t", &float, "@paddock-float", "G"]);
+    // A float of the space, opened in paddock, which then closes.
+    sandbox.write_config("[floats]\nG = \"cat\"\n");
+    let mut paddock = sandbox.launch();
+    paddock.wait_for_text(PROMPT);
+    paddock.command(b"G");
+    paddock.wait_for("the float in the space", |_| {
+        !sandbox.space("repo/feat/f").floats.is_empty()
+    });
+    paddock.detach_keys();
+    assert!(paddock.wait_exit());
+    let float = sandbox.space("repo/feat/f").floats[0].splits[0].id.clone();
     let payload = std::fs::read_to_string(format!("{SPIKE}/UserPromptSubmit.json"))
         .unwrap()
         .replace("\"/tmp/repo\"", &format!("{:?}", path.display()));
@@ -648,7 +638,7 @@ fn rm_counts_a_busy_claude_in_a_float_and_list_leaves_floats_out() {
         "agent running in space repo/feat/f",
     );
     assert!(path.is_dir());
-    assert_eq!(sandbox.session_names(), ["repo/feat/f"]);
+    assert_eq!(sandbox.space_names(), ["repo/feat/f"]);
 
     // The sidebar does not follow Claude in a float, nor does list.
     let out = cli(&sandbox, &dir, &["list", "--json"]);
@@ -694,7 +684,7 @@ fn a_name_that_is_one_worktree_s_path_and_another_s_branch_names_neither() {
         assert!(err.contains(&*dash.to_string_lossy()), "{err}");
     }
     assert!(at_b.is_dir() && dash.is_dir());
-    assert!(sandbox.session_names().is_empty());
+    assert!(sandbox.space_names().is_empty());
     // The full path names one.
     let out = cli(
         &sandbox,

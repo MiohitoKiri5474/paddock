@@ -2,60 +2,31 @@
 //! config, and a clean environment. Every tmux process paddock starts goes
 //! through [`Server::command`], so the user's own tmux server is never used.
 
-use super::structure::{self, Structure};
+use super::hook;
+use super::layout;
+use super::structure;
+use crate::backend::env::{clean_env, AGY_STATUS_VAR};
+use crate::backend::{
+    Border, FloatId, ListedSpace, SpaceId, SpaceTerminal, Structure, TerminalDetails, TerminalId,
+};
+use crate::input::Direction;
 use crate::paths::Paths;
+use crate::shell::quote;
 use anyhow::{bail, Context, Result};
+use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
-
-/// Variables passed from paddock's environment to tmux. Everything else, such
-/// as `SUPACODE_*` or `TERM_PROGRAM` from the launching app, is dropped.
-const KEPT_VARS: &[&str] = &[
-    "HOME",
-    "USER",
-    "LOGNAME",
-    "SHELL",
-    "PATH",
-    "LANG",
-    "TMPDIR",
-    "TMUX_TMPDIR",
-    // `paddock hook` in a terminal needs paddock's own state dir and socket.
-    "XDG_STATE_HOME",
-    "PADDOCK_TMUX_SOCKET",
-];
 
 /// The session option holding a space's root: the directory it was made
 /// in, or the one `set_root` (`C-a R`) gave it. New tabs and splits start
 /// there with `[spaces] new_tab_dir = "root"`.
 pub const ROOT_OPTION: &str = "@paddock-root";
 
-/// Set to `on` in every terminal, so Antigravity CLI reports its state
-/// (OSC 7501) there.
-pub const AGY_STATUS_VAR: &str = "AGY_CLI_OSC7501";
-
-/// `TERM` tmux itself sees (the panes get `default-terminal`).
-const SERVER_TERM: &str = "xterm-256color";
 const HISTORY_LIMIT: u32 = 50_000;
 /// How tmux names a window the user has not renamed.
 /// Shells (not `ssh` or `mosh`) are named after their directory.
 const AUTO_NAME: &str = "#{?#{m/r:^-?(ba|z|fi|da|k|tc|c)?sh$,#{pane_current_command}},\
 #{b:pane_current_path},#{pane_current_command}}";
-
-/// The environment tmux runs with: an allowlist of the given variables.
-pub fn clean_env(vars: impl IntoIterator<Item = (String, String)>) -> Vec<(String, String)> {
-    let mut kept: Vec<(String, String)> = vars
-        .into_iter()
-        .filter(|(k, _)| KEPT_VARS.contains(&k.as_str()) || k.starts_with("LC_"))
-        .collect();
-    kept.sort();
-    kept.push(("TERM".into(), SERVER_TERM.into()));
-    kept
-}
-
-/// `s` as one single-quoted shell word.
-pub(crate) fn quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', r"'\''"))
-}
 
 /// paddock's own tmux config: no prefix, no status line, no key delay.
 pub fn config(shell: &str) -> String {
@@ -144,7 +115,7 @@ impl Server {
     }
 
     /// The tmux sessions on the server, oldest first; empty if no server runs.
-    pub fn sessions(&self) -> Vec<Session> {
+    pub fn sessions(&self) -> Vec<ListedSpace> {
         let format = "#{session_created} #{session_id} #{session_name}";
         self.run(&["list-sessions", "-F", format])
             .map(|out| parse_sessions(&out))
@@ -156,7 +127,7 @@ impl Server {
     /// the same tmux run: a command after `new-session` in one run targets
     /// the new session, and no other client's command (a structure read,
     /// `paddock worktree`) sees the session without its root.
-    pub fn new_session(&self, name: &str, cwd: &Path, (cols, rows): (u16, u16)) -> Result<Session> {
+    pub fn new_session(&self, name: &str, cwd: &Path, (cols, rows): (u16, u16)) -> Result<SpaceId> {
         let root = root_arg(cwd);
         let cwd = start_dir(cwd);
         let named = unexpanded(name);
@@ -180,11 +151,7 @@ impl Server {
             ROOT_OPTION,
             &root,
         ];
-        let id = self.run(&args)?.trim().to_string();
-        Ok(Session {
-            id,
-            name: name.to_string(),
-        })
+        Ok(SpaceId::new(self.run(&args)?.trim()))
     }
 
     /// Make `dir` session `id`'s root ([`ROOT_OPTION`]).
@@ -216,7 +183,7 @@ impl Server {
 
     /// Open a new window (tab) running the user's shell in `cwd` at the end
     /// of session `id`, and make it current. Returns its pane id.
-    pub fn new_window(&self, id: &str, cwd: &Path) -> Result<String> {
+    pub fn new_window(&self, id: &str, cwd: &Path) -> Result<TerminalId> {
         let target = format!("{id}:");
         let cwd = start_dir(cwd);
         let args = [
@@ -229,7 +196,7 @@ impl Server {
             "-c",
             &cwd,
         ];
-        Ok(self.run(&args)?.trim().to_string())
+        Ok(TerminalId::new(self.run(&args)?.trim()))
     }
 
     /// Open a float in session `id`: a window running `command` in `cwd`,
@@ -243,7 +210,7 @@ impl Server {
     /// its own (`set-option` after `new-window -d` would mark the
     /// current tab), then named after its command as tabs are. If marking
     /// fails, the window is killed by that name, so it never stays as a tab.
-    pub fn new_float(&self, id: &str, cwd: &Path, command: &str, key: &str) -> Result<String> {
+    pub fn new_float(&self, id: &str, cwd: &Path, command: &str, key: &str) -> Result<FloatId> {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos());
@@ -281,7 +248,7 @@ impl Server {
             "on",
         ];
         match self.run(&args) {
-            Ok(out) => Ok(out.trim().to_string()),
+            Ok(out) => Ok(FloatId::new(out.trim())),
             Err(e) => {
                 // Gone already if `new-window` failed; the error is `e`.
                 let _ = self.run(&["kill-window", "-t", &made]);
@@ -298,7 +265,7 @@ impl Server {
     /// Split pane `pane`: side by side if `columns`, else top and bottom. The
     /// new shell starts in `cwd` and takes the second half and the focus.
     /// Returns its pane id.
-    pub fn split(&self, pane: &str, columns: bool, cwd: &Path) -> Result<String> {
+    pub fn split(&self, pane: &str, columns: bool, cwd: &Path) -> Result<TerminalId> {
         let cwd = start_dir(cwd);
         let way = if columns { "-h" } else { "-v" };
         let args = [
@@ -312,7 +279,7 @@ impl Server {
             "-c",
             &cwd,
         ];
-        Ok(self.run(&args)?.trim().to_string())
+        Ok(TerminalId::new(self.run(&args)?.trim()))
     }
 
     /// End a pane; its window goes with its last pane, and the session
@@ -341,9 +308,9 @@ impl Server {
         self.run(&["swap-window", "-d", "-s", a, "-t", b]).map(drop)
     }
 
-    /// Focus the pane next to `pane` in direction `flag` (`-L`, `-R`, `-U`, `-D`).
-    pub fn select_towards(&self, pane: &str, flag: &str) -> Result<()> {
-        self.run(&["select-pane", flag, "-t", pane]).map(drop)
+    /// Focus the pane next to `pane` in direction `dir`.
+    pub fn select_towards(&self, pane: &str, dir: Direction) -> Result<()> {
+        self.run(&["select-pane", flag(dir), "-t", pane]).map(drop)
     }
 
     /// Give `pane` and the panes beside it the same size.
@@ -356,12 +323,11 @@ impl Server {
         self.run(&["resize-pane", "-Z", "-t", pane]).map(drop)
     }
 
-    /// Move `pane`'s border in direction `flag` (`-L`, `-R`, `-U`, `-D`) by
-    /// `cells`. tmux stops at its smallest pane without an error, and
-    /// unzooms the window first.
-    pub fn resize(&self, pane: &str, flag: &str, cells: u16) -> Result<()> {
+    /// Move `pane`'s border in direction `dir` by `cells`. tmux stops at
+    /// its smallest pane without an error, and unzooms the window first.
+    pub fn resize(&self, pane: &str, dir: Direction, cells: u16) -> Result<()> {
         let cells = cells.to_string();
-        self.run(&["resize-pane", flag, "-t", pane, &cells])
+        self.run(&["resize-pane", flag(dir), "-t", pane, &cells])
             .map(drop)
     }
 
@@ -374,10 +340,11 @@ impl Server {
             .map(drop)
     }
 
-    /// Window `window`'s layout as tmux writes it (`#{window_layout}`).
-    pub fn layout(&self, window: &str) -> Result<String> {
+    /// The border at `(x, y)` of window `window`, read from its layout as
+    /// tmux writes it (`#{window_layout}`); `None` if there is none.
+    pub fn border_at(&self, window: &str, x: u16, y: u16) -> Result<Option<Border>> {
         let out = self.run(&["display-message", "-p", "-t", window, "#{window_layout}"])?;
-        Ok(out.trim_end().to_string())
+        Ok(layout::parse(out.trim_end()).and_then(|l| l.border_at(x, y)))
     }
 
     pub fn rename_session(&self, id: &str, name: &str) -> Result<()> {
@@ -397,6 +364,141 @@ impl Server {
             .trim()
             .to_string())
     }
+
+    /// Session `id`'s name as tmux keeps it (it writes `.` and `:` as `_`).
+    pub fn session_name(&self, id: &str) -> Result<String> {
+        self.display(id, "#{session_name}")
+    }
+
+    /// The server's pid, which names its hook event log.
+    pub fn pid(&self) -> Result<u32> {
+        self.run(&["display-message", "-p", "#{pid}"])?
+            .trim()
+            .parse()
+            .context("cannot read the tmux server's pid")
+    }
+
+    /// Pane `pane`'s current directory; `None` if tmux cannot say.
+    pub fn pane_path(&self, pane: &str) -> Option<String> {
+        self.display(pane, "#{pane_current_path}").ok()
+    }
+
+    /// The session holding pane `pane`; `None` if tmux cannot say.
+    pub fn pane_session(&self, pane: &str) -> Option<SpaceId> {
+        self.display(pane, "#{session_id}").ok().map(SpaceId::new)
+    }
+
+    /// Each pane's `pane_current_command`, by pane id; `None` if tmux
+    /// cannot say.
+    pub fn pane_commands(&self) -> Option<HashMap<TerminalId, String>> {
+        let format = "#{pane_id} #{pane_current_command}";
+        let out = self.run(&["list-panes", "-a", "-F", format]).ok()?;
+        Some(parse_commands(&out))
+    }
+
+    /// Each pane by the pid of its shell; none if tmux cannot say.
+    pub fn pane_pids(&self) -> HashMap<u32, TerminalId> {
+        self.run(&["list-panes", "-a", "-F", "#{pane_pid} #{pane_id}"])
+            .map(|o| parse_pids(&o))
+            .unwrap_or_default()
+    }
+
+    /// Every pane of session `id`, floats' too; none if tmux cannot say.
+    pub fn space_panes(&self, id: &str) -> Vec<SpaceTerminal> {
+        self.run(&["list-panes", "-s", "-t", id, "-F", PANE_FORMAT])
+            .map(|out| parse_panes(&out))
+            .unwrap_or_default()
+    }
+
+    /// Every pane on the server with what tmux knows of it; none if tmux
+    /// cannot say.
+    pub fn pane_details(&self) -> Vec<TerminalDetails> {
+        self.run(&["list-panes", "-a", "-F", DETAILS_FORMAT])
+            .map(|out| parse_details(&out))
+            .unwrap_or_default()
+    }
+
+    /// End the server and remove its socket.
+    #[cfg(test)]
+    pub fn kill_server(&self) {
+        let socket = self.run(&["display-message", "-p", "#{socket_path}"]);
+        let _ = self.run(&["kill-server"]);
+        if let Ok(socket) = socket {
+            let _ = std::fs::remove_file(socket.trim());
+        }
+    }
+}
+
+/// tmux's flag for `dir` (`select-pane`, `resize-pane`).
+fn flag(dir: Direction) -> &'static str {
+    match dir {
+        Direction::Left => "-L",
+        Direction::Down => "-D",
+        Direction::Up => "-U",
+        Direction::Right => "-R",
+    }
+}
+
+/// `list-panes` output of `<pane id> <command>` lines, by pane id.
+fn parse_commands(out: &str) -> HashMap<TerminalId, String> {
+    out.lines()
+        .filter_map(|l| l.split_once(' '))
+        .map(|(pane, command)| (TerminalId::new(pane), command.to_string()))
+        .collect()
+}
+
+/// `pane_pid pane_id` lines, by pid.
+fn parse_pids(out: &str) -> HashMap<u32, TerminalId> {
+    out.lines()
+        .filter_map(|l| {
+            let (pid, pane) = l.split_once(' ')?;
+            Some((pid.parse().ok()?, TerminalId::new(pane)))
+        })
+        .collect()
+}
+
+/// `list-panes` format of a pane as [`parse_panes`] reads it.
+const PANE_FORMAT: &str = "#{@paddock-float}\x1f#{pane_id}\x1f#{pane_current_path}";
+
+/// `list-panes` output in [`PANE_FORMAT`], in tmux's order.
+fn parse_panes(out: &str) -> Vec<SpaceTerminal> {
+    out.lines()
+        .filter_map(|l| {
+            let mut parts = l.splitn(3, '\x1f');
+            let float = !parts.next()?.is_empty();
+            let id = TerminalId::new(parts.next()?);
+            let path = parts.next()?.to_string();
+            Some(SpaceTerminal { id, path, float })
+        })
+        .collect()
+}
+
+/// `list-panes` format of a pane as [`parse_details`] reads it: its
+/// directory last, as the one field that may hold anything.
+const DETAILS_FORMAT: &str =
+    "#{pane_id}\x1f#{pane_pid}\x1f#{pane_tty}\x1f#{history_size}\x1f#{socket_path}\x1f#{pid}\x1f\
+#{pane_current_command}\x1f#{pane_current_path}";
+
+/// `list-panes` output in [`DETAILS_FORMAT`], in tmux's order.
+fn parse_details(out: &str) -> Vec<TerminalDetails> {
+    out.lines()
+        .filter_map(|l| {
+            let f: Vec<&str> = l.splitn(8, '\x1f').collect();
+            let [pane, pid, tty, scrollback, socket, server, command, dir] = f[..] else {
+                return None;
+            };
+            let id = TerminalId::new(pane);
+            Some(TerminalDetails {
+                hook_env: hook::env(socket, server.parse().ok()?, &id),
+                id,
+                dir: dir.to_string(),
+                command: command.to_string(),
+                pid: pid.parse().ok()?,
+                tty: tty.to_string(),
+                scrollback: scrollback.parse().ok()?,
+            })
+        })
+        .collect()
 }
 
 /// `dir` for `-c`, as an [`unexpanded`] argument.
@@ -431,23 +533,18 @@ fn literal(arg: &str) -> String {
     }
 }
 
-/// One tmux session: its stable id (`$N`) and its current name.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Session {
-    pub id: String,
-    pub name: String,
-}
-
-fn parse_sessions(out: &str) -> Vec<Session> {
-    let mut rows: Vec<(u64, u64, Session)> = out
+/// `list-sessions` output, oldest first: tmux's session ids are `$N`.
+fn parse_sessions(out: &str) -> Vec<ListedSpace> {
+    let mut rows: Vec<(u64, u64, ListedSpace)> = out
         .lines()
         .filter_map(|l| {
             let mut parts = l.splitn(3, ' ');
             let created = parts.next()?.parse().unwrap_or(0);
-            let id = parts.next()?.to_string();
+            let id = parts.next()?;
             let name = parts.next().unwrap_or_default().to_string();
             let number = id.trim_start_matches('$').parse().unwrap_or(u64::MAX);
-            Some((created, number, Session { id, name }))
+            let id = SpaceId::new(id);
+            Some((created, number, ListedSpace { id, name }))
         })
         .collect();
     rows.sort_by_key(|(created, number, _)| (*created, *number));
@@ -457,42 +554,6 @@ fn parse_sessions(out: &str) -> Vec<Session> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn vars(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
-        pairs
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect()
-    }
-
-    #[test]
-    fn clean_env_keeps_only_the_allowlist() {
-        let env = clean_env(vars(&[
-            ("HOME", "/h"),
-            ("SUPACODE_PANE", "1"),
-            ("TERM_PROGRAM", "ghostty"),
-            ("TERM", "xterm-ghostty"),
-            ("TMUX", "/tmp/x,1,0"),
-            ("LC_ALL", "C"),
-            ("PATH", "/bin"),
-            ("XDG_STATE_HOME", "/s"),
-            ("PADDOCK_TMUX_SOCKET", "p"),
-        ]));
-        let keys: Vec<&str> = env.iter().map(|(k, _)| k.as_str()).collect();
-        // Hooks in the terminals must find the same state and socket.
-        assert_eq!(
-            keys,
-            [
-                "HOME",
-                "LC_ALL",
-                "PADDOCK_TMUX_SOCKET",
-                "PATH",
-                "XDG_STATE_HOME",
-                "TERM"
-            ]
-        );
-        assert!(env.contains(&("TERM".into(), "xterm-256color".into())));
-    }
 
     #[test]
     fn config_sets_the_agreed_options() {
@@ -521,6 +582,53 @@ mod tests {
     }
 
     #[test]
+    fn pane_commands_are_read_by_pane() {
+        let got = parse_commands("%1 agy\n%2 -zsh\n%3 my tool\n\n%4\n");
+        assert_eq!(got.len(), 3);
+        assert_eq!(got["%1"], "agy");
+        assert_eq!(got["%2"], "-zsh");
+        assert_eq!(got["%3"], "my tool", "a name with a space");
+    }
+
+    #[test]
+    fn panes_are_read_by_the_pid_of_their_shell() {
+        let got = parse_pids("100 %4\n500 %5\nx %6\n");
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[&100], "%4");
+        assert_eq!(got[&500], "%5");
+    }
+
+    #[test]
+    fn pane_details_hold_what_a_hook_in_the_pane_would_see() {
+        let out = "%4\x1f100\x1f/dev/ttys004\x1f7\x1f/tmp/tmux-501/p\x1f42\x1fzsh\x1f/w/a b\n\
+                   %5\x1fx\x1f/dev/ttys005\x1f0\x1f/tmp/tmux-501/p\x1f42\x1fzsh\x1f/w\n";
+        let got = parse_details(out);
+        assert_eq!(got.len(), 1, "a line without a pid is skipped");
+        let d = &got[0];
+        assert_eq!(d.id, "%4");
+        assert_eq!(
+            (d.pid, d.tty.as_str(), d.scrollback),
+            (100, "/dev/ttys004", 7)
+        );
+        assert_eq!((d.command.as_str(), d.dir.as_str()), ("zsh", "/w/a b"));
+        assert_eq!(d.hook_env, hook::env("/tmp/tmux-501/p", 42, &d.id));
+    }
+
+    #[test]
+    fn a_space_s_panes_say_which_are_floats_and_where_their_shells_are() {
+        let out = "g\x1f%1\x1f/w/float\n\x1f%2\x1f/w/tab\n\x1f%3\x1f\n";
+        let panes = parse_panes(out);
+        let floats: Vec<bool> = panes.iter().map(|p| p.float).collect();
+        assert_eq!(floats, [true, false, false]);
+        assert_eq!(panes[1].id, "%2");
+        assert_eq!(panes[1].path, "/w/tab");
+        assert_eq!(panes[2].path, "");
+        // The format reads the float marker paddock sets.
+        let marker = format!("#{{{}}}\x1f", structure::FLOAT_OPTION);
+        assert!(PANE_FORMAT.starts_with(&marker), "{PANE_FORMAT}");
+    }
+
+    #[test]
     fn a_start_directory_is_taken_literally() {
         let tmp = tempfile::tempdir().unwrap();
         let server = Server::new(Paths {
@@ -533,7 +641,7 @@ mod tests {
         let dir = tmp.path().canonicalize().unwrap().join("x#{session_id}y");
         std::fs::create_dir(&dir).unwrap();
         let started = server.new_session("t", &dir, (80, 24));
-        let got = started.and_then(|s| server.display(&s.id, "#{pane_current_path}"));
+        let got = started.and_then(|s| server.display(s.as_str(), "#{pane_current_path}"));
         let socket = server.run(&["display-message", "-p", "#{socket_path}"]);
         let _ = server.run(&["kill-server"]);
         if let Ok(socket) = socket {
@@ -560,7 +668,7 @@ mod tests {
             started
                 .as_ref()
                 .map_err(|e| anyhow::anyhow!("{e:#}"))
-                .and_then(|s| server.display(&s.id, &format))
+                .and_then(|s| server.display(s.as_str(), &format))
         };
         let got: Vec<String> = ["zsh", "-zsh", "bash", "sh", "fish", "ssh", "mosh", "vim"]
             .into_iter()
@@ -611,12 +719,15 @@ mod tests {
         let dir = tmp.path().canonicalize().unwrap();
         let name = |id: &str| server.display(id, "#{session_name}|#{window_name}");
         let run = || -> Result<Vec<String>> {
-            let s = server.new_session("v#S", &dir, (80, 24))?;
-            let started = name(&s.id)?;
-            let window = server.display(&s.id, "#{window_id}")?;
+            let s = server
+                .new_session("v#S", &dir, (80, 24))?
+                .as_str()
+                .to_string();
+            let started = name(&s)?;
+            let window = server.display(&s, "#{window_id}")?;
             server.rename_window(&window, "w#{session_id}#(id)#")?;
-            server.rename_session(&s.id, "s#S;")?;
-            Ok(vec![started, name(&s.id)?])
+            server.rename_session(&s, "s#S;")?;
+            Ok(vec![started, name(&s)?])
         };
         let got = run();
         let socket = server.run(&["display-message", "-p", "#{socket_path}"]);
@@ -641,23 +752,22 @@ mod tests {
         let dir = tmp.path().canonicalize().unwrap().join("d;");
         std::fs::create_dir(&dir).unwrap();
         let run = || -> Result<(String, String, String)> {
-            let s = server.new_session("s;", &dir, (80, 24))?;
-            let started = server.display(&s.id, "#{session_name}")?;
-            server.new_window(&s.id, &dir)?;
-            let pane = server.split(&server.display(&s.id, "#{pane_id}")?, true, &dir)?;
+            let s = server
+                .new_session("s;", &dir, (80, 24))?
+                .as_str()
+                .to_string();
+            let started = server.display(&s, "#{session_name}")?;
+            server.new_window(&s, &dir)?;
+            let pane = server
+                .split(&server.display(&s, "#{pane_id}")?, true, &dir)?
+                .as_str()
+                .to_string();
             let window = server.display(&pane, "#{window_id}")?;
             server.rename_window(&window, "a;")?;
-            server.rename_session(&s.id, "b;")?;
+            server.rename_session(&s, "b;")?;
             let format = "#{session_name} #{window_name}";
             let names = server.display(&pane, format)?;
-            let dirs = server.run(&[
-                "list-panes",
-                "-s",
-                "-t",
-                &s.id,
-                "-F",
-                "#{pane_current_path}",
-            ])?;
+            let dirs = server.run(&["list-panes", "-s", "-t", &s, "-F", "#{pane_current_path}"])?;
             Ok((started, names, dirs))
         };
         let got = run();
@@ -683,13 +793,16 @@ mod tests {
         });
         server.write_config().unwrap();
         let run = || -> Result<Vec<String>> {
-            let s = server.new_session("t", tmp.path(), (80, 24))?;
-            server.new_float(&s.id, tmp.path(), "sleep 30;", ";")?;
-            server.new_float(&s.id, tmp.path(), "sleep 30", "C-;")?;
+            let s = server
+                .new_session("t", tmp.path(), (80, 24))?
+                .as_str()
+                .to_string();
+            server.new_float(&s, tmp.path(), "sleep 30;", ";")?;
+            server.new_float(&s, tmp.path(), "sleep 30", "C-;")?;
             // Exits at once: still made, no error.
-            server.new_float(&s.id, tmp.path(), "true", "x")?;
+            server.new_float(&s, tmp.path(), "true", "x")?;
             let format = "#{window_active} #{automatic-rename} [#{@paddock-float}]";
-            let out = server.run(&["list-windows", "-t", &s.id, "-F", format])?;
+            let out = server.run(&["list-windows", "-t", &s, "-F", format])?;
             Ok(out.lines().map(str::to_string).collect())
         };
         let got = run();
@@ -718,15 +831,21 @@ mod tests {
         std::fs::create_dir(&dir).unwrap();
         std::fs::create_dir(&other).unwrap();
         let run = || -> Result<Vec<Option<String>>> {
-            let s = server.new_session("t", &dir, (80, 24))?;
+            let s = server
+                .new_session("t", &dir, (80, 24))?
+                .as_str()
+                .to_string();
             // The root goes to the session just made, not the one before.
-            let second = server.new_session("u", &base, (80, 24))?;
-            let made = server.root(&s.id);
-            server.set_root(&s.id, &other)?;
-            let changed = server.root(&s.id);
-            server.run(&["set-option", "-u", "-t", &s.id, ROOT_OPTION])?;
-            let unset = server.root(&s.id);
-            Ok(vec![made, server.root(&second.id), changed, unset])
+            let second = server
+                .new_session("u", &base, (80, 24))?
+                .as_str()
+                .to_string();
+            let made = server.root(&s);
+            server.set_root(&s, &other)?;
+            let changed = server.root(&s);
+            server.run(&["set-option", "-u", "-t", &s, ROOT_OPTION])?;
+            let unset = server.root(&s);
+            Ok(vec![made, server.root(&second), changed, unset])
         };
         let got = run();
         let socket = server.run(&["display-message", "-p", "#{socket_path}"]);

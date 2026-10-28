@@ -7,7 +7,7 @@ paddock is a terminal workspace for running coding agents (Claude Code, Gemini C
 ### Layout
 
 **Space**:
-A named group of tabs you create to organise work, listed in the sidebar's SPACES section. It is a tmux session on the hidden server.
+A named group of tabs you create to organise work, listed in the sidebar's SPACES section. It lives on the paddock server; on the legacy tmux backend, it is a session of the hidden tmux server.
 _Avoid_: workspace, project, group, category
 
 **Space root**:
@@ -18,28 +18,36 @@ _Avoid_: root (alone), home, base (that is a branch), project directory
 The space whose tabs the tab bar shows. It has its own background in the sidebar.
 
 **Tab**:
-One page of a space, holding one or more terminals arranged as splits. It is a tmux window of the space's session.
+One page of a space, holding one or more terminals arranged as splits. It lives on the paddock server; on the legacy tmux backend, it is a window of the space's session.
 
 **Split**:
-A terminal sharing its tab with others, beside or above them. It is a tmux pane; tmux keeps the layout and the sizes, which `C-a H/J/K/L` and dragging the border between two splits change.
+A terminal sharing its tab with others, beside or above them. `C-a H/J/K/L` and dragging the border between two splits change their sizes. The paddock server keeps the layout in its layout tree, with each split's share of its row or column; on the legacy tmux backend, a split is a pane and tmux keeps the layout and the sizes.
 _Avoid_: window (that is a tab)
 
 **Zoom**:
-A split filling its tab for a while (`C-a z`), the others hidden but running; the tab bar marks the tab with a `Z`. It is tmux's `resize-pane -Z`, so it lives in tmux.
+A split filling its tab for a while (`C-a z`), the others hidden but running; the tab bar marks the tab with a `Z`. The paddock server keeps it with the tab's layout tree; on the legacy tmux backend, it is `resize-pane -Z` and lives in tmux.
 _Avoid_: maximise, fullscreen
 
 **Terminal**:
-One shell inside paddock, shown in a tab, alone or with others. It is a tmux pane and keeps running when paddock is closed.
+One shell inside paddock, shown in a tab, alone or with others. The paddock server runs it on its own PTY, so it keeps running when paddock is closed; on the legacy tmux backend, it is a tmux pane.
 _Avoid_: tmux session
 
+**Server**:
+paddock's own background process (`paddock server`) that holds every terminal and the layout while the app is closed: the default backend. The app is its client.
+_Avoid_: daemon (in user-facing text), hidden server (that is tmux's)
+
+**Backend**:
+What hosts the terminals (`[backend] kind`): paddock's own server (the native backend, the default), or the hidden tmux server (the legacy tmux backend, until v0.2). Terminals never move from one to the other: an older paddock's tmux server keeps its own until closed.
+_Avoid_: engine, runtime
+
 **Sidebar**:
-The panel on the left, which can be shown or hidden: SPACES, two lines per space with a dot for the most urgent state of its agents, then its directory and branch and that branch's PR mark (`#123 ✓`) where it fits, then AGENTS, two lines per main agent in any space with its state, space and tab, and its agent kind's tag where it fits, external sessions last.
+The panel on the left, which can be shown or hidden: SPACES, two lines per space with a dot for the most urgent state of its agents, then its directory and branch, that branch's git status (`+200 −10 ↑2↓1`: uncommitted lines, commits ahead and behind) and its PR mark (`#123 ✓`) where each fits (the PR mark dropped first), then AGENTS, two lines per main agent in any space with its state, space and tab, and its agent kind's tag where it fits, in space and tab order (a state change never moves one), external sessions last.
 
 **Agent**:
 A main agent in the sidebar's AGENTS section. Subagents show only in the dashboard.
 
 **Float**:
-A program shown in a box over the whole screen and hidden again by the prefix and its key, kept running while hidden. Each space has its own float per key. It is a tmux window of the space's session marked as a float, never a tab.
+A program shown in a box over the whole screen and hidden again by the prefix and its key, kept running while hidden. Each space has its own float per key. On the paddock server it is a terminal of the space kept apart from its tabs; on the legacy tmux backend, a window of the space's session marked as a float. Never a tab.
 _Avoid_: popup (that is the prompt), overlay
 
 **Session view**:
@@ -151,7 +159,7 @@ A repository's first working tree, the one `git clone` or `git init` made; the o
 _Avoid_: main worktree, root repo
 
 **Line changes**:
-Uncommitted lines added and removed in a task's working tree, shown as `+30 −144`.
+Uncommitted lines added and removed in a working tree, shown as `+30 −144`: a task's on the dashboard, and a space's (on its branch) in the sidebar, after its branch.
 _Avoid_: diff
 
 **Base diff**:

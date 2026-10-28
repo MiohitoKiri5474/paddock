@@ -5,13 +5,13 @@
 //! directory and branch.
 
 use super::Event;
+use crate::backend::{Backend, SpaceId};
 use crate::git;
 use crate::hooks::now_ms;
 use crate::paths::HomePaths;
 use crate::sessions::{agents, log, HookRecord};
-use crate::tmux::Server;
 use crate::worktree::space_dir;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -61,12 +61,12 @@ fn trim_external(path: &Path, reader: &mut log::Reader) -> Vec<HookRecord> {
 pub type Tasks = Vec<(String, String)>;
 
 /// The tasks on screen, whether the dashboard's details are wanted too,
-/// and the spaces (tmux session ids) whose directory and branch to read.
+/// and the spaces whose directory and branch to read.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Watched {
     pub tasks: Tasks,
     pub details: bool,
-    pub spaces: Vec<String>,
+    pub spaces: Vec<SpaceId>,
 }
 
 /// A space's directory, the branch checked out there, and the working
@@ -74,8 +74,11 @@ pub struct Watched {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Place {
     pub path: String,
-    /// `None` outside a git repository.
+    /// `None` outside a git repository; the short commit on a detached
+    /// HEAD.
     pub branch: Option<String>,
+    /// `branch` is a branch, not a detached HEAD's commit.
+    pub on_branch: bool,
     /// The working tree and its repository's main checkout; `None`
     /// outside a git repository.
     pub tree: Option<git::WorkingTree>,
@@ -85,6 +88,11 @@ pub struct Place {
     /// What is checked out at the root (as `branch` at `path`); `None`
     /// outside a git checkout.
     pub root_branch: Option<String>,
+    /// The status of `branch` in `path` (uncommitted changes, ahead and
+    /// behind upstream), read on the watcher's thread only (see
+    /// [`read_watched`]); `None` until then, outside a repository and on
+    /// a detached HEAD.
+    pub status: Option<git::Status>,
 }
 
 impl Place {
@@ -100,6 +108,19 @@ impl Place {
         Some((self.path.clone(), self.branch.clone()?))
     }
 
+    /// The directory and the branch checked out there, if on a branch:
+    /// the key its status is read by, shared with a task on that branch
+    /// there.
+    pub fn status_key(&self) -> Option<(String, String)> {
+        self.pr_key().filter(|_| self.on_branch)
+    }
+
+    /// Whether `other` is the same directory and branch, so its status
+    /// still applies.
+    pub fn same_checkout(&self, other: &Place) -> bool {
+        self.path == other.path && self.branch == other.branch
+    }
+
     /// The root and what is checked out there, as the finder shows them
     /// (home as `~`): a branch always belongs to the directory beside it.
     pub fn root_shown(&self, home: &HomePaths) -> (String, Option<String>) {
@@ -108,12 +129,16 @@ impl Place {
 }
 
 /// Space `id`'s directory, root and what is checked out in each, read
-/// now; `None` if tmux cannot say.
-pub fn place(server: &Server, id: &str) -> Option<Place> {
-    let path = space_dir(server, id)?;
-    let branch = git::head(&path);
+/// now; `None` if the backend cannot say. Not the branch's status, which
+/// [`places`] adds off the UI thread.
+pub fn place(backend: &Backend, id: &SpaceId) -> Option<Place> {
+    let path = space_dir(backend, id)?;
+    // `git::head`, keeping whether it is a branch.
+    let current = git::current_branch(&path);
+    let on_branch = current.is_some();
+    let branch = current.or_else(|| git::short_commit(&path));
     let tree = git::working_tree(&path);
-    let root = server.root(id);
+    let root = backend.root(id);
     let root_branch = match &root {
         Some(root) => git::head(root),
         None => branch.clone(),
@@ -121,50 +146,17 @@ pub fn place(server: &Server, id: &str) -> Option<Place> {
     Some(Place {
         path,
         branch,
+        on_branch,
         tree,
         root,
         root_branch,
+        status: None,
     })
 }
 
-/// Read each of `spaces`' place.
-fn places(server: &Server, spaces: &[String]) -> Vec<(String, Place)> {
-    spaces
-        .iter()
-        .filter_map(|id| Some((id.clone(), place(server, id)?)))
-        .collect()
-}
-
-/// The hook event log of `server` (see [`log::path`]).
-pub fn server_log(server: &Server, state_dir: &Path) -> Result<PathBuf> {
-    let pid: u32 = server
-        .run(&["display-message", "-p", "#{pid}"])?
-        .trim()
-        .parse()
-        .context("cannot read the tmux server's pid")?;
-    Ok(log::path(state_dir, pid))
-}
-
-/// Each pane's `pane_current_command`, by pane id; `None` if tmux cannot
-/// say.
-fn pane_commands(server: &Server) -> Option<HashMap<String, String>> {
-    let out = server
-        .run(&[
-            "list-panes",
-            "-a",
-            "-F",
-            "#{pane_id} #{pane_current_command}",
-        ])
-        .ok()?;
-    Some(parse_commands(&out))
-}
-
-/// `list-panes` output of `<pane id> <command>` lines, by pane id.
-fn parse_commands(out: &str) -> HashMap<String, String> {
-    out.lines()
-        .filter_map(|l| l.split_once(' '))
-        .map(|(pane, command)| (pane.to_string(), command.to_string()))
-        .collect()
+/// The hook event log of `backend` (see [`log::path`]).
+pub fn server_log(backend: &Backend, state_dir: &Path) -> Result<PathBuf> {
+    Ok(log::path(state_dir, backend.instance()?))
 }
 
 /// Start the threads, reading the server's hook events from `server_log`
@@ -173,7 +165,7 @@ fn parse_commands(out: &str) -> HashMap<String, String> {
 /// goes away. Returns where to send the tasks on screen: each list is read
 /// at once, then every [`GIT_POLL`] until the next one.
 pub fn start(
-    server: &Server,
+    backend: &Backend,
     server_log: PathBuf,
     agy_running: Arc<AtomicBool>,
     state_dir: &Path,
@@ -205,7 +197,7 @@ pub fn start(
         }
     });
 
-    let agents_server = server.clone();
+    let agents_backend = backend.clone();
     let events = tx.clone();
     std::thread::spawn(move || loop {
         // Whether Antigravity quit back to the shell (see
@@ -213,7 +205,7 @@ pub fn start(
         let taken = now_ms();
         let commands = agy_running
             .load(Ordering::Relaxed)
-            .then(|| pane_commands(&agents_server))
+            .then(|| agents_backend.terminal_commands())
             .flatten();
         if let Some(commands) = commands {
             if events.send(Event::Commands(taken, commands)).is_err() {
@@ -221,7 +213,7 @@ pub fn start(
             }
         }
         let taken = now_ms();
-        if let Some(list) = agents::fetch(&agents_server) {
+        if let Some(list) = agents::fetch(&agents_backend) {
             if events.send(Event::Agents(taken, list)).is_err() {
                 break;
             }
@@ -231,7 +223,7 @@ pub fn start(
 
     let (tasks_tx, tasks_rx) = mpsc::channel::<Watched>();
     let events = tx.clone();
-    let server = server.clone();
+    let backend = backend.clone();
     std::thread::spawn(move || {
         let mut watched = Watched::default();
         loop {
@@ -241,7 +233,7 @@ pub fn start(
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => break,
             }
-            if !read_watched(&server, &watched, &events) {
+            if !read_watched(&backend, &watched, &events) {
                 break;
             }
         }
@@ -251,8 +243,23 @@ pub fn start(
 
 /// Read what `watched` asks for (spaces' places, tasks' git status, and
 /// their details if wanted) and send it. Returns false once nobody listens.
-fn read_watched(server: &Server, watched: &Watched, events: &Sender<Event>) -> bool {
-    let read = places(server, &watched.spaces);
+fn read_watched(backend: &Backend, watched: &Watched, events: &Sender<Event>) -> bool {
+    // One status read per directory and branch each poll, shared by the
+    // spaces and the tasks.
+    let mut statuses: HashMap<(String, String), git::Status> = HashMap::new();
+    let read: Vec<(SpaceId, Place)> = watched
+        .spaces
+        .iter()
+        .filter_map(|id| {
+            let place = place(backend, id)?;
+            let status = place.status_key().map(|key| {
+                *statuses
+                    .entry(key)
+                    .or_insert_with_key(|(dir, branch)| git::checked_out_status(dir, branch))
+            });
+            Some((id.clone(), Place { status, ..place }))
+        })
+        .collect();
     if !read.is_empty() && events.send(Event::Spaces(read)).is_err() {
         return false;
     }
@@ -262,7 +269,12 @@ fn read_watched(server: &Server, watched: &Watched, events: &Sender<Event>) -> b
     }
     let read = tasks
         .iter()
-        .map(|(dir, branch)| ((dir.clone(), branch.clone()), git::status(dir, branch)))
+        .map(|key| {
+            let status = *statuses
+                .entry(key.clone())
+                .or_insert_with_key(|(dir, branch)| git::status(dir, branch));
+            (key.clone(), status)
+        })
         .collect();
     if events.send(Event::Git(read)).is_err() {
         return false;
@@ -282,12 +294,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pane_commands_are_read_by_pane() {
-        let got = parse_commands("%1 agy\n%2 -zsh\n%3 my tool\n\n%4\n");
-        assert_eq!(got.len(), 3);
-        assert_eq!(got["%1"], "agy");
-        assert_eq!(got["%2"], "-zsh");
-        assert_eq!(got["%3"], "my tool", "a name with a space");
+    fn only_a_space_on_a_branch_has_its_status_read() {
+        let place = |branch: Option<&str>, on_branch| Place {
+            path: "/w/api".into(),
+            branch: branch.map(str::to_string),
+            on_branch,
+            tree: None,
+            root: None,
+            root_branch: None,
+            status: None,
+        };
+        let key = Some(("/w/api".to_string(), "main".to_string()));
+        assert_eq!(place(Some("main"), true).status_key(), key);
+        assert_eq!(place(Some("1a2b3c4"), false).status_key(), None, "detached");
+        assert_eq!(place(None, false).status_key(), None, "no repository");
+        // `C-a r` keeps a status only for the same directory and branch.
+        assert!(place(Some("main"), true).same_checkout(&place(Some("main"), true)));
+        assert!(!place(Some("main"), true).same_checkout(&place(Some("dev"), true)));
     }
 
     #[test]
@@ -296,9 +319,11 @@ mod tests {
         let place = |root: Option<&str>, root_branch: Option<&str>| Place {
             path: "/w/api".into(),
             branch: Some("main".into()),
+            on_branch: true,
             tree: None,
             root: root.map(str::to_string),
             root_branch: root_branch.map(str::to_string),
+            status: None,
         };
         // Made before roots: its directory is its root.
         assert_eq!(

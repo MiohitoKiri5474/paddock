@@ -1,5 +1,10 @@
 //! Parsing tmux control-mode output (`tmux -C`), independent of any process.
 
+use crate::backend::{Event, TerminalId};
+
+/// What tmux tells every control client when a session is made or ends.
+const SESSIONS_CHANGED: &str = "%sessions-changed";
+
 /// One thing the control client tells us.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Message {
@@ -74,9 +79,87 @@ impl Parser {
     }
 }
 
+/// What a message means to paddock, if anything: replies are the
+/// client's own business, and most notifications change nothing shown.
+pub fn event(msg: Message) -> Option<Event> {
+    match msg {
+        Message::Output { pane, data } => Some(Event::Output {
+            terminal: TerminalId::new(pane),
+            data,
+        }),
+        Message::Exit => Some(Event::Ended),
+        Message::Notification(n) if n == SESSIONS_CHANGED => Some(Event::SpacesChanged),
+        Message::Notification(n) if changes_structure(&n) => Some(Event::Changed),
+        Message::Notification(_) | Message::Reply { .. } => None,
+    }
+}
+
+/// Whether a control notification changes a session's windows or panes,
+/// so they must be read again (ADR 0006).
+fn changes_structure(notification: &str) -> bool {
+    let kind = notification.split(' ').next().unwrap_or("");
+    matches!(
+        kind,
+        "%layout-change"
+            | "%window-add"
+            | "%window-close"
+            | "%window-renamed"
+            | "%session-renamed"
+            | "%session-window-changed"
+            | "%window-pane-changed"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn structure_notifications_are_told_apart_from_others() {
+        for n in [
+            "%layout-change @1 a87d,100x30,0,0,0 a87d,100x30,0,0,0 *",
+            "%window-add @2",
+            "%window-close @2",
+            "%window-renamed @1 vim",
+            "%session-renamed $0 api",
+            "%session-window-changed $0 @2",
+            "%window-pane-changed @1 %3",
+        ] {
+            assert!(changes_structure(n), "{n}");
+        }
+        for n in [
+            "%unlinked-window-add @3",
+            "%sessions-changed",
+            "%pane-mode-changed %1",
+        ] {
+            assert!(!changes_structure(n), "{n}");
+        }
+    }
+
+    #[test]
+    fn messages_become_the_events_paddock_acts_on() {
+        let note = |n: &str| event(Message::Notification(n.into()));
+        assert_eq!(note("%sessions-changed"), Some(Event::SpacesChanged));
+        assert_eq!(note("%window-add @2"), Some(Event::Changed));
+        assert_eq!(note("%pane-mode-changed %1"), None);
+        assert_eq!(event(Message::Exit), Some(Event::Ended));
+        let reply = Message::Reply {
+            ok: true,
+            lines: vec![],
+        };
+        assert_eq!(event(reply), None);
+        let output = Message::Output {
+            pane: "%3".into(),
+            data: b"hi".to_vec(),
+        };
+        assert_eq!(
+            event(output),
+            Some(Event::Output {
+                terminal: TerminalId::new("%3"),
+                data: b"hi".to_vec()
+            })
+        );
+    }
 
     #[test]
     fn unescape_decodes_octal_and_keeps_utf8() {

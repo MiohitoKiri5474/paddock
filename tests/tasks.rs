@@ -148,10 +148,13 @@ fn task(branch: &str, fields: &str) -> String {
 
 /// Tab count of space-1.
 fn tabs(sandbox: &Sandbox) -> usize {
-    sandbox
-        .tmux(&["list-windows", "-t", "space-1"])
-        .lines()
-        .count()
+    sandbox.space("space-1").tabs.len()
+}
+
+/// Wait until space-1 has `want` tabs: a closed terminal's tab goes once
+/// its last output is read, which may be after its rows have left.
+fn wait_for_tab_count(paddock: &Paddock, sandbox: &Sandbox, want: usize) {
+    paddock.wait_for(&format!("{want} tabs"), |_| tabs(sandbox) == want);
 }
 
 #[test]
@@ -402,13 +405,14 @@ fn subagent_work_done_while_paddock_is_closed_appears_on_reopen() {
     }
     hook("SubagentStop-subagent", "SubagentStop", AGENT_A);
 
+    // In tree order, not by state: the finished one stays first.
     let mut again = ready(&sandbox);
     wait_for_list(
         &mut again,
         &[
             &session("running"),
-            &sub("fix/b", "running"),
             &sub(FIX_A, "done"),
+            &sub("fix/b", "running"),
         ],
     );
 }
@@ -443,7 +447,7 @@ fn a_session_that_ends_while_paddock_is_closed_is_gone_with_its_tasks_on_reopen(
     wait_for_list(&mut again, &[&session("idle")]);
 }
 
-/// Another session, in the terminal tmux target `terminal` names, that
+/// Another session, in the terminal `terminal` names, that
 /// starts and goes idle in `dir`, which must be on its default branch, so
 /// without tasks. Hooked last while paddock is closed, its row on reopen
 /// shows the whole event log has been read.
@@ -457,7 +461,7 @@ fn witness(sandbox: &Sandbox, terminal: &str, dir: &Path) {
 // Ticket 10: rows stay, across new conversations and reopening, until
 // dismissed with `D` or until their session ends (ticket 20).
 
-/// Main-agent events in the pane tmux target `terminal` names: it starts in `dir`, then a
+/// Main-agent events in the terminal `terminal` names: it starts in `dir`, then a
 /// shell command leaves it on each of `branches` in turn, then it stops.
 fn work_on(sandbox: &Sandbox, terminal: &str, dir: &Path, branches: &[&str]) {
     sandbox.hook(
@@ -558,7 +562,7 @@ fn a_closed_terminals_rows_leave_at_once_and_stay_gone_after_reopening() {
     close_list(&mut paddock);
     paddock.type_line("exit");
     wait_for_list(&mut paddock, &[]);
-    assert_eq!(tabs(&sandbox), 1);
+    wait_for_tab_count(&paddock, &sandbox, 1);
 
     // Replaying the event log does not bring them back.
     paddock.detach_keys();

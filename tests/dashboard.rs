@@ -34,7 +34,7 @@ fn payload(name: &str, session: &str, cwd: &str) -> String {
         .replace("\"/tmp/repo\"", &format!("\"{cwd}\""))
 }
 
-/// Report `event` for a Claude session in the pane tmux target `terminal`
+/// Report `event` for a Claude session in the terminal `terminal`
 /// names, working in `cwd`.
 fn claude(sandbox: &Sandbox, terminal: &str, event: &str, session: &str, cwd: &str) {
     sandbox.hook(terminal, event, &payload(event, session, cwd));
@@ -48,7 +48,16 @@ fn ready(sandbox: &Sandbox) -> Paddock {
 
 /// Two tabs, the second current.
 fn two_tabs(sandbox: &Sandbox) -> Paddock {
+    two_tabs_running(sandbox, None)
+}
+
+/// [`two_tabs`], with `line` typed into the first tab before the second
+/// opens.
+fn two_tabs_running(sandbox: &Sandbox, line: Option<&str>) -> Paddock {
     let mut paddock = ready(sandbox);
+    if let Some(line) = line {
+        paddock.type_line(line);
+    }
     paddock.command(b"c");
     paddock.wait_for_current_tab("2:home");
     paddock.wait_for_text(PROMPT);
@@ -63,10 +72,7 @@ fn wait_anywhere(paddock: &Paddock, text: &str) {
 
 /// Tab count of space-1.
 fn tabs(sandbox: &Sandbox) -> usize {
-    sandbox
-        .tmux(&["list-windows", "-t", "space-1"])
-        .lines()
-        .count()
+    sandbox.space("space-1").tabs.len()
 }
 
 fn open(paddock: &mut Paddock) {
@@ -315,7 +321,7 @@ fn a_closed_terminals_session_leaves_and_the_selection_moves_to_the_next() {
     paddock.send(b"j");
     paddock.wait_for_text("preview: bravo");
 
-    sandbox.tmux(&["kill-window", "-t", "space-1:1"]);
+    sandbox.end_terminal("space-1:1");
     paddock.wait_for("bravo left the list", |s| !s.contains("bravo"));
     // The session that took its place is selected, not the first.
     paddock.wait_for_text("preview: charlie");
@@ -348,20 +354,20 @@ fn the_preview_shows_the_selected_terminal_live() {
     let sandbox = Sandbox::new();
     // No `claude agents` snapshots, whose polls redraw the screen anyway.
     sandbox.set_agents("not json");
-    let mut paddock = two_tabs(&sandbox);
+    // The first tab prints once `go` exists.
+    let go = sandbox.path("go");
+    let wait = format!(
+        "while [ ! -e '{}' ]; do sleep 0.05; done; echo live-$((6*7))",
+        go.display()
+    );
+    let mut paddock = two_tabs_running(&sandbox, Some(&wait));
     claude(&sandbox, "space-1:0", "Stop", "s1", "/w/repo");
     wait_anywhere(&paddock, "done");
     open(&mut paddock);
     paddock.wait_for_text("preview: repo");
 
     // The first tab is not current: only the preview can show its pane.
-    sandbox.tmux(&[
-        "send-keys",
-        "-t",
-        "space-1:0",
-        "echo live-$((6*7))",
-        "Enter",
-    ]);
+    std::fs::write(&go, "").unwrap();
     paddock.wait_for_text("live-42");
     assert_eq!(paddock.current_tab(), "2:home");
 }
@@ -378,16 +384,21 @@ fn wait_for_file(path: &Path, want: &str) {
     panic!("{} is {:?}", path.display(), std::fs::read_to_string(path));
 }
 
+/// Two tabs, the first one's Claude done and its terminal writing every
+/// byte it reads to the returned file, ESC shown as `^[`.
+fn two_tabs_with_cat(sandbox: &Sandbox) -> (Paddock, std::path::PathBuf) {
+    let out = sandbox.path("typed.txt");
+    let cat = format!("cat -v > {}", out.display());
+    let paddock = two_tabs_running(sandbox, Some(&cat));
+    claude(sandbox, "space-1:0", "Stop", "s1", "/w/repo");
+    wait_anywhere(&paddock, "done");
+    (paddock, out)
+}
+
 #[test]
 fn i_types_into_the_previewed_terminal_and_esc_is_never_sent() {
     let sandbox = Sandbox::new();
-    let mut paddock = two_tabs(&sandbox);
-    claude(&sandbox, "space-1:0", "Stop", "s1", "/w/repo");
-    wait_anywhere(&paddock, "done");
-    // The first tab's pane writes every byte it reads to a file, ESC shown as `^[`.
-    let out = sandbox.path("typed.txt");
-    let cat = format!("cat -v > {}", out.display());
-    sandbox.tmux(&["send-keys", "-t", "space-1:0", &cat, "Enter"]);
+    let (mut paddock, out) = two_tabs_with_cat(&sandbox);
 
     open(&mut paddock);
     paddock.send(b"I");
@@ -410,12 +421,7 @@ fn i_types_into_the_previewed_terminal_and_esc_is_never_sent() {
 #[test]
 fn esc_and_a_key_in_one_read_leave_interactive_preview_unsent() {
     let sandbox = Sandbox::new();
-    let mut paddock = two_tabs(&sandbox);
-    claude(&sandbox, "space-1:0", "Stop", "s1", "/w/repo");
-    wait_anywhere(&paddock, "done");
-    let out = sandbox.path("typed.txt");
-    let cat = format!("cat -v > {}", out.display());
-    sandbox.tmux(&["send-keys", "-t", "space-1:0", &cat, "Enter"]);
+    let (mut paddock, out) = two_tabs_with_cat(&sandbox);
 
     open(&mut paddock);
     paddock.send(b"I");
