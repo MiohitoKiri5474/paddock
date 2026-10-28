@@ -13,6 +13,7 @@
 //! - [`saved`] and [`restore`]: `layout.json`, written as the layout
 //!   changes, and the layout rebuilt from it.
 //! - [`terminal`] and [`pty`]: one terminal, its shell and its emulator.
+//! - [`proc`]: a process's name and directory, as macOS or Linux says.
 //! - [`hook`]: the variables that tell a process which terminal it runs in.
 //! - [`queue`]: the queues to the threads that write to a client or a
 //!   program.
@@ -22,6 +23,7 @@ mod axis;
 mod client;
 mod hook;
 mod layout;
+mod proc;
 mod protocol;
 mod pty;
 mod queue;

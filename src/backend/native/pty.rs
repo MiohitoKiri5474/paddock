@@ -1,5 +1,5 @@
 //! The native server's PTYs: a shell started on a new one, its size, and
-//! what macOS (`libproc`) says of the program in its foreground.
+//! the program in its foreground (named and placed by [`super::proc`]).
 
 use anyhow::{Context, Result};
 use std::ffi::CStr;
@@ -149,38 +149,7 @@ pub fn foreground(master: &File) -> Option<i32> {
     (group > 0).then_some(group)
 }
 
-/// Process `pid`'s name (its command, as `ps -c` shows it).
-pub fn name(pid: i32) -> Option<String> {
-    let mut buf = [0u8; 256];
-    let size = u32::try_from(buf.len()).ok()?;
-    // SAFETY: proc_name writes at most `size` bytes to the buffer.
-    let n = unsafe { libc::proc_name(pid, buf.as_mut_ptr().cast(), size) };
-    let n = usize::try_from(n).ok().filter(|&n| n > 0)?;
-    Some(String::from_utf8_lossy(&buf[..n]).into_owned())
-}
-
-/// Process `pid`'s current directory.
-pub fn cwd(pid: i32) -> Option<String> {
-    // SAFETY: an all-zero proc_vnodepathinfo is a valid value.
-    let mut info: libc::proc_vnodepathinfo = unsafe { std::mem::zeroed() };
-    let size = i32::try_from(std::mem::size_of::<libc::proc_vnodepathinfo>()).ok()?;
-    // SAFETY: proc_pidinfo writes at most `size` bytes to `info`.
-    let n = unsafe {
-        libc::proc_pidinfo(
-            pid,
-            libc::PROC_PIDVNODEPATHINFO,
-            0,
-            std::ptr::from_mut(&mut info).cast(),
-            size,
-        )
-    };
-    if n != size {
-        return None;
-    }
-    // SAFETY: the kernel writes the path NUL-terminated within the array.
-    let path = unsafe { CStr::from_ptr(info.pvi_cdir.vip_path.as_ptr().cast()) };
-    Some(path.to_string_lossy().into_owned()).filter(|p| !p.is_empty())
-}
+pub use super::proc::{cwd, name};
 
 #[cfg(test)]
 mod tests {

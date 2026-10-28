@@ -131,8 +131,7 @@ pub fn serve() -> Result<()> {
 /// one in four billion chance. Never 0, which a client's hello sends.
 fn new_instance() -> u32 {
     loop {
-        // SAFETY: arc4random has no preconditions.
-        let id = unsafe { libc::arc4random() };
+        let id = super::proc::random();
         if id != 0 {
             return id;
         }
