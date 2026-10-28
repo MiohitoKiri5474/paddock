@@ -18,6 +18,7 @@ const SPIKE: &str = concat!(
 const SESSION: &str = "11111111-2222-4333-8444-555555555555";
 const LIVE: &str = "0000aaaa-0000-4000-8000-00000000000a";
 const ENDED: &str = "0000bbbb-0000-4000-8000-00000000000b";
+const OTHER: &str = "0000cccc-0000-4000-8000-00000000000c";
 
 fn native() -> Sandbox {
     let sandbox = Sandbox::new();
@@ -83,6 +84,13 @@ fn saved_agents(saved: &str) -> Vec<serde_json::Value> {
     out
 }
 
+/// Run a line in the focused terminal and wait for its output: whatever
+/// was typed there before it has run.
+fn mark(paddock: &mut Paddock) {
+    paddock.type_line("echo MARK''-DONE");
+    paddock.wait_for_text("MARK-DONE");
+}
+
 /// How many agents the sidebar lists (each with its kind beside its
 /// place).
 fn agents_shown(paddock: &Paddock) -> usize {
@@ -129,9 +137,17 @@ fn a_restarted_server_resumes_a_live_claude_session_in_its_directory_and_not_an_
 
     stop_server(&sandbox.state_dir());
     assert!(paddock.wait_exit(), "a clean end");
-    let again = sandbox.launch();
+    let mut again = sandbox.launch();
 
     again.wait_for_text("restored 1 space, resumed 1 session");
+    sandbox.claude_calls();
+    // A resume command is typed before anything else: once a line typed
+    // into the ended session's terminal has run, it ran none.
+    again.command(b"h");
+    again.wait_for("the focus on the first split", |_| {
+        sandbox.terminal("space-1:0.0").focused
+    });
+    mark(&mut again);
     let calls = sandbox.claude_calls();
     assert_eq!(calls, [format!("{} --resume {LIVE}", real(&dir))]);
     // Before the resumed Claude reports anything, a later save still
@@ -164,14 +180,17 @@ fn the_resumed_session_is_listed_once_as_the_same_session() {
     claude(&sandbox, "space-1:0.1", "UserPromptSubmit", LIVE);
 
     again.wait_for("the resumed agent", |_| agents_shown(&again) > 0);
-    std::thread::sleep(Duration::from_millis(300));
-    assert_eq!(agents_shown(&again), 1, "{}", again.full_screen());
+    // Another session's event, after the resumed one's: once it shows,
+    // a second row for the resumed session would have too.
+    claude(&sandbox, "space-1:0.0", "UserPromptSubmit", OTHER);
+    again.wait_for("the other agent", |_| agents_shown(&again) > 1);
+    assert_eq!(agents_shown(&again), 2, "{}", again.full_screen());
     again.command(b"o");
     again.wait_for_text("j down  k up");
     again.wait_for_text("AGENT");
     let screen = again.screen();
     let rows = screen.lines().filter(|l| l.trim_end().ends_with(" claude"));
-    assert_eq!(rows.count(), 1, "one row: {screen}");
+    assert_eq!(rows.count(), 2, "one row each: {screen}");
 }
 
 /// A terminal whose session ended gets a fresh shell, and the notice
@@ -186,12 +205,12 @@ fn a_restart_with_no_live_session_resumes_nothing() {
 
     stop_server(&sandbox.state_dir());
     assert!(paddock.wait_exit(), "a clean end");
-    let again = sandbox.launch();
+    let mut again = sandbox.launch();
 
     again.wait_for_text("restored 1 space");
     again.wait_for_text(PROMPT);
     assert!(!again.full_screen().contains("resumed"));
-    std::thread::sleep(Duration::from_millis(300));
+    mark(&mut again);
     let log = std::fs::read_to_string(sandbox.path("claude.log")).unwrap_or_default();
     assert_eq!(log, "", "claude never run");
 }
