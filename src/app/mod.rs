@@ -26,8 +26,8 @@ mod worktrees;
 pub use dashboard::DashboardFilter;
 pub use rows::{Row, RowId, TaskDetails, TaskPrs, TaskRow};
 
-use crate::backend::{self, Backend, OtherVersion, SpaceId, TerminalId};
-use crate::config::{BackendKind, Config};
+use crate::backend::{self, Backend, OldTmuxServer, OtherVersion, SpaceId, TerminalId};
+use crate::config::Config;
 use crate::git::{Details, Status};
 use crate::paths::Paths;
 use crate::sessions::{Agent, HookRecord};
@@ -74,18 +74,25 @@ pub enum Event {
 pub fn run() -> Result<()> {
     let paths = Paths::from_env()?;
     // Read the config before touching the screen, so errors print normally.
-    let mut config = Config::load(&paths.config_dir)?;
+    let config = Config::load(&paths.config_dir)?;
     let Some(_instance) = crate::instance::claim(&paths.state_dir)? else {
         return Ok(());
     };
-    let state_dir = paths.state_dir.clone();
-    // Shown and repeated on leaving as the config's warnings are, first,
-    // so the tab bar's width does not cut it off.
-    if config.backend == BackendKind::Native {
-        if let Some(notice) = backend::old_tmux_server_notice(&paths) {
-            config.warnings.insert(0, notice);
-        }
+    let old_tmux = OldTmuxServer::find(&paths, config.backend);
+    let result = run_claimed(paths, &config, old_tmux.as_ref().map(OldTmuxServer::notice));
+    // Printed however paddock ends, after the screen is given back, and
+    // only then remembered as told.
+    if let Some(old) = old_tmux {
+        eprintln!("paddock: {}", old.notice());
+        old.told();
     }
+    result
+}
+
+/// [`run`] once this paddock is the only one: `notice`, if any, shows in
+/// the tab bar before the config's warnings, so its width does not cut it.
+fn run_claimed(paths: Paths, config: &Config, notice: Option<String>) -> Result<()> {
+    let state_dir = paths.state_dir.clone();
     let backend = Backend::new(paths, config.backend);
     prepare(&backend)?;
     let start_dir = std::env::current_dir().context("no current directory")?;
@@ -104,12 +111,18 @@ pub fn run() -> Result<()> {
     let size = screen.size().context("cannot read the terminal size")?;
     let mut app = state::App::start(
         backend,
-        &config,
+        config,
         (size.width, size.height),
         tx.clone(),
         start_dir,
         state_dir.clone(),
     )?;
+    if let Some(notice) = notice {
+        app.notice = Some(match app.notice.take() {
+            Some(others) => format!("{notice}; {others}"),
+            None => notice,
+        });
+    }
     let events_log = watch::server_log(&app.backend, &state_dir)?;
     app.events_log = Some(events_log.clone());
     let git = watch::start(

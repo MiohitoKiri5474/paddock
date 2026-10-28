@@ -43,7 +43,7 @@ exit codes:
 pub enum Code {
     Ok = 0,
     Usage = 1,
-    Git = 2,
+    GitOrBackend = 2,
     Refused = 3,
     Late = 4,
 }
@@ -68,7 +68,7 @@ impl From<Failure> for Fail {
     fn from(f: Failure) -> Self {
         let code = match f {
             Failure::Invalid(_) => Code::Usage,
-            Failure::Git(_) | Failure::Backend(_) => Code::Git,
+            Failure::Git(_) | Failure::Backend(_) => Code::GitOrBackend,
             Failure::Refused(_) => Code::Refused,
             Failure::Late(_) => Code::Late,
         };
@@ -416,8 +416,8 @@ mod tests {
     fn failures_map_to_their_exit_codes() {
         let code = |f: Failure| Fail::from(f).code;
         assert_eq!(code(Failure::Invalid("x".into())), Code::Usage);
-        assert_eq!(code(Failure::Git("x".into())), Code::Git);
-        assert_eq!(code(Failure::Backend("x".into())), Code::Git);
+        assert_eq!(code(Failure::Git("x".into())), Code::GitOrBackend);
+        assert_eq!(code(Failure::Backend("x".into())), Code::GitOrBackend);
         assert_eq!(code(Failure::Refused("x".into())), Code::Refused);
         assert_eq!(code(Failure::Late("x".into())), Code::Late);
         assert_eq!(Code::Late as i32, 4);

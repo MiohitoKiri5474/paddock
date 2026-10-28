@@ -10,15 +10,15 @@ mod border;
 mod env;
 mod hook_vars;
 mod ids;
-mod legacy;
 mod native;
+mod old_tmux;
 mod structure;
 mod tmux;
 
 pub use border::Border;
 pub use ids::{FloatId, SpaceId, TabId, TerminalId};
-pub use legacy::old_tmux_server_notice;
 pub use native::{serve, OtherVersion};
+pub use old_tmux::OldTmuxServer;
 pub use structure::{Float, Split, Structure, Tab};
 
 use crate::config::BackendKind;

@@ -266,14 +266,15 @@ impl Sandbox {
     }
 
     /// Start the sandbox's tmux server as an older paddock left it
-    /// running, or end it (`running` false). Like every tmux call here, it
-    /// is on the sandbox's socket, never the user's.
-    pub fn old_tmux_server(&self, running: bool) {
-        if running {
-            self.tmux(&["-f", "/dev/null", "new-session", "-d", "sleep 600"]);
-        } else {
-            self.tmux(&["kill-server"]);
-        }
+    /// running. Like every tmux call here, it is on the sandbox's socket,
+    /// never the user's.
+    pub fn start_old_tmux_server(&self) {
+        self.tmux(&["-f", "/dev/null", "new-session", "-d", "sleep 600"]);
+    }
+
+    /// End the server [`Self::start_old_tmux_server`] started.
+    pub fn kill_old_tmux_server(&self) {
+        self.tmux(&["kill-server"]);
     }
 
     /// Write paddock's `config.toml`, after the `[backend]` table the
