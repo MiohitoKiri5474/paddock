@@ -6,10 +6,11 @@ mod harness;
 
 use harness::backend::{alive, server_pid, NATIVE};
 use harness::native_skip::NATIVE_NEEDS;
-use harness::stall::{finished, SEND_TIMEOUT};
+use harness::stall::{finished, wait_with_progress, SEND_TIMEOUT};
 use harness::{Paddock, Sandbox, PROMPT};
 use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 fn native() -> Sandbox {
@@ -26,16 +27,25 @@ fn ready(sandbox: &Sandbox) -> Paddock {
 
 /// Wait until `done` holds, or fail saying `what`.
 fn wait_until(what: &str, done: impl Fn() -> bool) {
-    wait_within(harness::TIMEOUT, what, done);
-}
-
-/// [`wait_until`], within `limit`.
-fn wait_within(limit: Duration, what: &str, done: impl Fn() -> bool) {
     let start = Instant::now();
     while !done() {
-        assert!(start.elapsed() < limit, "{what}");
+        assert!(start.elapsed() < harness::TIMEOUT, "{what}");
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+/// Wait until file `path` holds `len` bytes, as long as it still grows:
+/// many MiB through a terminal take a while under load, so only
+/// [`harness::TIMEOUT`] without growing fails, saying `what`.
+fn wait_for_len(path: &Path, len: u64, what: &str) {
+    wait_with_progress(
+        || std::fs::metadata(path).map_or(0, |m| m.len()),
+        |&size| {
+            assert!(size <= len, "{what}: {size} bytes, past {len}");
+            size == len
+        },
+        |size| format!("{what}: {size} bytes of {len}"),
+    );
 }
 
 #[test]
@@ -422,14 +432,16 @@ fn a_paste_bigger_than_any_frame_reaches_a_program_that_reads_whole() {
     const LEN: usize = 17 << 20;
     let sandbox = native();
     let mut paddock = ready(&sandbox);
+    // Raw before the paste comes: a canonical line takes 1 KiB at most.
     paddock.type_line(&format!(
-        "stty raw -echo; head -c {LEN} > big.txt; stty sane; echo GOT''-IT"
+        "stty raw -echo; echo PASTE''-READY; head -c {LEN} > big.txt; stty sane; echo GOT''-IT"
     ));
+    paddock.wait_for_text("PASTE-READY");
     finished(paddock.send_in_background(paste(LEN)), "the paste");
-    wait_within(SEND_TIMEOUT, "head to get it all", || {
-        paddock.screen().contains("GOT-IT")
-    });
-    let got = std::fs::read(sandbox.path("home/big.txt")).unwrap();
+    let file = sandbox.path("home/big.txt");
+    wait_for_len(&file, LEN as u64, "head to get it all");
+    paddock.wait_for_text("GOT-IT");
+    let got = std::fs::read(&file).unwrap();
     assert_eq!(got.len(), LEN);
     assert!(got.iter().all(|&b| b == b'x'), "every byte as pasted");
 }
@@ -513,9 +525,9 @@ fn a_key_typed_while_a_big_paste_waits_still_arrives() {
     send_input(&mut stream, &terminal, b"Z");
 
     let file = sandbox.path("home/got.txt");
-    wait_within(SEND_TIMEOUT, "the key after the paste", || {
-        std::fs::read(&file).is_ok_and(|got| got.len() == LEN + 1 && got.ends_with(b"xZ"))
-    });
+    wait_for_len(&file, LEN as u64 + 1, "the paste and the key");
+    let got = std::fs::read(&file).unwrap();
+    assert!(got.ends_with(b"xZ"), "the key after the paste");
     assert!(!paddock.full_screen().contains("input refused"));
 }
 
@@ -578,30 +590,42 @@ fn an_input_cut_by_a_takeover_is_discarded_whole() {
     assert_eq!(std::fs::read(&file).unwrap(), b"after");
 }
 
+/// End the `sleep` the shell of space-1 runs, once it runs.
+fn end_sleep(sandbox: &Sandbox) {
+    let shell = sandbox.terminal("space-1").pid.expect("its shell's pid");
+    let shell = shell.to_string();
+    wait_until("a sleep to end", || {
+        let pkill = std::process::Command::new("pkill")
+            .args(["-P", &shell, "-x", "sleep"])
+            .status();
+        pkill.is_ok_and(|s| s.success())
+    });
+}
+
 #[test]
 fn an_input_past_the_cap_is_refused_whole_with_one_notice() {
     const CAP: usize = 64 << 20;
     let sandbox = native();
     let mut paddock = ready(&sandbox);
-    let (mut stream, terminal) = cat_after(&sandbox, &mut paddock, 4);
-    let start = Instant::now();
+    // `cat` reads only once the test ends the `sleep`: nothing is taken
+    // while the inputs come, however long sending them takes.
+    let (mut stream, terminal) = cat_after(&sandbox, &mut paddock, 600);
+    // Queuing never waits on the program: a server that did would stop
+    // reading, and a write would time out here.
+    stream
+        .set_write_timeout(Some(SEND_TIMEOUT))
+        .expect("a write timeout");
     send_input(&mut stream, &terminal, &vec![b'x'; CAP - (4 << 20)]);
     // Past the cap: refused, both, with one notice.
     let paste = [b"\x1b[200~".as_slice(), &vec![b'p'; 8 << 20], b"\x1b[201~"].concat();
     send_input(&mut stream, &terminal, &paste);
     send_input(&mut stream, &terminal, &paste);
     send_input(&mut stream, &terminal, b"Z");
-    assert!(
-        start.elapsed() < Duration::from_secs(4),
-        "all sent while it slept"
-    );
 
     paddock.wait_for_text("input refused: it would take what waits for sleep past 64 MiB");
+    end_sleep(&sandbox);
     let file = sandbox.path("home/got.txt");
-    let want = CAP - (4 << 20) + 1;
-    wait_within(SEND_TIMEOUT, "what was kept", || {
-        std::fs::metadata(&file).is_ok_and(|m| m.len() == want as u64)
-    });
+    wait_for_len(&file, (CAP - (4 << 20) + 1) as u64, "what was kept");
     let got = std::fs::read(&file).unwrap();
     assert!(got.ends_with(b"xZ"), "the key after what was kept");
     assert!(!got.contains(&b'p'), "nothing of the refused pastes");
@@ -624,6 +648,23 @@ fn stopping_the_server_ends_paddock_without_a_lost_connection() {
     );
 }
 
+/// Wait until `text` shows, as long as the screen still changes: under
+/// load, drawing much output can take longer than [`harness::TIMEOUT`],
+/// which then counts from the last change. A paddock let go, or stuck,
+/// stops changing.
+fn wait_while_streaming(paddock: &Paddock, text: &str) {
+    wait_with_progress(
+        || paddock.screen(),
+        |screen| screen.contains(text),
+        |_| {
+            format!(
+                "no {text}, no longer changing; screen:\n{}",
+                paddock.full_screen()
+            )
+        },
+    );
+}
+
 #[test]
 fn a_paddock_stalled_a_moment_under_heavy_output_stays_attached() {
     let sandbox = native();
@@ -632,7 +673,7 @@ fn a_paddock_stalled_a_moment_under_heavy_output_stays_attached() {
     paddock.wait_for("numbers", |s| s.lines().any(|l| l.parse::<u32>().is_ok()));
     let start = Instant::now();
     paddock.stall_until(|| start.elapsed() > Duration::from_secs(2));
-    paddock.wait_for_text("ALL-DONE");
+    wait_while_streaming(&paddock, "ALL-DONE");
     paddock.type_line("echo still-here");
     paddock.wait_for_text("still-here\n");
 }
@@ -733,6 +774,8 @@ fn closing_the_last_space_ends_the_server_whatever_its_shells_do() {
     paddock.type_line("trap '' HUP; echo HUP''-IGNORED");
     paddock.wait_for_text("HUP-IGNORED");
     let shell = sandbox.terminal("space-1").pid.expect("its shell's pid");
+    // The shell that ignores the hangup is left to the test, pass or fail.
+    let _shell = KillOnDrop(shell);
     let space = sandbox.state().spaces[0].id.clone();
 
     let (mut stream, _) = connect(&sandbox);
@@ -744,11 +787,21 @@ fn closing_the_last_space_ends_the_server_whatever_its_shells_do() {
     assert!(String::from_utf8_lossy(&reply).contains("Done"));
 
     wait_until("the server ended", || !alive(pid));
-    assert!(paddock.wait_exit());
-    // The shell that ignored it is left to the test.
-    let _ = std::process::Command::new("kill")
-        .args(["-9", &shell.to_string()])
-        .status();
+    // Its end, not a lost connection: the server ends only once its
+    // client has read that its space ended.
+    assert!(paddock.wait_exit(), "{}", paddock.full_screen());
+}
+
+/// Kills the process with this pid (SIGKILL) when dropped.
+struct KillOnDrop(u32);
+
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        let _ = std::process::Command::new("kill")
+            .args(["-9", &self.0.to_string()])
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
 }
 
 /// The test functions in a test file's source: the `fn` after each
