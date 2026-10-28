@@ -93,6 +93,13 @@ pub enum Request {
     CloseSpace(SpaceId),
     SetRoot(SpaceId, PathBuf),
     Root(SpaceId),
+    /// Note the space paddock shows, which `layout.json` keeps.
+    SetCurrent(SpaceId),
+    /// The space paddock showed last, if any (an [`Answer::SpaceOf`]).
+    Current,
+    /// How many spaces the server rebuilt from `layout.json` when it
+    /// started; only the first to ask is told.
+    TakeRestored,
     Structure(SpaceId),
     SpaceTerminals(SpaceId),
     /// A tab at the end of the space, current, its shell in `cwd`.
@@ -210,7 +217,8 @@ pub enum Answer {
     /// A float just started.
     Float(FloatId),
     Border(Option<BorderHit>),
-    /// The space holding a terminal; `None` if no space does.
+    /// The space holding a terminal (or the current one); `None` if no
+    /// space does.
     SpaceOf(Option<SpaceId>),
     Spaces(Vec<ListedSpace>),
     Text(Option<String>),
@@ -219,6 +227,9 @@ pub enum Answer {
     Commands(HashMap<TerminalId, String>),
     Pids(HashMap<u32, TerminalId>),
     Details(Vec<TerminalDetails>),
+    /// How many spaces the server rebuilt when it started; `None` if it
+    /// rebuilt none, or another client was told.
+    Restored(Option<usize>),
     /// The space is attached: one snapshot frame follows for each
     /// terminal, in this order, at this size; then its output.
     Attached {
@@ -351,6 +362,28 @@ fn take_id(body: &[u8]) -> Result<(TerminalId, &[u8])> {
     Ok((TerminalId::new(id), &body[len..]))
 }
 
+/// The running server speaks another protocol version: its pid and
+/// version, as its hello tells. paddock offers to restart it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OtherVersion {
+    pub pid: u32,
+    pub version: u32,
+}
+
+impl std::fmt::Display for OtherVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self { pid, version } = self;
+        write!(
+            f,
+            "the running paddock server (pid {pid}) speaks protocol version {version}, \
+             and this paddock speaks {VERSION}: close every terminal in it, or end it \
+             (kill {pid}), and start paddock again"
+        )
+    }
+}
+
+impl std::error::Error for OtherVersion {}
+
 /// The other side, as its hello tells.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Peer {
@@ -375,11 +408,9 @@ pub fn hello(stream: &mut (impl Read + Write), server: bool, instance: u32) -> R
             pid,
             instance,
         })) if version == VERSION => Ok(Peer { pid, instance }),
-        Some(Frame::Message(Message::Hello { version, pid, .. })) if server => bail!(
-            "the running paddock server (pid {pid}) speaks protocol version {version}, \
-             and this paddock speaks {VERSION}: close every terminal in it, or end it \
-             (kill {pid}), and start paddock again"
-        ),
+        Some(Frame::Message(Message::Hello { version, pid, .. })) if server => {
+            Err(OtherVersion { pid, version }.into())
+        }
         Some(Frame::Message(Message::Hello { version, .. })) => {
             bail!("a client speaks protocol version {version}, this server {VERSION}")
         }

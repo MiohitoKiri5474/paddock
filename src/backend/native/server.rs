@@ -12,11 +12,12 @@
 use super::axis::Axis;
 use super::protocol::{self, Answer, Ending, Frame, Message, Notice, Refusal, Request};
 use super::pty::Program::{self, LoginShell};
+use super::saved::{self, Saver};
 use super::space::{HostedFloat, Space};
 use super::state::{State, Subscriber};
 use super::tab::Tab;
 use super::terminal::{dir_name, HostedTerminal, Input, Sent, INPUT_MAX};
-use super::{lock, pty, socket_path, LOG};
+use super::{lock, pty, restore, socket_path, LOG};
 use crate::backend::env::{clean_env, AGY_STATUS_VAR};
 use crate::backend::{FloatId, SpaceId, TabId, TerminalId};
 use crate::paths::Paths;
@@ -30,7 +31,7 @@ use std::process::Child;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// How long a server that never got a terminal waits before ending (its
 /// client may have died before asking for one).
@@ -44,6 +45,9 @@ const DRAIN: Duration = Duration::from_millis(500);
 const LOCK_WAIT: Duration = Duration::from_secs(3);
 /// How often tabs named after what runs in them look again.
 const TAB_NAME_POLL: Duration = Duration::from_millis(300);
+/// How often the layout is offered to `layout.json` (written only when
+/// it changed, at most once every [`saved::GAP`]).
+const SAVE_POLL: Duration = Duration::from_millis(100);
 
 struct Shared {
     state: Mutex<State>,
@@ -52,6 +56,8 @@ struct Shared {
     /// The shells' environment.
     env: Vec<(String, String)>,
     connections: AtomicU64,
+    /// Writes `layout.json`; always locked after `state`.
+    saver: Mutex<Saver>,
 }
 
 impl Shared {
@@ -82,10 +88,22 @@ pub fn serve() -> Result<()> {
         home: var("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from),
         env,
         connections: AtomicU64::new(0),
+        saver: Mutex::new(Saver::new(paths.state_dir.clone())),
     });
+    // Before any signal is handled: one that ends the server mid-way
+    // would save half the layout.
+    if let Some(layout) = saved::load(&paths.state_dir) {
+        let mut state = shared.lock();
+        let mut start = |state: &State, space: &SpaceId, id, cwd: &Path, size: (u16, u16)| {
+            start_terminal(&shared, state, space, id, LoginShell, cwd, size)
+        };
+        restore::spaces(&mut state, layout, &mut start);
+    }
     watch_signals(&shared)?;
     let names = Arc::clone(&shared);
     std::thread::spawn(move || follow_names(&names));
+    let saving = Arc::clone(&shared);
+    std::thread::spawn(move || save_layout(&saving));
     let idle = Arc::clone(&shared);
     std::thread::spawn(move || {
         std::thread::sleep(IDLE_EXIT);
@@ -167,7 +185,7 @@ fn watch_signals(shared: &Arc<Shared>) -> Result<()> {
 fn shut_down(shared: &Shared) -> ! {
     let attached = {
         let mut state = shared.lock();
-        close(&mut state);
+        close(shared, &mut state);
         for (_, term) in state.terminals() {
             term.hang_up();
         }
@@ -185,11 +203,40 @@ fn shut_down(shared: &Shared) -> ! {
 }
 
 /// Take no more spaces, and stop listening: a paddock that comes now
-/// starts the next server.
-fn close(state: &mut State) {
+/// starts the next server. The layout is saved as it is now, and no
+/// more: the shells about to end leave it as it was (and a server left
+/// with no space removes it).
+fn close(shared: &Shared, state: &mut State) {
     if !state.closing {
+        flush_layout(shared, state);
         state.closing = true;
         let _ = std::fs::remove_file(state.socket());
+    }
+}
+
+/// Write the layout to `layout.json` now, if it changed.
+fn flush_layout(shared: &Shared, state: &State) {
+    let mut saver = shared.saver.lock().unwrap_or_else(|e| e.into_inner());
+    if let Err(e) = saver.flush(saved::snapshot(state)) {
+        eprintln!("paddock server: {e:#}");
+    }
+}
+
+/// Offer the layout to `layout.json` every [`SAVE_POLL`], until the
+/// server is ending. A terminal's directory is read here too, as no
+/// notice says it changed.
+fn save_layout(shared: &Shared) {
+    loop {
+        std::thread::sleep(SAVE_POLL);
+        let state = shared.lock();
+        if state.closing {
+            return;
+        }
+        let layout = saved::snapshot(&state);
+        let mut saver = shared.saver.lock().unwrap_or_else(|e| e.into_inner());
+        if let Err(e) = saver.offer(layout, Instant::now()) {
+            eprintln!("paddock server: {e:#}");
+        }
     }
 }
 
@@ -657,7 +704,7 @@ fn wait_for_exit(
     }
     let last = state.spaces.is_empty();
     if last {
-        close(&mut state);
+        close(shared, &mut state);
     }
     drop(state);
     if let Some(ended) = ended {
@@ -708,7 +755,7 @@ fn close_space(shared: &Shared, space: &SpaceId) -> Result<bool> {
     let ended = end_space(&mut state, space);
     let last = state.spaces.is_empty();
     if last {
-        close(&mut state);
+        close(shared, &mut state);
     }
     drop(state);
     if let Some(ended) = ended {

@@ -121,6 +121,11 @@ pub struct State {
     pub started: bool,
     /// The server is ending: it takes no new space.
     pub closing: bool,
+    /// The space paddock shows, as it last said.
+    pub current: Option<SpaceId>,
+    /// How many spaces the server rebuilt from `layout.json` when it
+    /// started, until a client takes the number to say so.
+    pub restored: Option<usize>,
 }
 
 impl State {
@@ -135,6 +140,8 @@ impl State {
             attached: Vec::new(),
             started: false,
             closing: false,
+            current: None,
+            restored: None,
         }
     }
 
@@ -428,6 +435,13 @@ impl State {
                 self.space_mut(&id)?.root = dir.to_string_lossy().into_owned();
                 Answer::Done
             }
+            Request::SetCurrent(id) => {
+                self.space(&id)?;
+                self.current = Some(id);
+                Answer::Done
+            }
+            Request::Current => Answer::SpaceOf(self.current.clone()),
+            Request::TakeRestored => Answer::Restored(self.restored.take()),
             Request::Root(id) => Answer::Text(self.space(&id).ok().map(|s| s.root.clone())),
             Request::Structure(id) => Answer::Structure(self.structure(&id)?),
             Request::SpaceTerminals(id) => Answer::Terminals(self.space_terminals(&id)?),

@@ -37,6 +37,36 @@ impl Tab {
         }
     }
 
+    /// A tab as `layout.json` brings it back: `layout`, focusing
+    /// `active` (one of its terminals), zoomed if `zoomed` and it has
+    /// more than one.
+    pub fn restore(
+        id: TabId,
+        name: String,
+        auto_name: bool,
+        layout: Layout,
+        active: TerminalId,
+        zoomed: bool,
+    ) -> Self {
+        let mut focused = layout.terminals();
+        focused.retain(|t| *t != active);
+        focused.push(active.clone());
+        Self {
+            id,
+            name,
+            auto_name,
+            zoomed: zoomed && focused.len() > 1,
+            layout,
+            active,
+            focused,
+        }
+    }
+
+    /// Its tree of splits.
+    pub fn layout(&self) -> &Layout {
+        &self.layout
+    }
+
     pub fn name(&self) -> &str {
         &self.name
     }

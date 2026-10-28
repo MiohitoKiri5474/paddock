@@ -599,5 +599,11 @@ impl Layout {
     }
 }
 
+mod saved;
+
+#[cfg(test)]
+pub use saved::SavedCell;
+pub use saved::SavedTree;
+
 #[cfg(test)]
 mod tests;
