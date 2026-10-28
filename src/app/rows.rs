@@ -4,13 +4,18 @@
 //! dashboard. A session that ended (its pane closed, or its agent quit) has no
 //! row.
 //!
+//! The order never depends on state: session rows follow their panes'
+//! spaces, tabs and splits, task rows their tree, external rows their
+//! labels. A row whose state changes stays where it is, so the list never
+//! jumps under the reader; urgency shows in dots and highlights instead.
+//!
 //! External sessions (agents outside paddock's terminals) come last, in
 //! their own group: they have no pane, space or tab, so nothing can jump
 //! to, close, fork or type into them.
 
 use crate::git::{Details, Status};
 use crate::github::Pr;
-use crate::sessions::{self, AgentKind, Sessions, State, SubagentTask, Task, TaskState};
+use crate::sessions::{self, AgentKind, Sessions, State, SubagentTask, Task};
 use std::collections::HashMap;
 
 /// One agent session, in the pane it runs in.
@@ -122,37 +127,9 @@ pub struct Placed<'a> {
     pub terminal: &'a str,
 }
 
-/// Sort order of task rows: waiting, running, done, stopped. A main agent's
-/// task row has its session's state, idle counting as done.
-fn task_rank(task: &TaskRow, session: State) -> u8 {
-    let state = task.subagent.as_ref().map_or(
-        match session {
-            State::Waiting => TaskState::Waiting,
-            State::Running => TaskState::Running,
-            State::Done | State::Idle => TaskState::Done,
-            State::Stopped | State::Unknown => TaskState::Stopped,
-        },
-        |s| s.state,
-    );
-    match state {
-        TaskState::Waiting => 0,
-        TaskState::Running => 1,
-        TaskState::Done => 2,
-        TaskState::Stopped => 3,
-    }
-}
-
-/// `tasks` sorted by state, in tree order within a state, under a session
-/// in state `session`.
-fn sort_tasks(mut tasks: Vec<TaskRow>, session: State) -> Vec<TaskRow> {
-    // Stable: tree order breaks ties.
-    tasks.sort_by_key(|t| task_rank(t, session));
+/// A session's task rows, in tree order, with their git status.
+fn task_rows(tasks: Vec<&Task>, status: &TaskStatus) -> Vec<TaskRow> {
     tasks
-}
-
-/// The task rows of a session in state `session`, with their git status.
-fn task_rows(tasks: Vec<&Task>, status: &TaskStatus, session: State) -> Vec<TaskRow> {
-    let rows = tasks
         .into_iter()
         .map(|task| TaskRow {
             branch: task.branch.clone(),
@@ -162,16 +139,15 @@ fn task_rows(tasks: Vec<&Task>, status: &TaskStatus, session: State) -> Vec<Task
                 .copied(),
             subagent: task.subagent.clone(),
         })
-        .collect();
-    sort_tasks(rows, session)
+        .collect()
 }
 
-/// Session rows of the given (open) panes, sorted by state, then by space
-/// and tab, each with its task rows sorted by state. Sessions that ended
-/// or were dismissed get none (see [`Sessions::shown`]); nor do sessions of
-/// panes not given: their terminal was closed, so they ended with it.
-/// Then, if `externals` is given, the external sessions' rows, sorted by
-/// state, then label.
+/// Session rows of the given (open) panes, in space and tab order (panes
+/// of one tab in the order given), each with its task rows in tree order.
+/// State never moves a row. Sessions that ended or were dismissed get none
+/// (see [`Sessions::shown`]); nor do sessions of panes not given: their
+/// terminal was closed, so they ended with it. Then, if `externals` is
+/// given, the external sessions' rows, by label.
 pub fn rows<'a>(
     sessions: &Sessions,
     status: &TaskStatus,
@@ -189,13 +165,14 @@ pub fn rows<'a>(
                 label: sessions::label(s, p.tab_name),
                 kind: s.kind,
                 state: s.state,
-                tasks: task_rows(tasks, status, s.state),
+                tasks: task_rows(tasks, status),
                 external: false,
             };
             Some((p.order, row))
         })
         .collect();
-    rows.sort_by_key(|(order, r)| (r.state.rank(), *order));
+    // Stable: panes of one tab keep the order given.
+    rows.sort_by_key(|(order, _)| *order);
     let mut out: Vec<Row> = rows.into_iter().map(|(_, r)| r).collect();
     if let Some(e) = externals {
         out.extend(external_rows(sessions, status, e));
@@ -203,8 +180,8 @@ pub fn rows<'a>(
     out
 }
 
-/// The external sessions' rows, sorted by state, then label (then key, so
-/// the order holds still).
+/// The external sessions' rows, sorted by label (then key, so the order
+/// holds still); never by state.
 fn external_rows(sessions: &Sessions, status: &TaskStatus, e: Externals) -> Vec<Row> {
     let mut rows: Vec<Row> = sessions
         .externals(e.now, e.timeout)
@@ -218,14 +195,12 @@ fn external_rows(sessions: &Sessions, status: &TaskStatus, e: Externals) -> Vec<
                 label: sessions::label(s, None),
                 kind: s.kind,
                 state: s.state,
-                tasks: task_rows(tasks, status, s.state),
+                tasks: task_rows(tasks, status),
                 external: true,
             })
         })
         .collect();
-    rows.sort_by(|a, b| {
-        (a.state.rank(), &a.label, &a.pane).cmp(&(b.state.rank(), &b.label, &b.pane))
-    });
+    rows.sort_by(|a, b| (&a.label, &a.pane).cmp(&(&b.label, &b.pane)));
     rows
 }
 
@@ -240,6 +215,7 @@ pub fn most_urgent<'a>(rows: &'a [Row], matching: impl Fn(&Row) -> bool + 'a) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sessions::TaskState;
 
     fn placed<'a>(
         space: &'a str,
@@ -257,48 +233,7 @@ mod tests {
     }
 
     #[test]
-    fn task_rows_sort_by_state_in_tree_order_within_a_state() {
-        let task = |branch: &str, state: Option<TaskState>| TaskRow {
-            branch: branch.into(),
-            cwd: "/r".into(),
-            status: None,
-            subagent: state.map(|state| SubagentTask {
-                agent_id: branch.into(),
-                description: None,
-                state,
-            }),
-        };
-        let tasks = vec![
-            task("stopped", Some(TaskState::Stopped)),
-            task("done-1", Some(TaskState::Done)),
-            task("main", None),
-            task("running", Some(TaskState::Running)),
-            task("done-2", Some(TaskState::Done)),
-            task("waiting", Some(TaskState::Waiting)),
-        ];
-        let order = |session| -> Vec<String> {
-            sort_tasks(tasks.clone(), session)
-                .into_iter()
-                .map(|t| t.branch)
-                .collect()
-        };
-        // The main agent's task row takes its session's state; idle is done.
-        assert_eq!(
-            order(State::Idle),
-            ["waiting", "running", "done-1", "main", "done-2", "stopped"]
-        );
-        assert_eq!(
-            order(State::Waiting),
-            ["main", "waiting", "running", "done-1", "done-2", "stopped"]
-        );
-        assert_eq!(
-            order(State::Unknown),
-            ["waiting", "running", "done-1", "done-2", "stopped", "main"]
-        );
-    }
-
-    #[test]
-    fn rows_sort_their_task_rows() {
+    fn task_rows_stay_in_tree_order_whatever_their_state() {
         use crate::sessions::HookRecord;
         let mut s = Sessions::default();
         let record = |event: &str, agent: Option<&str>, branch: &str| HookRecord {
@@ -309,23 +244,32 @@ mod tests {
             branch: Some(branch.into()),
             ..Default::default()
         };
+        let branches = |s: &Sessions| -> Vec<String> {
+            rows(
+                s,
+                &TaskStatus::new(),
+                [placed("$1", "@1", (0, 0), "%1")],
+                None,
+            )[0]
+            .tasks
+            .iter()
+            .map(|t| t.branch.clone())
+            .collect()
+        };
+        s.apply(&record("UserPromptSubmit", None, "feat/main"));
         s.apply(&record("PostToolUse", Some("a1"), "fix/a"));
-        s.apply(&record("PermissionRequest", None, "feat/main"));
-        let got: Vec<String> = rows(
-            &s,
-            &TaskStatus::new(),
-            [placed("$1", "@1", (0, 0), "%1")],
-            None,
-        )[0]
-        .tasks
-        .iter()
-        .map(|t| t.branch.clone())
-        .collect();
-        assert_eq!(got, ["feat/main", "fix/a"], "waiting before running");
+        s.apply(&record("PostToolUse", Some("a2"), "fix/b"));
+        let before = branches(&s);
+        assert_eq!(before.len(), 3, "{before:?}");
+        // The last subagent waits, the main agent finishes: nothing moves.
+        s.apply(&record("PermissionRequest", Some("a2"), "fix/b"));
+        assert_eq!(branches(&s), before);
+        s.apply(&record("Stop", None, "feat/main"));
+        assert_eq!(branches(&s), before);
     }
 
     #[test]
-    fn rows_cover_live_sessions_in_open_panes_sorted_by_state_then_item_and_tab() {
+    fn rows_cover_live_sessions_in_open_panes_in_space_and_tab_order() {
         use crate::sessions::HookRecord;
         let mut s = Sessions::default();
         for (pane, event, cwd) in [
@@ -369,8 +313,8 @@ mod tests {
             .collect();
         // Claude quit in %1, and %7, %9 and %10 were closed: they ended.
         let want = [
-            ("c", "$2", "@3", State::Waiting),
             ("api", "$2", "@2", State::Done),
+            ("c", "$2", "@3", State::Waiting),
             ("d", "$2", "@3", State::Done),
             ("e", "$3", "@7", State::Running),
         ];
@@ -379,6 +323,42 @@ mod tests {
             .map(|&(l, i, w, s)| (l.into(), i.into(), w.into(), s))
             .collect();
         assert_eq!(got, want);
+    }
+
+    #[test]
+    fn a_state_change_never_moves_a_session_row() {
+        use crate::sessions::HookRecord;
+        let mut s = Sessions::default();
+        let record = |event: &str, pane: &str| HookRecord {
+            event: event.into(),
+            pane: pane.into(),
+            session_id: Some(pane.into()),
+            cwd: Some(format!("/w/{}", pane.trim_start_matches('%'))),
+            ts: 1,
+            ..Default::default()
+        };
+        for pane in ["%1", "%2", "%3"] {
+            s.apply(&record("UserPromptSubmit", pane));
+        }
+        let panes = || {
+            [
+                placed("$1", "@1", (0, 0), "%1"),
+                placed("$1", "@2", (0, 1), "%2"),
+                placed("$2", "@3", (1, 0), "%3"),
+            ]
+        };
+        let order = |s: &Sessions| -> Vec<String> {
+            rows(s, &TaskStatus::new(), panes(), None)
+                .into_iter()
+                .map(|r| r.pane)
+                .collect()
+        };
+        assert_eq!(order(&s), ["%1", "%2", "%3"]);
+        // The last one waits, the first finishes: the order holds.
+        s.apply(&record("PermissionRequest", "%3"));
+        assert_eq!(order(&s), ["%1", "%2", "%3"]);
+        s.apply(&record("Stop", "%1"));
+        assert_eq!(order(&s), ["%1", "%2", "%3"]);
     }
 
     #[test]
@@ -412,7 +392,7 @@ mod tests {
     }
 
     #[test]
-    fn external_rows_come_last_sorted_by_state_and_only_when_asked() {
+    fn external_rows_come_last_by_label_and_only_when_asked() {
         use crate::sessions::{external_key, HookRecord};
         let mut s = Sessions::default();
         let record = |event: &str, pane: String, session: &str, cwd: &str| HookRecord {
@@ -425,12 +405,12 @@ mod tests {
             ..Default::default()
         };
         s.apply(&record("UserPromptSubmit", "%1".into(), "p1", "/w/mine"));
-        s.apply(&record("Stop", external_key("e1"), "e1", "/w/web"));
+        s.apply(&record("Stop", external_key("e1"), "e1", "/w/api"));
         s.apply(&record(
             "PermissionRequest",
             external_key("e2"),
             "e2",
-            "/w/api",
+            "/w/web",
         ));
         let panes = || [placed("$1", "@1", (0, 0), "%1")];
         let shown = |r: Vec<Row>| -> Vec<(String, State, bool, String)> {
@@ -443,10 +423,11 @@ mod tests {
             timeout: 1_000,
         };
         let got = shown(rows(&s, &TaskStatus::new(), panes(), Some(externals)));
+        // By label, not state: the waiting `web` stays after `api`.
         let want = [
             ("mine", State::Running, false, "$1"),
-            ("api", State::Waiting, true, ""),
-            ("web", State::Done, true, ""),
+            ("api", State::Done, true, ""),
+            ("web", State::Waiting, true, ""),
         ];
         let want: Vec<(String, State, bool, String)> = want
             .iter()
