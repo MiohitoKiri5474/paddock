@@ -472,4 +472,25 @@ mod tests {
         assert!(e.modes().alt_screen, "left as it was");
         assert!(Emulator::new(5, 3, SCROLLBACK).history_text().is_empty());
     }
+
+    #[test]
+    fn history_text_leaves_both_screens_and_the_cursor_as_they_were() {
+        let mut e = Emulator::new(10, 3, SCROLLBACK);
+        e.feed(b"one\r\ntwo\r\nthree\r\nfour\x1b[2;3H");
+        let before = (e.snapshot(None), e.cursor());
+        e.history_text();
+        assert_eq!((e.snapshot(None), e.cursor()), before, "the normal screen");
+        e.feed(b"\x1b[?1049h\x1b[H\x1b[2Jfull\r\nscreen\x1b[1;4H");
+        let before = (e.snapshot(None), e.cursor());
+        let text = String::from_utf8(e.history_text()).unwrap();
+        assert_eq!((e.snapshot(None), e.cursor()), before, "the alternate one");
+        assert_eq!(text, "one\r\ntwo\r\nthree\r\nfour\x1b[0m\r\n");
+        // Leaving the alternate screen shows the normal one as it was.
+        let mut copy = rebuilt(&mut e);
+        for t in [&mut e, &mut copy] {
+            t.feed(b"\x1b[?1049l");
+        }
+        assert_same(&e, &copy);
+        assert_eq!(e.cursor(), (1, 2));
+    }
 }

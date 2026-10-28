@@ -11,7 +11,7 @@
 
 use super::layout::Layout;
 use super::saved::{self, SavedLayout, SavedSpace, SavedTab};
-use super::scrollback;
+use super::scrollback::{self, ScrollbackName};
 use super::space::Space;
 use super::state::State;
 use super::tab::Tab;
@@ -130,13 +130,15 @@ fn rebuild_tab(
         let cwd = Path::new(&saved.dir);
         let mut term = start(state, space, terminal.clone(), cwd, size)?;
         // With the state locked, so before its shell's first output.
-        if let Some(key) = saved.scrollback.as_deref() {
-            if let Some(text) = scrollback::load(dir, key) {
-                term.seed(&text);
+        match saved.scrollback.as_deref().map(ScrollbackName::parse) {
+            Some(Some(name)) => {
+                if let Some(text) = scrollback::load(dir, &name) {
+                    term.seed(&text);
+                }
+                term.saved_as = name;
             }
-            if scrollback::is_key(key) {
-                term.scrollback = key.to_string();
-            }
+            Some(None) => eprintln!("paddock server: no scrollback named {:?}", saved.scrollback),
+            None => {}
         }
         terminals.push(term);
     }

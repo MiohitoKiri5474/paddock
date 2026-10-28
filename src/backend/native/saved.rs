@@ -2,7 +2,7 @@
 //! in order, each with its name, root, size and current tab, its tabs
 //! with their names (and whether each is automatic), focus, zoom and tree
 //! of splits with their shares, each terminal by its directory (and the
-//! key of its saved scrollback, see [`super::scrollback`]), and the
+//! name of its saved scrollback, see [`super::scrollback`]), and the
 //! space paddock showed last. No terminal id is kept: a restored terminal
 //! is a new one, so it inherits no agent session. Floats are left out:
 //! their keys make them again when wanted.
@@ -12,7 +12,9 @@
 //! removes it, so the next starts clean. Each write also removes the
 //! saved scrollback no terminal of it names. The layout is taken with the
 //! server's state locked ([`snapshot`]), but its directories are read,
-//! and the file written, after ([`Snapshot::read_dirs`]). A server that
+//! and the file written, after ([`Snapshot::read_dirs`]); but for the
+//! last, written as the server ends, with each terminal's scrollback
+//! before it, both with the state locked. A server that
 //! starts and finds it rebuilds the layout from it (see
 //! [`super::restore`]).
 
@@ -72,7 +74,8 @@ pub struct SavedTab {
 pub struct SavedTerminal {
     /// Its program's directory when last saved.
     pub dir: String,
-    /// The key of its saved scrollback, in `scrollback/`.
+    /// The name of its saved scrollback, in `scrollback/` (see
+    /// [`scrollback::ScrollbackName`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scrollback: Option<String>,
 }
@@ -168,7 +171,7 @@ fn saved_space(space: &Space, dirs: &mut Vec<Option<DirReader>>) -> SavedSpace {
             dirs.push(hosted.map(HostedTerminal::dir_reader));
             SavedTerminal {
                 dir: space.root.clone(),
-                scrollback: hosted.map(|t| t.scrollback.clone()),
+                scrollback: hosted.map(|t| t.saved_as.as_str().to_string()),
             }
         });
         SavedTab {
@@ -239,8 +242,8 @@ fn write(dir: &Path, layout: &SavedLayout) -> Result<()> {
     write_layout(dir, layout)?;
     let terminals = layout.spaces.iter().flat_map(|s| &s.tabs);
     let terminals = terminals.flat_map(|t| t.splits.terminals());
-    let keys = terminals.filter_map(|t| t.scrollback.as_deref());
-    scrollback::prune(dir, &keys.collect())
+    let names = terminals.filter_map(|t| t.scrollback.as_deref());
+    scrollback::prune(dir, &names.collect())
 }
 
 fn write_layout(dir: &Path, layout: &SavedLayout) -> Result<()> {

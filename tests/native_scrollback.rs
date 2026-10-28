@@ -103,6 +103,26 @@ fn a_restored_terminal_shows_its_scrollback_above_its_new_prompt() {
 }
 
 #[test]
+fn copy_mode_search_finds_restored_text_scrolled_off_the_screen() {
+    let sandbox = native();
+    let mut paddock = ready(&sandbox);
+    paddock.type_line("echo far-$((6*7)); seq 1 60");
+    paddock.wait_for("the numbers", |s| s.lines().any(|l| l == "60"));
+    wait_for_saved_layout(&sandbox, 1);
+
+    let mut again = restart(&sandbox, paddock);
+    again.wait_for_text(MARK);
+    assert!(!again.screen().contains("far-42"), "off the screen");
+
+    again.command(b"/");
+    again.wait_for("search prompt", |s| s.lines().any(|l| l.trim() == "/"));
+    again.send(b"far-42\r");
+
+    again.wait_for_text("match 1/1");
+    assert!(again.screen().contains("far-42"), "shown at the match");
+}
+
+#[test]
 fn a_bad_scrollback_file_never_stops_the_restore() {
     let sandbox = native();
     let mut paddock = ready(&sandbox);

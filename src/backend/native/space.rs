@@ -279,6 +279,7 @@ impl Space {
 #[cfg(test)]
 mod tests {
     use super::super::pty::{self, Program, Pty};
+    use super::super::scrollback::ScrollbackName;
     use super::super::terminal::Input;
     use super::*;
 
@@ -299,7 +300,8 @@ mod tests {
         let id = TerminalId::new(id);
         let input = Input::start(&id, pty.master.try_clone().unwrap());
         (
-            HostedTerminal::new(id, String::new(), &pty, input, size).unwrap(),
+            HostedTerminal::new(id.clone(), ScrollbackName::new(1, &id), &pty, input, size)
+                .unwrap(),
             pty,
         )
     }

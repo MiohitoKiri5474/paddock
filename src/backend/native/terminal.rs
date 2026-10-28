@@ -5,6 +5,7 @@
 
 use super::pty::{self, Pty};
 use super::queue::Queue;
+use super::scrollback::ScrollbackName;
 use crate::backend::TerminalId;
 use crate::terminal::emulator::Emulator;
 use crate::terminal::key_modes::KeyModeScanner;
@@ -125,26 +126,26 @@ pub struct HostedTerminal {
     /// Its program has exited and been reaped: its pid may be another
     /// process's now, so it is never signalled again.
     pub exited: bool,
-    /// The key its scrollback is saved under (see
-    /// [`super::scrollback`]): its own, or the one it was restored from.
-    pub scrollback: String,
+    /// The name its scrollback is saved under: its own, or the one it
+    /// was restored from.
+    pub saved_as: ScrollbackName,
     emulator: Emulator,
     keys: KeyModeScanner,
     scanner: Scanner,
 }
 
 impl HostedTerminal {
-    /// Terminal `id` on `pty`, its scrollback saved under `scrollback`.
+    /// Terminal `id` on `pty`, its scrollback saved as `saved_as`.
     pub fn new(
         id: TerminalId,
-        scrollback: String,
+        saved_as: ScrollbackName,
         pty: &Pty,
         input: Input,
         size: (u16, u16),
     ) -> Result<Self> {
         Ok(Self {
             id,
-            scrollback,
+            saved_as,
             pid: pty.child.id(),
             tty: pty.tty.clone(),
             master: pty.master.try_clone()?,
