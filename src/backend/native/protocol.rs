@@ -292,14 +292,16 @@ pub fn encode(frame: &Frame) -> Result<Vec<u8>> {
 }
 
 /// The next frame, of at most `max` bytes; `None` if the other side
-/// closed the connection between frames. A connection closed within a
-/// frame, its length included, is an error.
+/// closed the connection between frames (Linux reports one closed with
+/// what we sent unread as reset, macOS as closed). A connection closed
+/// within a frame, its length included, is an error.
 pub fn read(r: &mut impl Read, max: usize) -> Result<Option<Frame>> {
     let mut len = [0; 4];
     let mut got = 0;
     while got < len.len() {
         match r.read(&mut len[got..]) {
             Ok(0) if got == 0 => return Ok(None),
+            Err(e) if got == 0 && e.kind() == ErrorKind::ConnectionReset => return Ok(None),
             Ok(0) => bail!("the paddock server connection closed within a frame's length"),
             Ok(n) => got += n,
             Err(e) if e.kind() == ErrorKind::Interrupted => {}
@@ -440,6 +442,22 @@ mod tests {
             read(&mut bytes.as_slice(), FROM_CLIENT).unwrap(),
             Some(frame)
         );
+    }
+
+    /// A connection the other side reset.
+    struct Reset;
+
+    impl Read for Reset {
+        fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+            Err(ErrorKind::ConnectionReset.into())
+        }
+    }
+
+    #[test]
+    fn a_connection_reset_between_frames_reads_as_closed() {
+        assert_eq!(read(&mut Reset, FROM_CLIENT).unwrap(), None);
+        let mut cut = [0u8, 0].chain(Reset);
+        assert!(read(&mut cut, FROM_CLIENT).is_err());
     }
 
     #[test]
