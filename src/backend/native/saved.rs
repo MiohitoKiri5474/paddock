@@ -2,10 +2,10 @@
 //! in order, each with its name, root, size and current tab, its tabs
 //! with their names (and whether each is automatic), focus, zoom and tree
 //! of splits with their shares, each terminal by its directory and the
-//! agent session last seen in it (if any, and whether it ended), and the
-//! space paddock showed last. No terminal id is kept: a restored terminal
-//! is a new one, which resumes its saved session if that had not ended
-//! (ticket 48). Floats are left out: their keys make them again when
+//! agent session last seen in it (if any, and whether it is over), and
+//! the space paddock showed last. No terminal id is kept: a restored
+//! terminal is a new one, which resumes its saved session if that is not
+//! over (ticket 48). Floats are left out: their keys make them again when
 //! wanted.
 //!
 //! The server writes it whenever it changes ([`Saver`]), at most once
@@ -85,9 +85,11 @@ pub struct SavedAgent {
     pub kind: AgentKind,
     /// Its session id, which resumes it.
     pub session: String,
-    /// It ended (it quit, or `/clear` started another): not resumed.
+    /// Its conversation is over: the agent reported its end (it quit, or
+    /// `/clear` began another conversation), so it is not resumed. Not
+    /// the dashboard's *ended* (CONTEXT.md), which `/clear` is not.
     #[serde(default)]
-    pub ended: bool,
+    pub over: bool,
 }
 
 impl SavedLayout {
@@ -135,54 +137,61 @@ pub struct Snapshot {
     /// Each terminal's id, and where to read its directory, in the
     /// layout's order (`None` for a terminal not hosted, which keeps its
     /// placeholder).
-    dirs: Vec<(TerminalId, Option<DirReader>)>,
+    terminals: Vec<(TerminalId, Option<DirReader>)>,
 }
 
 /// Take what `layout.json` keeps of `state`, with it locked: no read of
 /// a directory, nor of the file.
 pub fn snapshot(state: &State) -> Snapshot {
     let current = state.current.as_ref();
-    let mut dirs = Vec::new();
-    let spaces = state.spaces.iter().map(|s| saved_space(s, &mut dirs));
+    let mut terminals = Vec::new();
+    let spaces = state.spaces.iter().map(|s| saved_space(s, &mut terminals));
     let layout = SavedLayout {
         version: VERSION,
         current: current.and_then(|c| state.spaces.iter().position(|s| s.id == *c)),
         spaces: spaces.collect(),
     };
-    Snapshot { layout, dirs }
+    Snapshot { layout, terminals }
 }
 
 impl Snapshot {
     /// The layout, each terminal's directory read: its foreground
     /// program's, else its shell's, else (a shell not started yet, or
     /// gone) the placeholder [`saved_space`] left, its space's root; and
-    /// the session `seen` last in it.
-    pub fn read_dirs(self, seen: &Seen) -> SavedLayout {
-        let Self { mut layout, dirs } = self;
+    /// the session `seen` last in it ([`Seen::agents`], which forgets
+    /// the terminals not in the layout).
+    pub fn read_dirs(self, seen: &mut Seen) -> SavedLayout {
+        let Self {
+            mut layout,
+            terminals: hosted,
+        } = self;
+        let (ids, readers): (Vec<_>, Vec<_>) = hosted.into_iter().unzip();
+        let agents = seen.agents(&ids);
         // Spaces, tabs and each tree's terminals walk in the order
         // `saved_space` pushed the readers in.
         let terminals = layout.spaces.iter_mut().flat_map(|s| &mut s.tabs);
         let terminals = terminals.flat_map(|t| t.splits.terminals_mut());
-        for (terminal, (id, reader)) in terminals.zip(dirs) {
+        for (terminal, (reader, agent)) in terminals.zip(readers.into_iter().zip(agents)) {
             if let Some(dir) = reader.and_then(DirReader::read) {
                 terminal.dir = dir;
             }
-            terminal.agent = seen.get(&id).cloned();
+            terminal.agent = agent;
         }
         layout
     }
 }
 
 /// `space` as `layout.json` keeps it, each terminal's directory its
-/// root for now: what reads the real one is pushed on `dirs`, one per
-/// terminal in the tree's order, which [`Snapshot::read_dirs`] follows.
-fn saved_space(space: &Space, dirs: &mut Vec<(TerminalId, Option<DirReader>)>) -> SavedSpace {
+/// root for now: each terminal's id, and what reads its real directory,
+/// is pushed on `hosted`, in the tree's order, which
+/// [`Snapshot::read_dirs`] follows.
+fn saved_space(space: &Space, hosted: &mut Vec<(TerminalId, Option<DirReader>)>) -> SavedSpace {
     let tabs = space.tabs.iter().map(|tab| {
         let terminals = tab.terminals();
         let focus = terminals.iter().position(|t| t == tab.active());
         let splits = tab.layout().save(&mut |id| {
             let reader = space.hosted(id).map(HostedTerminal::dir_reader);
-            dirs.push((id.clone(), reader));
+            hosted.push((id.clone(), reader));
             SavedTerminal {
                 dir: space.root.clone(),
                 agent: None,
@@ -412,7 +421,7 @@ mod tests {
         let agent = SavedAgent {
             kind: AgentKind::Claude,
             session: "7f3c2a10-1b2c-4d5e-8f90-0123456789ab".into(),
-            ended: false,
+            over: false,
         };
         let SavedTree::Split { cells, .. } = &mut saved.spaces[0].tabs[0].splits else {
             unreachable!("split in two");

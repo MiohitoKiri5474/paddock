@@ -16,6 +16,8 @@ const SPIKE: &str = concat!(
     "/spikes/02-subagent-worktree/fixtures"
 );
 const SESSION: &str = "11111111-2222-4333-8444-555555555555";
+/// The fixtures' directory.
+const FIXTURE_CWD: &str = "\"/tmp/repo\"";
 const LIVE: &str = "0000aaaa-0000-4000-8000-00000000000a";
 const ENDED: &str = "0000bbbb-0000-4000-8000-00000000000b";
 const OTHER: &str = "0000cccc-0000-4000-8000-00000000000c";
@@ -51,6 +53,14 @@ fn claude(sandbox: &Sandbox, terminal: &str, event: &str, session: &str) {
     sandbox.hook(terminal, event, &payload(event, session));
 }
 
+/// Report that Claude session `session` in the terminal `terminal` names
+/// ended for `reason`: `prompt_input_exit` (its user quit it) or `other`
+/// (the fixture's, as a signal gives).
+fn end(sandbox: &Sandbox, terminal: &str, session: &str, reason: &str) {
+    let ended = payload("SessionEnd", session).replace("\"other\"", &format!("\"{reason}\""));
+    sandbox.hook(terminal, "SessionEnd", &ended);
+}
+
 /// The saved layout, once `ready` holds for its text.
 fn wait_for_saved(sandbox: &Sandbox, what: &str, ready: impl Fn(&str) -> bool) -> String {
     let path = sandbox.state_dir().join("layout.json");
@@ -84,11 +94,23 @@ fn saved_agents(saved: &str) -> Vec<serde_json::Value> {
     out
 }
 
+/// Whether `saved` holds session `session`, over or not.
+fn saved_as(saved: &str, session: &str, over: bool) -> bool {
+    saved_agents(saved)
+        .iter()
+        .any(|a| a["session"] == session && (a["over"] == true) == over)
+}
+
 /// Run a line in the focused terminal and wait for its output: whatever
-/// was typed there before it has run.
+/// its shell read before it has run.
 fn mark(paddock: &mut Paddock) {
     paddock.type_line("echo MARK''-DONE");
     paddock.wait_for_text("MARK-DONE");
+}
+
+/// What the stub `claude` was called with so far.
+fn claude_log(sandbox: &Sandbox) -> String {
+    std::fs::read_to_string(sandbox.path("claude.log")).unwrap_or_default()
 }
 
 /// How many agents the sidebar lists (each with its kind beside its
@@ -98,8 +120,16 @@ fn agents_shown(paddock: &Paddock) -> usize {
     sidebar.iter().filter(|l| l.ends_with("claude")).count()
 }
 
-/// One tab split in two: the second split in `dir` runs session [`LIVE`],
-/// the first ran [`ENDED`], which has quit. Returns once both are saved.
+/// The server ends cleanly and a new paddock starts the next one.
+fn restart(sandbox: &Sandbox, mut paddock: Paddock) -> Paddock {
+    stop_server(&sandbox.state_dir());
+    assert!(paddock.wait_exit(), "a clean end");
+    sandbox.launch()
+}
+
+/// One tab split in two: the second split in `dir` runs session [`LIVE`]
+/// (reporting `dir` as its directory), the first ran [`ENDED`], which
+/// its user quit. Returns once both are saved.
 fn two_sessions(paddock: &mut Paddock, sandbox: &Sandbox, dir: &Path) {
     paddock.command(b"|");
     paddock.wait_for("the split", |_| {
@@ -110,12 +140,15 @@ fn two_sessions(paddock: &mut Paddock, sandbox: &Sandbox, dir: &Path) {
     paddock.wait_for("the cd", |_| {
         sandbox.terminal("space-1:0.1").dir.as_deref() == Some(real.as_str())
     });
-    claude(sandbox, "space-1:0.1", "SessionStart", LIVE);
-    claude(sandbox, "space-1:0.1", "UserPromptSubmit", LIVE);
+    let cwd = format!("\"{real}\"");
+    for event in ["SessionStart", "UserPromptSubmit"] {
+        let p = payload(event, LIVE).replace(FIXTURE_CWD, &cwd);
+        sandbox.hook("space-1:0.1", event, &p);
+    }
     claude(sandbox, "space-1:0.0", "SessionStart", ENDED);
-    claude(sandbox, "space-1:0.0", "SessionEnd", ENDED);
+    end(sandbox, "space-1:0.0", ENDED, "prompt_input_exit");
     wait_for_saved(sandbox, "both sessions saved", |s| {
-        s.contains(LIVE) && s.contains(ENDED)
+        saved_as(s, LIVE, false) && saved_as(s, ENDED, true)
     });
 }
 
@@ -130,19 +163,17 @@ fn a_restarted_server_resumes_a_live_claude_session_in_its_directory_and_not_an_
     let agents = saved_agents(&saved);
     assert_eq!(agents.len(), 2, "{saved}");
     assert_eq!(agents[0]["session"], ENDED, "{saved}");
-    assert_eq!(agents[0]["ended"], true, "{saved}");
+    assert_eq!(agents[0]["over"], true, "{saved}");
     assert_eq!(agents[1]["session"], LIVE, "{saved}");
     assert_eq!(agents[1]["kind"], "claude", "{saved}");
-    assert_ne!(agents[1]["ended"], true, "{saved}");
+    assert_ne!(agents[1]["over"], true, "{saved}");
 
-    stop_server(&sandbox.state_dir());
-    assert!(paddock.wait_exit(), "a clean end");
-    let mut again = sandbox.launch();
+    let mut again = restart(&sandbox, paddock);
 
     again.wait_for_text("restored 1 space, resumed 1 session");
     sandbox.claude_calls();
-    // A resume command is typed before anything else: once a line typed
-    // into the ended session's terminal has run, it ran none.
+    // Every resume is typed by now: a line typed into the ended
+    // session's terminal shows it ran none there.
     again.command(b"h");
     again.wait_for("the focus on the first split", |_| {
         sandbox.terminal("space-1:0.0").focused
@@ -169,48 +200,110 @@ fn the_resumed_session_is_listed_once_as_the_same_session() {
     two_sessions(&mut paddock, &sandbox, &dir);
     paddock.wait_for("the agent", |_| agents_shown(&paddock) == 1);
 
-    stop_server(&sandbox.state_dir());
-    assert!(paddock.wait_exit(), "a clean end");
-    let mut again = sandbox.launch();
+    let mut again = restart(&sandbox, paddock);
     again.wait_for_text("resumed 1 session");
     sandbox.claude_calls();
     // The resumed Claude starts in its new terminal with the same id.
-    let resume = payload("SessionStart", LIVE).replace("startup", "resume");
+    let cwd = format!("\"{}\"", real(&dir));
+    let resume = payload("SessionStart", LIVE)
+        .replace("startup", "resume")
+        .replace(FIXTURE_CWD, &cwd);
     sandbox.hook("space-1:0.1", "SessionStart", &resume);
-    claude(&sandbox, "space-1:0.1", "UserPromptSubmit", LIVE);
+    let prompt = payload("UserPromptSubmit", LIVE).replace(FIXTURE_CWD, &cwd);
+    sandbox.hook("space-1:0.1", "UserPromptSubmit", &prompt);
 
     again.wait_for("the resumed agent", |_| agents_shown(&again) > 0);
     // Another session's event, after the resumed one's: once it shows,
     // a second row for the resumed session would have too.
-    claude(&sandbox, "space-1:0.0", "UserPromptSubmit", OTHER);
+    let other = payload("UserPromptSubmit", OTHER).replace(FIXTURE_CWD, "\"/w/elsewhere\"");
+    sandbox.hook("space-1:0.0", "UserPromptSubmit", &other);
     again.wait_for("the other agent", |_| agents_shown(&again) > 1);
     assert_eq!(agents_shown(&again), 2, "{}", again.full_screen());
     again.command(b"o");
     again.wait_for_text("j down  k up");
     again.wait_for_text("AGENT");
+    again.wait_for("both rows", |s| {
+        s.lines()
+            .filter(|l| l.trim_end().ends_with(" claude"))
+            .count()
+            == 2
+    });
+    // The resumed session's row is the one in its directory.
     let screen = again.screen();
-    let rows = screen.lines().filter(|l| l.trim_end().ends_with(" claude"));
-    assert_eq!(rows.count(), 2, "one row each: {screen}");
+    let rows: Vec<&str> = screen
+        .lines()
+        .filter(|l| l.trim_end().ends_with(" claude"))
+        .collect();
+    let resumed = rows.iter().filter(|l| l.contains(" proj ")).count();
+    let other = rows.iter().filter(|l| l.contains(" elsewhere ")).count();
+    assert_eq!((resumed, other), (1, 1), "one row each: {screen}");
 }
 
-/// A terminal whose session ended gets a fresh shell, and the notice
-/// names no resumed session.
+/// A terminal whose session its user quit gets a fresh shell, and the
+/// notice names no resumed session.
 #[test]
 fn a_restart_with_no_live_session_resumes_nothing() {
     let sandbox = native();
-    let mut paddock = ready(&sandbox);
+    let paddock = ready(&sandbox);
     claude(&sandbox, "space-1:0.0", "SessionStart", ENDED);
-    claude(&sandbox, "space-1:0.0", "SessionEnd", ENDED);
-    wait_for_saved(&sandbox, "the ended session", |s| s.contains(ENDED));
+    end(&sandbox, "space-1:0.0", ENDED, "prompt_input_exit");
+    wait_for_saved(&sandbox, "the ended session", |s| saved_as(s, ENDED, true));
+
+    let mut again = restart(&sandbox, paddock);
+
+    again.wait_for_text("restored 1 space");
+    again.wait_for_text(PROMPT);
+    assert!(!again.full_screen().contains("resumed"));
+    mark(&mut again);
+    assert_eq!(claude_log(&sandbox), "", "claude never run");
+}
+
+/// A reboot signals Claude as it does the server: an end from outside
+/// (reason `other`) logged just before the server stops, and already
+/// saved as over, does not stop the session from being resumed.
+#[test]
+fn a_session_ended_from_outside_as_the_server_stops_is_resumed() {
+    let sandbox = native();
+    let paddock = ready(&sandbox);
+    let dir = real(&sandbox.path("home"));
+    claude(&sandbox, "space-1:0.0", "SessionStart", LIVE);
+    wait_for_saved(&sandbox, "the session", |s| saved_as(s, LIVE, false));
+    end(&sandbox, "space-1:0.0", LIVE, "other");
+    wait_for_saved(&sandbox, "the end saved", |s| saved_as(s, LIVE, true));
+
+    let again = restart(&sandbox, paddock);
+
+    again.wait_for_text("restored 1 space, resumed 1 session");
+    assert_eq!(sandbox.claude_calls(), [format!("{dir} --resume {LIVE}")]);
+    again.wait_for_text(PROMPT);
+}
+
+/// A terminal whose directory is gone starts in `$HOME`, where Claude
+/// would not find the session: it is not resumed.
+#[test]
+fn a_session_whose_directory_is_gone_is_not_resumed() {
+    let sandbox = native();
+    let dir = sandbox.path("home/gone");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut paddock = ready(&sandbox);
+    paddock.type_line(&format!("cd '{}'", dir.display()));
+    let real_dir = real(&dir);
+    paddock.wait_for("the cd", |_| {
+        sandbox.terminal("space-1").dir.as_deref() == Some(real_dir.as_str())
+    });
+    claude(&sandbox, "space-1:0.0", "SessionStart", LIVE);
+    wait_for_saved(&sandbox, "the session", |s| {
+        saved_as(s, LIVE, false) && s.contains("/gone\"")
+    });
 
     stop_server(&sandbox.state_dir());
     assert!(paddock.wait_exit(), "a clean end");
+    std::fs::remove_dir(&dir).unwrap();
     let mut again = sandbox.launch();
 
     again.wait_for_text("restored 1 space");
     again.wait_for_text(PROMPT);
     assert!(!again.full_screen().contains("resumed"));
     mark(&mut again);
-    let log = std::fs::read_to_string(sandbox.path("claude.log")).unwrap_or_default();
-    assert_eq!(log, "", "claude never run");
+    assert_eq!(claude_log(&sandbox), "", "claude never run");
 }

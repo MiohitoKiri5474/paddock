@@ -74,11 +74,19 @@ impl AgentKind {
     }
 }
 
-/// Whether `id` looks like a session id (a UUID: hex digits and `-`): one
-/// that comes from a hook payload or a file and is typed into a shell,
-/// where a control character would end the line even inside quotes.
+/// Whether `id` is shaped as a session id, a UUID (groups of 8, 4, 4, 4
+/// and 12 hex digits joined by `-`): one that comes from a hook payload
+/// or a file and is typed into a shell, where a control character would
+/// end the line even inside quotes, and a leading `-` would read as a
+/// flag.
 pub fn is_session_id(id: &str) -> bool {
-    !id.is_empty() && id.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+    const GROUPS: [usize; 5] = [8, 4, 4, 4, 12];
+    let groups: Vec<&str> = id.split('-').collect();
+    groups.len() == GROUPS.len()
+        && groups
+            .iter()
+            .zip(GROUPS)
+            .all(|(g, n)| g.len() == n && g.chars().all(|c| c.is_ascii_hexdigit()))
 }
 
 #[cfg(test)]
@@ -101,7 +109,22 @@ mod tests {
     #[test]
     fn only_uuid_shaped_session_ids_are_typed_into_a_shell() {
         assert!(is_session_id("7f3c2a10-1b2c-4d5e-8f90-0123456789ab"));
-        for bad in ["", "x\r; rm -rf ~", "a b", "abc$(id)", "abc\u{1b}"] {
+        assert!(is_session_id("7F3C2A10-1B2C-4D5E-8F90-0123456789AB"));
+        for bad in [
+            "",
+            "x\r; rm -rf ~",
+            "a b",
+            "abc$(id)",
+            "abc\u{1b}",
+            "--",
+            "-7f3c2a10-1b2c-4d5e-8f90-0123456789ab",
+            "abcdef",
+            "7f3c2a10-1b2c-4d5e-8f90-0123456789a",
+            "7f3c2a10-1b2c-4d5e-8f90-0123456789abc",
+            "7f3c2a101b2c-4d5e-8f90-0123456789ab",
+            "7f3c2a10-1b2c-4d5e-8f90-0123456789ab-",
+            "7g3c2a10-1b2c-4d5e-8f90-0123456789ab",
+        ] {
             assert!(!is_session_id(bad), "{bad:?}");
         }
     }
