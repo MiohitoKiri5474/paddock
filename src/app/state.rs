@@ -293,6 +293,9 @@ pub struct App {
     pub(super) external: External,
     /// Where new tabs and splits start.
     pub(super) new_tab_dir: NewTabDir,
+    /// The current space as last told to a backend that keeps it (see
+    /// [`Backend::keeps_current`]).
+    pub(super) told_current: Option<SpaceId>,
 }
 
 /// The part of a screen of `(cols, rows)` that shows the current tab's
@@ -384,6 +387,7 @@ impl App {
             worktrees: config.worktrees.clone(),
             external: config.external,
             new_tab_dir: config.new_tab_dir,
+            told_current: None,
         };
         app.load_dismissed();
         app.open_spaces()?;
@@ -423,7 +427,14 @@ impl App {
             // from opening no other.
             self.report(|app| app.attach(&s.id));
         }
-        let saved_space = saved.space;
+        // A backend that keeps the current space (native, in
+        // `layout.json`) takes over `layout.toml`'s.
+        let saved_space = if self.backend.keeps_current() {
+            self.backend.current_space()
+        } else {
+            saved.space
+        };
+        self.note_restored();
         self.current = self
             .spaces
             .iter()
@@ -433,6 +444,19 @@ impl App {
             self.new_space()?;
         }
         Ok(())
+    }
+
+    /// Say how many spaces the backend rebuilt from its saved layout, if
+    /// it just did (ADR 0008).
+    fn note_restored(&mut self) {
+        let Some(n) = self.backend.restored() else {
+            return;
+        };
+        let restored = format!("restored {n} space{}", if n == 1 { "" } else { "s" });
+        self.notice = Some(match self.notice.take() {
+            Some(other) => format!("{restored}; {other}"),
+            None => restored,
+        });
     }
 
     /// Where the current tab's panes are drawn.
@@ -660,7 +684,7 @@ impl App {
 
     /// Detach every space; they keep running on the hidden server. The
     /// current space is saved first.
-    pub fn detach_all(self) -> Result<()> {
+    pub fn detach_all(mut self) -> Result<()> {
         let saved = self.save();
         for space in self.spaces {
             space.detach();

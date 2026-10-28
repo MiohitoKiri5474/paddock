@@ -1,7 +1,9 @@
 //! What paddock keeps in the state directory (`layout.toml`) that the
-//! backend does not hold: which space was current. Tabs, splits, sizes and
-//! focus live in the backend (ADR 0006). A file from before, with its `current` tab and `tabs`
-//! layouts, still reads: those fields are ignored.
+//! backend does not hold: which space was current (on tmux; the native
+//! server keeps it in `layout.json`, ADR 0008), and the sidebar's width.
+//! Tabs, splits, sizes and focus live in the backend (ADR 0006). A file
+//! from before, with its `current` tab and `tabs` layouts, still reads:
+//! those fields are ignored.
 
 use crate::backend::SpaceId;
 use anyhow::{Context, Result};

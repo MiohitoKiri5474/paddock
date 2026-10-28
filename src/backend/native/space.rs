@@ -60,6 +60,30 @@ impl Space {
         }
     }
 
+    /// A space as `layout.json` brings it back: `tabs` (at least one),
+    /// tab `current` current, its terminals `terminals`, shown at `size`.
+    pub fn restore(
+        id: SpaceId,
+        name: String,
+        root: String,
+        size: (u16, u16),
+        tabs: Vec<Tab>,
+        current: usize,
+        terminals: Vec<HostedTerminal>,
+    ) -> Self {
+        Self {
+            id,
+            name,
+            root,
+            size,
+            current: current.min(tabs.len().saturating_sub(1)),
+            tabs,
+            previous: Vec::new(),
+            floats: Vec::new(),
+            terminals,
+        }
+    }
+
     /// Tab `i` as the backend's interface shows it.
     pub fn tab_view(&self, i: usize) -> crate::backend::Tab {
         let tab = &self.tabs[i];

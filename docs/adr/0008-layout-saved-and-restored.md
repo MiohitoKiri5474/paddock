@@ -1,6 +1,6 @@
 # The server saves the layout and rebuilds it after a restart
 
-A reboot, a server crash or a restart for an upgrade ([ADR 0007](0007-native-backend-with-a-server.md)) used to lose every space. Now the server writes the layout to `~/.local/state/paddock/layout.json` whenever it changes, at most a few times a second. The file holds spaces in order with their names, roots and current tab, tabs with their names (and whether each name is automatic), splits and their sizes, zoom and focus, floats, and each terminal's directory.
+A reboot, a server crash or a restart for an upgrade ([ADR 0007](0007-native-backend-with-a-server.md)) used to lose every space. Now the server writes the layout to `~/.local/state/paddock/layout.json` whenever it changes, at most a few times a second. The file holds spaces in order with their names, roots and current tab, tabs with their names (and whether each name is automatic), splits and their sizes, zoom and focus, and each terminal's directory. Floats are left out: their keys make them again when wanted.
 
 When a server starts and finds that file, it rebuilds the layout without asking. Every terminal gets a fresh shell in its saved directory, or in `$HOME` if that directory is gone, and paddock shows a one-line notice with how many spaces came back. A terminal that ran an agent comes back as a plain shell, and the dashboard treats that agent as ended.
 
@@ -13,3 +13,4 @@ When a server starts and finds that file, it rebuilds the layout without asking.
 
 - `layout.json` replaces the layout tmux held and the current space kept in `layout.toml`; only the sidebar width stays there.
 - Programs other than shells are not restarted, so an editor or a server left running in a terminal has to be started again.
+- Servers from before this file wrote none, so the first upgrade to a paddock that reads it restores nothing.

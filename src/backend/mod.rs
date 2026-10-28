@@ -16,7 +16,7 @@ mod tmux;
 
 pub use border::Border;
 pub use ids::{FloatId, SpaceId, TabId, TerminalId};
-pub use native::serve;
+pub use native::{serve, OtherVersion};
 pub use structure::{Float, Split, Structure, Tab};
 
 use crate::config::BackendKind;
@@ -177,11 +177,65 @@ impl Backend {
     }
 
     /// Get ready to start the host, if it does not run yet; an error if
-    /// one runs that this paddock cannot talk to.
+    /// one runs that this paddock cannot talk to ([`OtherVersion`] on
+    /// native, see [`Self::restart`]).
     pub fn prepare(&self) -> Result<()> {
         match self {
             Self::Tmux(t) => t.write_config(),
             Self::Native(n) => n.check(),
+        }
+    }
+
+    /// Start a native server that saved its layout as it ended, if none
+    /// runs, so it rebuilds it (ADR 0008): only the app does, at its
+    /// start. (A server started otherwise, to make a space, rebuilds it
+    /// too.)
+    pub fn resume(&self) -> Result<()> {
+        match self {
+            Self::Tmux(_) => Ok(()),
+            Self::Native(n) => n.resume(),
+        }
+    }
+
+    /// End the running native server `other`, which this paddock cannot
+    /// talk to, and everything in it; the next [`Self::prepare`] starts
+    /// a new one, which rebuilds the layout the old one saved.
+    pub fn restart(&self, other: &OtherVersion) -> Result<()> {
+        match self {
+            Self::Tmux(_) => Ok(()),
+            Self::Native(n) => n.restart(other),
+        }
+    }
+
+    /// How many spaces the host rebuilt from its saved layout when it
+    /// started, once: `None` after the first ask, and on tmux.
+    pub fn restored(&self) -> Option<usize> {
+        match self {
+            Self::Tmux(_) => None,
+            Self::Native(n) => n.take_restored().ok().flatten(),
+        }
+    }
+
+    /// Whether the host keeps which space paddock shows (native, in
+    /// `layout.json`); on tmux, `layout.toml` keeps it.
+    pub fn keeps_current(&self) -> bool {
+        matches!(self, Self::Native(_))
+    }
+
+    /// The space paddock showed last, as the host keeps it (see
+    /// [`Self::keeps_current`]); `None` if it cannot say.
+    pub fn current_space(&self) -> Option<SpaceId> {
+        match self {
+            Self::Tmux(_) => None,
+            Self::Native(n) => n.current_space().ok().flatten(),
+        }
+    }
+
+    /// Tell the host which space paddock shows, if it keeps it.
+    pub fn set_current_space(&self, space: &SpaceId) -> Result<()> {
+        match self {
+            Self::Tmux(_) => Ok(()),
+            Self::Native(n) => n.set_current_space(space),
         }
     }
 

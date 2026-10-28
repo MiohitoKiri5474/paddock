@@ -212,7 +212,16 @@ impl HostedTerminal {
 
     /// The foreground program's directory, as tmux's `pane_current_path`.
     pub fn dir(&self) -> Option<String> {
-        pty::cwd(self.foreground()).or_else(|| pty::cwd(i32::try_from(self.pid).ok()?))
+        self.dir_reader().read()
+    }
+
+    /// What reads [`Self::dir`] later, without the terminal (so without
+    /// the server's lock): the pids it reads it from, taken now.
+    pub fn dir_reader(&self) -> DirReader {
+        DirReader {
+            foreground: self.foreground(),
+            shell: i32::try_from(self.pid).ok(),
+        }
     }
 
     /// The foreground program's name, as tmux's `pane_current_command`.
@@ -246,6 +255,20 @@ fn is_shell(command: &str) -> bool {
         return false;
     };
     matches!(kind, "" | "ba" | "z" | "fi" | "da" | "k" | "tc" | "c")
+}
+
+/// A terminal's directory to read (see [`HostedTerminal::dir_reader`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DirReader {
+    foreground: i32,
+    shell: Option<i32>,
+}
+
+impl DirReader {
+    /// The foreground program's directory, else the shell's.
+    pub fn read(self) -> Option<String> {
+        pty::cwd(self.foreground).or_else(|| pty::cwd(self.shell?))
+    }
 }
 
 /// A directory's last part (`/` for the root), as a tab is named after it.

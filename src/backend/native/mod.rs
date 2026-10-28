@@ -1,8 +1,8 @@
 //! The native backend (ADR 0007): `paddock server`, a background process
 //! that owns every terminal's PTY and an emulator for each, and paddock as
 //! its client over a Unix socket in the state directory. It hosts the
-//! spaces, each with its tabs, splits and floats; saving the layout
-//! (ticket 44) is still to come.
+//! spaces, each with its tabs, splits and floats, and saves them to
+//! `layout.json` to rebuild them when it next starts (ADR 0008).
 //!
 //! - [`client`]: what the app, the CLI and `paddock debug state` ask, and
 //!   the attached space's connection. Starts the server when needed.
@@ -10,6 +10,8 @@
 //! - [`state`]: the spaces it holds and what it answers about them.
 //! - [`space`], [`tab`] and [`layout`]: a space's tabs and floats, a
 //!   tab's focus and zoom, and its tree of splits.
+//! - [`saved`] and [`restore`]: `layout.json`, written as the layout
+//!   changes, and the layout rebuilt from it.
 //! - [`terminal`] and [`pty`]: one terminal, its shell and its emulator.
 //! - [`hook`]: the variables that tell a process which terminal it runs in.
 //! - [`queue`]: the queues to the threads that write to a client or a
@@ -23,6 +25,8 @@ mod layout;
 mod protocol;
 mod pty;
 mod queue;
+mod restore;
+mod saved;
 mod server;
 mod space;
 mod state;
@@ -30,6 +34,7 @@ mod tab;
 mod terminal;
 
 pub use client::{Attached, Client};
+pub use protocol::OtherVersion;
 pub use server::serve;
 
 use crate::paths::Paths;
@@ -99,6 +104,27 @@ fn lock(state_dir: &Path) -> Result<Option<File>> {
     Ok(Some(file))
 }
 
+/// Whether a server holds the lock in `state_dir`; unlike [`lock`],
+/// writes nothing (a lock taken to see is let go at once).
+fn held(state_dir: &Path) -> Result<bool> {
+    let path = state_dir.join(LOCK);
+    let file = match File::open(&path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e).with_context(|| format!("cannot open {}", path.display())),
+    };
+    // SAFETY: the descriptor is valid while `file` is borrowed; dropping
+    // it lets go of a lock taken here.
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+        return Ok(false);
+    }
+    let err = std::io::Error::last_os_error();
+    if err.kind() == std::io::ErrorKind::WouldBlock {
+        return Ok(true);
+    }
+    Err(err).with_context(|| format!("cannot lock {}", path.display()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -125,11 +151,13 @@ mod tests {
     #[test]
     fn one_lock_at_a_time_and_it_names_its_holder() {
         let dir = tempfile::tempdir().unwrap();
-        let held = lock(dir.path()).unwrap().expect("the first takes it");
+        assert!(!held(dir.path()).unwrap(), "no lock file yet");
+        let taken = lock(dir.path()).unwrap().expect("the first takes it");
         assert!(lock(dir.path()).unwrap().is_none(), "the second does not");
+        assert!(held(dir.path()).unwrap());
         let pid = std::fs::read_to_string(dir.path().join(LOCK)).unwrap();
         assert_eq!(pid.trim(), std::process::id().to_string());
-        drop(held);
+        drop(taken);
         // A child forked meanwhile by another test holds the descriptor
         // until it execs (it is close-on-exec): give it a moment.
         let start = std::time::Instant::now();

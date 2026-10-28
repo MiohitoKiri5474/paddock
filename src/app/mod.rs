@@ -26,7 +26,7 @@ mod worktrees;
 pub use dashboard::DashboardFilter;
 pub use rows::{Row, RowId, TaskDetails, TaskPrs, TaskRow};
 
-use crate::backend::{self, Backend, SpaceId, TerminalId};
+use crate::backend::{self, Backend, OtherVersion, SpaceId, TerminalId};
 use crate::config::Config;
 use crate::git::{Details, Status};
 use crate::paths::Paths;
@@ -36,6 +36,7 @@ use crossterm::event as ct;
 use signal_hook::consts::SIGTERM;
 use signal_hook::iterator::Signals;
 use std::collections::HashMap;
+use std::io::{IsTerminal, Write};
 use std::sync::{mpsc, Arc};
 
 /// Everything the event loop waits on, from the backend and from the outer
@@ -79,7 +80,7 @@ pub fn run() -> Result<()> {
     };
     let state_dir = paths.state_dir.clone();
     let backend = Backend::new(paths, config.backend);
-    backend.prepare()?;
+    prepare(&backend)?;
     let start_dir = std::env::current_dir().context("no current directory")?;
 
     let (tx, rx) = mpsc::channel();
@@ -135,4 +136,38 @@ pub fn run() -> Result<()> {
         Some(farewell) => anyhow::bail!(farewell),
         None => Ok(()),
     }
+}
+
+/// Get the backend ready ([`Backend::prepare`]) and bring back a saved
+/// layout ([`Backend::resume`]). A server that speaks another protocol
+/// version is said so, with an offer to restart it (ADR 0007): on yes it
+/// ends, programs and all, and a new one rebuilds its layout; on no, or
+/// with no terminal to ask on, paddock stops with the same words.
+fn prepare(backend: &Backend) -> Result<()> {
+    if let Err(e) = backend.prepare() {
+        let Some(other) = e.downcast_ref::<OtherVersion>() else {
+            return Err(e);
+        };
+        if !ask_to_restart(other)? {
+            return Err(e);
+        }
+        backend.restart(other)?;
+        backend.prepare()?;
+    }
+    backend.resume()
+}
+
+fn ask_to_restart(other: &OtherVersion) -> Result<bool> {
+    if !std::io::stdin().is_terminal() {
+        return Ok(false);
+    }
+    print!(
+        "paddock: {}.\nRestart it? Its programs end; its layout comes back. [y/N] ",
+        other.mismatch()
+    );
+    std::io::stdout().flush()?;
+    let mut answer = String::new();
+    std::io::stdin().read_line(&mut answer)?;
+    let answer = answer.trim();
+    Ok(answer.eq_ignore_ascii_case("y") || answer.eq_ignore_ascii_case("yes"))
 }

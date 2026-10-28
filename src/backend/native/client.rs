@@ -8,10 +8,10 @@
 
 use super::axis::Axis;
 use super::protocol::{
-    self, Answer, Closed, Ending, Frame, Message, Notice, Peer, Refusal, Request,
+    self, Answer, Closed, Ending, Frame, Message, Notice, OtherVersion, Peer, Refusal, Request,
 };
 use super::server::log_path;
-use super::socket_path;
+use super::{held, saved, socket_path, LOCK};
 use crate::backend::border::{Anchor, Border};
 use crate::backend::env::clean_env;
 use crate::backend::{
@@ -76,6 +76,8 @@ macro_rules! pick {
 const INPUT_FRAME: usize = 64 << 10;
 /// How long a new server gets to start listening.
 const START_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long a server asked to end for a restart gets to let its lock go.
+const END_TIMEOUT: Duration = Duration::from_secs(5);
 const POLL: Duration = Duration::from_millis(20);
 
 #[derive(Clone, Debug)]
@@ -134,6 +136,78 @@ impl Client {
             Err(e) if no_server(&e) => Ok(None),
             Err(e) => Err(e),
         }
+    }
+
+    /// Start the server if none runs and `layout.json` holds a layout for
+    /// it to rebuild, so paddock finds those spaces instead of making
+    /// its first.
+    pub fn resume(&self) -> Result<()> {
+        if !self.paths.state_dir.join(saved::FILE).exists() {
+            return Ok(());
+        }
+        self.start()
+    }
+
+    /// End the running server `other`, which speaks another protocol
+    /// version, so the next one rebuilds the layout it saved as it
+    /// ended. Only the process holding the server lock is signalled, and
+    /// only if it is the one `other` names: a hello's pid alone could be
+    /// anyone's. With no lock held, the socket is left over: removed.
+    pub fn restart(&self, other: &OtherVersion) -> Result<()> {
+        let state_dir = &self.paths.state_dir;
+        if !held(state_dir)? {
+            let _ = std::fs::remove_file(socket_path(&self.paths)?);
+            return Ok(());
+        }
+        let path = state_dir.join(LOCK);
+        let text = std::fs::read_to_string(&path)
+            .with_context(|| format!("cannot read {}", path.display()))?;
+        let pid = text.trim().parse::<i32>().ok().filter(|&p| p > 1);
+        let Some(pid) = pid.filter(|&p| u32::try_from(p) == Ok(other.pid)) else {
+            bail!(
+                "the server lock names pid {}, not the running server's {}: \
+                 end it yourself (kill {}) and start paddock again",
+                text.trim(),
+                other.pid,
+                other.pid
+            );
+        };
+        // SAFETY: kill has no memory-safety preconditions; the pid holds
+        // the server lock, so it is the server.
+        if unsafe { libc::kill(pid, libc::SIGTERM) } != 0 {
+            let err = std::io::Error::last_os_error();
+            if err.raw_os_error() != Some(libc::ESRCH) {
+                return Err(err).with_context(|| format!("cannot end pid {}", other.pid));
+            }
+        }
+        let start = Instant::now();
+        while held(state_dir)? {
+            if start.elapsed() > END_TIMEOUT {
+                bail!("the paddock server (pid {}) did not end", other.pid);
+            }
+            std::thread::sleep(POLL);
+        }
+        // An ending server removes its socket; one killed leaves it.
+        let _ = std::fs::remove_file(socket_path(&self.paths)?);
+        Ok(())
+    }
+
+    /// How many spaces the server rebuilt from `layout.json` when it
+    /// started; `None` if none, or paddock was told already.
+    pub fn take_restored(&self) -> Result<Option<usize>> {
+        let restored = self.query(Request::TakeRestored, pick!(Answer::Restored))?;
+        Ok(restored.flatten())
+    }
+
+    /// The space paddock showed last, as the server keeps it.
+    pub fn current_space(&self) -> Result<Option<SpaceId>> {
+        Ok(self
+            .query(Request::Current, pick!(Answer::SpaceOf))?
+            .flatten())
+    }
+
+    pub fn set_current_space(&self, space: &SpaceId) -> Result<()> {
+        self.done(Request::SetCurrent(space.clone()))
     }
 
     /// Start the server unless one runs, and wait until it listens.

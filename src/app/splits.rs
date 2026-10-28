@@ -92,10 +92,22 @@ impl App {
         self.report(|app| app.save());
     }
 
-    /// Write the current space to the state directory.
-    pub(super) fn save(&self) -> Result<()> {
+    /// Write the current space and the sidebar's width to the state
+    /// directory; a backend that keeps the current space is told it
+    /// instead, when it changed.
+    pub(super) fn save(&mut self) -> Result<()> {
+        let current = self.current_space().map(|i| i.id.clone());
+        let space = if !self.backend.keeps_current() {
+            current
+        } else {
+            if let Some(id) = current.filter(|id| self.told_current.as_ref() != Some(id)) {
+                self.backend.set_current_space(&id)?;
+                self.told_current = Some(id);
+            }
+            None
+        };
         let saved = Saved {
-            space: self.current_space().map(|i| i.id.clone()),
+            space,
             sidebar: self.sidebar_wish,
         };
         saved::save(&self.state_dir, &saved)

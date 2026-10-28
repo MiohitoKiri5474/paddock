@@ -334,7 +334,9 @@ fn a_server_speaking_another_protocol_version_is_a_clear_error() {
         "{}",
         paddock.screen()
     );
-    assert!(!paddock.wait_exit(), "paddock fails");
+    paddock.wait_for_text("Restart it?");
+    paddock.type_line("n");
+    assert!(!paddock.wait_exit(), "declining fails");
     assert!(
         server_pid(&sandbox.state_dir()).is_none(),
         "no server of ours started"
