@@ -298,7 +298,10 @@ mod tests {
         .unwrap();
         let id = TerminalId::new(id);
         let input = Input::start(&id, pty.master.try_clone().unwrap());
-        (HostedTerminal::new(id, &pty, input, size).unwrap(), pty)
+        (
+            HostedTerminal::new(id, String::new(), &pty, input, size).unwrap(),
+            pty,
+        )
     }
 
     /// A space of one tab holding `%1`, at 80x24, with a float on `G`

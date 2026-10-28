@@ -3,11 +3,15 @@
 //! ids, and every terminal as a fresh shell in its saved directory (in
 //! `$HOME` if that is gone, as [`super::pty::spawn`] does). Agents that
 //! ran are not restarted: their terminals are new ones, under a new
-//! instance id, so no session carries over. A file any space of which
-//! cannot be rebuilt is set aside before anything is written over it.
+//! instance id, so no session carries over. Each terminal's saved
+//! scrollback is drawn above its new shell (see [`super::scrollback`]);
+//! scrollback missing or unreadable is left out, and never stops the
+//! restore. A file any space of which cannot be rebuilt is set aside
+//! before anything is written over it.
 
 use super::layout::Layout;
 use super::saved::{self, SavedLayout, SavedSpace, SavedTab};
+use super::scrollback;
 use super::space::Space;
 use super::state::State;
 use super::tab::Tab;
@@ -31,7 +35,7 @@ pub fn from_file(dir: &Path, state: &mut State, start: &mut Start<'_>) -> usize 
         return 0;
     };
     let total = saved.spaces.len();
-    let restored = rebuild_layout(state, saved, start);
+    let restored = rebuild_layout(dir, state, saved, start);
     if restored < total {
         let lost = total - restored;
         saved::set_aside(dir, &anyhow!("{lost} of {total} saved spaces not rebuilt"));
@@ -39,13 +43,19 @@ pub fn from_file(dir: &Path, state: &mut State, start: &mut Start<'_>) -> usize 
     restored
 }
 
-/// Rebuild every space of `saved` in `state`; one that cannot be is left
-/// out, and why logged. Returns how many came back.
-fn rebuild_layout(state: &mut State, saved: SavedLayout, start: &mut Start<'_>) -> usize {
+/// Rebuild every space of `saved` in `state`, with the scrollback saved
+/// in the state directory `dir`; one that cannot be is left out, and why
+/// logged. Returns how many came back.
+fn rebuild_layout(
+    dir: &Path,
+    state: &mut State,
+    saved: SavedLayout,
+    start: &mut Start<'_>,
+) -> usize {
     let mut restored = 0;
     for (i, space) in saved.spaces.into_iter().enumerate() {
         let name = space.name.clone();
-        match rebuild_space(state, space, start) {
+        match rebuild_space(dir, state, space, start) {
             Ok(made) => {
                 if saved.current == Some(i) {
                     state.current = Some(made.id.clone());
@@ -65,13 +75,18 @@ fn rebuild_layout(state: &mut State, saved: SavedLayout, start: &mut Start<'_>) 
 
 /// Space `saved` with new ids, its shells started; on an error, those
 /// already started are hung up.
-fn rebuild_space(state: &mut State, saved: SavedSpace, start: &mut Start<'_>) -> Result<Space> {
+fn rebuild_space(
+    dir: &Path,
+    state: &mut State,
+    saved: SavedSpace,
+    start: &mut Start<'_>,
+) -> Result<Space> {
     let id = SpaceId::new(format!("${}", state.next()));
     let size = (saved.size.0.max(1), saved.size.1.max(1));
     let mut terminals = Vec::new();
     let mut tabs = Vec::new();
     for tab in saved.tabs {
-        match rebuild_tab(state, &id, tab, size, start, &mut terminals) {
+        match rebuild_tab(dir, state, &id, tab, size, start, &mut terminals) {
             Ok(tab) => tabs.push(tab),
             Err(e) => {
                 for t in &terminals {
@@ -95,8 +110,10 @@ fn rebuild_space(state: &mut State, saved: SavedSpace, start: &mut Start<'_>) ->
 }
 
 /// Tab `saved` of space `space` with new ids, each of its shells started
-/// at `size` (laid out later) and added to `terminals`.
+/// at `size` (laid out later), under its saved scrollback, and added to
+/// `terminals`.
 fn rebuild_tab(
+    dir: &Path,
     state: &mut State,
     space: &SpaceId,
     saved: SavedTab,
@@ -107,10 +124,21 @@ fn rebuild_tab(
     let id = TabId::new(format!("@{}", state.next()));
     let tree = saved.splits.map(&mut |t| {
         let terminal = TerminalId::new(format!("%{}", state.next()));
-        (terminal, t.dir)
+        (terminal, t)
     });
-    for (terminal, dir) in tree.terminals() {
-        terminals.push(start(state, space, terminal.clone(), Path::new(dir), size)?);
+    for (terminal, saved) in tree.terminals() {
+        let cwd = Path::new(&saved.dir);
+        let mut term = start(state, space, terminal.clone(), cwd, size)?;
+        // With the state locked, so before its shell's first output.
+        if let Some(key) = saved.scrollback.as_deref() {
+            if let Some(text) = scrollback::load(dir, key) {
+                term.seed(&text);
+            }
+            if scrollback::is_key(key) {
+                term.scrollback = key.to_string();
+            }
+        }
+        terminals.push(term);
     }
     let tree = tree.map(&mut |(terminal, _)| terminal);
     let active = tree.terminals().get(saved.focus).map(|t| (*t).clone());
@@ -148,7 +176,10 @@ mod tests {
                     "name": "api",
                     "auto_name": true,
                     "focus": 0,
-                    "splits": SavedTree::Terminal(SavedTerminal { dir: "/w/api".into() }),
+                    "splits": SavedTree::Terminal(SavedTerminal {
+                        dir: "/w/api".into(),
+                        ..SavedTerminal::default()
+                    }),
                 }],
             }],
         })
