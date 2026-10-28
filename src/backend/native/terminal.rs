@@ -122,6 +122,9 @@ pub struct HostedTerminal {
     /// Bytes for the program: input and query replies.
     pub input: Input,
     pub size: (u16, u16),
+    /// Its program has exited and been reaped: its pid may be another
+    /// process's now, so it is never signalled again.
+    pub exited: bool,
     emulator: Emulator,
     keys: KeyModeScanner,
     scanner: Scanner,
@@ -136,10 +139,28 @@ impl HostedTerminal {
             master: pty.master.try_clone()?,
             input,
             size,
+            exited: false,
             emulator: Emulator::answering(size.0, size.1, SCROLLBACK),
             keys: KeyModeScanner::default(),
             scanner: Scanner::default(),
         })
+    }
+
+    /// Hang up its program and its process group, as closing its
+    /// terminal does; nothing once the program has been reaped.
+    pub fn hang_up(&self) {
+        let Ok(pid) = i32::try_from(self.pid) else {
+            return;
+        };
+        if self.exited || pid <= 1 {
+            return;
+        }
+        // SAFETY: kill has no memory-safety preconditions; `pid` > 1 leads
+        // its own session (setsid), so `-pid` is its group only.
+        unsafe {
+            libc::kill(-pid, libc::SIGHUP);
+            libc::kill(pid, libc::SIGHUP);
+        }
     }
 
     /// Feed what the program wrote, and send it the answers to the

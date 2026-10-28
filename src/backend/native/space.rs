@@ -1,7 +1,8 @@
-//! One space on the native server: its tabs in order, the current one and
-//! those current before it, the size its tabs are shown at, its floats,
-//! and its terminals. Every change to a tab's layout ends with [`Space::lay_out`],
-//! which sizes each terminal's PTY to the place it is drawn in.
+//! One space on the native server: its tabs in order, the current one
+//! and those current before it, the size its tabs are shown at, its
+//! floats, and its terminals. Every change to a tab's layout ends with
+//! [`Space::lay_out`], which sizes each terminal's PTY to the place it is
+//! drawn in.
 
 use super::tab::Tab;
 use super::terminal::HostedTerminal;
@@ -9,9 +10,10 @@ use crate::backend::{FloatId, SpaceId, Split, Structure, TabId, TerminalId};
 use anyhow::{anyhow, bail, Result};
 use ratatui::layout::Rect;
 
-/// A float: one terminal running a program, on its key, never a tab. Its
-/// terminal keeps the size it was last given, apart from the tabs'.
-pub struct Float {
+/// A float as the server holds it: one terminal running a program, on
+/// its key, never a tab. Its terminal keeps the size it was last given,
+/// apart from the tabs'.
+pub struct HostedFloat {
     pub id: FloatId,
     /// Its key, as [`crate::input::keymap::Key::name`] writes it.
     pub key: String,
@@ -31,7 +33,7 @@ pub struct Space {
     /// goes back to the latest of them, as tmux does.
     previous: Vec<TabId>,
     /// Its floats, oldest first.
-    pub floats: Vec<Float>,
+    pub floats: Vec<HostedFloat>,
     /// Every terminal of its tabs and floats.
     pub terminals: Vec<HostedTerminal>,
 }
@@ -83,7 +85,7 @@ impl Space {
 
     /// Float `float` as the backend's interface shows it: its terminal
     /// fills it.
-    fn float_view(&self, float: &Float) -> crate::backend::Float {
+    fn float_view(&self, float: &HostedFloat) -> crate::backend::Float {
         let (width, height) = self.hosted(&float.terminal).map_or(self.size, |t| t.size);
         crate::backend::Float {
             id: float.id.clone(),
@@ -105,14 +107,27 @@ impl Space {
     }
 
     /// Add `float`, whose program runs in `terminal`.
-    pub fn push_float(&mut self, float: Float, terminal: HostedTerminal) {
+    pub fn push_float(&mut self, float: HostedFloat, terminal: HostedTerminal) {
         self.floats.push(float);
         self.terminals.push(terminal);
     }
 
     /// The float `float`.
-    pub fn float(&self, float: &FloatId) -> Option<&Float> {
+    pub fn float(&self, float: &FloatId) -> Option<&HostedFloat> {
         self.floats.iter().find(|f| f.id == *float)
+    }
+
+    /// Note that `terminal`'s program has exited and been reaped, before
+    /// its last output is read: it is never signalled again, and a float
+    /// it ran goes at once, so its key is free for the next. True if a
+    /// float went.
+    pub fn reaped(&mut self, terminal: &TerminalId) -> bool {
+        if let Some(t) = self.hosted_mut(terminal) {
+            t.exited = true;
+        }
+        let before = self.floats.len();
+        self.floats.retain(|f| f.terminal != *terminal);
+        self.floats.len() != before
     }
 
     pub fn tab(&self, tab: &TabId) -> Option<usize> {
@@ -126,6 +141,10 @@ impl Space {
 
     pub fn hosted(&self, terminal: &TerminalId) -> Option<&HostedTerminal> {
         self.terminals.iter().find(|t| t.id == *terminal)
+    }
+
+    pub fn hosted_mut(&mut self, terminal: &TerminalId) -> Option<&mut HostedTerminal> {
+        self.terminals.iter_mut().find(|t| t.id == *terminal)
     }
 
     /// The index of the tab holding `terminal`; an error if none does.
@@ -206,7 +225,7 @@ impl Space {
             return;
         };
         for split in tab.splits(self.size) {
-            let Some(term) = self.terminals.iter_mut().find(|t| t.id == split.id) else {
+            let Some(term) = self.hosted_mut(&split.id) else {
                 continue;
             };
             if let Err(e) = term.resize((split.rect.width, split.rect.height)) {
@@ -235,7 +254,7 @@ impl Space {
 
 #[cfg(test)]
 mod tests {
-    use super::super::pty::{self, Pty};
+    use super::super::pty::{self, Program, Pty};
     use super::super::terminal::Input;
     use super::*;
 
@@ -244,7 +263,15 @@ mod tests {
     fn hosted(id: &str, size: (u16, u16)) -> (HostedTerminal, Pty) {
         let env = [("PATH".to_string(), "/usr/bin:/bin".to_string())];
         let dir = std::env::temp_dir();
-        let pty = pty::spawn("/bin/sh", Some("sleep 30"), &dir, &dir, size, &env).unwrap();
+        let pty = pty::spawn(
+            "/bin/sh",
+            Program::Command("sleep 30"),
+            &dir,
+            &dir,
+            size,
+            &env,
+        )
+        .unwrap();
         let id = TerminalId::new(id);
         let input = Input::start(&id, pty.master.try_clone().unwrap());
         (HostedTerminal::new(id, &pty, input, size).unwrap(), pty)
@@ -257,7 +284,7 @@ mod tests {
         let tab = Tab::new(TabId::new("@1"), "t".into(), TerminalId::new("%1"));
         let mut space = Space::new(SpaceId::new("$1"), "s".into(), "/".into(), tab, tab_term);
         let (float_term, float_pty) = hosted("%2", (40, 10));
-        let float = Float {
+        let float = HostedFloat {
             id: FloatId::new("@2"),
             key: "G".into(),
             terminal: TerminalId::new("%2"),
@@ -285,6 +312,20 @@ mod tests {
         assert!(!s.float_active);
         assert!(space.check_float_key("G").is_err(), "one per key");
         assert!(space.check_float_key("H").is_ok());
+        kill(ptys);
+    }
+
+    #[test]
+    fn a_floats_key_is_free_once_its_program_is_reaped_before_its_output_is_read() {
+        let (mut space, ptys) = with_a_float();
+        let float = TerminalId::new("%2");
+        assert!(space.reaped(&float), "the float went");
+        assert!(space.check_float_key("G").is_ok(), "its key is free");
+        assert!(space.structure().floats.is_empty());
+        let term = space.hosted(&float).expect("still read until drained");
+        assert!(term.exited, "never signalled again");
+        assert!(!space.reaped(&TerminalId::new("%1")), "a tab's is no float");
+        assert!(!space.remove(&float), "the tab is left");
         kill(ptys);
     }
 

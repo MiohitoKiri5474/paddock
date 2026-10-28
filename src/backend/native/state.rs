@@ -1,9 +1,9 @@
 //! What the native server holds: its spaces ([`Space`]), and the client
-//! attached to each (paddock attaches every space). It answers every request that reads, or
-//! changes a layout or a name; making and ending terminals is the
-//! server's ([`super::server`]), as it starts their threads. A change to
-//! the attached space's structure tells its client ([`Notice::Changed`]),
-//! which reads it again.
+//! attached to each (paddock attaches every space). It answers every
+//! request that reads, or changes a layout or a name; making and ending
+//! terminals is the server's ([`super::server`]), as it starts their
+//! threads. A change to an attached space's structure tells its client
+//! ([`Notice::Changed`]), which reads it again.
 
 use super::hook;
 use super::protocol::{self, Answer, Frame, Message, Notice, Request};
@@ -12,7 +12,7 @@ use super::space::Space;
 use super::tab::Tab;
 use super::terminal::HostedTerminal;
 use crate::backend::{
-    ListedSpace, SpaceId, SpaceTerminal, Structure, TabId, TerminalDetails, TerminalId,
+    FloatId, ListedSpace, SpaceId, SpaceTerminal, Structure, TabId, TerminalDetails, TerminalId,
 };
 use anyhow::{anyhow, bail, Result};
 use std::os::unix::net::UnixStream;
@@ -30,8 +30,8 @@ const GRACE: Duration = Duration::from_secs(5);
 /// writing fast never grows the server without bound meanwhile.
 const MAX_QUEUED: usize = 128 << 20;
 
-/// The client attached to a space: frames for it go through `queue`, in order, to
-/// a thread that writes them.
+/// The client attached to a space: frames for it go through `queue`, in
+/// order, to a thread that writes them.
 pub struct Subscriber {
     /// Which connection it is.
     pub conn: u64,
@@ -222,16 +222,40 @@ impl State {
         }
     }
 
+    /// Take out the first attached client `which` picks, if any.
+    fn take(&mut self, which: impl Fn(&Subscriber) -> bool) -> Option<Subscriber> {
+        let i = self.attached.iter().position(which)?;
+        Some(self.attached.remove(i))
+    }
+
     /// Take out the client of connection `conn`, if it is attached.
     pub fn detach(&mut self, conn: u64) -> Option<Subscriber> {
-        let i = self.attached.iter().position(|s| s.conn == conn)?;
-        Some(self.attached.remove(i))
+        self.take(|s| s.conn == conn)
     }
 
     /// Take out the client attached to `space`, if any.
     pub fn detach_space(&mut self, space: &SpaceId) -> Option<Subscriber> {
-        let i = self.attached.iter().position(|s| s.space == *space)?;
-        Some(self.attached.remove(i))
+        self.take(|s| s.space == *space)
+    }
+
+    /// The space connection `conn` is attached to, if it is.
+    pub fn attached_space(&self, conn: u64) -> Option<SpaceId> {
+        let found = self.attached.iter().find(|s| s.conn == conn);
+        found.map(|s| s.space.clone())
+    }
+
+    /// Tell every attached client `notice`.
+    pub fn notify_all(&mut self, notice: &Notice) {
+        let spaces: Vec<SpaceId> = self.attached.iter().map(|s| s.space.clone()).collect();
+        for space in spaces {
+            self.notify(&space, notice.clone());
+        }
+    }
+
+    /// The terminal float `float` runs in, in any space.
+    pub fn float_terminal(&self, float: &FloatId) -> Option<TerminalId> {
+        let found = self.spaces.iter().find_map(|s| s.float(float));
+        found.map(|f| f.terminal.clone())
     }
 
     /// Tell the client attached to `space`, if any.
@@ -242,10 +266,7 @@ impl State {
     /// Tell every attached client a space was made or ended, as each
     /// space's connection hears it on tmux.
     pub fn notify_spaces(&mut self) {
-        let spaces: Vec<SpaceId> = self.attached.iter().map(|s| s.space.clone()).collect();
-        for space in spaces {
-            self.notify(&space, Notice::SpacesChanged);
-        }
+        self.notify_all(&Notice::SpacesChanged);
     }
 
     pub fn structure(&self, id: &SpaceId) -> Result<Structure> {

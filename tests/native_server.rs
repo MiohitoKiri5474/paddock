@@ -721,6 +721,34 @@ fn a_space_takes_one_float_per_key() {
     assert_eq!(floats, [1, 1]);
 }
 
+/// Closing the last space ends the server at once, as its last shell
+/// ending does, even with a shell that ignores the hangup.
+#[test]
+fn closing_the_last_space_ends_the_server_whatever_its_shells_do() {
+    let sandbox = native();
+    let mut paddock = ready(&sandbox);
+    let pid = server_pid(&sandbox.state_dir()).expect("a server");
+    paddock.type_line("trap '' HUP; echo HUP''-IGNORED");
+    paddock.wait_for_text("HUP-IGNORED");
+    let shell = sandbox.terminal("space-1").pid.expect("its shell's pid");
+    let space = sandbox.state().spaces[0].id.clone();
+
+    let (mut stream, _) = connect(&sandbox);
+    send_message(
+        &mut stream,
+        &format!(r#"{{"Request":{{"CloseSpace":"{space}"}}}}"#),
+    );
+    let reply = read_frame(&mut stream).expect("a reply");
+    assert!(String::from_utf8_lossy(&reply).contains("Done"));
+
+    wait_until("the server ended", || !alive(pid));
+    assert!(paddock.wait_exit());
+    // The shell that ignored it is left to the test.
+    let _ = std::process::Command::new("kill")
+        .args(["-9", &shell.to_string()])
+        .status();
+}
+
 /// The test functions in a test file's source: the `fn` after each
 /// `#[test]`, past any other attributes. Tests in a nested module would
 /// be named by its path, which this does not read: it refuses them.

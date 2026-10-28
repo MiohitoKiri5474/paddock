@@ -9,6 +9,17 @@ use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 
+/// What runs on a new PTY.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Program<'a> {
+    /// The user's shell as a login shell, as tmux starts a pane's (so
+    /// macOS's `path_helper` runs).
+    LoginShell,
+    /// `shell -c <command>`, not a login shell, as tmux runs a window's
+    /// command (a float's program).
+    Command(&'a str),
+}
+
 /// A shell (or a float's program) on a PTY of its own.
 pub struct Pty {
     /// The PTY's master side: the shell's output is read, and its input
@@ -19,15 +30,12 @@ pub struct Pty {
     pub child: Child,
 }
 
-/// Start `shell` as a login shell (as tmux does, so macOS's
-/// `path_helper` runs), or running `command` (`shell -c command`, not a
-/// login shell, as tmux runs a window's command), in `cwd`, or in `home`
-/// if `cwd` is gone, on a new PTY of `(cols, rows)`, with exactly the
-/// environment `env`. The server calls it holding its state lock (see
-/// `open`).
+/// Start `shell` as `program` says in `cwd`, or in `home` if `cwd` is
+/// gone, on a new PTY of `(cols, rows)`, with exactly the environment
+/// `env`. The server calls it holding its state lock (see `open`).
 pub fn spawn(
     shell: &str,
-    command: Option<&str>,
+    program: Program<'_>,
     cwd: &Path,
     home: &Path,
     size: (u16, u16),
@@ -40,9 +48,9 @@ pub fn spawn(
         .map_or("sh".into(), |n| n.to_string_lossy().into_owned());
     let dir = if cwd.is_dir() { cwd } else { home };
     let mut child = Command::new(shell);
-    match command {
-        Some(command) => child.arg0(name).arg("-c").arg(command),
-        None => child.arg0(format!("-{name}")),
+    match program {
+        Program::Command(command) => child.arg0(name).arg("-c").arg(command),
+        Program::LoginShell => child.arg0(format!("-{name}")),
     };
     child
         .env_clear()
@@ -183,7 +191,15 @@ mod tests {
     fn a_shell_runs_on_its_own_pty_where_it_started() {
         let dir = tempfile::tempdir().unwrap();
         let env = [("PATH".to_string(), "/usr/bin:/bin".to_string())];
-        let mut pty = spawn("/bin/sh", None, dir.path(), dir.path(), (40, 10), &env).unwrap();
+        let mut pty = spawn(
+            "/bin/sh",
+            Program::LoginShell,
+            dir.path(),
+            dir.path(),
+            (40, 10),
+            &env,
+        )
+        .unwrap();
         assert!(pty.tty.starts_with("/dev/ttys"), "{}", pty.tty);
         let pid = i32::try_from(pty.child.id()).unwrap();
         // The shell leads its own session, in the PTY's foreground.
@@ -217,7 +233,7 @@ mod tests {
     fn a_command_runs_in_a_shell_that_is_not_a_login_one_and_ends_with_it() {
         let dir = tempfile::tempdir().unwrap();
         let env = [("PATH".to_string(), "/usr/bin:/bin".to_string())];
-        let command = Some("echo \"name=$0\"; exit 3");
+        let command = Program::Command("echo \"name=$0\"; exit 3");
         let mut pty = spawn("/bin/sh", command, dir.path(), dir.path(), (40, 10), &env).unwrap();
         let mut out = String::new();
         let mut buf = [0; 1024];

@@ -11,7 +11,8 @@
 
 use super::axis::Axis;
 use super::protocol::{self, Answer, Ending, Frame, Message, Notice, Refusal, Request};
-use super::space::{Float, Space};
+use super::pty::Program::{self, LoginShell};
+use super::space::{HostedFloat, Space};
 use super::state::{State, Subscriber};
 use super::tab::Tab;
 use super::terminal::{dir_name, HostedTerminal, Input, Sent, INPUT_MAX};
@@ -168,12 +169,9 @@ fn shut_down(shared: &Shared) -> ! {
         let mut state = shared.lock();
         close(&mut state);
         for (_, term) in state.terminals() {
-            hang_up(term.pid);
+            term.hang_up();
         }
-        let spaces: Vec<SpaceId> = state.attached.iter().map(|s| s.space.clone()).collect();
-        for space in spaces {
-            state.notify(&space, Notice::Ended);
-        }
+        state.notify_all(&Notice::Ended);
         std::mem::take(&mut state.attached)
     };
     let letting: Vec<_> = attached
@@ -192,20 +190,6 @@ fn close(state: &mut State) {
     if !state.closing {
         state.closing = true;
         let _ = std::fs::remove_file(state.socket());
-    }
-}
-
-/// Hang up the shell `pid` and its process group, as closing its terminal
-/// does.
-fn hang_up(pid: u32) {
-    let Ok(pid) = i32::try_from(pid) else { return };
-    // SAFETY: kill has no memory-safety preconditions; `pid` > 1 leads its
-    // own session (setsid), so `-pid` is its group only.
-    unsafe {
-        if pid > 1 {
-            libc::kill(-pid, libc::SIGHUP);
-            libc::kill(pid, libc::SIGHUP);
-        }
     }
 }
 
@@ -274,7 +258,15 @@ fn serve_connection(shared: &Arc<Shared>, conn: u64, mut stream: UnixStream) -> 
                 key,
             } => new_float(shared, &space, &cwd, &command, &key),
             Request::CloseFloat(float) => close_float(shared, &float),
-            Request::CloseSpace(space) => close_space(shared, &space),
+            Request::CloseSpace(space) => {
+                let closed = close_space(shared, &space);
+                let last = matches!(closed, Ok(true));
+                protocol::write(&mut stream, &reply(closed.map(|_| Answer::Done)))?;
+                if last {
+                    shut_down(shared);
+                }
+                continue;
+            }
             Request::CloseTerminal(terminal) => close_terminal(shared, &terminal),
             request => shared.lock().answer(request),
         };
@@ -416,10 +408,9 @@ fn attach(
 /// Show the space connection `conn` attached at `size`.
 fn resize(shared: &Shared, conn: u64, size: (u16, u16)) {
     let mut state = shared.lock();
-    let Some(space) = state.attached.iter().find(|s| s.conn == conn) else {
+    let Some(space) = state.attached_space(conn) else {
         return;
     };
-    let space = space.space.clone();
     let Ok(s) = state.space_mut(&space) else {
         return;
     };
@@ -431,17 +422,16 @@ fn resize(shared: &Shared, conn: u64, size: (u16, u16)) {
 /// Show float `float` of the space connection `conn` attached at `size`.
 fn resize_float(shared: &Shared, conn: u64, float: &FloatId, size: (u16, u16)) {
     let mut state = shared.lock();
-    let Some(space) = state.attached.iter().find(|s| s.conn == conn) else {
+    let Some(space) = state.attached_space(conn) else {
         return;
     };
-    let space = space.space.clone();
     let Ok(s) = state.space_mut(&space) else {
         return;
     };
     let Some(terminal) = s.float(float).map(|f| f.terminal.clone()) else {
         return;
     };
-    let Some(term) = s.terminals.iter_mut().find(|t| t.id == terminal) else {
+    let Some(term) = s.hosted_mut(&terminal) else {
         return;
     };
     if term.size == size {
@@ -469,7 +459,7 @@ fn new_space(shared: &Arc<Shared>, name: &str, cwd: &Path, size: (u16, u16)) -> 
     let space = SpaceId::new(format!("${}", state.next()));
     let terminal = TerminalId::new(format!("%{}", state.next()));
     let tab = new_tab_for(&mut state, cwd, terminal.clone());
-    let term = start_terminal(shared, &state, &space, terminal, None, cwd, size)?;
+    let term = start_terminal(shared, &state, &space, terminal, LoginShell, cwd, size)?;
     let root = cwd.to_string_lossy().into_owned();
     let made = Space::new(space.clone(), name.to_string(), root, tab, term);
     state.spaces.push(made);
@@ -485,7 +475,8 @@ fn new_tab(shared: &Arc<Shared>, space: &SpaceId, cwd: &Path) -> Result<Answer> 
     let size = state.space(space)?.size;
     let terminal = TerminalId::new(format!("%{}", state.next()));
     let tab = new_tab_for(&mut state, cwd, terminal.clone());
-    let term = start_terminal(shared, &state, space, terminal.clone(), None, cwd, size)?;
+    let id = terminal.clone();
+    let term = start_terminal(shared, &state, space, id, LoginShell, cwd, size)?;
     let s = state.space_mut(space)?;
     s.push_tab(tab, term);
     state.notify(space, Notice::Changed);
@@ -503,14 +494,18 @@ fn new_float(
     key: &str,
 ) -> Result<Answer> {
     let mut state = shared.lock();
+    if state.closing {
+        return Err(Ending.into());
+    }
     let s = state.space(space)?;
     s.check_float_key(key)?;
     let size = s.size;
     let float = FloatId::new(format!("@{}", state.next()));
     let terminal = TerminalId::new(format!("%{}", state.next()));
     let id = terminal.clone();
-    let term = start_terminal(shared, &state, space, id, Some(command), cwd, size)?;
-    let made = Float {
+    let program = Program::Command(command);
+    let term = start_terminal(shared, &state, space, id, program, cwd, size)?;
+    let made = HostedFloat {
         id: float.clone(),
         key: key.to_string(),
         terminal,
@@ -534,7 +529,8 @@ fn split(shared: &Arc<Shared>, target: &TerminalId, columns: bool, cwd: &Path) -
     tab.split(target, terminal.clone(), Axis::of(columns), size)?;
     let place = tab.splits(size).into_iter().find(|p| p.id == terminal);
     let place = place.map_or(size, |p| (p.rect.width, p.rect.height));
-    let started = start_terminal(shared, &state, &space, terminal.clone(), None, cwd, place);
+    let id = terminal.clone();
+    let started = start_terminal(shared, &state, &space, id, LoginShell, cwd, place);
     let s = state.space_mut(&space)?;
     match started {
         Ok(term) => s.terminals.push(term),
@@ -558,8 +554,8 @@ fn follow_names(shared: &Shared) {
     }
 }
 
-/// A shell on a new PTY in `cwd` (running `command`, for a float), with
-/// the hook variables of terminal `id`, and its threads. Called with the state locked (`state`), so its
+/// `program` on a new PTY in `cwd` (a shell, or a float's command),
+/// with the hook variables of terminal `id`, and its threads. Called with the state locked (`state`), so its
 /// reader waits until the terminal is in it (and no other shell starts
 /// meanwhile, see [`pty::spawn`]).
 fn start_terminal(
@@ -567,7 +563,7 @@ fn start_terminal(
     state: &State,
     space: &SpaceId,
     id: TerminalId,
-    command: Option<&str>,
+    program: Program<'_>,
     cwd: &Path,
     size: (u16, u16),
 ) -> Result<HostedTerminal> {
@@ -578,7 +574,7 @@ fn start_terminal(
         .cloned()
         .chain(state.hook_env(&id))
         .collect();
-    let mut pty = pty::spawn(&shared.shell, command, cwd, &shared.home, size, &env)?;
+    let mut pty = pty::spawn(&shared.shell, program, cwd, &shared.home, size, &env)?;
     let ready = (|| {
         let input = Input::start(&id, pty.master.try_clone()?);
         let reader = pty.master.try_clone()?;
@@ -646,6 +642,7 @@ fn wait_for_exit(
     drained: &mpsc::Receiver<()>,
 ) {
     let _ = child.wait();
+    reaped(shared, space, id);
     // The reader only drops its end.
     let _ = drained.recv_timeout(DRAIN);
     let mut state = shared.lock();
@@ -670,6 +667,19 @@ fn wait_for_exit(
     }
 }
 
+/// Note that terminal `id`'s program has been reaped: never signal its
+/// pid again, and close a float it ran at once, so its key takes a new
+/// one while its last output is still read.
+fn reaped(shared: &Shared, space: &SpaceId, id: &TerminalId) {
+    let mut state = shared.lock();
+    let Ok(s) = state.space_mut(space) else {
+        return;
+    };
+    if s.reaped(id) {
+        state.notify(space, Notice::Changed);
+    }
+}
+
 /// Take `space` out at once, as tmux's `kill-session` does, hanging up
 /// what still runs in it (its floats, when its last tab has closed):
 /// tell its client it ended, and every client that a space did. Returns
@@ -678,7 +688,7 @@ fn end_space(state: &mut State, space: &SpaceId) -> Option<Subscriber> {
     let i = state.spaces.iter().position(|s| s.id == *space)?;
     let gone = state.spaces.remove(i);
     for term in &gone.terminals {
-        hang_up(term.pid);
+        term.hang_up();
     }
     state.notify(space, Notice::Ended);
     // Nothing follows its end.
@@ -687,30 +697,31 @@ fn end_space(state: &mut State, space: &SpaceId) -> Option<Subscriber> {
     ended
 }
 
-/// End `space` at once; its shells' exits follow (and the server's, with
-/// the last space).
-fn close_space(shared: &Shared, space: &SpaceId) -> Result<Answer> {
+/// End `space` at once; its shells' exits follow. True if it was the
+/// last: the server takes no new space, and its caller ends it once it
+/// has answered, as the last terminal ending does (not waiting for shells
+/// that ignore the hangup).
+fn close_space(shared: &Shared, space: &SpaceId) -> Result<bool> {
     let mut state = shared.lock();
     state.space(space)?;
     let ended = end_space(&mut state, space);
+    let last = state.spaces.is_empty();
+    if last {
+        close(&mut state);
+    }
     drop(state);
     if let Some(ended) = ended {
         std::thread::spawn(move || ended.let_go(LAST_WORDS));
     }
-    Ok(Answer::Done)
+    Ok(last)
 }
 
 fn close_float(shared: &Shared, float: &FloatId) -> Result<Answer> {
-    let state = shared.lock();
-    let found = state.spaces.iter().find_map(|s| {
-        let f = s.float(float)?;
-        s.hosted(&f.terminal)
-    });
-    let Some(term) = found else {
+    let terminal = shared.lock().float_terminal(float);
+    let Some(terminal) = terminal else {
         bail!("no float {float}");
     };
-    hang_up(term.pid);
-    Ok(Answer::Done)
+    close_terminal(shared, &terminal)
 }
 
 fn close_terminal(shared: &Shared, terminal: &TerminalId) -> Result<Answer> {
@@ -718,7 +729,7 @@ fn close_terminal(shared: &Shared, terminal: &TerminalId) -> Result<Answer> {
     let Some((_, term)) = state.terminals().find(|(_, t)| t.id == *terminal) else {
         bail!("no terminal {terminal}");
     };
-    hang_up(term.pid);
+    term.hang_up();
     Ok(Answer::Done)
 }
 
