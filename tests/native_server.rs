@@ -474,7 +474,7 @@ fn cat_after(sandbox: &Sandbox, paddock: &mut Paddock, wait: u32) -> (UnixStream
 fn connect(sandbox: &Sandbox) -> (UnixStream, String) {
     let terminal = sandbox.terminal("space-1").id;
     let mut stream = UnixStream::connect(sandbox.state_dir().join("server.sock")).unwrap();
-    send_message(&mut stream, r#"{"Hello":{"version":1,"pid":1}}"#);
+    send_message(&mut stream, r#"{"Hello":{"version":2,"pid":1}}"#);
     assert!(read_frame(&mut stream).is_some(), "the server's hello");
     (stream, terminal)
 }
@@ -713,7 +713,7 @@ fn a_request_after_attaching_closes_the_connection_unanswered() {
     stream
         .set_read_timeout(Some(harness::TIMEOUT))
         .expect("a read timeout");
-    send_message(&mut stream, r#"{"Hello":{"version":1,"pid":1}}"#);
+    send_message(&mut stream, r#"{"Hello":{"version":2,"pid":1}}"#);
     assert!(read_frame(&mut stream).is_some(), "the server's hello");
     let attach = format!(r#"{{"Request":{{"Attach":{{"space":"{space}","size":[80,24]}}}}}}"#);
     send_message(&mut stream, &attach);

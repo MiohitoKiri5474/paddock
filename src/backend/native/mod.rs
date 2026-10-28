@@ -27,6 +27,7 @@ mod pty;
 mod queue;
 mod restore;
 mod saved;
+mod seen;
 mod server;
 mod space;
 mod state;

@@ -1,10 +1,12 @@
 //! `layout.json` in the state directory (ADR 0008): the server's spaces
 //! in order, each with its name, root, size and current tab, its tabs
 //! with their names (and whether each is automatic), focus, zoom and tree
-//! of splits with their shares, each terminal by its directory, and the
+//! of splits with their shares, each terminal by its directory and the
+//! agent session last seen in it (if any, and whether it ended), and the
 //! space paddock showed last. No terminal id is kept: a restored terminal
-//! is a new one, so it inherits no agent session. Floats are left out:
-//! their keys make them again when wanted.
+//! is a new one, which resumes its saved session if that had not ended
+//! (ticket 48). Floats are left out: their keys make them again when
+//! wanted.
 //!
 //! The server writes it whenever it changes ([`Saver`]), at most once
 //! every [`GAP`], by an atomic replace; a server with no space left
@@ -15,9 +17,12 @@
 //! [`super::restore`]).
 
 use super::layout::SavedTree;
+use super::seen::Seen;
 use super::space::Space;
 use super::state::State;
 use super::terminal::{DirReader, HostedTerminal};
+use crate::backend::TerminalId;
+use crate::sessions::AgentKind;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -69,6 +74,20 @@ pub struct SavedTab {
 pub struct SavedTerminal {
     /// Its program's directory when last saved.
     pub dir: String,
+    /// The agent session last seen running in it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<SavedAgent>,
+}
+
+/// An agent session seen in a terminal, from the server's hook log.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SavedAgent {
+    pub kind: AgentKind,
+    /// Its session id, which resumes it.
+    pub session: String,
+    /// It ended (it quit, or `/clear` started another): not resumed.
+    #[serde(default)]
+    pub ended: bool,
 }
 
 impl SavedLayout {
@@ -108,13 +127,15 @@ impl SavedSpace {
     }
 }
 
-/// What `layout.json` keeps of `state`, but its terminals' directories,
-/// which [`Snapshot::read_dirs`] reads once the state is let go.
+/// What `layout.json` keeps of `state`, but its terminals' directories
+/// and sessions, which [`Snapshot::read_dirs`] reads once the state is
+/// let go.
 pub struct Snapshot {
     layout: SavedLayout,
-    /// Where to read each terminal's directory, in the layout's order
-    /// (`None` for a terminal not hosted, which keeps its placeholder).
-    dirs: Vec<Option<DirReader>>,
+    /// Each terminal's id, and where to read its directory, in the
+    /// layout's order (`None` for a terminal not hosted, which keeps its
+    /// placeholder).
+    dirs: Vec<(TerminalId, Option<DirReader>)>,
 }
 
 /// Take what `layout.json` keeps of `state`, with it locked: no read of
@@ -134,17 +155,19 @@ pub fn snapshot(state: &State) -> Snapshot {
 impl Snapshot {
     /// The layout, each terminal's directory read: its foreground
     /// program's, else its shell's, else (a shell not started yet, or
-    /// gone) the placeholder [`saved_space`] left, its space's root.
-    pub fn read_dirs(self) -> SavedLayout {
+    /// gone) the placeholder [`saved_space`] left, its space's root; and
+    /// the session `seen` last in it.
+    pub fn read_dirs(self, seen: &Seen) -> SavedLayout {
         let Self { mut layout, dirs } = self;
         // Spaces, tabs and each tree's terminals walk in the order
         // `saved_space` pushed the readers in.
         let terminals = layout.spaces.iter_mut().flat_map(|s| &mut s.tabs);
         let terminals = terminals.flat_map(|t| t.splits.terminals_mut());
-        for (terminal, reader) in terminals.zip(dirs) {
+        for (terminal, (id, reader)) in terminals.zip(dirs) {
             if let Some(dir) = reader.and_then(DirReader::read) {
                 terminal.dir = dir;
             }
+            terminal.agent = seen.get(&id).cloned();
         }
         layout
     }
@@ -153,14 +176,16 @@ impl Snapshot {
 /// `space` as `layout.json` keeps it, each terminal's directory its
 /// root for now: what reads the real one is pushed on `dirs`, one per
 /// terminal in the tree's order, which [`Snapshot::read_dirs`] follows.
-fn saved_space(space: &Space, dirs: &mut Vec<Option<DirReader>>) -> SavedSpace {
+fn saved_space(space: &Space, dirs: &mut Vec<(TerminalId, Option<DirReader>)>) -> SavedSpace {
     let tabs = space.tabs.iter().map(|tab| {
         let terminals = tab.terminals();
         let focus = terminals.iter().position(|t| t == tab.active());
         let splits = tab.layout().save(&mut |id| {
-            dirs.push(space.hosted(id).map(HostedTerminal::dir_reader));
+            let reader = space.hosted(id).map(HostedTerminal::dir_reader);
+            dirs.push((id.clone(), reader));
             SavedTerminal {
                 dir: space.root.clone(),
+                agent: None,
             }
         });
         SavedTab {
@@ -336,7 +361,10 @@ mod tests {
     use super::*;
 
     fn terminal(dir: &str) -> SavedTree<SavedTerminal> {
-        SavedTree::Terminal(SavedTerminal { dir: dir.into() })
+        SavedTree::Terminal(SavedTerminal {
+            dir: dir.into(),
+            agent: None,
+        })
     }
 
     /// A layout of one space, `name`, with a tab split in two.
@@ -375,6 +403,29 @@ mod tests {
         assert_eq!(load(dir.path()), Some(layout("api")));
         let names: Vec<_> = std::fs::read_dir(dir.path()).unwrap().collect();
         assert_eq!(names.len(), 1, "no file left beside it");
+    }
+
+    #[test]
+    fn a_terminals_agent_reads_back_and_a_terminal_without_one_writes_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut saved = layout("api");
+        let agent = SavedAgent {
+            kind: AgentKind::Claude,
+            session: "7f3c2a10-1b2c-4d5e-8f90-0123456789ab".into(),
+            ended: false,
+        };
+        let SavedTree::Split { cells, .. } = &mut saved.spaces[0].tabs[0].splits else {
+            unreachable!("split in two");
+        };
+        cells[1].node = SavedTree::Terminal(SavedTerminal {
+            dir: "/w/api/src".into(),
+            agent: Some(agent),
+        });
+        write(dir.path(), &saved).unwrap();
+        assert_eq!(load(dir.path()), Some(saved));
+        let text = std::fs::read_to_string(dir.path().join(FILE)).unwrap();
+        assert_eq!(text.matches("\"agent\"").count(), 1, "{text}");
+        assert!(text.contains("\"kind\": \"claude\""), "{text}");
     }
 
     #[test]

@@ -13,6 +13,7 @@ use super::axis::Axis;
 use super::protocol::{self, Answer, Ending, Frame, Message, Notice, Refusal, Request};
 use super::pty::Program::{self, LoginShell};
 use super::saved::{self, Saver};
+use super::seen::Seen;
 use super::space::{HostedFloat, Space};
 use super::state::{State, Subscriber};
 use super::tab::Tab;
@@ -58,11 +59,19 @@ struct Shared {
     connections: AtomicU64,
     /// Writes `layout.json`; locked after `state`, if both are.
     saver: Mutex<Saver>,
+    /// The agent session last seen in each terminal, from the server's
+    /// hook log, for `layout.json`; locked after `state`, if both are,
+    /// and before `saver`.
+    seen: Mutex<Seen>,
 }
 
 impl Shared {
     fn lock(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn seen(&self) -> MutexGuard<'_, Seen> {
+        self.seen.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 
@@ -82,13 +91,15 @@ pub fn serve() -> Result<()> {
     let mut env = clean_env(std::env::vars());
     env.push(("COLORTERM".into(), "truecolor".into()));
     env.push((AGY_STATUS_VAR.into(), "on".into()));
+    let instance = new_instance();
     let shared = Arc::new(Shared {
-        state: Mutex::new(State::new(socket, new_instance())),
+        state: Mutex::new(State::new(socket, instance)),
         shell: var("SHELL").unwrap_or_else(|| "/bin/sh".into()),
         home: var("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from),
         env,
         connections: AtomicU64::new(0),
         saver: Mutex::new(Saver::new(paths.state_dir.clone())),
+        seen: Mutex::new(Seen::new(&paths.state_dir, instance)),
     });
     // Before any signal is handled: one that ends the server mid-way
     // would save half the layout.
@@ -97,7 +108,13 @@ pub fn serve() -> Result<()> {
         let mut start = |state: &State, space: &SpaceId, id, cwd: &Path, size: (u16, u16)| {
             start_terminal(&shared, state, space, id, LoginShell, cwd, size)
         };
-        restore::from_file(&paths.state_dir, &mut state, &mut start);
+        let (_, resumed) = restore::from_file(&paths.state_dir, &mut state, &mut start);
+        // Saved as running until the resumed agents' hooks say otherwise,
+        // so a restart before they report keeps them.
+        let mut seen = shared.seen();
+        for (terminal, agent) in resumed {
+            seen.seed(terminal, agent);
+        }
     }
     watch_signals(&shared)?;
     let names = Arc::clone(&shared);
@@ -220,9 +237,14 @@ fn close(shared: &Shared, state: &mut State) {
     }
 }
 
-/// Write the layout to `layout.json` now, if it changed, and no more.
+/// Write the layout to `layout.json` now, if it changed, and no more:
+/// with the sessions seen up to now, before the shells are hung up (an
+/// agent hung up may say it ended).
 fn flush_layout(shared: &Shared, state: &State) {
-    let layout = saved::snapshot(state).read_dirs();
+    let mut seen = shared.seen();
+    seen.read_new();
+    let layout = saved::snapshot(state).read_dirs(&seen);
+    drop(seen);
     let mut saver = shared.saver.lock().unwrap_or_else(|e| e.into_inner());
     if let Err(e) = saver.flush(layout) {
         eprintln!("paddock server: {e:#}");
@@ -231,12 +253,14 @@ fn flush_layout(shared: &Shared, state: &State) {
 
 /// Offer the layout to `layout.json` every [`SAVE_POLL`], until the
 /// server is ending. A terminal's directory is read here too, as no
-/// notice says it changed: with the state let go, as is the file. (A
+/// notice says it changed, and the hook log for the sessions seen: with
+/// the state let go, as is the file. (A
 /// layout taken before the server began to end is never written after
 /// its last: the saver is flushed then, and takes no more.)
 fn save_layout(shared: &Shared) {
     loop {
         std::thread::sleep(SAVE_POLL);
+        shared.seen().read_new();
         let snapshot = {
             let state = shared.lock();
             if state.closing {
@@ -244,7 +268,7 @@ fn save_layout(shared: &Shared) {
             }
             saved::snapshot(&state)
         };
-        let layout = snapshot.read_dirs();
+        let layout = snapshot.read_dirs(&shared.seen());
         let mut saver = shared.saver.lock().unwrap_or_else(|e| e.into_inner());
         if let Err(e) = saver.offer(layout, Instant::now()) {
             eprintln!("paddock server: {e:#}");

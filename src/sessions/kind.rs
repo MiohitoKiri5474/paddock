@@ -4,6 +4,7 @@
 //! the kind where it is used, so a new kind is an arm in each, not a
 //! rewrite.
 
+use crate::shell::quote;
 use serde::{Deserialize, Serialize};
 
 /// The coding agent a session belongs to. A hook record without one (every
@@ -57,6 +58,27 @@ impl AgentKind {
     pub fn is_claude(&self) -> bool {
         *self == AgentKind::Claude
     }
+
+    /// The shell command that continues session `id` of this kind where
+    /// it was left, typed into a terminal paddock restored; `None` for a
+    /// kind paddock does not resume, or an id not safe to type into a
+    /// shell (see [`is_session_id`]).
+    pub fn resume_command(self, id: &str) -> Option<String> {
+        if !is_session_id(id) {
+            return None;
+        }
+        match self {
+            AgentKind::Claude => Some(format!("claude --resume {}", quote(id))),
+            AgentKind::Gemini | AgentKind::Agy => None,
+        }
+    }
+}
+
+/// Whether `id` looks like a session id (a UUID: hex digits and `-`): one
+/// that comes from a hook payload or a file and is typed into a shell,
+/// where a control character would end the line even inside quotes.
+pub fn is_session_id(id: &str) -> bool {
+    !id.is_empty() && id.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
 }
 
 #[cfg(test)]
@@ -74,6 +96,28 @@ mod tests {
         assert_eq!(AgentKind::parse("Claude"), None);
         assert_eq!(AgentKind::parse(""), None);
         assert_eq!(AgentKind::parse("cursor"), None);
+    }
+
+    #[test]
+    fn only_uuid_shaped_session_ids_are_typed_into_a_shell() {
+        assert!(is_session_id("7f3c2a10-1b2c-4d5e-8f90-0123456789ab"));
+        for bad in ["", "x\r; rm -rf ~", "a b", "abc$(id)", "abc\u{1b}"] {
+            assert!(!is_session_id(bad), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn only_claude_resumes_and_only_a_uuid_shaped_id() {
+        let id = "7f3c2a10-1b2c-4d5e-8f90-0123456789ab";
+        assert_eq!(
+            AgentKind::Claude.resume_command(id).as_deref(),
+            Some("claude --resume '7f3c2a10-1b2c-4d5e-8f90-0123456789ab'")
+        );
+        assert_eq!(AgentKind::Gemini.resume_command(id), None);
+        assert_eq!(AgentKind::Agy.resume_command(id), None);
+        for bad in ["", "x\r; rm -rf ~", "a b", "abc$(id)", "abc\u{1b}"] {
+            assert_eq!(AgentKind::Claude.resume_command(bad), None, "{bad:?}");
+        }
     }
 
     #[test]

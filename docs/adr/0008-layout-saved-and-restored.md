@@ -14,3 +14,4 @@ When a server starts and finds that file, it rebuilds the layout without asking.
 - `layout.json` replaces the layout tmux held and the current space kept in `layout.toml`; only the sidebar width stays there.
 - Programs other than shells are not restarted, so an editor or a server left running in a terminal has to be started again.
 - Servers from before this file wrote none, so the first upgrade to a paddock that reads it restores nothing.
+- Since ticket 48 the file also keeps the agent session last seen in each terminal. A Claude Code session that had not ended is resumed (`claude --resume <id>` typed into the new shell) rather than coming back as a plain shell; Gemini and Antigravity sessions still come back as plain shells.
