@@ -14,7 +14,7 @@ use crate::backend::{
 use anyhow::{anyhow, bail, Result};
 use ratatui::layout::Rect;
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -118,12 +118,11 @@ fn size(frame: &Frame) -> usize {
     }
 }
 
-#[derive(Default)]
 pub struct State {
     /// The server's socket and instance id, which its terminals' hook
     /// variables name (see [`super::hook`]).
     socket: PathBuf,
-    pub instance: u32,
+    instance: u32,
     next_id: u64,
     pub spaces: Vec<Space>,
     pub attached: Option<Subscriber>,
@@ -140,8 +139,22 @@ impl State {
         Self {
             socket,
             instance,
-            ..Self::default()
+            next_id: 0,
+            spaces: Vec::new(),
+            attached: None,
+            started: false,
+            closing: false,
         }
+    }
+
+    /// The server's socket.
+    pub fn socket(&self) -> &Path {
+        &self.socket
+    }
+
+    /// The server's instance id (see [`crate::backend::Instance`]).
+    pub fn instance(&self) -> u32 {
+        self.instance
     }
 
     /// The variables that tell a process it runs in terminal `id`.

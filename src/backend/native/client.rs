@@ -108,9 +108,10 @@ impl Client {
         }
     }
 
-    /// The server's instance id, new each time a server starts.
+    /// The server's instance id, new each time a server starts; an error
+    /// if its hello gave none (0), which names no event log.
     pub fn instance(&self) -> Result<u32> {
-        self.connect().map(|(_, server)| server.instance)
+        self.connect().and_then(|(_, server)| instance_of(server))
     }
 
     /// Start the server unless one runs, and wait until it listens.
@@ -407,5 +408,33 @@ impl Attached {
         // The server may be gone already; nothing to do then.
         let _ = protocol::write(&mut self.stream, &frame);
         let _ = self.stream.shutdown(std::net::Shutdown::Both);
+    }
+}
+
+/// The instance id `server`'s hello gave; an error for none (0), which
+/// names no event log.
+fn instance_of(server: Peer) -> Result<u32> {
+    if server.instance == 0 {
+        bail!(
+            "the paddock server (pid {}) gave no instance id in its hello",
+            server.pid
+        );
+    }
+    Ok(server.instance)
+}
+
+#[cfg(test)]
+mod instance_tests {
+    use super::*;
+
+    #[test]
+    fn a_hello_without_an_instance_id_is_an_error() {
+        let peer = |instance| Peer { pid: 7, instance };
+        assert_eq!(instance_of(peer(42)).unwrap(), 42);
+        let err = instance_of(peer(0)).unwrap_err().to_string();
+        assert!(
+            err.contains("no instance id") && err.contains("pid 7"),
+            "{err}"
+        );
     }
 }

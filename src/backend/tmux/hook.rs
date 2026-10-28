@@ -15,7 +15,9 @@ pub fn terminal(var: impl Fn(&str) -> Option<String>, socket: &str) -> Option<Ho
     let id = parts.next()?.parse().ok()?;
     let path = parts.next()?;
     let ours = Path::new(path).file_name()? == socket;
-    let pane_ok = pane.starts_with('%') && pane.len() > 1;
+    let pane_ok = pane
+        .strip_prefix('%')
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
     (ours && pane_ok).then(|| HookTerminal {
         instance: Instance {
             kind: BackendKind::Tmux,
@@ -50,6 +52,9 @@ mod tests {
         assert_eq!(read(t, "%3"), Some((4242, "%3".into())));
         assert_eq!(read("/tmp/tmux-501/default,1,0", "%3"), None);
         assert_eq!(read(t, ""), None);
+        for pane in ["%", "3", "%x", "%3 "] {
+            assert_eq!(read(t, pane), None, "pane {pane:?}");
+        }
         assert_eq!(read("", "%3"), None);
         assert_eq!(read("garbage", "%3"), None);
         assert_eq!(terminal(|_| None, "paddock"), None, "outside tmux");

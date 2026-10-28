@@ -41,7 +41,6 @@ const LOCK_WAIT: Duration = Duration::from_secs(3);
 
 struct Shared {
     state: Mutex<State>,
-    socket: PathBuf,
     shell: String,
     home: PathBuf,
     /// The shells' environment.
@@ -72,8 +71,7 @@ pub fn serve() -> Result<()> {
     env.push(("COLORTERM".into(), "truecolor".into()));
     env.push((AGY_STATUS_VAR.into(), "on".into()));
     let shared = Arc::new(Shared {
-        state: Mutex::new(State::new(socket.clone(), new_instance())),
-        socket,
+        state: Mutex::new(State::new(socket, new_instance())),
         shell: var("SHELL").unwrap_or_else(|| "/bin/sh".into()),
         home: var("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from),
         env,
@@ -161,7 +159,7 @@ fn watch_signals(shared: &Arc<Shared>) -> Result<()> {
 fn shut_down(shared: &Shared) -> ! {
     let attached = {
         let mut state = shared.lock();
-        close(shared, &mut state);
+        close(&mut state);
         for (_, term) in state.terminals() {
             hang_up(term.pid);
         }
@@ -178,10 +176,10 @@ fn shut_down(shared: &Shared) -> ! {
 
 /// Take no more spaces, and stop listening: a paddock that comes now
 /// starts the next server.
-fn close(shared: &Shared, state: &mut State) {
+fn close(state: &mut State) {
     if !state.closing {
         state.closing = true;
-        let _ = std::fs::remove_file(&shared.socket);
+        let _ = std::fs::remove_file(state.socket());
     }
 }
 
@@ -200,7 +198,7 @@ fn hang_up(pid: u32) {
 }
 
 fn serve_connection(shared: &Arc<Shared>, conn: u64, mut stream: UnixStream) -> Result<()> {
-    let instance = shared.lock().instance;
+    let instance = shared.lock().instance();
     protocol::hello(&mut stream, false, instance)?;
     let mut attached = false;
     // An input whose last parts have not come yet. Left so when the
@@ -539,7 +537,7 @@ fn wait_for_exit(
     }
     let last = state.spaces.is_empty();
     if last {
-        close(shared, &mut state);
+        close(&mut state);
     }
     drop(state);
     if let Some(ended) = ended {
