@@ -65,6 +65,35 @@ fn splits_and_new_tabs_carry_their_own_terminal_for_hooks() {
     paddock.wait_for_text(&format!("tab-pane={}\n", tab.id));
 }
 
+/// Ticket 42: a float's program and a second space's shell carry their
+/// own terminal too.
+#[test]
+fn floats_and_a_second_space_carry_their_own_terminal_for_hooks() {
+    let sandbox = Sandbox::new();
+    sandbox.write_config(&format!("{NATIVE}[floats]\nG = \"sh\"\n"));
+    let mut paddock = sandbox.launch();
+    paddock.wait_for_text(PROMPT);
+
+    paddock.command(b"G");
+    paddock.wait_for("the float", |_| sandbox.state().spaces[0].floats.len() == 1);
+    let float = sandbox.state().spaces[0].floats[0].splits[0].clone();
+    let float = sandbox.terminal(&float.id);
+    assert_eq!(float.id, float.hook_env["PADDOCK_PANE"]);
+    paddock.type_line("echo float-pane=$PADDOCK_PANE");
+    let text = format!("float-pane={}", float.id);
+    paddock.wait_for(&text, |_| paddock.full_screen().contains(&text));
+    paddock.command(b"G");
+
+    paddock.command(b"C\r");
+    paddock.wait_for("the second space", |_| sandbox.state().spaces.len() == 2);
+    let second = sandbox.terminal("space-2");
+    assert_eq!(second.id, second.hook_env["PADDOCK_PANE"]);
+    assert_ne!(second.id, float.id);
+    paddock.wait_for_text(PROMPT);
+    paddock.type_line("echo space-pane=$PADDOCK_PANE");
+    paddock.wait_for_text(&format!("space-pane={}\n", second.id));
+}
+
 /// The server's event log is named apart from tmux's, so a tmux server
 /// whose pid equals its instance id never reads it.
 #[test]

@@ -7,7 +7,7 @@ paddock is a terminal workspace for running coding agents (Claude Code, Gemini C
 ### Layout
 
 **Space**:
-A named group of tabs you create to organise work, listed in the sidebar's SPACES section. It is a tmux session on the hidden server.
+A named group of tabs you create to organise work, listed in the sidebar's SPACES section. On tmux it is a session on the hidden server; on native, a space of the paddock server's.
 _Avoid_: workspace, project, group, category
 
 **Space root**:
@@ -47,7 +47,7 @@ The panel on the left, which can be shown or hidden: SPACES, two lines per space
 A main agent in the sidebar's AGENTS section. Subagents show only in the dashboard.
 
 **Float**:
-A program shown in a box over the whole screen and hidden again by the prefix and its key, kept running while hidden. Each space has its own float per key. It is a tmux window of the space's session marked as a float, never a tab.
+A program shown in a box over the whole screen and hidden again by the prefix and its key, kept running while hidden. Each space has its own float per key. On tmux it is a window of the space's session marked as a float; on native, a terminal of the space kept apart from its tabs. Never a tab.
 _Avoid_: popup (that is the prompt), overlay
 
 **Session view**:

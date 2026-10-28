@@ -1,15 +1,15 @@
 //! The native backend (ADR 0007): `paddock server`, a background process
 //! that owns every terminal's PTY and an emulator for each, and paddock as
-//! its client over a Unix socket in the state directory. So far it hosts
-//! one space, with its tabs and splits; what it cannot do yet (floats,
-//! more spaces) fails with [`unsupported`].
+//! its client over a Unix socket in the state directory. It hosts the
+//! spaces, each with its tabs, splits and floats; saving the layout
+//! (ticket 44) is still to come.
 //!
 //! - [`client`]: what the app, the CLI and `paddock debug state` ask, and
 //!   the attached space's connection. Starts the server when needed.
 //! - [`server`]: the server process: its socket, lock and lifetime.
 //! - [`state`]: the spaces it holds and what it answers about them.
-//! - [`space`], [`tab`] and [`layout`]: a space's tabs, a tab's focus and
-//!   zoom, and its tree of splits.
+//! - [`space`], [`tab`] and [`layout`]: a space's tabs and floats, a
+//!   tab's focus and zoom, and its tree of splits.
 //! - [`terminal`] and [`pty`]: one terminal, its shell and its emulator.
 //! - [`hook`]: the variables that tell a process which terminal it runs in.
 //! - [`queue`]: the queues to the threads that write to a client or a
@@ -48,11 +48,6 @@ const LOG: &str = "server.log";
 /// The longest socket path macOS takes (`sun_path` holds 104 bytes, its
 /// final NUL included).
 const MAX_SOCKET_PATH: usize = 103;
-
-/// The error for what the native backend cannot do yet.
-pub fn unsupported(what: &str) -> anyhow::Error {
-    anyhow::anyhow!("not on the native backend yet: {what}")
-}
 
 /// The native terminal a process runs in, from its environment as `var`
 /// reads it (see [`hook::terminal`]); `None` outside the terminals of the

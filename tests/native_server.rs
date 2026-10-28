@@ -689,6 +689,66 @@ fn a_request_after_attaching_closes_the_connection_unanswered() {
     }
 }
 
+/// Ticket 42: a space has at most one float per key; another space has
+/// its own.
+#[test]
+fn a_space_takes_one_float_per_key() {
+    let sandbox = native();
+    let mut paddock = ready(&sandbox);
+    paddock.command(b"C\r");
+    wait_until("two spaces", || sandbox.state().spaces.len() == 2);
+    let spaces: Vec<String> = sandbox.state().spaces.into_iter().map(|s| s.id).collect();
+    let cwd = sandbox.path("").to_string_lossy().into_owned();
+    let new_float = |space: &str| {
+        let (mut stream, _) = connect(&sandbox);
+        let request = format!(
+            r#"{{"Request":{{"NewFloat":{{"space":"{space}","cwd":"{cwd}","command":"sleep 30","key":"G"}}}}}}"#
+        );
+        send_message(&mut stream, &request);
+        String::from_utf8_lossy(&read_frame(&mut stream).expect("a reply")).into_owned()
+    };
+
+    assert!(new_float(&spaces[0]).contains("Float"));
+    let again = new_float(&spaces[0]);
+    assert!(again.contains("a float on G already"), "{again}");
+    assert!(new_float(&spaces[1]).contains("Float"), "the other space's");
+    let floats: Vec<usize> = sandbox
+        .state()
+        .spaces
+        .iter()
+        .map(|s| s.floats.len())
+        .collect();
+    assert_eq!(floats, [1, 1]);
+}
+
+/// Closing the last space ends the server at once, as its last shell
+/// ending does, even with a shell that ignores the hangup.
+#[test]
+fn closing_the_last_space_ends_the_server_whatever_its_shells_do() {
+    let sandbox = native();
+    let mut paddock = ready(&sandbox);
+    let pid = server_pid(&sandbox.state_dir()).expect("a server");
+    paddock.type_line("trap '' HUP; echo HUP''-IGNORED");
+    paddock.wait_for_text("HUP-IGNORED");
+    let shell = sandbox.terminal("space-1").pid.expect("its shell's pid");
+    let space = sandbox.state().spaces[0].id.clone();
+
+    let (mut stream, _) = connect(&sandbox);
+    send_message(
+        &mut stream,
+        &format!(r#"{{"Request":{{"CloseSpace":"{space}"}}}}"#),
+    );
+    let reply = read_frame(&mut stream).expect("a reply");
+    assert!(String::from_utf8_lossy(&reply).contains("Done"));
+
+    wait_until("the server ended", || !alive(pid));
+    assert!(paddock.wait_exit());
+    // The shell that ignored it is left to the test.
+    let _ = std::process::Command::new("kill")
+        .args(["-9", &shell.to_string()])
+        .status();
+}
+
 /// The test functions in a test file's source: the `fn` after each
 /// `#[test]`, past any other attributes. Tests in a nested module would
 /// be named by its path, which this does not read: it refuses them.

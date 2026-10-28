@@ -1,9 +1,9 @@
-//! What the native server holds: its spaces ([`Space`]), and the one
-//! client attached to a space. It answers every request that reads, or
-//! changes a layout or a name; making and ending terminals is the
-//! server's ([`super::server`]), as it starts their threads. A change to
-//! the attached space's structure tells its client ([`Notice::Changed`]),
-//! which reads it again.
+//! What the native server holds: its spaces ([`Space`]), and the client
+//! attached to each (paddock attaches every space). It answers every
+//! request that reads, or changes a layout or a name; making and ending
+//! terminals is the server's ([`super::server`]), as it starts their
+//! threads. A change to an attached space's structure tells its client
+//! ([`Notice::Changed`]), which reads it again.
 
 use super::hook;
 use super::protocol::{self, Answer, Frame, Message, Notice, Request};
@@ -12,7 +12,7 @@ use super::space::Space;
 use super::tab::Tab;
 use super::terminal::HostedTerminal;
 use crate::backend::{
-    ListedSpace, SpaceId, SpaceTerminal, Structure, TabId, TerminalDetails, TerminalId,
+    FloatId, ListedSpace, SpaceId, SpaceTerminal, Structure, TabId, TerminalDetails, TerminalId,
 };
 use anyhow::{anyhow, bail, Result};
 use std::os::unix::net::UnixStream;
@@ -21,7 +21,7 @@ use std::sync::mpsc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-/// Bytes queued for the attached client past which it is behind: a client
+/// Bytes queued for an attached client past which it is behind: a client
 /// that stays behind for [`GRACE`] has stopped reading (not just paused a
 /// moment), and is let go.
 const BEHIND: usize = 16 << 20;
@@ -30,8 +30,8 @@ const GRACE: Duration = Duration::from_secs(5);
 /// writing fast never grows the server without bound meanwhile.
 const MAX_QUEUED: usize = 128 << 20;
 
-/// The attached client: frames for it go through `queue`, in order, to
-/// a thread that writes them.
+/// The client attached to a space: frames for it go through `queue`, in
+/// order, to a thread that writes them.
 pub struct Subscriber {
     /// Which connection it is.
     pub conn: u64,
@@ -115,7 +115,8 @@ pub struct State {
     instance: u32,
     next_id: u64,
     pub spaces: Vec<Space>,
-    pub attached: Option<Subscriber>,
+    /// The client attached to each space, one at most per space.
+    pub attached: Vec<Subscriber>,
     /// A terminal ran: once none is left, the server ends.
     pub started: bool,
     /// The server is ending: it takes no new space.
@@ -131,7 +132,7 @@ impl State {
             instance,
             next_id: 0,
             spaces: Vec::new(),
-            attached: None,
+            attached: Vec::new(),
             started: false,
             closing: false,
         }
@@ -161,6 +162,15 @@ impl State {
     pub fn space(&self, id: &SpaceId) -> Result<&Space> {
         let found = self.spaces.iter().find(|s| s.id == *id);
         found.ok_or_else(|| anyhow!("no space {id}"))
+    }
+
+    /// An error if a space is named `name` already, in tmux's words,
+    /// which paddock shows.
+    pub fn check_space_name(&self, name: &str) -> Result<()> {
+        if self.spaces.iter().any(|s| s.name == name) {
+            bail!("duplicate session: {name}");
+        }
+        Ok(())
     }
 
     pub fn space_mut(&mut self, id: &SpaceId) -> Result<&mut Space> {
@@ -198,31 +208,65 @@ impl State {
         found.ok_or_else(|| anyhow!("no terminal {terminal}"))
     }
 
-    /// Queue `frame` for the attached client, if it is attached to
-    /// `space` (to any space if `None`). A client that has stopped reading
-    /// (see [`BEHIND`]), or whose writer failed, is let go, so its frames
-    /// never pile up.
-    pub fn send(&mut self, space: Option<&SpaceId>, frame: Frame) {
-        let Some(s) = &mut self.attached else { return };
-        if space.is_some_and(|space| s.space != *space) {
+    /// Queue `frame` for the client attached to `space`, if any. A client
+    /// that has stopped reading (see [`BEHIND`]), or whose writer failed,
+    /// is let go, so its frames never pile up.
+    pub fn send(&mut self, space: &SpaceId, frame: Frame) {
+        let Some(s) = self.attached.iter_mut().find(|s| s.space == *space) else {
             return;
-        }
+        };
         let Err(why) = s.queue(frame) else { return };
-        if let Some(s) = self.attached.take() {
-            eprintln!("paddock server: letting connection {} go: {why}", s.conn);
+        eprintln!("paddock server: letting connection {} go: {why}", s.conn);
+        if let Some(s) = self.detach_space(space) {
             std::thread::spawn(move || s.let_go(Duration::ZERO));
         }
     }
 
-    /// Tell the client attached to `space`, if any.
-    pub fn notify(&mut self, space: &SpaceId, notice: Notice) {
-        self.send(Some(space), Frame::Message(Message::Notice(notice)));
+    /// Take out the first attached client `which` picks, if any.
+    fn take(&mut self, which: impl Fn(&Subscriber) -> bool) -> Option<Subscriber> {
+        let i = self.attached.iter().position(which)?;
+        Some(self.attached.remove(i))
     }
 
-    /// Tell the attached client a space was made or ended.
+    /// Take out the client of connection `conn`, if it is attached.
+    pub fn detach(&mut self, conn: u64) -> Option<Subscriber> {
+        self.take(|s| s.conn == conn)
+    }
+
+    /// Take out the client attached to `space`, if any.
+    pub fn detach_space(&mut self, space: &SpaceId) -> Option<Subscriber> {
+        self.take(|s| s.space == *space)
+    }
+
+    /// The space connection `conn` is attached to, if it is.
+    pub fn attached_space(&self, conn: u64) -> Option<SpaceId> {
+        let found = self.attached.iter().find(|s| s.conn == conn);
+        found.map(|s| s.space.clone())
+    }
+
+    /// Tell every attached client `notice`.
+    pub fn notify_all(&mut self, notice: &Notice) {
+        let spaces: Vec<SpaceId> = self.attached.iter().map(|s| s.space.clone()).collect();
+        for space in spaces {
+            self.notify(&space, notice.clone());
+        }
+    }
+
+    /// The terminal float `float` runs in, in any space.
+    pub fn float_terminal(&self, float: &FloatId) -> Option<TerminalId> {
+        let found = self.spaces.iter().find_map(|s| s.float(float));
+        found.map(|f| f.terminal.clone())
+    }
+
+    /// Tell the client attached to `space`, if any.
+    pub fn notify(&mut self, space: &SpaceId, notice: Notice) {
+        self.send(space, Frame::Message(Message::Notice(notice)));
+    }
+
+    /// Tell every attached client a space was made or ended, as each
+    /// space's connection hears it on tmux.
     pub fn notify_spaces(&mut self) {
-        let notice = Message::Notice(Notice::SpacesChanged);
-        self.send(None, Frame::Message(notice));
+        self.notify_all(&Notice::SpacesChanged);
     }
 
     pub fn structure(&self, id: &SpaceId) -> Result<Structure> {
@@ -285,15 +329,20 @@ impl State {
         }
     }
 
-    /// Every terminal of space `id`, in its tabs' order.
+    /// Every terminal of space `id`, in its tabs' order, then its
+    /// floats'.
     fn space_terminals(&self, id: &SpaceId) -> Result<Vec<SpaceTerminal>> {
         let space = self.space(id)?;
-        let ids = space.tabs.iter().flat_map(Tab::terminals);
-        let terminals = ids.filter_map(|t| space.hosted(&t));
-        let listed = terminals.map(|h| SpaceTerminal {
-            id: h.id.clone(),
-            path: h.dir().unwrap_or_default(),
-            float: false,
+        let tabs = space.tabs.iter().flat_map(Tab::terminals);
+        let tabs = tabs.map(|t| (t, false));
+        let floats = space.floats.iter().map(|f| (f.terminal.clone(), true));
+        let listed = tabs.chain(floats).filter_map(|(t, float)| {
+            let h = space.hosted(&t)?;
+            Some(SpaceTerminal {
+                id: h.id.clone(),
+                path: h.dir().unwrap_or_default(),
+                float,
+            })
         });
         Ok(listed.collect())
     }
@@ -368,6 +417,9 @@ impl State {
             ),
             Request::SpaceName(id) => Answer::Text(Some(self.space(&id)?.name.clone())),
             Request::RenameSpace(id, name) => {
+                if self.space(&id)?.name != name {
+                    self.check_space_name(&name)?;
+                }
                 self.space_mut(&id)?.name = name;
                 self.notify(&id, Notice::Changed);
                 Answer::Done
@@ -410,5 +462,49 @@ impl State {
             ),
             other => bail!("the server cannot answer {other:?} here"),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The notices the client on `stream` reads, until none comes for a
+    /// moment.
+    fn notices(stream: &mut UnixStream) -> Vec<Notice> {
+        stream
+            .set_read_timeout(Some(Duration::from_millis(200)))
+            .unwrap();
+        let mut got = Vec::new();
+        while let Ok(Some(frame)) = protocol::read(stream, protocol::FROM_SERVER) {
+            if let Frame::Message(Message::Notice(n)) = frame {
+                got.push(n);
+            }
+        }
+        got
+    }
+
+    #[test]
+    fn each_space_has_its_own_client_and_every_client_hears_of_spaces() {
+        let mut state = State::new(PathBuf::from("/tmp/server.sock"), 1);
+        let (one, two) = (SpaceId::new("$1"), SpaceId::new("$2"));
+        let (server_a, mut client_a) = UnixStream::pair().unwrap();
+        let (server_b, mut client_b) = UnixStream::pair().unwrap();
+        let a = Subscriber::new(1, one.clone(), &server_a).unwrap();
+        let b = Subscriber::new(2, two.clone(), &server_b).unwrap();
+        state.attached.extend([a, b]);
+
+        state.notify(&one, Notice::Changed);
+        state.notify_spaces();
+
+        assert_eq!(
+            notices(&mut client_a),
+            [Notice::Changed, Notice::SpacesChanged]
+        );
+        assert_eq!(notices(&mut client_b), [Notice::SpacesChanged]);
+        assert_eq!(state.detach(2).map(|s| s.conn), Some(2));
+        assert!(state.detach(2).is_none(), "taken out once");
+        assert_eq!(state.detach_space(&one).map(|s| s.conn), Some(1));
+        assert!(state.attached.is_empty());
     }
 }
