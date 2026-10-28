@@ -31,6 +31,8 @@ commands:
     [--agent <kind>]...       only for these agents (claude, gemini)
   worktree new|open|list|rm   manage worktrees as spaces, without the UI
                               (paddock worktree --help)
+  server upgrade              hand the running paddock server's terminals
+                              to this paddock, programs running on
 ";
 
 /// `paddock <version>` for `version`, `-V` or `--version` alone, else
@@ -64,8 +66,25 @@ fn main() -> anyhow::Result<()> {
         ["debug", "state", "--json"] => debug::print_state(),
         // Hidden from the usage: paddock starts it (ADR 0007).
         ["server"] => backend::serve(),
+        ["server", "upgrade"] => upgrade_server(),
+        // Hidden from the usage: what a server runs as it hands over
+        // (ADR 0009).
+        ["server", "--check-handover"] => backend::check_handover(),
+        ["server", "--take-over", record, conn] => backend::take_over(record, conn),
         _ => anyhow::bail!("{}", USAGE.trim_end()),
     }
+}
+
+/// `paddock server upgrade`: hand the running native server's terminals
+/// to this binary, whatever protocol version it speaks (ADR 0009).
+fn upgrade_server() -> anyhow::Result<()> {
+    let paths = paths::Paths::from_env()?;
+    let pid = backend::Backend::new(paths, config::BackendKind::Native).upgrade()?;
+    println!(
+        "the paddock server (pid {pid}) now runs paddock {}, its programs running on",
+        env!("CARGO_PKG_VERSION")
+    );
+    Ok(())
 }
 
 #[cfg(test)]

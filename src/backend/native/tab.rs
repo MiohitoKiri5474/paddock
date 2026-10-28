@@ -62,6 +62,25 @@ impl Tab {
         }
     }
 
+    /// Its terminals, the one focused last at the end.
+    pub fn focus_order(&self) -> &[TerminalId] {
+        &self.focused
+    }
+
+    /// The tab with its terminals last focused in `order` (as
+    /// [`Self::focus_order`] gave it), if that names each of them once
+    /// and ends with the focused one; else as it was.
+    pub fn with_focus_order(mut self, order: Vec<TerminalId>) -> Self {
+        let mut given = order.clone();
+        let mut held = self.focused.clone();
+        given.sort();
+        held.sort();
+        if given == held && order.last() == Some(&self.active) {
+            self.focused = order;
+        }
+        self
+    }
+
     /// Its tree of splits.
     pub fn layout(&self) -> &Layout {
         &self.layout

@@ -3,6 +3,7 @@
 //! program's terminal queries (DA and `CSI ? u` through alacritty,
 //! XTVERSION here), and makes the snapshot a client attaches with.
 
+use super::handover::HandedTerminal;
 use super::pty::{self, Pty};
 use super::queue::Queue;
 use crate::backend::TerminalId;
@@ -76,6 +77,12 @@ impl Input {
         self.refused()
     }
 
+    /// Whether the program has taken all its input (or its writer has
+    /// ended): nothing queued for it would be lost.
+    pub fn idle(&self) -> bool {
+        self.queue.waiting() == 0 || self.queue.ended()
+    }
+
     /// Refuse an input too big to ever queue, as [`Self::send`] would.
     pub fn refuse(&self) -> Sent {
         if self.queue.ended() {
@@ -132,18 +139,60 @@ pub struct HostedTerminal {
 
 impl HostedTerminal {
     pub fn new(id: TerminalId, pty: &Pty, input: Input, size: (u16, u16)) -> Result<Self> {
-        Ok(Self {
+        let master = pty.master.try_clone()?;
+        Ok(Self::hosting(
             id,
-            pid: pty.child.id(),
-            tty: pty.tty.clone(),
-            master: pty.master.try_clone()?,
+            pty.child.id(),
+            pty.tty.clone(),
+            master,
+            input,
+            size,
+        ))
+    }
+
+    /// Terminal `id` with a fresh emulator, its program `pid` on the PTY
+    /// `master` (`tty`).
+    fn hosting(
+        id: TerminalId,
+        pid: u32,
+        tty: String,
+        master: File,
+        input: Input,
+        size: (u16, u16),
+    ) -> Self {
+        Self {
+            id,
+            pid,
+            tty,
+            master,
             input,
             size,
             exited: false,
             emulator: Emulator::answering(size.0, size.1, SCROLLBACK),
             keys: KeyModeScanner::default(),
             scanner: Scanner::default(),
-        })
+        }
+    }
+
+    /// A terminal another server handed over (ADR 0009), as `handed`
+    /// says, on its PTY `master`: its emulator rebuilt from `snapshot`
+    /// ([`Self::snapshot`]'s). What the snapshot makes the emulator
+    /// answer is dropped: the program asked nothing.
+    pub fn adopt(handed: HandedTerminal, master: File, input: Input, snapshot: &[u8]) -> Self {
+        let mut term = Self::hosting(
+            handed.id,
+            handed.pid,
+            handed.tty,
+            master,
+            input,
+            handed.size,
+        );
+        term.exited = handed.exited;
+        term.keys.feed(snapshot);
+        term.emulator.feed(snapshot);
+        let _ = term.emulator.take_replies();
+        term.scanner.feed(snapshot, term.size.1);
+        term
     }
 
     /// Hang up its program and its process group, as closing its

@@ -84,6 +84,19 @@ impl Space {
         }
     }
 
+    /// The tabs current before the current one, the latest last.
+    pub fn previous(&self) -> &[TabId] {
+        &self.previous
+    }
+
+    /// The space with `previous` as the tabs current before (as
+    /// [`Self::previous`] gave them), those it still has.
+    pub fn with_previous(mut self, mut previous: Vec<TabId>) -> Self {
+        previous.retain(|t| self.tab(t).is_some());
+        self.previous = previous;
+        self
+    }
+
     /// Tab `i` as the backend's interface shows it.
     pub fn tab_view(&self, i: usize) -> crate::backend::Tab {
         let tab = &self.tabs[i];

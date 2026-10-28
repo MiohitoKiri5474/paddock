@@ -9,6 +9,7 @@
 use super::axis::Axis;
 use super::protocol::{
     self, Answer, Closed, Ending, Frame, Message, Notice, OtherVersion, Peer, Refusal, Request,
+    Upgrade,
 };
 use super::server::log_path;
 use super::{held, saved, socket_path, LOCK};
@@ -53,6 +54,26 @@ impl std::fmt::Display for Refused {
 
 impl std::error::Error for Refused {}
 
+/// The running server gave no answer to an upgrade: it is from before
+/// ADR 0009, or its new binary failed once it ran (see `server.log`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NoHandover {
+    pub pid: u32,
+}
+
+impl std::fmt::Display for NoHandover {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the paddock server (pid {}) gave no answer to the upgrade: it may be too old \
+             to hand its terminals over, so restart it instead (see server.log)",
+            self.pid
+        )
+    }
+}
+
+impl std::error::Error for NoHandover {}
+
 /// Whether `e` says no server could answer: none runs, or it was ending
 /// or went away as it was asked (the next request starts a new one).
 fn no_server(e: &anyhow::Error) -> bool {
@@ -78,6 +99,9 @@ const INPUT_FRAME: usize = 64 << 10;
 const START_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long a server asked to end for a restart gets to let its lock go.
 const END_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long a server gets to answer an upgrade: its probe of the new
+/// binary has 10 s, and the new binary rebuilds every terminal.
+const UPGRADE_TIMEOUT: Duration = Duration::from_secs(60);
 const POLL: Duration = Duration::from_millis(20);
 
 #[derive(Clone, Debug)]
@@ -190,6 +214,34 @@ impl Client {
         // An ending server removes its socket; one killed leaves it.
         let _ = std::fs::remove_file(socket_path(&self.paths)?);
         Ok(())
+    }
+
+    /// Ask the running server, whatever protocol version it speaks, to
+    /// hand every terminal to the binary `exe`, which then runs as it
+    /// (ADR 0009): the server's pid, the same as before. An error says
+    /// why not; the server then runs on unchanged ([`NoHandover`] if it
+    /// cannot hand over at all, so it has to be restarted instead).
+    pub fn upgrade(&self, exe: &Path) -> Result<u32> {
+        let socket = socket_path(&self.paths)?;
+        let mut stream = UnixStream::connect(socket).context(NotRunning)?;
+        // The probe and the rebuild of a big scrollback take a while.
+        stream.set_read_timeout(Some(UPGRADE_TIMEOUT))?;
+        let server = match protocol::read(&mut stream, protocol::FROM_SERVER)? {
+            Some(Frame::Message(Message::Hello { pid, .. })) => pid,
+            other => bail!("expected the paddock server's hello, got {other:?}"),
+        };
+        let ask = Upgrade::Ask { exe: exe.into() };
+        protocol::write(&mut stream, &Frame::Upgrade(ask))?;
+        // A server from before ADR 0009 closes the connection at a frame
+        // it does not know.
+        let answer = protocol::read(&mut stream, protocol::FROM_SERVER)
+            .ok()
+            .flatten();
+        match answer {
+            Some(Frame::Upgrade(Upgrade::Done { pid })) => Ok(pid),
+            Some(Frame::Upgrade(Upgrade::Refused(why))) => Err(Refused(why).into()),
+            _ => Err(NoHandover { pid: server }.into()),
+        }
     }
 
     /// How many spaces the server rebuilt from `layout.json` when it
@@ -567,8 +619,9 @@ impl Client {
                         deliver(Event::Ended);
                         return;
                     }
-                    // Input parts only go to the server.
-                    Frame::Message(_) | Frame::Part { .. } => continue,
+                    // Input parts only go to the server, and an upgrade's
+                    // answer only on its own connection.
+                    Frame::Message(_) | Frame::Part { .. } | Frame::Upgrade(_) => continue,
                 };
                 if !deliver(event) {
                     return;

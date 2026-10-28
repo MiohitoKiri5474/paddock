@@ -17,14 +17,14 @@ mod tmux;
 
 pub use border::Border;
 pub use ids::{FloatId, SpaceId, TabId, TerminalId};
-pub use native::{serve, OtherVersion};
+pub use native::{check_handover, serve, take_over, OtherVersion};
 pub use old_tmux::OldTmuxServer;
 pub use structure::{Float, Split, Structure, Tab};
 
 use crate::config::BackendKind;
 use crate::input::Direction;
 use crate::paths::Paths;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
@@ -206,6 +206,21 @@ impl Backend {
         match self {
             Self::Tmux(_) => Ok(()),
             Self::Native(n) => n.restart(other),
+        }
+    }
+
+    /// Hand the running native server's terminals to this paddock's own
+    /// binary, which then runs as it, whatever protocol version it
+    /// speaks (ADR 0009): its pid. An error says why not, and the server
+    /// runs on unchanged (`NoHandover` if it cannot hand over at all,
+    /// so [`Self::restart`] is left). An error on tmux.
+    pub fn upgrade(&self) -> Result<u32> {
+        match self {
+            Self::Tmux(_) => anyhow::bail!("the tmux backend has no paddock server to upgrade"),
+            Self::Native(n) => {
+                let exe = std::env::current_exe().context("cannot find paddock's own binary")?;
+                n.upgrade(&exe)
+            }
         }
     }
 
