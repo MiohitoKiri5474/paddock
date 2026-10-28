@@ -1,32 +1,43 @@
 //! A paddock under strain: input sent from a thread of its own, and the
 //! process stopped a while, for the native server's queues.
 
-use super::Paddock;
+use super::{Paddock, TIMEOUT};
 use std::io::Write;
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-/// How long paddock gets to take what [`Paddock::send_in_background`]
-/// sends: pastes of many MiB (17 MiB takes about 2 s alone), while the
-/// whole suite runs.
+/// How long a client gets to write one frame to the server, which never
+/// waits on a program before it reads on.
 pub const SEND_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Input being sent by [`Paddock::send_in_background`].
+pub struct Sending {
+    thread: JoinHandle<()>,
+    /// Bytes paddock has taken so far.
+    sent: Arc<AtomicUsize>,
+}
 
 impl Paddock {
     /// Send `bytes` from a thread of its own, 4 KiB at a time (other sends
     /// get in between): for input paddock may stop taking, which must not
     /// hang the test. Wait for it with [`finished`].
-    pub fn send_in_background(&self, bytes: Vec<u8>) -> JoinHandle<()> {
+    pub fn send_in_background(&self, bytes: Vec<u8>) -> Sending {
         let writer = Arc::clone(&self.writer);
-        std::thread::spawn(move || {
+        let sent = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&sent);
+        let thread = std::thread::spawn(move || {
             for chunk in bytes.chunks(4096) {
                 let mut w = writer.lock().expect("writer lock");
                 if w.write_all(chunk).and_then(|()| w.flush()).is_err() {
                     return;
                 }
+                counted.fetch_add(chunk.len(), Ordering::Relaxed);
             }
-        })
+        });
+        Sending { thread, sent }
     }
 
     /// Stop paddock (SIGSTOP) until `done` holds, then let it go on
@@ -41,16 +52,24 @@ impl Paddock {
     }
 }
 
-/// Wait for a [`Paddock::send_in_background`] to have sent everything;
-/// panic saying `what` if it has not within [`SEND_TIMEOUT`] (paddock stopped
-/// taking input).
-pub fn finished(send: JoinHandle<()>, what: &str) {
-    let start = Instant::now();
-    while !send.is_finished() {
-        assert!(start.elapsed() < SEND_TIMEOUT, "paddock never took {what}");
+/// Wait for a [`Paddock::send_in_background`] to have sent everything,
+/// as long as paddock keeps taking it: pastes of many MiB take a while
+/// under load, so only [`TIMEOUT`] with nothing taken fails, saying
+/// `what` (paddock stopped taking input).
+pub fn finished(send: Sending, what: &str) {
+    let mut taken = (0, Instant::now());
+    while !send.thread.is_finished() {
+        let now = send.sent.load(Ordering::Relaxed);
+        if now != taken.0 {
+            taken = (now, Instant::now());
+        }
+        assert!(
+            taken.1.elapsed() < TIMEOUT,
+            "paddock stopped taking {what} after {now} bytes"
+        );
         std::thread::sleep(Duration::from_millis(20));
     }
-    send.join().expect("the sending thread");
+    send.thread.join().expect("the sending thread");
 }
 
 fn signal(pid: u32, name: &str) {
