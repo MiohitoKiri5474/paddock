@@ -7,7 +7,7 @@
 
 mod harness;
 
-use harness::{Paddock, Sandbox, PROMPT};
+use harness::{tmux_only, Paddock, Sandbox, PROMPT};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -24,14 +24,14 @@ fn dir(sandbox: &Sandbox, name: &str) -> PathBuf {
     real(&d)
 }
 
-/// Session `name`'s root as tmux stores it; empty if none.
+/// Space `name`'s root as the backend stores it; empty if none.
 fn root(sandbox: &Sandbox, name: &str) -> String {
-    sandbox.display(&format!("={name}:"), "#{@paddock-root}")
+    sandbox.space(name).root.unwrap_or_default()
 }
 
-/// The directory of session `name`'s focused pane.
+/// The directory of space `name`'s focused terminal.
 fn focused_dir(sandbox: &Sandbox, name: &str) -> PathBuf {
-    PathBuf::from(sandbox.display(&format!("={name}:"), "#{pane_current_path}"))
+    PathBuf::from(sandbox.terminal(name).dir.unwrap_or_default())
 }
 
 fn ready(sandbox: &Sandbox) -> Paddock {
@@ -53,13 +53,13 @@ fn cd(paddock: &mut Paddock, sandbox: &Sandbox, space: &str, to: &Path) {
 /// `old`) whose shell is in `want`.
 fn wait_for_new_pane_in(paddock: &Paddock, sandbox: &Sandbox, space: &str, old: &str, want: &Path) {
     paddock.wait_for(&format!("a new pane in {}", want.display()), |_| {
-        let pane = sandbox.display(&format!("={space}:"), "#{pane_id}");
-        pane != old && focused_dir(sandbox, space) == want
+        let pane = sandbox.terminal(space);
+        pane.id != old && pane.dir.as_deref().map(Path::new) == Some(want)
     });
 }
 
 fn focused_pane(sandbox: &Sandbox, space: &str) -> String {
-    sandbox.display(&format!("={space}:"), "#{pane_id}")
+    sandbox.terminal(space).id
 }
 
 /// Run git in `dir`, ignoring the user's own git configuration.
@@ -103,7 +103,7 @@ fn the_first_space_and_c_a_c_take_the_focused_directory_as_root() {
     paddock.command(b"C");
     paddock.wait_for_popup("New space", "space-2");
     paddock.send(b"\r");
-    paddock.wait_for("space-2", |_| sandbox.session_names().len() == 2);
+    paddock.wait_for("space-2", |_| sandbox.space_names().len() == 2);
 
     assert_eq!(root(&sandbox, "space-2"), a.to_string_lossy());
     // space-1's root stays where it was made.
@@ -125,7 +125,7 @@ fn a_worktree_space_s_root_is_its_worktree_from_the_keys_and_the_command() {
     paddock.send(b"feat/keys\r");
     paddock.wait_for("the worktree space", |_| {
         sandbox
-            .session_names()
+            .space_names()
             .contains(&"repo/feat/keys".to_string())
     });
     let made = sandbox.path("home/.paddock/worktrees/repo/feat-keys");
@@ -204,15 +204,20 @@ fn c_a_r_makes_the_focused_directory_the_root_with_a_notice() {
     wait_for_new_pane_in(&paddock, &sandbox, "space-1", &old, &b);
 }
 
+/// tmux-only: a space made before roots is a tmux session without the
+/// option.
 #[test]
-fn a_space_without_a_root_falls_back_to_its_first_tab_s_directory() {
+fn tmux_only_a_space_without_a_root_falls_back_to_its_first_tab_s_directory() {
     let sandbox = Sandbox::new();
     sandbox.write_config(ROOT_MODE);
     let mut paddock = ready(&sandbox);
     let a = dir(&sandbox, "a");
     let b = dir(&sandbox, "b");
     // As if made before roots: no option.
-    sandbox.tmux(&["set-option", "-u", "-t", "=space-1:", "@paddock-root"]);
+    tmux_only::tmux(
+        &sandbox,
+        &["set-option", "-u", "-t", "=space-1:", "@paddock-root"],
+    );
     assert_eq!(root(&sandbox, "space-1"), "");
     cd(&mut paddock, &sandbox, "space-1", &a);
     paddock.command(b"c");

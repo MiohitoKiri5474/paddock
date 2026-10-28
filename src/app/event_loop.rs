@@ -2,11 +2,10 @@
 
 use super::input::Flow;
 use super::screen::Screen;
-use super::space::changes_structure;
 use super::state::{App, Mode, TAB_BAR_ROWS};
 use super::{prs, watch, Event};
+use crate::backend::{self, SpaceId, TerminalId};
 use crate::hooks::now_ms;
-use crate::tmux::Message;
 use crate::ui::{dashboard, help, session_view, sidebar};
 use anyhow::Result;
 use crossterm::event::{self as ct, KeyEventKind};
@@ -19,8 +18,11 @@ use std::time::{Duration, Instant};
 const FRAME: Duration = Duration::from_millis(16);
 /// Milliseconds in a second.
 const MS_PER_SEC: u64 = 1000;
-/// What tmux tells every control client when a session is made or ends.
-const SESSIONS_CHANGED: &str = "%sessions-changed";
+/// paddock's farewell when its connection to the native server breaks
+/// while its terminals may run on.
+const LOST: &str = "lost the connection to the paddock server (it let this paddock go, \
+                    or failed; see server.log in paddock's state directory): run paddock \
+                    again to attach to what still runs";
 
 /// Tells the git thread which task rows are on screen, and the pull
 /// requests' thread (while PR status is on) what shows PRs.
@@ -85,9 +87,10 @@ struct EventEffects {
     hooks: bool,
     /// Pane output: the most frequent event, changing nothing but a screen.
     output: bool,
-    /// Anything but the readers' results and tmux messages may change which
-    /// rows are on screen. A tmux message does once `handle_tmux` changed the
-    /// panes: a pane that closes takes its session's row with it.
+    /// Anything but the readers' results and backend events may change
+    /// which rows are on screen. A backend event does once
+    /// `handle_backend` changed the terminals: a terminal that closes takes
+    /// its session's row with it.
     rows_may_move: bool,
     /// The spaces' directories and branches were read: the sidebar's PRs
     /// may be others now.
@@ -101,14 +104,14 @@ impl EventEffects {
             places: matches!(event, Event::Spaces(_)),
             output: matches!(
                 event,
-                Event::Tmux {
-                    msg: Message::Output { .. },
+                Event::Backend {
+                    event: backend::Event::Output { .. },
                     ..
                 }
             ),
             rows_may_move: !matches!(
                 event,
-                Event::Tmux { .. } | Event::Git(_) | Event::Spaces(_) | Event::Prs(_)
+                Event::Backend { .. } | Event::Git(_) | Event::Spaces(_) | Event::Prs(_)
             ),
         }
     }
@@ -120,7 +123,7 @@ pub fn run(
     rx: &Receiver<Event>,
     git: Sender<watch::Watched>,
     prs: Option<Sender<prs::Wanted>>,
-) -> Result<()> {
+) -> Result<Option<String>> {
     let mut feed = TaskFeed {
         tx: git,
         sent: watch::Watched::default(),
@@ -158,7 +161,9 @@ pub fn run(
             break;
         }
     }
-    app.detach_all()
+    let farewell = app.farewell.take();
+    app.detach_all()?;
+    Ok(farewell)
 }
 
 /// Keep up with an event just handled (see `effects`): turns seen, the tab bar
@@ -192,9 +197,9 @@ fn handle(
     effects: &mut EventEffects,
 ) -> Result<(Flow, bool)> {
     match event {
-        Event::Tmux { session, msg } => {
-            let done = handle_tmux(app, &session, msg);
-            effects.rows_may_move = done.panes_changed;
+        Event::Backend { space, event } => {
+            let done = handle_backend(app, &space, event);
+            effects.rows_may_move = done.terminals_changed;
             Ok((done.flow, done.changed))
         }
         Event::Input(input) => handle_input(app, input, screen),
@@ -253,70 +258,80 @@ fn handle(
     }
 }
 
-/// What handling a tmux control message did.
-struct TmuxHandled {
+/// What handling a backend event did.
+struct BackendHandled {
     /// Whether to go on.
     flow: Flow,
     /// Whether the screen may have changed.
     changed: bool,
-    /// Whether the panes changed, which may move rows (see [`EventEffects`]).
-    panes_changed: bool,
+    /// Whether the terminals changed, which may move rows (see [`EventEffects`]).
+    terminals_changed: bool,
 }
 
-impl TmuxHandled {
-    /// The panes changed: everything may have.
-    fn panes_changed(flow: Flow) -> Self {
+impl BackendHandled {
+    /// The terminals changed: everything may have.
+    fn terminals_changed(flow: Flow) -> Self {
         Self {
             flow,
             changed: true,
-            panes_changed: true,
+            terminals_changed: true,
         }
     }
 }
 
-/// A control message from space `session`'s client.
-fn handle_tmux(app: &mut App, session: &str, msg: Message) -> TmuxHandled {
-    match msg {
-        Message::Output { pane, data } => {
-            let unseen = !app.terminals.contains_key(&pane);
+/// An event from space `space`'s connection.
+fn handle_backend(app: &mut App, space: &SpaceId, event: backend::Event) -> BackendHandled {
+    match event {
+        backend::Event::Output { terminal, data } => {
+            let unseen = !app.terminals.contains_key(&terminal);
             if unseen {
-                // A pane made since the last look, maybe through `tmux
-                // attach`. The refresh may change the tab shown, which
+                // A terminal made since the last look, maybe from outside
+                // paddock. The refresh may change the tab shown, which
                 // `follow_up` skips for output: note the page here.
-                app.refresh_reported(session);
+                app.refresh_reported(space);
                 app.track_page();
             }
-            if let Some(t) = app.terminals.get_mut(&pane) {
+            if let Some(t) = app.terminals.get_mut(&terminal) {
                 t.output(&data);
                 let reports = t.take_reports();
                 if !reports.is_empty() {
-                    app.record_status(&pane, &reports);
+                    app.record_status(&terminal, &reports);
                 }
             }
-            TmuxHandled {
+            BackendHandled {
                 flow: Flow::Continue,
-                changed: app.shows(&pane) || app.shows_in_preview(&pane),
-                panes_changed: unseen,
+                changed: app.shows(&terminal) || app.shows_in_preview(&terminal),
+                terminals_changed: unseen,
             }
         }
-        // The space's tmux session ended: its last pane exited or was closed.
-        Message::Exit if app.space_ended(session) => TmuxHandled::panes_changed(Flow::Continue),
-        Message::Exit => TmuxHandled::panes_changed(Flow::Quit),
-        // A session came or went on the server: one made outside paddock
-        // becomes a space (one that ended reports its own exit).
-        Message::Notification(n) if n == SESSIONS_CHANGED => {
-            app.attach_new_sessions();
-            TmuxHandled::panes_changed(Flow::Continue)
+        // The space ended: its last terminal exited or was closed.
+        backend::Event::Ended if app.space_ended(space) => {
+            BackendHandled::terminals_changed(Flow::Continue)
         }
-        Message::Notification(n) if changes_structure(&n) => {
-            app.refresh_reported(session);
-            TmuxHandled::panes_changed(Flow::Continue)
+        backend::Event::Ended => BackendHandled::terminals_changed(Flow::Quit),
+        backend::Event::InputRefused { why, .. } => {
+            app.notice = Some(format!("input refused: {why}"));
+            BackendHandled {
+                flow: Flow::Continue,
+                changed: true,
+                terminals_changed: false,
+            }
         }
-        Message::Notification(_) | Message::Reply { .. } => TmuxHandled {
-            flow: Flow::Continue,
-            changed: false,
-            panes_changed: false,
-        },
+        // Never a quiet quit: the terminals may run on, to attach again.
+        backend::Event::Lost => {
+            app.farewell = Some(LOST.to_string());
+            BackendHandled::terminals_changed(Flow::Quit)
+        }
+        // A space came or went: one made outside paddock becomes a space
+        // here (one that ended reports its own end).
+        backend::Event::SpacesChanged => {
+            app.attach_new_spaces();
+            BackendHandled::terminals_changed(Flow::Continue)
+        }
+        backend::Event::Changed => {
+            app.refresh_reported(space);
+            BackendHandled::terminals_changed(Flow::Continue)
+        }
     }
 }
 
@@ -427,8 +442,8 @@ fn cursor(app: &App, dashboard: Option<Position>, typing: Option<Position>) -> O
 /// The current tab's panes and the borders between them. Returns the
 /// focused pane's cursor.
 fn draw_panes(app: &App, area: Rect, buf: &mut Buffer) -> Option<Position> {
-    let focus = app.current_pane();
-    let panes: Vec<(String, Rect)> = app
+    let focus = app.current_terminal();
+    let panes: Vec<(TerminalId, Rect)> = app
         .pane_rects()
         .into_iter()
         .map(|(pane, r)| (pane, r.intersection(area)))
@@ -465,7 +480,7 @@ fn draw_dashboard(app: &App, area: Rect, buf: &mut Buffer) -> Option<Position> {
         prs: &app.task_prs,
         selected: d.selected.as_ref(),
         preview: row
-            .and_then(|r| app.terminals.get(&r.pane))
+            .and_then(|r| app.terminals.get(r.pane.as_str()))
             .map(|t| t.emulator()),
         interactive: d.interactive,
         filter: &d.filter,

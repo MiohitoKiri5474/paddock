@@ -1,13 +1,13 @@
 # paddock
 
-A terminal workspace for one person on one Mac. It keeps every terminal alive on a hidden tmux server, draws them itself (tabs, splits, mouse, scrollback), and tracks coding agents' sessions (Claude Code, Gemini CLI and Antigravity CLI) and the branches they and their subagents work on, so you can see at a glance which ones need you.
+A terminal workspace for one person on one Mac. It keeps every terminal alive on its own background server (`paddock server`), draws them itself (tabs, splits, mouse, scrollback), and tracks coding agents' sessions (Claude Code, Gemini CLI and Antigravity CLI) and the branches they and their subagents work on, so you can see at a glance which ones need you.
 
 Design: [docs/design.md](docs/design.md). Glossary: [CONTEXT.md](CONTEXT.md). Decisions: [docs/adr/](docs/adr/).
 
 ## Requirements
 
 - macOS (the release binary is for Apple Silicon only)
-- tmux (tested with 3.8): `brew install tmux` (Homebrew installs it with paddock)
+- tmux (tested with 3.8), only for the legacy tmux backend (`[backend] kind = "tmux"`, kept until v0.2): `brew install tmux` (Homebrew installs it with paddock)
 - Claude Code, Gemini CLI and/or Antigravity CLI (for session tracking; Gemini CLI tested with 0.64, Antigravity CLI with 1.4.3)
 - Rust 1.85+, only to build from source
 - Optional: the GitHub CLI (`gh`, logged in), for pull request status on the dashboard, in the sidebar and in `paddock worktree list`
@@ -16,19 +16,19 @@ Design: [docs/design.md](docs/design.md). Glossary: [CONTEXT.md](CONTEXT.md). De
 
 Pick one of these, then connect Claude Code, Gemini CLI or Antigravity CLI (below).
 
-**Homebrew** (recommended; installs tmux too):
+**Homebrew** (recommended):
 
 ```sh
 brew install MiohitoKiri5474/paddock/paddock
 ```
 
-If an earlier `brew install` failed while tapping, run `brew untap miohitokiri5474/paddock` first. Upgrade with `brew upgrade paddock`.
+If an earlier `brew install` failed while tapping, run `brew untap miohitokiri5474/paddock` first. Upgrade with `brew upgrade paddock` (see [Upgrade](#upgrade)).
 
-**Release tarball** (Apple Silicon). Download `paddock-v0.0.5-aarch64-apple-darwin.tar.gz` and its `.sha256` from [Releases](https://github.com/MiohitoKiri5474/paddock/releases), then:
+**Release tarball** (Apple Silicon). Download `paddock-v0.1.0-rc.1-aarch64-apple-darwin.tar.gz` and its `.sha256` from [Releases](https://github.com/MiohitoKiri5474/paddock/releases), then:
 
 ```sh
-shasum -a 256 -c paddock-v0.0.5-aarch64-apple-darwin.tar.gz.sha256
-tar xzf paddock-v0.0.5-aarch64-apple-darwin.tar.gz
+shasum -a 256 -c paddock-v0.1.0-rc.1-aarch64-apple-darwin.tar.gz.sha256
+tar xzf paddock-v0.1.0-rc.1-aarch64-apple-darwin.tar.gz
 xattr -d com.apple.quarantine paddock   # unsigned binary: lets Gatekeeper run it ("No such xattr" is fine)
 sudo mkdir -p /usr/local/bin             # missing on a fresh Apple Silicon Mac
 sudo mv paddock /usr/local/bin/         # or anywhere on your PATH
@@ -37,7 +37,7 @@ sudo mv paddock /usr/local/bin/         # or anywhere on your PATH
 **Cargo**, from a tag:
 
 ```sh
-cargo install --git https://github.com/MiohitoKiri5474/paddock --tag v0.0.5 --locked
+cargo install --git https://github.com/MiohitoKiri5474/paddock --tag v0.1.0-rc.1 --locked
 ```
 
 If it fails with `failed to authenticate when downloading repository: git@github.com:…` (your git config rewrites GitHub URLs to SSH), let cargo use the `git` command: prefix the command with `CARGO_NET_GIT_FETCH_WITH_CLI=true`, or set `git-fetch-with-cli = true` under `[net]` in `~/.cargo/config.toml`.
@@ -48,6 +48,18 @@ If it fails with `failed to authenticate when downloading repository: git@github
 cargo install --path . --locked     # installs ~/.cargo/bin/paddock
 ```
 
+### Upgrade
+
+Your terminals run on paddock's server, which keeps running after you leave paddock. A new paddock whose server speaks another protocol version says so and offers to restart it: the programs in its terminals end, and its layout (spaces, tabs, splits and their directories, saved in `~/.local/state/paddock/layout.json`) comes back with a fresh shell in each terminal. Say no and paddock stops; leave paddock and finish what runs first, then start it again. Floats and programs other than shells (an agent, an editor) are not restarted.
+
+**From paddock 0.0.x (tmux).** paddock now runs on its own server by default, not on a hidden tmux server. The old `tmux -L paddock` server is not migrated: its spaces and programs stay where they are, and the new paddock starts empty. While that server runs, paddock says so in the tab bar, and prints it again however it ends (on leaving, or on an error at start), once per server: once printed, it remembers that server's pid and start time in `~/.local/state/paddock/old-tmux-server`, and a different server is said again. Finish what runs there first: `tmux -L paddock attach` attaches to that old server, with the old paddock's spaces as tmux sessions. Then close it:
+
+```sh
+tmux -L paddock kill-server         # ends every terminal of the old paddock
+```
+
+The new paddock's terminals live on its own server, so `tmux -L paddock attach` never shows them. Hooks in paddock's terminals get `PADDOCK_PANE` and `PADDOCK_SOCKET` instead of `TMUX` and `TMUX_PANE`, by which `paddock hook` tells which terminal an event comes from; a script of yours that read `TMUX_PANE` should read `PADDOCK_PANE` now. To keep the tmux backend until v0.2, set `[backend] kind = "tmux"` (see [Configure](#configure)).
+
 ### Connect Claude Code
 
 paddock tracks Claude sessions through Claude Code hooks. Install the paddock plugin, which carries them, in Claude Code:
@@ -57,7 +69,7 @@ paddock tracks Claude sessions through Claude Code hooks. Install the paddock pl
 /plugin install paddock@paddock
 ```
 
-Then restart running Claude sessions. The plugin's hooks run `paddock` from your `PATH`, so make sure `which paddock` finds it in the shell you start Claude from (Homebrew and `cargo install` put it there). Without `paddock` on `PATH` the hooks do nothing, quietly. The plugin also carries the worktree skills (see [Claude Code plugin](#claude-code-plugin)).
+Then restart running Claude sessions. The plugin's hooks run `paddock` from your `PATH`, so make sure `which paddock` finds it in the shell you start Claude from (Homebrew and `cargo install` put it there). Without `paddock` on `PATH` the hooks do nothing, quietly. The plugin also carries the worktree skills (see [Worktree skills for agents](#worktree-skills-for-agents)).
 
 **Fallback, without the plugin**: write the hooks into `~/.claude/settings.json` instead.
 
@@ -96,7 +108,7 @@ Config and state are kept.
 With the plugin, nothing else changes: the new `paddock` only has to be on `PATH`. With `hooks install`, the hooks point at the old binary by its full path, so remove them with it before it goes, then install them again with the new one. For example, from Cargo to Homebrew:
 
 ```sh
-# Detach paddock first (C-a d); your terminals keep running in tmux.
+# Detach paddock first (C-a d); your terminals keep running on its server.
 ~/.cargo/bin/paddock hooks uninstall --agent claude --agent gemini --agent agy
 cargo uninstall paddock
 brew install MiohitoKiri5474/paddock/paddock
@@ -108,7 +120,7 @@ Name each agent whose hooks you installed (drop `--agent gemini` or `--agent agy
 
 ### Connect Gemini CLI
 
-paddock tracks Gemini CLI sessions (hooks need Gemini CLI 0.26 or newer; tested with 0.64) through Gemini's hooks in `~/.gemini/settings.json` (`$GEMINI_CLI_HOME/.gemini/settings.json` if set). There is no plugin for Gemini: install the hooks with paddock.
+paddock tracks Gemini CLI sessions (hooks need Gemini CLI 0.26 or newer; tested with 0.64) through Gemini's hooks in `~/.gemini/settings.json` (`$GEMINI_CLI_HOME/.gemini/settings.json` if set). paddock's Gemini extension carries the worktree skill and commands but no hooks (see [Worktree skills for agents](#worktree-skills-for-agents)): install the hooks with paddock.
 
 ```sh
 cp ~/.gemini/settings.json ~/.gemini/settings.json.bak
@@ -122,7 +134,7 @@ What Gemini sessions get: their row, dot, tab marker, state (running after a pro
 
 ### Connect Antigravity CLI
 
-paddock tracks Antigravity CLI (`agy`; tested with 1.4.3) sessions through agy's hooks in `~/.gemini/config/hooks.json`, a file keyed by hook name, and, in paddock's terminals, through the status agy reports to its terminal (OSC 7501, agy 1.4.0 or newer). There is no plugin for agy: install the hooks with paddock.
+paddock tracks Antigravity CLI (`agy`; tested with 1.4.3) sessions through agy's hooks in `~/.gemini/config/hooks.json`, a file keyed by hook name, and, in paddock's terminals, through the status agy reports to its terminal (OSC 7501, agy 1.4.0 or newer). paddock's agy plugin carries the worktree skill but no hooks (see [Worktree skills for agents](#worktree-skills-for-agents)): install the hooks with paddock.
 
 ```sh
 cp ~/.gemini/config/hooks.json ~/.gemini/config/hooks.json.bak   # if you have one
@@ -132,13 +144,13 @@ paddock hooks uninstall --agent agy   # removes only that entry
 
 A plain `paddock hooks install` includes agy when `agy` is on your `PATH`. paddock's entry holds three hooks (`SessionStart`, `PreInvocation`, `Stop`) that call `paddock hook --agent agy <event>` by paddock's full path, with a 10 s timeout, and answer `{}` (agy reads a hook's reply as JSON); re-run the install after moving paddock's binary. Your other named hooks in the file stay, and `uninstall` never creates the file. Hooks in `~/.gemini/antigravity-cli/settings.json` or a workspace's `.agents/hooks.json` are not touched. Restart running agy sessions afterwards.
 
-States: idle when agy starts, running when it starts on a prompt (`PreInvocation`), done or idle once it is fully idle again (`Stop`). Waiting comes only from agy's status reports, read from the terminal's output while paddock runs: paddock sets `AGY_CLI_OSC7501=on` in its terminals, since agy reports only to a terminal that answers its check and tmux answers in paddock's place (that it does not support them). There agy also reports working, done and failed (failed counts as done); its idle reports never notify, so starting agy and quitting without a prompt says nothing. paddock records a report only while an agy session runs in that terminal, and not again while it says the same. Any program run inside an agy session's terminal can write the same report (`app=antigravity`) and so set that session's state. A terminal opened before you upgraded paddock lacks the variable: open a new one, or `export AGY_CLI_OSC7501=on` in it before running `agy`. Setting it `off` in your shell turns waiting off.
+States: idle when agy starts, running when it starts on a prompt (`PreInvocation`), done or idle once it is fully idle again (`Stop`). Waiting comes only from agy's status reports, read from the terminal's output while paddock runs: paddock sets `AGY_CLI_OSC7501=on` in its terminals, since agy reports only to a terminal that answers its check, and paddock's server (tmux, on the tmux backend) answers in paddock's place (that it does not support them). There agy also reports working, done and failed (failed counts as done); its idle reports never notify, so starting agy and quitting without a prompt says nothing. paddock records a report only while an agy session runs in that terminal, and not again while it says the same. Any program run inside an agy session's terminal can write the same report (`app=antigravity`) and so set that session's state. A terminal opened before you upgraded paddock lacks the variable: open a new one, or `export AGY_CLI_OSC7501=on` in it before running `agy`. Setting it `off` in your shell turns waiting off.
 
 agy sends no hook when it quits: its session ends when its terminal closes, or when the terminal is back at a shell (paddock looks every 3 s, while an agy session runs in one of its terminals). Run `agy` from a shell: started through another program that stays in the foreground (`npx`, `node`, a wrapper script), it ends only when that program quits back to the shell or the terminal closes.
 
 What agy sessions get: their row, dot, tab marker, state, branch and task rows (its first workspace stands in for the directory), `C-a a`, notifications, the EXTERNAL group and the AGENT tag `agy`. What stays Claude Code's alone: fork, subagent rows and the `claude agents --json` snapshot. An external agy session lives on its hooks alone: no status reports reach paddock from another terminal, so it is never waiting, and with no end event and no snapshot it leaves once nothing has been heard of it for `[dashboard] external_timeout` minutes (after it quit, or idle at its prompt), until its next hook.
 
-Not checked yet, as agy needs a sign-in: that agy's hooks run with the terminal's `TMUX` and `TMUX_PANE`, by which paddock tells which terminal an event comes from. If they don't, every agy session shows under EXTERNAL, even one running in a paddock terminal, and is never waiting (its status reports find no session in that terminal). Please report it if you see that.
+Not checked yet, as agy needs a sign-in: that agy's hooks run with the terminal's `PADDOCK_PANE` and `PADDOCK_SOCKET` (or, on the tmux backend, `TMUX` and `TMUX_PANE`), by which paddock tells which terminal an event comes from. If they don't, every agy session shows under EXTERNAL, even one running in a paddock terminal, and is never waiting (its status reports find no session in that terminal). Please report it if you see that.
 
 ## Use
 
@@ -148,7 +160,7 @@ paddock version    # or -V, --version: print `paddock <version>`, for bug report
 paddock help       # or -h, --help: list the commands
 ```
 
-The sidebar has two sections. SPACES lists your spaces, each with its directory and git branch on a dim second line, and at its end, only when it fits after both uncut, the branch's pull request as `#123 ✓` (the number coloured by its state, then its checks; see Pull requests): each space is a tmux session on paddock's hidden server, its tabs are the session's windows and its splits their panes, so `tmux -L paddock attach` shows the same thing. AGENTS lists every main agent session in any space, with its state (waiting, done, idle, running), the space and tab it runs in, and, at the end of that second line when it fits after the space and tab, its agent's kind (`claude`, `gemini` or `agy`). The space you are in and the agent in the focused terminal have a darker background (`[colors] current_space`), and `C-a s` puts the sidebar's selection on that agent (else on that space). Open a tab with `C-a c` and run `claude` (or `gemini`, or `agy`) in it; the dashboard (`C-a o`) shows the branches it and its subagents work on. The dashboard lists the sessions on top as an aligned table (NAME, STATE, ↑↓, CHANGES, BASE, FILES, AGE, PR, AGENT; AGENT is the session's agent kind, `claude`, `gemini` or `agy`; on a narrow screen whole columns drop, AGENT first, then PR after shortening to `#123 ✓`, NAME and STATE stay). Fork, subagent rows and `claude agents --json` are Claude Code's alone. A session and its branch and subagent rows form one block: only sessions are selected, the whole selected block is highlighted, and `D` dismisses the block. A session leaves the sidebar and the dashboard by itself once it ends: when its terminal (pane, tab or space) is closed, or when its agent quits in it (`/exit`, Ctrl-D; for agy, once the terminal is back at its shell); the selection moves to the session that takes its place. A new agent in that terminal is a new session and shows up as usual. Below the list, a live preview of the selected session sits in a rounded border (`I` types into it), and the keys are on the last line. A turn that ends while you look elsewhere is `done` until you look at its tab, then `idle`. You get a macOS notification when a session or one of its subagents starts waiting, or when a main agent finishes a turn (a subagent finishing never notifies).
+The sidebar has two sections. SPACES lists your spaces, each with its directory and git branch on a dim second line, then, only where each fits after both uncut, the branch's status as on the dashboard (`+200 −10 ↑2↓1`: uncommitted lines added in green and removed in red, then commits ahead of and behind upstream; nothing on a detached HEAD or outside a repository) and, at the end, its pull request as `#123 ✓` (the number coloured by its state, then its checks; see Pull requests); short of room, the PR mark goes before the status, and on the selected space the status is not coloured: each space lives on paddock's server with its tabs and splits, so it outlives paddock until closed (on the tmux backend, a space is a session of the hidden tmux server, its tabs the session's windows and its splits their panes). AGENTS lists every main agent session in any space, in space and tab order (an agent never moves when its state changes), with its state (waiting, done, idle, running), the space and tab it runs in, and, at the end of that second line when it fits after the space and tab, its agent's kind (`claude`, `gemini` or `agy`). The space you are in and the agent in the focused terminal have a darker background (`[colors] current_space`), and `C-a s` puts the sidebar's selection on that agent (else on that space). Open a tab with `C-a c` and run `claude` (or `gemini`, or `agy`) in it; the dashboard (`C-a o`) shows the branches it and its subagents work on. The dashboard lists the sessions on top as an aligned table (NAME, STATE, ↑↓, CHANGES, BASE, FILES, AGE, PR, AGENT; AGENT is the session's agent kind, `claude`, `gemini` or `agy`; on a narrow screen whole columns drop, AGENT first, then PR after shortening to `#123 ✓`, NAME and STATE stay). Fork, subagent rows and `claude agents --json` are Claude Code's alone. A session and its branch and subagent rows form one block: only sessions are selected, the whole selected block is highlighted, and `D` dismisses the block. A session leaves the sidebar and the dashboard by itself once it ends: when its terminal (pane, tab or space) is closed, or when its agent quits in it (`/exit`, Ctrl-D; for agy, once the terminal is back at its shell); the selection moves to the session that takes its place. A new agent in that terminal is a new session and shows up as usual. Below the list, a live preview of the selected session sits in a rounded border (`I` types into it), and the keys are on the last line. A turn that ends while you look elsewhere is `done` until you look at its tab, then `idle`. You get a macOS notification when a session or one of its subagents starts waiting, or when a main agent finishes a turn (a subagent finishing never notifies).
 
 External sessions: an agent running outside paddock's terminals (another terminal app, an IDE) shows too, dim, in an EXTERNAL group at the bottom of AGENTS and of the dashboard, with its state, its branch and task rows, but no screen: the preview says `external session: no screen`. paddock learns of it from the same hooks (the plugin's, or `hooks install`, both global to their agent) and, for Claude, from `claude agents --json`; its label is the session's name, else its directory's. It can't be jumped to, closed, forked or typed into: `Enter`, `x`, `f` and `I` on it only show a notice, `C-a a` skips it, and the finder leaves it out; `D` dismisses it. Waiting or done, it notifies and its dot shows like any other; with no tab to look at, a finished turn stays `done` until its row is selected in the dashboard, or in AGENTS while the sidebar has the keyboard. It leaves when it ends (`SessionEnd`, `/clear` included), or once nothing has been heard of it for `[dashboard] external_timeout` minutes (no hook event, not in `claude agents --json`), as when its agent was killed; a Gemini session waiting on you outlasts that timeout, since it has no snapshot and a wait sends no hooks, but leaves after 24 hours with nothing heard of it; an agy session sends no end event, so it leaves only by that timeout. `[dashboard] external = false` hides the group and its notifications. Its hook events go to `~/.local/state/paddock/events/external.jsonl`; once it passes 4 MiB, paddock trims it (when it opens, and every few seconds while it runs) to the last day's records, at most the newest 2 MiB of them.
 
@@ -201,17 +213,17 @@ Every key is an action with a name you can rebind (see [Configure](#configure));
 
 `C-a` pressed twice sends a literal `C-a`. `go_to_tab`'s first key goes to tab 1, its second to tab 2, and so on. `close` closes the pane; the last one closes its tab, the last tab its space, and it asks first if an agent is busy (`an agent is running: close? y/n`). Renaming, naming a new space (prefilled with `space-N`; `Enter` keeps it) and that question open a small box in the middle of the screen; `Esc` or a click outside it cancels. `{`/`}` can also be done by dragging the sidebar's border.
 
-Zoom: `C-a z` makes the focused split fill its tab, and the tab bar shows a `Z` after the tab's name; `C-a z` again gives every split its place back, with the focus where it was. The other splits are hidden but keep running. Moving the focus (`C-a h/j/k/l`, a direct chord, or `C-a a` and the finder jumping to a hidden split), splitting, evening out (`C-a =`), or closing the zoomed split undoes the zoom first, as in tmux. With a float shown, `C-a z` hides the float, then zooms. The zoom lives in tmux (`resize-pane -Z`), so it survives detaching, and a zoom made in `tmux -L paddock attach` shows in paddock too. An agent in a hidden split that finishes a turn stays `done` until you see it. `zoom` has no direct chord by default.
+Zoom: `C-a z` makes the focused split fill its tab, and the tab bar shows a `Z` after the tab's name; `C-a z` again gives every split its place back, with the focus where it was. The other splits are hidden but keep running. Moving the focus (`C-a h/j/k/l`, a direct chord, or `C-a a` and the finder jumping to a hidden split), splitting, evening out (`C-a =`), or closing the zoomed split undoes the zoom first, as in tmux. With a float shown, `C-a z` hides the float, then zooms. The zoom lives on paddock's server with the tab's layout, so it survives detaching and comes back with a restored layout. (On the tmux backend it is tmux's `resize-pane -Z`, and a zoom made in `tmux -L paddock attach` shows in paddock too.) An agent in a hidden split that finishes a turn stays `done` until you see it. `zoom` has no direct chord by default.
 
-Resizing: `C-a H`, `J`, `K` and `L` move the focused split's border left, down, up or right by 2 columns (or rows), the way tmux's `resize-pane` does: the border after the split, or the one before it for the last split of a row or column. After `C-a H`, the four keys work again without the prefix for 500 ms, each press starting the wait over, as tmux's `bind -r` does: `C-a H H H` moves the border 6 columns. Any other key ends that and is read as usual (so `H` typed later goes to the terminal); `[keys] repeat_ms` sets the wait, and `0` turns it off. You can also press on the line between two splits and drag it: the splits follow the pointer, and the size is kept on release. A press on that line never selects text. Dragging needs tmux 3.8 or later, whose layout paddock reads as JSON (`#{window_layout}`); with an older tmux a drag on that line does nothing, and the keys still work. A split stops at 1 column or row, without a message. The sizes live in tmux, so they survive detaching; `C-a =` evens them out again, and resizing a zoomed tab unzooms it first, as in tmux. The resize keys have no direct chord by default.
+Resizing: `C-a H`, `J`, `K` and `L` move the focused split's border left, down, up or right by 2 columns (or rows), the way tmux's `resize-pane` does: the border after the split, or the one before it for the last split of a row or column. After `C-a H`, the four keys work again without the prefix for 500 ms, each press starting the wait over, as tmux's `bind -r` does: `C-a H H H` moves the border 6 columns. Any other key ends that and is read as usual (so `H` typed later goes to the terminal); `[keys] repeat_ms` sets the wait, and `0` turns it off. You can also press on the line between two splits and drag it: the splits follow the pointer, and the size is kept on release. A press on that line never selects text. (On the tmux backend, dragging needs tmux 3.8 or later, whose layout paddock reads as JSON (`#{window_layout}`); with an older tmux a drag on that line does nothing, and the keys still work.) A split stops at 1 column or row, without a message. The sizes live on paddock's server (in tmux, on the tmux backend), so they survive detaching; `C-a =` evens them out again, and resizing a zoomed tab unzooms it first, as in tmux. The resize keys have no direct chord by default.
 
 The finder (`C-a g`) opens a box framed like the prompts: a text field on top and, under it, every space (name, directory, branch), every tab (`space › tab`, directory, branch) and every agent (name, state, `space › tab`), each with its kind as a marker. Typing filters them fuzzily (case-insensitive unless you type an uppercase letter; contiguous and word-start matches rank first) against name, kind, directory and branch, best match first. `Up`/`Down` (or `C-p`/`C-n`) move, `Enter` shows the one selected (its space and tab, with its pane focused), `Esc` or a click outside cancels (a float shown stays shown); a click on a row opens it and the wheel moves the selection. While the field is empty, `b`, `w`, `i` and `d` show only agents that are waiting (blocked), running (working), idle or done, `a` all again, and the title says which; with text in the field they are ordinary characters. The finder's keys are fixed, except that `finder` in `[keys.commands]` names the key that opens it.
 
-Floats (`[floats]`): `C-a G` shows lazygit in a box over the whole screen, sidebar included, framed like the prompts and titled with its command; `C-a G` again hides it and the program keeps running, so showing it again brings back the same program and state. When the program exits, the float closes, and the next `C-a G` starts it again. Each space has its own float per key, started in the focused terminal's directory; it lives in the space's tmux session (so it survives detaching) but is never a tab, never in `C-a Tab`'s history, and paddock does not follow an agent in it. One float shows at a time. While it shows, every key, paste and mouse event inside it goes to it, except the prefix: `C-a` commands still work, and one that changes the page or gives the sidebar or dashboard the keyboard hides the float first. A click outside it does nothing. A float whose key you remove from `[floats]` is closed, with its program, the next time paddock opens. Floats are tmux windows, so `tmux -L paddock attach` lists them next to the tabs.
+Floats (`[floats]`): `C-a G` shows lazygit in a box over the whole screen, sidebar included, framed like the prompts and titled with its command; `C-a G` again hides it and the program keeps running, so showing it again brings back the same program and state. When the program exits, the float closes, and the next `C-a G` starts it again. Each space has its own float per key, started in the focused terminal's directory; it lives on paddock's server with its space (so it survives detaching) but is never a tab, never in `C-a Tab`'s history, and paddock does not follow an agent in it. One float shows at a time. While it shows, every key, paste and mouse event inside it goes to it, except the prefix: `C-a` commands still work, and one that changes the page or gives the sidebar or dashboard the keyboard hides the float first. A click outside it does nothing. A float whose key you remove from `[floats]` is closed, with its program, the next time paddock opens. Floats are not saved in `layout.json`: after a server restart, their keys start them again. (On the tmux backend, floats are tmux windows, so `tmux -L paddock attach` lists them next to the tabs.)
 
 Worktrees: a git worktree is a space. `C-a W` asks for a branch name (edited like the other prompts) and, in the focused terminal's repository, runs `git worktree add -b <branch> <path>` (`git worktree add <path> <branch>` if the branch exists), where `<path>` is `<[worktrees] directory>/<repo>/<branch>` with slashes in the branch written `-`; then it opens a new space named `<repo>/<branch>` with its first tab there. A name git refuses, a path that exists or any git error shows as a notice (git's reason first), and nothing is left half-made. `C-a O` lists the repository's worktrees that have no space yet: `j`/`k` move, `Enter` opens one, `Esc` cancels. In the sidebar, a space in a linked worktree is listed one cell in, under its repository's main-checkout space, or under a dim header with the repository's name when no space is in the main checkout; `W` and `o` there act on the selected space's repository, and `x` on a worktree space no longer just closes it: it deletes it. A worktree space is one paddock made, a linked worktree at exactly `<[worktrees] directory>/<repo>/<name>`; the main checkout and other worktrees (such as Claude's `.claude/worktrees/agent-*`) are never deleted, and `x` on their spaces only closes them, as before. Deleting asks `delete <branch> and its worktree (ignored files too)? y/n`; `n` (any key but `y`) cancels and nothing is deleted or closed. If the worktree has uncommitted changes, or commits not in its base (a branch's or a detached HEAD's), it asks again naming every risk; an unmerged branch is said to be kept (`… remove the worktree anyway? (the branch is kept) y/n`). Then it closes the space and any other space in that worktree (asking if an agent is busy in any, as close does), runs `git worktree remove` (`--force` only if you confirmed uncommitted changes; changes or commits made after the question leave everything in place, with a notice) and `git branch -d` (never `-D`: a branch git finds unmerged is kept, and a notice says so). `delete_worktree` (unbound by default) does the same for the current space. Every git read paddock makes gives up after 5 s, adding and removing after 60 s.
 
-Space roots: every space has a root directory, kept in its tmux session as the option `@paddock-root`. A space gets the directory it was made in: the focused terminal's for `C-a C`, the worktree for `C-a W`, `C-a O` and `paddock worktree new|open`. `C-a R` makes the focused terminal's directory the current space's root, and says so in the tab bar. With `[spaces] new_tab_dir = "root"`, new tabs and splits start in the root wherever the focused terminal has gone; with the default `"current"` they start in the focused terminal's directory, as before. A space made by an older paddock has no root until `C-a R`; until then its first tab's directory serves, and a root that was deleted falls back to the focused terminal's directory. The sidebar still shows each space's first tab's directory; the finder's space rows show the root as it was made (links kept) and the branch checked out there, if it is in a git checkout.
+Space roots: every space has a root directory, kept with the space on paddock's server and in `layout.json` (on the tmux backend, in its tmux session as the option `@paddock-root`). A space gets the directory it was made in: the focused terminal's for `C-a C`, the worktree for `C-a W`, `C-a O` and `paddock worktree new|open`. `C-a R` makes the focused terminal's directory the current space's root, and says so in the tab bar. With `[spaces] new_tab_dir = "root"`, new tabs and splits start in the root wherever the focused terminal has gone; with the default `"current"` they start in the focused terminal's directory, as before. A space made by an older paddock has no root until `C-a R`; until then its first tab's directory serves, and a root that was deleted falls back to the focused terminal's directory. The sidebar still shows each space's first tab's directory; the finder's space rows show the root as it was made (links kept) and the branch checked out there, if it is in a git checkout.
 
 The help (`C-a ?`) says how the prefix works in its top border, so the keys fit an 80x24 terminal.
 
@@ -358,7 +370,12 @@ external_timeout = 10     # minutes an external session stays with no hook event
 
 [github]
 refresh_secs = 60         # how often the dashboard and the sidebar ask `gh` for each repository's pull requests; 0 turns PR status off (in `worktree list` too)
+
+[backend]
+kind = "native"           # what hosts the terminals: "native" (the default) or "tmux" (legacy, until v0.2)
 ```
+
+`[backend] kind` is `"native"` (the default: paddock's own server, `paddock server`, started in the background and listening on `~/.local/state/paddock/server.sock`, which saves its layout to `layout.json`) or `"tmux"`, the hidden `tmux -L paddock` server earlier releases used, kept until v0.2; anything else is refused at start. Switching kinds does not move running terminals: each backend keeps its own.
 
 `[worktrees] directory` must be absolute once `~` is expanded, and not your home directory itself; paddock refuses to start otherwise.
 
@@ -384,7 +401,7 @@ paddock refuses to start, naming the file and the setting, on an unknown action 
 
 ## Worktree command
 
-`paddock worktree` does what `C-a W`, `C-a O` and sidebar `x` do, for scripts and agents. It drives paddock's hidden tmux server directly (starting it if needed), so it works whether paddock is open or not; an open paddock shows the spaces it makes and drops the ones it closes. Nothing prompts or needs a terminal.
+`paddock worktree` does what `C-a W`, `C-a O` and sidebar `x` do, for scripts and agents. It drives paddock's server directly (starting it if needed), so it works whether paddock is open or not; an open paddock shows the spaces it makes and drops the ones it closes. Nothing prompts or needs a terminal.
 
 ```sh
 paddock worktree new feat/x            # new worktree at <[worktrees] directory>/<repo>/feat-x and a space repo/feat/x; prints the path
@@ -399,29 +416,59 @@ paddock worktree rm feat/x             # close its spaces, remove it, delete the
 - `new` checks the branch out if it exists, else creates it at the current tree's HEAD. If anything fails, nothing is left half-made. With `--json`: `{"path","branch","repo","space"}`.
 - `list --json` rows: `path`, `branch` (`null` if detached), `main`, `ours` (paddock made it), `space`, `dirty`, `merged` (into the base, as git sees it), `pr` (the branch's pull request: `null`, or `{"number", "state", "checks", "review", "url"}` with `state` one of `open`, `draft`, `merged`, `closed`; `checks` `passing`, `failing`, `pending` or `null`; `review` `approved`, `changes_requested`, `review_required` or `null`), `agents` (the states of the agent sessions in its spaces). The text form shows the PR as `#123 open`, else `-`, after `merged`/`unmerged`. `list` asks `gh` once for the repository (5 s limit, no cache); without `gh`, when it fails, or with `[github] refresh_secs = 0` (then it never runs), every `pr` is `null` and `list` still exits 0.
 - `rm` refuses, naming the risk, when the worktree has uncommitted changes (unless `--discard-changes`), commits not in its base (unless `--discard-commits`; a detached HEAD's too), an agent running or waiting in it (floats included), or when it is the main checkout, a worktree paddock did not make, or holds the caller's current directory or terminal. It removes with `git worktree remove` (`--force` only with `--discard-changes`) and deletes the branch with `git branch -d`: an unmerged branch is kept, with a notice.
-- Exit codes: `0` ok, `1` usage or config error, `2` git or tmux error (git's reason on stderr), `3` refused for a risk, `4` timeout (nothing deleted). Errors are one line on stderr.
+- Exit codes: `0` ok, `1` usage or config error, `2` git or backend error (git's reason on stderr), `3` refused for a risk, `4` timeout (nothing deleted). Errors are one line on stderr.
 
-## Claude Code plugin
+## Worktree skills for agents
 
-This repository is also a Claude Code plugin marketplace. Its `paddock` plugin carries paddock's hooks (see [Connect Claude Code](#connect-claude-code)) and a skill, `paddock-worktrees`, that teaches Claude when and how to use `paddock worktree` (check `list` first, work in the path `new` returns, delete only when asked or merged, never pass `--discard-*` without your say-so, and ask you on exit code 3), plus two slash commands, `/paddock:worktree-new <branch>` and `/paddock:worktree-list`. In Claude Code:
+Each coding agent paddock tracks (each agent kind: Claude Code, Gemini CLI, Antigravity CLI) gets a skill, `paddock-worktrees`, that teaches it when and how to use `paddock worktree` (check `list` first, work in the path `new` returns, delete only when asked or merged and ask you before each delete, never pass `--discard-*` without your say-so, and ask you on exit code 3), and, where the CLI loads commands, two commands to run `paddock worktree new <branch>` and `paddock worktree list`. The `new` command takes the branch you type as one quoted argument and asks you again for anything but `A-Za-z0-9._/-`. Each needs `paddock` on your `PATH`.
+
+Claude Code's plugin pre-approves only `paddock worktree list`, `new` and `open`, so Claude Code asks you before each `rm` whatever the model does. Gemini CLI and agy have no such list: they rely on their own approval mode (in an auto-approve or yolo mode nothing asks), and only the skill's instruction to ask stands between them and a delete.
+
+The Gemini CLI and agy installs below read the repository's default branch, `main`, which only releases reach: a change on `develop` reaches them with the next release.
+
+### Claude Code
+
+This repository is a Claude Code plugin marketplace. Its `paddock` plugin carries paddock's hooks (see [Connect Claude Code](#connect-claude-code)), the skill, and two slash commands, `/paddock:worktree-new <branch>` and `/paddock:worktree-list`. In Claude Code:
 
 ```text
 /plugin marketplace add MiohitoKiri5474/paddock
 /plugin install paddock@paddock
 ```
 
-The plugin needs `paddock` on your `PATH`.
+### Gemini CLI
+
+The repository is also a Gemini CLI extension (`gemini-extension.json` at its root; it needs Gemini CLI 0.26 or newer, where Agent Skills are on by default, and was checked with `gemini extensions validate` from Gemini CLI 0.65). It carries the skill and two commands, `/paddock:worktree-new <branch>` and `/paddock:worktree-list`, and no hooks: those come from `paddock hooks install --agent gemini` (see [Connect Gemini CLI](#connect-gemini-cli)). From your shell:
+
+```sh
+gemini extensions install https://github.com/MiohitoKiri5474/paddock
+gemini extensions update paddock      # after a paddock release
+gemini extensions uninstall paddock
+```
+
+Gemini copies the whole repository into `~/.gemini/extensions/paddock`; restart running Gemini sessions afterwards.
+
+### Antigravity CLI
+
+agy installs the same extension as a plugin, converting it on install (`agy plugin validate`, agy 1.4.5, reports it as a Gemini CLI extension that `plugin install` converts). Expect the skill alone, so ask agy in words: agy's plugin validator warns that plugins do not load `commands/`, and an extension agy converted on install kept its `commands/` as they were (seen with agy 1.4.5; not checked with this one). From your shell:
+
+```sh
+agy plugin install https://github.com/MiohitoKiri5474/paddock
+agy plugin uninstall paddock
+```
+
+The uninstall name is assumed, not checked: agy named another converted extension after its `name`. If it is not found, use the name `/plugin` lists. Restart running agy sessions afterwards. Do not give agy the Claude Code plugin (`agy plugin import claude`, or `plugins/paddock` as a local plugin): agy would run its Claude hooks, and paddock would record agy's events as a Claude session's.
 
 ## Files
 
-- State: `~/.local/state/paddock/` (current space and sidebar width, event logs, dismissed rows, `hook-errors.log`, `gh.log`); tabs and splits live in tmux
-- Hidden server: `tmux -L paddock ls`
+- State: `~/.local/state/paddock/` (the server's `server.sock`, `server.lock`, `server.log` and `layout.json`, sidebar width, event logs, dismissed rows, `hook-errors.log`, `gh.log`)
+- The tmux backend's hidden server: `tmux -L paddock ls`
 
 ## Uninstall
 
 ```sh
 paddock hooks uninstall --agent claude --agent gemini --agent agy   # each agent you connected
-tmux -L paddock kill-server         # ends every paddock terminal
+# First close every space in paddock (sidebar `x`): the server ends with the last one.
+tmux -L paddock kill-server         # the tmux backend's server, if one still runs
 rm -rf ~/.local/state/paddock ~/.config/paddock
 cargo uninstall paddock             # or brew uninstall paddock, or delete the binary you moved
 ```
@@ -430,12 +477,16 @@ cargo uninstall paddock             # or brew uninstall paddock, or delete the b
 
 ```sh
 cargo clippy --all-targets -- -D warnings
-cargo test                          # unit + end-to-end tests (real tmux on a temp socket)
+cargo test                          # unit + end-to-end tests on the tmux backend (real tmux on a temp socket)
+scripts/test-native.sh              # the end-to-end tests on the native backend (the default)
 claude plugin validate --strict .   # the plugin marketplace, in full (cargo test checks the basics)
 claude plugin validate --strict plugins/paddock
+gemini extensions validate .        # the Gemini extension (agy installs it too)
 ```
 
-CI runs the unit tests on macOS and uploads a release binary when they pass. Pushing a `v*` tag that matches the version in `Cargo.toml` builds the Apple Silicon tarball and opens a draft pre-release.
+A release bumps the version in `Cargo.toml` (and `Cargo.lock`), `plugins/paddock/.claude-plugin/plugin.json` and `gemini-extension.json` together; `cargo test` fails while either manifest differs from `Cargo.toml`.
+
+CI runs the unit tests, then the end-to-end tests on each backend (native, and tmux with its tmux-only tests), on macOS, and uploads a release binary when the unit tests pass. Pushing a `v*` tag that matches the version in `Cargo.toml` builds the Apple Silicon tarball and opens a draft pre-release.
 
 ## License
 

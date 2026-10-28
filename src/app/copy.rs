@@ -7,6 +7,7 @@
 use super::input::Flow;
 use super::mouse::copy as to_clipboard;
 use super::state::{App, Mode};
+use crate::backend::TerminalId;
 use crate::input::keymap::CopyAction;
 use crate::input::line::LineEdit;
 use crate::input::{Command, KeyAction};
@@ -30,8 +31,8 @@ const HINTS: &[&str] = &[
 
 /// A terminal in copy mode.
 pub struct CopyMode {
-    /// Its pane.
-    pub pane: String,
+    /// Its terminal.
+    pub terminal: TerminalId,
     pub cursor: Spot,
     /// Where the selection started, while selecting.
     pub anchor: Option<Anchor>,
@@ -112,7 +113,7 @@ impl App {
     /// Copy mode in the terminal typing goes to, the search prompt open if
     /// `search`; the view holds still from here.
     pub(super) fn enter_copy(&mut self, search: bool) {
-        let Some(pane) = self.float_pane().or_else(|| self.current_pane()) else {
+        let Some(pane) = self.float_terminal().or_else(|| self.current_terminal()) else {
             return;
         };
         let Some(t) = self.terminals.get_mut(&pane) else {
@@ -121,7 +122,7 @@ impl App {
         t.pause();
         let cursor = t.emulator().copy_start();
         self.mode = Mode::Copy(CopyMode {
-            pane,
+            terminal: pane,
             cursor,
             anchor: None,
             search: None,
@@ -134,7 +135,7 @@ impl App {
     /// view is live again, with the output held back drawn. The caller
     /// sets the mode.
     pub(super) fn leave_copy(&mut self, copy: &CopyMode) {
-        if let Some(t) = self.terminals.get_mut(&copy.pane) {
+        if let Some(t) = self.terminals.get_mut(&copy.terminal) {
             t.go_on();
             let emu = t.emulator_mut();
             emu.clear_selection();
@@ -157,7 +158,7 @@ impl App {
         let Mode::Copy(copy) = &self.mode else {
             return;
         };
-        let pane = copy.pane.clone();
+        let pane = copy.terminal.clone();
         let paused = self.terminals.get(&pane).is_some_and(|t| t.is_paused());
         if paused && self.shows(&pane) {
             return;
@@ -202,7 +203,7 @@ impl App {
 
     /// Do `action` in copy mode.
     fn copy_action(&mut self, mut copy: CopyMode, action: CopyAction) -> Flow {
-        let Some(t) = self.terminals.get_mut(&copy.pane) else {
+        let Some(t) = self.terminals.get_mut(&copy.terminal) else {
             return Flow::Continue;
         };
         let emu = t.emulator_mut();
@@ -253,7 +254,7 @@ impl App {
                 if !query.is_empty() {
                     let found = self
                         .terminals
-                        .get(&copy.pane)
+                        .get(&copy.terminal)
                         .map(|t| t.emulator().find(&query))
                         .unwrap_or_default();
                     copy.search = Some(Search {
@@ -292,7 +293,7 @@ impl App {
 
     /// Show the cursor, and keep the selection running to it.
     fn follow_cursor(&mut self, copy: &CopyMode) {
-        let Some(t) = self.terminals.get_mut(&copy.pane) else {
+        let Some(t) = self.terminals.get_mut(&copy.terminal) else {
             return;
         };
         let emu = t.emulator_mut();
@@ -307,7 +308,7 @@ impl App {
         let Mode::Copy(copy) = &mut self.mode else {
             return;
         };
-        let Some(t) = self.terminals.get_mut(&copy.pane) else {
+        let Some(t) = self.terminals.get_mut(&copy.terminal) else {
             return;
         };
         let emu = t.emulator_mut();
@@ -316,11 +317,14 @@ impl App {
     }
 
     /// Copy mode's view for pane `pane`, if it is the one in copy mode.
-    pub(super) fn copy_view(&self, pane: &str) -> Option<CopyView<'_>> {
+    pub(super) fn copy_view(&self, pane: &TerminalId) -> Option<CopyView<'_>> {
         let Mode::Copy(copy) = &self.mode else {
             return None;
         };
-        let t = self.terminals.get(pane).filter(|_| copy.pane == pane)?;
+        let t = self
+            .terminals
+            .get(pane)
+            .filter(|_| copy.terminal == *pane)?;
         Some(copy.view(t.emulator()))
     }
 

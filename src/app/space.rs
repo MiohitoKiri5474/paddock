@@ -1,21 +1,20 @@
-//! A space: one tmux session on the hidden server (ADR 0006), with its
-//! windows (tabs) and panes (splits) as tmux has them, and the one control
-//! client that carries every pane's output and input.
+//! A space: its tabs and splits as the backend has them (ADR 0006), and the
+//! one connection that carries every terminal's output and input.
 
-use crate::terminal::{seed, Terminal};
-use crate::tmux::structure::{FloatWindow, Structure, Window};
-use crate::tmux::{wait_reply, ControlClient, Message, Server};
+use crate::backend::{
+    Backend, Connection, Event, Float, FloatId, SpaceId, Structure, Tab, TabId, TerminalId,
+};
+use crate::terminal::Terminal;
 use anyhow::Result;
 
-/// The smallest size paddock gives tmux, as `(cols, rows)`.
+/// The smallest size paddock gives the backend, as `(cols, rows)`.
 pub const MIN_SIZE: (u16, u16) = (2, 1);
 
 pub struct Space {
-    /// The tmux session id (`$N`).
-    pub id: String,
+    pub id: SpaceId,
     pub structure: Structure,
-    control: ControlClient,
-    /// The size the client last asked tmux for.
+    connection: Connection,
+    /// The size the connection last asked for.
     size: (u16, u16),
 }
 
@@ -25,160 +24,111 @@ pub fn clamp((cols, rows): (u16, u16)) -> (u16, u16) {
 }
 
 impl Space {
-    /// Attach to tmux session `id` at `size` and rebuild every pane's screen
-    /// and history. Afterwards every control message, in order, goes to
-    /// `deliver`. Returns the space and a terminal for each pane.
+    /// Attach space `id` at `size` and rebuild every terminal's screen and
+    /// history. Afterwards every event, in order, goes to `deliver`.
+    /// Returns the space and a terminal for each of its terminals.
     pub fn attach(
-        server: &Server,
-        id: &str,
+        backend: &Backend,
+        id: &SpaceId,
         size: (u16, u16),
-        deliver: impl FnMut(Message) -> bool + Send + 'static,
-    ) -> Result<(Self, Vec<(String, Terminal)>)> {
+        deliver: impl FnMut(Event) -> bool + Send + 'static,
+    ) -> Result<(Self, Vec<(TerminalId, Terminal)>)> {
         let size = clamp(size);
-        let (mut control, rx) = ControlClient::attach(server, id)?;
-        control.resize(size.0, size.1)?;
-        wait_reply(&rx)?;
-        // Read after the resize, so the panes have their final sizes.
-        let structure = server.structure(id)?;
-        // Floats too, so a hidden float's screen survives reopening.
-        let panes: Vec<(&str, (u16, u16))> = structure
-            .all_windows()
-            .flat_map(|w| &w.panes)
-            .map(|p| (p.id.as_str(), (p.rect.width, p.rect.height)))
+        let (connection, structure, replays) = backend.attach(id, size, deliver)?;
+        let terminals = replays
+            .into_iter()
+            .map(|r| {
+                let mut t = Terminal::new(clamp(r.size));
+                t.output(&r.bytes);
+                (r.terminal, t)
+            })
             .collect();
-        let ids: Vec<&str> = panes.iter().map(|(p, _)| *p).collect();
-        let seeds = seed::fetch(&mut control, &rx, &ids)?;
-        control.forward(&rx, deliver);
-        let mut terminals = Vec::new();
-        for ((pane, size), seed) in panes.into_iter().zip(seeds) {
-            let mut t = Terminal::new(clamp(size));
-            t.output(&seed::stream(&seed)?);
-            terminals.push((pane.to_string(), t));
-        }
         let space = Self {
-            id: id.to_string(),
+            id: id.clone(),
             structure,
-            control,
+            connection,
             size,
         };
         Ok((space, terminals))
     }
 
-    /// The session name, shown as the space's title.
+    /// The space's name, shown as its title.
     pub fn name(&self) -> &str {
         &self.structure.name
     }
 
-    pub fn windows(&self) -> &[Window] {
-        &self.structure.windows
+    pub fn tabs(&self) -> &[Tab] {
+        &self.structure.tabs
     }
 
-    /// The current window (tab), if any.
-    pub fn current_window(&self) -> Option<&Window> {
-        self.structure.windows.get(self.structure.current)
+    /// The current tab, if any.
+    pub fn current_tab(&self) -> Option<&Tab> {
+        self.structure.tabs.get(self.structure.current)
     }
 
-    pub fn current_window_mut(&mut self) -> Option<&mut Window> {
-        self.structure.windows.get_mut(self.structure.current)
+    pub fn current_tab_mut(&mut self) -> Option<&mut Tab> {
+        self.structure.tabs.get_mut(self.structure.current)
     }
 
-    /// The index of window `window`, else (it closed) of the current one.
-    pub fn tab_or_current(&self, window: &str) -> Option<usize> {
-        let tab = self.structure.windows.iter().position(|w| w.id == window);
-        tab.or_else(|| self.current_window().map(|_| self.structure.current))
+    /// The index of tab `tab`, else (it closed) of the current one.
+    pub fn tab_or_current(&self, tab: &TabId) -> Option<usize> {
+        let found = self.structure.tabs.iter().position(|t| t.id == *tab);
+        found.or_else(|| self.current_tab().map(|_| self.structure.current))
     }
 
-    /// The index of the window holding pane `pane`.
-    pub fn window_of(&self, pane: &str) -> Option<usize> {
-        self.structure.windows.iter().position(|w| w.contains(pane))
-    }
-
-    /// Every pane of the space, its floats' included.
-    pub fn panes(&self) -> impl Iterator<Item = &str> {
+    /// The index of the tab holding terminal `terminal`.
+    pub fn tab_of(&self, terminal: &TerminalId) -> Option<usize> {
         self.structure
-            .all_windows()
-            .flat_map(|w| w.panes.iter().map(|p| p.id.as_str()))
+            .tabs
+            .iter()
+            .position(|t| t.contains(terminal))
     }
 
-    /// Whether pane `pane` is in this space, in a tab or a float.
-    pub fn holds(&self, pane: &str) -> bool {
-        self.panes().any(|p| p == pane)
+    /// Every terminal of the space, its floats' included.
+    pub fn terminals(&self) -> impl Iterator<Item = &TerminalId> {
+        self.structure.splits().map(|s| &s.id)
+    }
+
+    /// Whether terminal `terminal` is in this space, in a tab or a float.
+    pub fn holds(&self, terminal: &TerminalId) -> bool {
+        self.terminals().any(|t| t == terminal)
     }
 
     /// The float on key `key` (as [`crate::input::keymap::Key::name`]
     /// writes it), if it runs.
-    pub fn float(&self, key: &str) -> Option<&FloatWindow> {
+    pub fn float(&self, key: &str) -> Option<&Float> {
         self.structure.floats.iter().find(|f| f.key == key)
     }
 
-    /// Write raw bytes to pane `pane` of this space.
-    pub fn input(&mut self, pane: &str, bytes: &[u8]) -> Result<()> {
-        self.control.send_bytes(pane, bytes)
+    /// Write raw bytes to terminal `terminal` of this space.
+    pub fn input(&mut self, terminal: &TerminalId, bytes: &[u8]) -> Result<()> {
+        self.connection.input(terminal, bytes)
     }
 
-    /// Show the space at `size`: tmux resizes every window of the session.
+    /// Show the space at `size`: every tab of it is resized.
     pub fn resize(&mut self, size: (u16, u16)) -> Result<()> {
         let size = clamp(size);
         if size == self.size {
             return Ok(());
         }
         self.size = size;
-        self.control.resize(size.0, size.1)
+        self.connection.resize(size)
     }
 
-    /// Show float window `window` at `size`, apart from the tabs' size.
-    pub fn resize_float(&mut self, window: &str, size: (u16, u16)) -> Result<()> {
-        let (cols, rows) = clamp(size);
-        self.control.resize_window(window, cols, rows)
+    /// Show float `float` at `size`, apart from the tabs' size.
+    pub fn resize_float(&mut self, float: &FloatId, size: (u16, u16)) -> Result<()> {
+        self.connection.resize_float(float, clamp(size))
     }
 
-    /// Leave the space running on the hidden server.
+    /// Leave the space running in the backend.
     pub fn detach(self) {
-        self.control.detach();
+        self.connection.detach();
     }
-}
-
-/// Whether a control notification changes a space's windows or panes, so
-/// they must be read again (ADR 0006).
-pub fn changes_structure(notification: &str) -> bool {
-    let kind = notification.split(' ').next().unwrap_or("");
-    matches!(
-        kind,
-        "%layout-change"
-            | "%window-add"
-            | "%window-close"
-            | "%window-renamed"
-            | "%session-renamed"
-            | "%session-window-changed"
-            | "%window-pane-changed"
-    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn structure_notifications_are_told_apart_from_others() {
-        for n in [
-            "%layout-change @1 a87d,100x30,0,0,0 a87d,100x30,0,0,0 *",
-            "%window-add @2",
-            "%window-close @2",
-            "%window-renamed @1 vim",
-            "%session-renamed $0 api",
-            "%session-window-changed $0 @2",
-            "%window-pane-changed @1 %3",
-        ] {
-            assert!(changes_structure(n), "{n}");
-        }
-        for n in [
-            "%unlinked-window-add @3",
-            "%sessions-changed",
-            "%pane-mode-changed %1",
-        ] {
-            assert!(!changes_structure(n), "{n}");
-        }
-    }
 
     #[test]
     fn sizes_never_go_below_the_minimum() {

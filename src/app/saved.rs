@@ -1,8 +1,11 @@
-//! What paddock keeps in the state directory (`layout.toml`) that tmux cannot
-//! hold: which space was current. Tabs, splits, sizes and focus live
-//! in tmux (ADR 0006). A file from before, with its `current` tab and `tabs`
-//! layouts, still reads: those fields are ignored.
+//! What paddock keeps in the state directory (`layout.toml`) that the
+//! backend does not hold: which space was current (on tmux; the native
+//! server keeps it in `layout.json`, ADR 0008), and the sidebar's width.
+//! Tabs, splits, sizes and focus live in the backend (ADR 0006). A file
+//! from before, with its `current` tab and `tabs` layouts, still reads:
+//! those fields are ignored.
 
+use crate::backend::SpaceId;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -11,10 +14,10 @@ pub const FILE_NAME: &str = "layout.toml";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Saved {
-    /// The current space's tmux session id (`$N`).
+    /// The current space's id, as the backend spells it (tmux: `$N`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[serde(alias = "item")]
-    pub space: Option<String>,
+    pub space: Option<SpaceId>,
     /// The sidebar's width when last changed (`C-a {`, `C-a }`, dragging).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sidebar: Option<u16>,
@@ -60,7 +63,7 @@ mod tests {
     #[test]
     fn a_file_saved_as_item_still_names_the_current_space() {
         let saved: Saved = toml::from_str("item = \"$4\"").unwrap();
-        assert_eq!(saved.space.as_deref(), Some("$4"));
+        assert_eq!(saved.space.as_ref().map(SpaceId::as_str), Some("$4"));
     }
 
     #[test]

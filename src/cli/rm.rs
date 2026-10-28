@@ -6,6 +6,7 @@
 
 use super::worktree::{find, ids, inside, name_of, print_json, state_in, Context, Space};
 use super::{allowed, Code, Discard, Fail};
+use crate::backend::{Instance, SpaceId};
 use crate::git::{self, WorkingTree, Worktree};
 use crate::sessions::State;
 use crate::worktree::{self as shared, Risks, WorktreeSpace};
@@ -47,10 +48,10 @@ pub(super) fn rm(
     let found = resolve(cx, from, target)?;
     never_deleted(cx, &found)?;
     let spaces = cx.spaces();
-    let closing = shared::spaces_in(&cx.server, &ids(&spaces), &found.w.path)?;
-    let pid = cx.server_pid();
-    not_the_caller_s(cx, &found, &closing, pid)?;
-    let confirmed = check(cx, &found, &spaces, &closing, pid, discard)?;
+    let closing = shared::spaces_in(&cx.backend, &ids(&spaces), &found.w.path)?;
+    let instance = cx.instance()?;
+    not_the_caller_s(cx, &found, &closing, instance)?;
+    let confirmed = check(cx, &found, &spaces, &closing, instance, discard)?;
     let target = WorktreeSpace {
         space: None,
         spaces: closing.clone(),
@@ -58,7 +59,7 @@ pub(super) fn rm(
         branch: found.w.branch.clone(),
         main: found.tree.main.clone(),
     };
-    let removal = shared::remove(&cx.server, &target, Some(&confirmed))?;
+    let removal = shared::remove(&cx.backend, &target, Some(&confirmed))?;
     if let Some(notice) = &removal.notice {
         eprintln!("paddock: {notice}");
     }
@@ -112,16 +113,16 @@ fn never_deleted(cx: &Context, found: &Found) -> Result<(), Fail> {
 fn not_the_caller_s(
     cx: &Context,
     found: &Found,
-    closing: &[String],
-    pid: Option<u32>,
+    closing: &[SpaceId],
+    instance: Option<Instance>,
 ) -> Result<(), Fail> {
     let top = &found.w.path;
     if inside(&cx.cwd.to_string_lossy(), top) {
         return Err(found.refused("holds the current directory: run rm from outside it"));
     }
-    if let Some(pane) = cx.caller_pane(pid) {
-        let space = cx.server.display(&pane, "#{session_id}").ok();
-        let path = cx.server.display(&pane, "#{pane_current_path}").ok();
+    if let Some(terminal) = cx.caller_terminal(instance) {
+        let space = cx.backend.space_of(&terminal);
+        let path = cx.backend.terminal_dir(&terminal);
         let here =
             space.is_some_and(|s| closing.contains(&s)) || path.is_some_and(|p| inside(&p, top));
         if here {
@@ -139,15 +140,15 @@ fn check(
     cx: &Context,
     found: &Found,
     spaces: &[Space],
-    closing: &[String],
-    pid: Option<u32>,
+    closing: &[SpaceId],
+    instance: Option<Instance>,
     discard: Discard,
 ) -> Result<Risks, Fail> {
     let top = found.w.path.as_str();
     let risks = shared::risks_within(top, cx.risk_deadline);
     let detached = found.w.branch.is_none();
     let confirmed = allowed(&found.label, risks.as_ref(), detached, discard)?;
-    let (sessions, late) = cx.sessions(pid);
+    let (sessions, late) = cx.sessions(instance);
     if let Some(late) = late {
         return Err(late);
     }
@@ -155,12 +156,13 @@ fn check(
         .iter()
         .flat_map(|s| {
             let closes = closing.contains(&s.id);
-            shared::panes(&cx.server, &s.id)
+            cx.backend
+                .space_terminals(&s.id)
                 .into_iter()
                 .filter(move |p| closes || inside(&p.path, top))
                 .map(move |p| (s, p.id))
         })
-        .find_map(|(s, pane)| match state_in(&sessions, &pane) {
+        .find_map(|(s, pane)| match state_in(&sessions, pane.as_str()) {
             Some(state @ (State::Running | State::Waiting)) => Some((s, state)),
             _ => None,
         });
@@ -178,6 +180,8 @@ fn check(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::Backend;
+    use crate::config::BackendKind;
     use crate::paths::Paths;
     use std::process::Command;
     use std::time::Duration;
@@ -217,7 +221,8 @@ mod tests {
         let wt = root.join("wt");
         let config = format!("[worktrees]\ndirectory = {:?}\n", wt.to_string_lossy());
         std::fs::write(paths.config_dir.join("config.toml"), config).unwrap();
-        let mut cx = Context::new(paths, root.clone(), None);
+        let backend = Backend::new(paths.clone(), BackendKind::Tmux);
+        let mut cx = Context::new(backend, paths, root.clone(), None);
         // Nothing can be checked in no time. The check comes before
         // `claude agents`, so no real Claude is asked.
         cx.risk_deadline = Duration::ZERO;
@@ -228,12 +233,8 @@ mod tests {
             .as_ref()
             .ok()
             .map(|_| rm(&cx, Some(&repo), "feat/t", Discard::default(), false));
-        let names: Vec<String> = cx.server.sessions().into_iter().map(|s| s.name).collect();
-        let socket = cx.server.run(&["display-message", "-p", "#{socket_path}"]);
-        let _ = cx.server.run(&["kill-server"]);
-        if let Ok(socket) = socket {
-            let _ = std::fs::remove_file(socket.trim());
-        }
+        let names: Vec<String> = cx.backend.spaces().into_iter().map(|s| s.name).collect();
+        cx.backend.stop();
 
         let (path, _) = made.unwrap();
         let err = got.unwrap().unwrap_err();

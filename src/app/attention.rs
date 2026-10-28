@@ -9,6 +9,7 @@ use super::rows::Row;
 use super::sidebar::Pick;
 use super::state::{App, Mode};
 use super::Event;
+use crate::backend::TerminalId;
 use crate::config::Notify;
 use crate::hooks::now_ms;
 use crate::sessions::{self, is_external, log, state_after, HookRecord, ProgramState, State};
@@ -194,14 +195,18 @@ impl Attention {
     }
 }
 
-/// The row after the focused terminal's among those waiting or idle, in
-/// sidebar order and wrapping around; the first one if it is not among them.
-/// External sessions are skipped: there is no terminal to jump to.
+/// The row after the focused terminal's among those that need you, most
+/// urgent first (waiting, done, idle; sidebar order within a state, as the
+/// rows themselves are never sorted by state) and wrapping around; the
+/// most urgent one if the focused terminal's is not among them. External
+/// sessions are skipped: there is no terminal to jump to.
 pub fn next_needing<'a>(rows: &'a [Row], focused: Option<&str>) -> Option<&'a Row> {
-    let needy: Vec<&Row> = rows
+    let mut needy: Vec<&Row> = rows
         .iter()
         .filter(|r| r.state.needs_you() && !r.external)
         .collect();
+    // Stable: sidebar order within a state.
+    needy.sort_by_key(|r| r.state.rank());
     let at = needy.iter().position(|r| Some(r.pane.as_str()) == focused);
     let next = at.map_or(0, |i| (i + 1) % needy.len());
     needy.get(next).copied()
@@ -252,18 +257,18 @@ impl App {
     /// first report may come before its `SessionStart` is folded: the
     /// latest report of a pane with no agy session yet waits for one (see
     /// [`App::retry_status`]).
-    pub(super) fn record_status(&mut self, pane: &str, reports: &[Report]) {
+    pub(super) fn record_status(&mut self, pane: &TerminalId, reports: &[Report]) {
         let ts = now_ms();
         for r in reports {
             if r.app.as_deref() != Some(sessions::AGY_APP) {
                 continue;
             }
-            if self.sessions.agy_live_in(pane) {
+            if self.sessions.agy_live_in(pane.as_str()) {
                 self.pending_status.remove(pane);
-                self.write_status(pane, r.state, ts);
+                self.write_status(pane.as_str(), r.state, ts);
             } else {
                 let pending = PendingStatus { state: r.state, ts };
-                self.pending_status.insert(pane.to_string(), pending);
+                self.pending_status.insert(pane.clone(), pending);
             }
         }
     }
@@ -282,19 +287,19 @@ impl App {
     pub(super) fn retry_status(&mut self) {
         let now = now_ms();
         let pending = std::mem::take(&mut self.pending_status);
-        for (pane, p) in pending {
+        for (terminal, p) in pending {
+            let pane = terminal.as_str();
             let latest_start = p.ts.saturating_add(STATUS_WAIT_MS);
-            if self.sessions.agy_live_by(&pane, latest_start) {
-                if !self.sessions.hook_changed_after(&pane, p.ts) {
+            if self.sessions.agy_live_by(pane, latest_start) {
+                if !self.sessions.hook_changed_after(pane, p.ts) {
                     // Never before a record already folded, so a replay of
                     // the log folds it where it was folded now.
-                    let after = self.sessions.last_heard(&pane).unwrap_or(0);
-                    self.write_status(&pane, p.state, p.ts.max(after));
+                    let after = self.sessions.last_heard(pane).unwrap_or(0);
+                    self.write_status(pane, p.state, p.ts.max(after));
                 }
-            } else if !self.sessions.agy_live_in(&pane)
-                && now.saturating_sub(p.ts) <= STATUS_WAIT_MS
+            } else if !self.sessions.agy_live_in(pane) && now.saturating_sub(p.ts) <= STATUS_WAIT_MS
             {
-                self.pending_status.insert(pane, p);
+                self.pending_status.insert(terminal, p);
             }
         }
     }
@@ -325,7 +330,7 @@ impl App {
     /// `C-a a`: jump to the next session that needs you.
     pub(super) fn next_attention(&mut self) {
         let rows = self.rows();
-        let focused = self.focused_window().map(|w| w.active.as_str());
+        let focused = self.focused_tab().map(|t| t.active.as_str());
         match next_needing(&rows, focused) {
             Some(row) => {
                 self.jump_to(&row.pane);
@@ -343,12 +348,12 @@ impl App {
         if !self.looking_at_tab() {
             return;
         }
-        let Some(window) = self.current_space().and_then(|i| i.current_window()) else {
+        let Some(tab) = self.current_space().and_then(|i| i.current_tab()) else {
             return;
         };
-        let panes: Vec<String> = window.shown_panes().map(|p| p.id.clone()).collect();
-        for pane in panes {
-            self.sessions.see(&pane);
+        let shown: Vec<TerminalId> = tab.shown_splits().map(|s| s.id.clone()).collect();
+        for terminal in shown {
+            self.sessions.see(terminal.as_str());
         }
     }
 
@@ -376,13 +381,13 @@ impl App {
     /// Whether you are looking at the terminal with pane `pane`: it is
     /// focused, paddock's window has the focus, and no float is over it.
     fn focused_on(&self, pane: &str) -> bool {
-        self.looking_at_tab() && self.is_current_pane(pane)
+        self.looking_at_tab() && self.is_current_row(pane)
     }
 
     /// Whether you are looking at the current tab: paddock's window has
     /// the focus and no float is shown (the float has the keyboard then).
     fn looking_at_tab(&self) -> bool {
-        self.attention.window_focused && self.float_pane().is_none()
+        self.attention.window_focused && self.float_terminal().is_none()
     }
 
     fn notify(&mut self, pane: &str, alert: Alert) {
@@ -720,7 +725,7 @@ mod tests {
         Row {
             pane: pane.into(),
             space: "$1".into(),
-            window: "@1".into(),
+            tab: "@1".into(),
             label: pane.into(),
             kind: crate::sessions::AgentKind::Claude,
             state,
@@ -756,5 +761,23 @@ mod tests {
         assert_eq!(next(None), Some("w"));
         let running = [row("r", State::Running)];
         assert!(next_needing(&running, None).is_none());
+    }
+
+    #[test]
+    fn next_needing_picks_the_most_urgent_whatever_the_row_order() {
+        // Rows follow their tabs, not their states: an idle agent can come
+        // before a waiting one.
+        let rows = [
+            row("i", State::Idle),
+            row("d", State::Done),
+            row("w", State::Waiting),
+            row("w2", State::Waiting),
+        ];
+        let next = |focused| next_needing(&rows, focused).map(|r| r.pane.as_str());
+        assert_eq!(next(None), Some("w"));
+        assert_eq!(next(Some("w")), Some("w2"));
+        assert_eq!(next(Some("w2")), Some("d"));
+        assert_eq!(next(Some("d")), Some("i"));
+        assert_eq!(next(Some("i")), Some("w"));
     }
 }

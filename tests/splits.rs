@@ -8,7 +8,7 @@
 mod harness;
 
 use harness::{
-    cols, in_region, pane_sizes, wait_for_pane_sizes, wait_in_region, Paddock, Sandbox, PROMPT,
+    cols, in_region, split_sizes, wait_for_split_sizes, wait_in_region, Paddock, Sandbox, PROMPT,
 };
 
 /// Column of the border after one side-by-side split.
@@ -47,7 +47,7 @@ fn pipe_splits_side_by_side_into_a_new_pane() {
 
     split_side_by_side(&mut p);
 
-    wait_for_pane_sizes(&sandbox, &["0.0 34x29", "0.1 33x29"]);
+    wait_for_split_sizes(&sandbox, &["0.0 34x29", "0.1 33x29"]);
     p.wait_for_tabs(&["1:home"]);
     p.wait_for("vertical border", |_| {
         cols(&p.rows()[1], V_BORDER, V_BORDER + 1) == "│"
@@ -55,7 +55,7 @@ fn pipe_splits_side_by_side_into_a_new_pane() {
     p.type_line("echo typed-into-the-new-split");
     wait_in_region(&p, "typed-into-the-new-split", ALL_ROWS, RIGHT);
     assert!(!in_region(&p, "typed-into-the-new-split", ALL_ROWS, LEFT));
-    assert_eq!(sandbox.session_names(), ["space-1"], "one item");
+    assert_eq!(sandbox.space_names(), ["space-1"], "one item");
 }
 
 #[test]
@@ -65,7 +65,7 @@ fn minus_splits_top_and_bottom() {
 
     p.command(b"-");
 
-    wait_for_pane_sizes(&sandbox, &["0.0 68x14", "0.1 68x14"]);
+    wait_for_split_sizes(&sandbox, &["0.0 68x14", "0.1 68x14"]);
     p.wait_for("horizontal border", |_| {
         p.rows()[H_BORDER].starts_with("────")
     });
@@ -90,7 +90,7 @@ fn hjkl_and_arrows_move_focus() {
 
     // Split the right one top and bottom, then move up and down in it.
     p.command(b"-");
-    wait_for_pane_sizes(&sandbox, &["0.0 34x29", "0.1 33x14", "0.2 33x14"]);
+    wait_for_split_sizes(&sandbox, &["0.0 34x29", "0.1 33x14", "0.2 33x14"]);
     p.command(b"k");
     p.type_line("echo went-up");
     wait_in_region(&p, "went-up", (1, H_BORDER), RIGHT);
@@ -117,11 +117,11 @@ fn x_closes_only_the_focused_split_and_its_neighbour_takes_the_space() {
     let sandbox = Sandbox::new();
     let mut p = ready(&sandbox);
     split_side_by_side(&mut p);
-    wait_for_pane_sizes(&sandbox, &["0.0 34x29", "0.1 33x29"]);
+    wait_for_split_sizes(&sandbox, &["0.0 34x29", "0.1 33x29"]);
 
     p.command(b"x");
 
-    wait_for_pane_sizes(&sandbox, &["0.0 68x29"]);
+    wait_for_split_sizes(&sandbox, &["0.0 68x29"]);
     p.wait_for_tabs(&["1:home"]);
     p.type_line("echo focus-moved-back");
     wait_for_line(&p, "focus-moved-back");
@@ -135,7 +135,7 @@ fn a_shell_exiting_closes_only_its_split() {
 
     p.type_line("exit");
 
-    wait_for_pane_sizes(&sandbox, &["0.0 68x29"]);
+    wait_for_split_sizes(&sandbox, &["0.0 68x29"]);
     p.type_line("echo still-here");
     wait_for_line(&p, "still-here");
 }
@@ -147,11 +147,11 @@ fn equals_gives_the_focused_split_and_its_neighbours_the_same_size() {
     split_side_by_side(&mut p);
     // Splitting the right one again halves it.
     p.command(b"|");
-    wait_for_pane_sizes(&sandbox, &["0.0 34x29", "0.1 16x29", "0.2 16x29"]);
+    wait_for_split_sizes(&sandbox, &["0.0 34x29", "0.1 16x29", "0.2 16x29"]);
 
     p.command(b"=");
 
-    wait_for_pane_sizes(&sandbox, &["0.0 22x29", "0.1 22x29", "0.2 22x29"]);
+    wait_for_split_sizes(&sandbox, &["0.0 22x29", "0.1 22x29", "0.2 22x29"]);
 }
 
 #[test]
@@ -161,13 +161,13 @@ fn splits_and_focus_come_back_after_detach_and_relaunch() {
     // Tab 1: left | (top over bottom). Tab 2: one pane.
     split_side_by_side(&mut p);
     p.command(b"-");
-    wait_for_pane_sizes(&sandbox, &["0.0 34x29", "0.1 33x14", "0.2 33x14"]);
+    wait_for_split_sizes(&sandbox, &["0.0 34x29", "0.1 33x14", "0.2 33x14"]);
     p.command(b"c");
     p.wait_for_tabs(&["1:home", "2:home"]);
     p.command(b"1");
     p.wait_for_current_tab("1:home");
     p.command(b"k"); // focus the top right pane
-    let before = pane_sizes(&sandbox);
+    let before = split_sizes(&sandbox);
     p.detach_keys();
     assert!(p.wait_exit());
 
@@ -175,7 +175,11 @@ fn splits_and_focus_come_back_after_detach_and_relaunch() {
 
     again.wait_for_tabs(&["1:home", "2:home"]);
     again.wait_for_current_tab("1:home");
-    assert_eq!(pane_sizes(&sandbox), before, "same panes at the same sizes");
+    assert_eq!(
+        split_sizes(&sandbox),
+        before,
+        "same panes at the same sizes"
+    );
     wait_in_region(&again, PROMPT, (H_BORDER + 1, 30), RIGHT);
     again.wait_for("vertical border", |_| {
         cols(&again.rows()[1], V_BORDER, V_BORDER + 1) == "│"
@@ -185,7 +189,7 @@ fn splits_and_focus_come_back_after_detach_and_relaunch() {
 }
 
 #[test]
-fn the_layout_lives_in_tmux_not_in_the_state_file() {
+fn the_layout_lives_in_the_backend_not_in_the_state_file() {
     let sandbox = Sandbox::new();
     let mut p = ready(&sandbox);
     split_side_by_side(&mut p);
@@ -196,7 +200,7 @@ fn the_layout_lives_in_tmux_not_in_the_state_file() {
     let again = ready(&sandbox);
 
     again.wait_for_tabs(&["1:home"]);
-    wait_for_pane_sizes(&sandbox, &["0.0 34x29", "0.1 33x29"]);
+    wait_for_split_sizes(&sandbox, &["0.0 34x29", "0.1 33x29"]);
     wait_in_region(&again, PROMPT, ALL_ROWS, RIGHT);
 }
 

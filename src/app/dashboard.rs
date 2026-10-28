@@ -13,6 +13,7 @@ use super::rows::{pane_only, row_ids, Row, RowId, EXTERNAL_TYPE};
 use super::state::{App, Mode, Panel};
 use super::watch::Watched;
 use super::Event;
+use crate::backend::TerminalId;
 use crate::fuzzy;
 use crate::github;
 use crate::input::keymap::DashboardAction;
@@ -155,10 +156,10 @@ impl App {
     }
 
     /// Whether the dashboard shows pane `pane` in its preview.
-    pub fn shows_in_preview(&self, pane: &str) -> bool {
+    pub fn shows_in_preview(&self, pane: &TerminalId) -> bool {
         self.dashboard()
             .and_then(|d| self.dashboard_row(d))
-            .is_some_and(|r| r.pane == pane)
+            .is_some_and(|r| r.pane == *pane)
     }
 
     /// `C-a o`: open the dashboard on its first line, or close it.
@@ -288,10 +289,10 @@ impl App {
         };
         let bytes = self
             .terminals
-            .get(&pane)
+            .get(pane.as_str())
             .and_then(|t| encode_key(&key, t.key_modes()));
         if let Some(bytes) = bytes {
-            self.report(|app| app.input(&pane, &bytes));
+            self.report(|app| app.input_row(&pane, &bytes));
         }
     }
 
@@ -438,9 +439,9 @@ impl App {
         };
         let bracketed = self
             .terminals
-            .get(&row.pane)
+            .get(row.pane.as_str())
             .is_some_and(|t| t.emulator().modes().bracketed_paste);
-        self.input(&row.pane, &encode_paste(text, bracketed))
+        self.input_row(&row.pane, &encode_paste(text, bracketed))
     }
 }
 
@@ -468,7 +469,7 @@ mod tests {
         let row = |label: &str, state: State, branch: &str| Row {
             pane: format!("%{label}"),
             space: "$1".into(),
-            window: "@1".into(),
+            tab: "@1".into(),
             label: label.into(),
             kind: crate::sessions::AgentKind::Claude,
             state,

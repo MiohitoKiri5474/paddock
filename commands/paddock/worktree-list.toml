@@ -1,0 +1,8 @@
+# /paddock:worktree-list. The prompt is the Claude plugin's
+# skills/worktree-list body (tests/plugin.rs).
+description = "List the repository's worktrees with their paddock spaces, state and agents."
+prompt = """
+Run `paddock worktree list` and show its output as it is.
+
+If it fails, report stderr and the exit code.
+"""

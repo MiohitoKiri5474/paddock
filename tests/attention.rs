@@ -197,9 +197,12 @@ fn c_a_a_cycles_through_sessions_that_need_you() {
         vt100::Color::Idx(3),
         vt100::Color::Idx(2),
     );
-    // Rows: 0 SPACES, 1-4 two spaces, 5 blank, 6 AGENTS, 7 the waiting agent.
-    assert_eq!(paddock.sidebar()[7], " ● waiting             waiting");
-    assert_eq!(paddock.colors(7, 23), (black, yellow));
+    // Rows: 0 SPACES, 1-4 two spaces, 5 blank, 6 AGENTS, then the agents
+    // in space and tab order, not by state: idle (7), running (10), and the
+    // waiting agent last (13), though `C-a a` went to it first.
+    assert_eq!(paddock.sidebar()[7], " ● idle                   idle");
+    assert_eq!(paddock.sidebar()[13], " ● waiting             waiting");
+    assert_eq!(paddock.colors(13, 23), (black, yellow));
     paddock.command(b"w");
     paddock.send(b"k\r");
     paddock.wait_for_tabs(&["1:● claude", "2:claude"]);
@@ -220,16 +223,15 @@ fn c_a_a_focuses_the_split_running_the_session() {
     paddock.command(b"a");
     paddock.type_line("echo typed-into-the-split");
 
-    let capture = || sandbox.tmux(&["capture-pane", "-p", "-t", "space-1:0.1"]);
-    let start = std::time::Instant::now();
-    while !capture().contains("typed-into-the-split\n") {
-        assert!(
-            start.elapsed() < harness::TIMEOUT,
-            "split got:\n{}",
-            capture()
-        );
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
+    // The right split (columns 35-67) got it, the left (0-33) did not.
+    harness::wait_in_region(&paddock, "typed-into-the-split", (1, 30), (35, 68));
+    assert!(!harness::in_region(
+        &paddock,
+        "typed-into-the-split",
+        (1, 30),
+        (0, 34)
+    ));
+    assert!(sandbox.terminal("space-1:0.1").focused);
 }
 
 #[test]
@@ -283,8 +285,8 @@ fn c_a_a_to_a_split_hidden_by_a_zoom_gives_the_layout_back_focused_there() {
 
     paddock.command(b"a");
 
-    harness::wait_for_pane_sizes(&sandbox, &["0.0 34x29", "0.1 33x29"]);
-    assert_eq!(sandbox.display("space-1:0", "#{window_zoomed_flag}"), "0");
+    harness::wait_for_split_sizes(&sandbox, &["0.0 34x29", "0.1 33x29"]);
+    assert!(!sandbox.space("space-1").tabs[0].zoomed);
     paddock.wait_for("the border back", |_| {
         harness::cols(&paddock.rows()[1], 34, 35) == "│"
     });

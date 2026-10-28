@@ -9,6 +9,7 @@
 
 use super::splits::SplitDrag;
 use super::state::{App, Mode, TAB_BAR_ROWS};
+use crate::backend::TerminalId;
 use crate::input::mouse::WHEEL_LINES;
 use crate::input::{route_mouse, MouseAction};
 use crate::terminal::emulator::Emulator;
@@ -24,9 +25,9 @@ use std::process::{Command, Stdio};
 /// go the same way, even outside that pane.
 pub enum Press {
     /// Reported to the program in this pane.
-    Program(String),
+    Program(TerminalId),
     /// Selecting text in this pane; `dragged` once the pointer moved.
-    Select { pane: String, dragged: bool },
+    Select { terminal: TerminalId, dragged: bool },
     /// On the sidebar's border, pressed at screen row `row`; `dragged`
     /// once the pointer left the border's column (until then, a release is
     /// a click on that row).
@@ -89,7 +90,7 @@ impl App {
             }
         };
         let at = Position::new(m.column, m.row);
-        let over = self.rect_of(&copy.pane).is_some_and(|r| r.contains(at));
+        let over = self.rect_of(&copy.terminal).is_some_and(|r| r.contains(at));
         if over {
             self.copy_wheel(lines);
         }
@@ -97,16 +98,16 @@ impl App {
     }
 
     fn press(&mut self, m: MouseEvent) -> Result<bool> {
-        if let Some(Press::Select { pane, .. }) = self.press.take() {
+        if let Some(Press::Select { terminal: pane, .. }) = self.press.take() {
             if let Some(t) = self.terminals.get_mut(&pane) {
                 t.emulator_mut().clear_selection();
             }
         }
         let left = m.kind == MouseEventKind::Down(MouseButton::Left);
-        let hit = if self.float_pane().is_some() {
+        let hit = if self.float_terminal().is_some() {
             // While a float is shown, only presses inside it do anything.
-            // Its pane is never focused in tmux: that would make its
-            // window the session's current one.
+            // Its terminal is never focused in the backend: that would
+            // make the float its space's current page.
             self.under(m.column, m.row)
         } else {
             if let Some(changed) = self.press_outside_panes(m, left) {
@@ -137,7 +138,7 @@ impl App {
             MouseAction::Select => {
                 t.emulator_mut().select(row, col);
                 self.press = Some(Press::Select {
-                    pane,
+                    terminal: pane,
                     dragged: false,
                 });
             }
@@ -198,24 +199,22 @@ impl App {
         self.settle()
     }
 
-    /// Focus pane `pane` of the current tab, here at once and in tmux.
-    fn focus_pane(&mut self, pane: &str) {
-        let Some(window) = self
-            .current_space_mut()
-            .and_then(|i| i.current_window_mut())
-        else {
+    /// Focus pane `pane` of the current tab, here at once and in the
+    /// backend.
+    fn focus_pane(&mut self, pane: &TerminalId) {
+        let Some(tab) = self.current_space_mut().and_then(|i| i.current_tab_mut()) else {
             return;
         };
-        window.active = pane.to_string();
-        let id = window.id.clone();
-        self.report(|app| app.server.select(&id, Some(pane)));
+        tab.active = pane.clone();
+        let id = tab.id.clone();
+        self.report(|app| app.backend.select(&id, Some(pane)));
     }
 
     /// A drag or release: it goes where its press went, clamped to that pane.
     fn held(&mut self, m: MouseEvent) -> Result<bool> {
         let released = matches!(m.kind, MouseEventKind::Up(_));
         let pane = match &self.press {
-            Some(Press::Program(p) | Press::Select { pane: p, .. }) => p.clone(),
+            Some(Press::Program(p) | Press::Select { terminal: p, .. }) => p.clone(),
             Some(Press::Border { row, dragged }) => {
                 let (row, dragged) = (*row, *dragged);
                 return Ok(self.border_held(m, row, dragged));
@@ -288,7 +287,7 @@ impl App {
     fn hover(&mut self, m: MouseEvent) -> Result<bool> {
         // While a float is shown, the wheel only reaches it.
         let over_tab_bar = m.row < TAB_BAR_ROWS && m.column >= self.sidebar_width();
-        if over_tab_bar && self.float_pane().is_none() {
+        if over_tab_bar && self.float_terminal().is_none() {
             let step: isize = match m.kind {
                 MouseEventKind::ScrollUp => -1,
                 MouseEventKind::ScrollDown => 1,
@@ -318,7 +317,7 @@ impl App {
 
     /// The panes the mouse reaches, and where they are drawn: the float
     /// shown alone, else the current tab's.
-    fn mouse_rects(&self) -> Vec<(String, Rect)> {
+    fn mouse_rects(&self) -> Vec<(TerminalId, Rect)> {
         match self.float_rect() {
             Some(float) => vec![float],
             None => self.pane_rects(),
@@ -326,14 +325,14 @@ impl App {
     }
 
     /// The pane at a screen position, and where it is drawn.
-    fn under(&self, col: u16, row: u16) -> Option<(String, Rect)> {
+    fn under(&self, col: u16, row: u16) -> Option<(TerminalId, Rect)> {
         self.mouse_rects()
             .into_iter()
             .find(|(_, r)| r.contains(Position::new(col, row)))
     }
 
     /// Where pane `pane` is drawn, if the mouse reaches it.
-    fn rect_of(&self, pane: &str) -> Option<Rect> {
+    fn rect_of(&self, pane: &TerminalId) -> Option<Rect> {
         self.mouse_rects()
             .into_iter()
             .find(|(p, r)| p == pane && !r.is_empty())

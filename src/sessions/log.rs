@@ -1,7 +1,10 @@
-//! The hook event log: `<state>/events/<tmux server pid>.jsonl`, one JSON
-//! record per line. Hooks append with a single `write` each, so parallel
-//! hooks never interleave. One file per server, because tmux reuses pane ids
-//! after the server restarts.
+//! The hook event log: `<state>/events/<id>.jsonl` for a tmux server (its
+//! pid), `<state>/events/native-<id>.jsonl` for a native one (a random id
+//! per start), one JSON record per line. Hooks append with a single
+//! `write` each, so parallel hooks never interleave. One file per server,
+//! because a backend reuses terminal ids after its server restarts, and
+//! apart by backend, as a tmux server's pid may equal a native server's
+//! id.
 //!
 //! Events of external sessions (agents outside paddock's terminals) have no
 //! server: they go to `<state>/events/external.jsonl`, without a pane. The
@@ -9,13 +12,21 @@
 //! agent on the machine appends to it.
 
 use super::{external_key, AgentKind, HookRecord};
+use crate::backend::Instance;
+use crate::config::BackendKind;
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
-pub fn path(state_dir: &Path, server_pid: u32) -> PathBuf {
-    state_dir.join("events").join(format!("{server_pid}.jsonl"))
+/// The log of backend instance `instance`.
+pub fn path(state_dir: &Path, instance: Instance) -> PathBuf {
+    let id = instance.id;
+    let name = match instance.kind {
+        BackendKind::Tmux => format!("{id}.jsonl"),
+        BackendKind::Native => format!("native-{id}.jsonl"),
+    };
+    state_dir.join("events").join(name)
 }
 
 /// The log of external sessions' events.
@@ -121,19 +132,6 @@ fn records(bytes: &[u8]) -> Vec<HookRecord> {
         .split(|&b| b == b'\n')
         .filter_map(|l| serde_json::from_slice(l).ok())
         .collect()
-}
-
-/// The terminal a hook runs in, from `$TMUX` (`socket,pid,index`) and
-/// `$TMUX_PANE`: `(server pid, pane id)`, or `None` unless the socket is
-/// paddock's (`socket` is its name).
-pub fn terminal(tmux: &str, pane: &str, socket: &str) -> Option<(u32, String)> {
-    let mut parts = tmux.rsplitn(3, ',');
-    let _index = parts.next()?;
-    let pid = parts.next()?.parse().ok()?;
-    let path = parts.next()?;
-    let ours = Path::new(path).file_name()? == socket;
-    let pane_ok = pane.starts_with('%') && pane.len() > 1;
-    (ours && pane_ok).then(|| (pid, pane.to_string()))
 }
 
 /// The record for agent `kind`'s hook payload (JSON on stdin). An
@@ -319,16 +317,6 @@ mod tests {
     use super::*;
 
     const CLAUDE: AgentKind = AgentKind::Claude;
-
-    #[test]
-    fn only_paddocks_socket_counts() {
-        let t = "/private/tmp/tmux-501/paddock,4242,0";
-        assert_eq!(terminal(t, "%3", "paddock"), Some((4242, "%3".into())));
-        assert_eq!(terminal("/tmp/tmux-501/default,1,0", "%3", "paddock"), None);
-        assert_eq!(terminal(t, "", "paddock"), None);
-        assert_eq!(terminal("", "%3", "paddock"), None);
-        assert_eq!(terminal("garbage", "%3", "paddock"), None);
-    }
 
     #[test]
     fn an_external_record_has_no_pane_and_is_keyed_by_its_session_once_read() {
@@ -588,10 +576,23 @@ mod tests {
         assert_eq!(meta_description("/no/transcript", "a1"), None);
     }
 
+    fn instance(kind: BackendKind, id: u32) -> Instance {
+        Instance { kind, id }
+    }
+
+    #[test]
+    fn each_backends_logs_are_apart_even_with_the_same_id() {
+        let dir = Path::new("/s");
+        let tmux = path(dir, instance(BackendKind::Tmux, 42));
+        let native = path(dir, instance(BackendKind::Native, 42));
+        assert_eq!(tmux, Path::new("/s/events/42.jsonl"), "as before");
+        assert_eq!(native, Path::new("/s/events/native-42.jsonl"));
+    }
+
     #[test]
     fn the_reader_returns_new_complete_lines_only() {
         let dir = tempfile::tempdir().unwrap();
-        let p = path(dir.path(), 9);
+        let p = path(dir.path(), instance(BackendKind::Tmux, 9));
         let mut reader = Reader::new(p.clone());
         assert!(reader.read_new().is_empty(), "no file yet");
         append(&p, &record(CLAUDE, "Stop", "%1", "{}", 1)).unwrap();

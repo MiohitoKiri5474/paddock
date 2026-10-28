@@ -12,19 +12,6 @@ fn ready(sandbox: &Sandbox) -> Paddock {
     paddock
 }
 
-/// Every pane on the hidden server, as `pane_id pane_pid pane_dead`.
-fn panes(sandbox: &Sandbox) -> String {
-    sandbox
-        .tmux(&[
-            "list-panes",
-            "-a",
-            "-F",
-            "#{pane_id} #{pane_pid} #{pane_dead}",
-        ])
-        .trim()
-        .to_string()
-}
-
 #[test]
 fn accepting_take_over_closes_the_first_and_keeps_its_terminals() {
     let sandbox = Sandbox::new();
@@ -34,7 +21,7 @@ fn accepting_take_over_closes_the_first_and_keeps_its_terminals() {
     first.wait_for_text(PROMPT);
     first.type_line("echo marker-before-take-over");
     first.wait_for_text("marker-before-take-over\n");
-    let before = panes(&sandbox);
+    let before = sandbox.shells();
 
     let mut second = sandbox.launch();
     second.wait_for_text(TAKE_OVER);
@@ -42,7 +29,11 @@ fn accepting_take_over_closes_the_first_and_keeps_its_terminals() {
 
     assert!(first.wait_exit(), "the first paddock detaches cleanly");
     second.wait_for_tabs(&["1:home", "2:home"]);
-    assert_eq!(panes(&sandbox), before, "the same shells are still running");
+    assert_eq!(
+        sandbox.shells(),
+        before,
+        "the same shells are still running"
+    );
     second.command(b"2");
     second.wait_for_text("marker-before-take-over\n");
     second.type_line("echo after-take-over");

@@ -28,7 +28,7 @@ fn payload(name: &str, session: &str, cwd: &str) -> String {
         .replace("\"/tmp/repo\"", &format!("\"{cwd}\""))
 }
 
-/// Report `event` for a Claude session in the pane tmux target `terminal` names.
+/// Report `event` for a Claude session in the terminal `terminal` names.
 fn claude(sandbox: &Sandbox, terminal: &str, event: &str, session: &str) {
     sandbox.hook(terminal, event, &payload(event, session, "/w/repo"));
 }
@@ -48,12 +48,9 @@ fn two_tabs(sandbox: &Sandbox) -> Paddock {
     paddock
 }
 
-/// Window count of space-1.
+/// Tab count of space-1.
 fn tabs(sandbox: &Sandbox) -> usize {
-    sandbox
-        .tmux(&["list-windows", "-t", "space-1"])
-        .lines()
-        .count()
+    sandbox.space("space-1").tabs.len()
 }
 
 fn wait_for_tab_count(paddock: &Paddock, sandbox: &Sandbox, want: usize) {
@@ -62,7 +59,7 @@ fn wait_for_tab_count(paddock: &Paddock, sandbox: &Sandbox, want: usize) {
 
 fn wait_for_items(paddock: &Paddock, sandbox: &Sandbox, want: &[&str]) {
     paddock.wait_for(&format!("items {want:?}"), |_| {
-        sandbox.session_names() == want
+        sandbox.space_names() == want
     });
 }
 
@@ -220,7 +217,7 @@ fn f_on_a_space_forks_its_agent_into_a_new_tab_of_that_space() {
             "{canonical} --resume 0000bbbb-0000-4000-8000-00000000000b --fork-session"
         )]
     );
-    assert_eq!(sandbox.session_names(), ["space-1", "space-2"]);
+    assert_eq!(sandbox.space_names(), ["space-1", "space-2"]);
     // The keyboard is back in the new pane.
     paddock.type_line("echo in-the-fork");
     paddock.wait_for_text("in-the-fork\n");
@@ -248,7 +245,7 @@ fn closing_the_only_pane_of_a_spaces_only_tab_asks_to_close_the_space() {
     paddock.wait_for_popup("Close space", "an agent is running: close? y/n");
     paddock.send(b"n");
     paddock.wait_for_no_popup();
-    assert_eq!(sandbox.session_names(), ["space-1"]);
+    assert_eq!(sandbox.space_names(), ["space-1"]);
 }
 
 #[test]
@@ -295,5 +292,5 @@ fn a_busy_close_asked_from_the_sidebar_gives_the_sidebar_back() {
     paddock.wait_for_popup("Close tab", "an agent is running: close? y/n");
     paddock.send(b"y");
     wait_for_tab_count(&paddock, &sandbox, 1);
-    assert_eq!(sandbox.session_names(), ["space-1"]);
+    assert_eq!(sandbox.space_names(), ["space-1"]);
 }
