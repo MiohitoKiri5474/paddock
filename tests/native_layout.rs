@@ -276,9 +276,11 @@ const PROMPT_SUBMIT: &str = concat!(
     "/spikes/02-subagent-worktree/fixtures/UserPromptSubmit.json"
 );
 
-/// Whether the sidebar lists an agent (its kind beside its place).
-fn shows_the_agent(paddock: &Paddock) -> bool {
-    paddock.sidebar().iter().any(|l| l.ends_with("claude"))
+/// How many agents the sidebar lists (each with its kind beside its
+/// place).
+fn agents_shown(paddock: &Paddock) -> usize {
+    let sidebar = paddock.sidebar();
+    sidebar.iter().filter(|l| l.ends_with("claude")).count()
 }
 
 /// A server killed outright saves nothing as it ends: the next one
@@ -292,7 +294,7 @@ fn a_killed_server_restores_from_its_last_save_and_its_agents_end() {
     split_in(&mut paddock, &sandbox, &dir);
     let payload = std::fs::read_to_string(PROMPT_SUBMIT).unwrap();
     sandbox.hook("space-1:0.1", "UserPromptSubmit", &payload);
-    paddock.wait_for("the agent", |_| shows_the_agent(&paddock));
+    paddock.wait_for("the agent", |_| agents_shown(&paddock) == 1);
     wait_for_saved(&sandbox, 1, "/proj\"");
     let before = shape(&sandbox, "", "");
     let pid = server_pid(&sandbox.state_dir()).expect("a server");
@@ -310,11 +312,13 @@ fn a_killed_server_restores_from_its_last_save_and_its_agents_end() {
 
     again.wait_for_text("restored 1 space");
     assert_eq!(shape(&sandbox, "", ""), before);
-    again.wait_for("the sidebar", |_| {
-        again.sidebar().iter().any(|l| l.contains("AGENTS"))
-    });
-    std::thread::sleep(Duration::from_millis(500));
-    assert!(!shows_the_agent(&again), "{}", again.full_screen());
+    // A new session's event shows once the new server's log is read:
+    // the old one's would have shown by then, but is not in it.
+    let session = "11111111-2222-4333-8444-555555555555";
+    let new = payload.replace(session, "22222222-2222-4333-8444-555555555555");
+    sandbox.hook("space-1:0.0", "UserPromptSubmit", &new);
+    again.wait_for("the new agent", |_| agents_shown(&again) > 0);
+    assert_eq!(agents_shown(&again), 1, "{}", again.full_screen());
 }
 
 /// Only the app's start rebuilds a saved layout: the CLI's commands that

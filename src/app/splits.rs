@@ -100,11 +100,9 @@ impl App {
         let space = if !self.backend.keeps_current() {
             current
         } else {
-            if current.is_some() && current != self.told_current {
-                if let Some(id) = &current {
-                    self.backend.set_current_space(id)?;
-                }
-                self.told_current = current;
+            if let Some(id) = current.filter(|id| self.told_current.as_ref() != Some(id)) {
+                self.backend.set_current_space(&id)?;
+                self.told_current = Some(id);
             }
             None
         };

@@ -21,6 +21,7 @@ use super::terminal::{DirReader, HostedTerminal};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::fs::File;
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
@@ -111,9 +112,9 @@ impl SavedSpace {
 /// which [`Snapshot::read_dirs`] reads once the state is let go.
 pub struct Snapshot {
     layout: SavedLayout,
-    /// Where to read each terminal's directory, in the layout's order,
-    /// and the directory to keep while it cannot be read.
-    dirs: Vec<(Option<DirReader>, String)>,
+    /// Where to read each terminal's directory, in the layout's order
+    /// (`None` for a terminal not hosted, which keeps its placeholder).
+    dirs: Vec<Option<DirReader>>,
 }
 
 /// Take what `layout.json` keeps of `state`, with it locked: no read of
@@ -133,29 +134,31 @@ pub fn snapshot(state: &State) -> Snapshot {
 impl Snapshot {
     /// The layout, each terminal's directory read: its foreground
     /// program's, else its shell's, else (a shell not started yet, or
-    /// gone) its space's root.
+    /// gone) the placeholder [`saved_space`] left, its space's root.
     pub fn read_dirs(self) -> SavedLayout {
         let Self { mut layout, dirs } = self;
-        let mut dirs = dirs.into_iter();
+        // Spaces, tabs and each tree's terminals walk in the order
+        // `saved_space` pushed the readers in.
         let terminals = layout.spaces.iter_mut().flat_map(|s| &mut s.tabs);
-        for terminal in terminals.flat_map(|t| t.splits.terminals_mut()) {
-            if let Some((reader, root)) = dirs.next() {
-                terminal.dir = reader.and_then(DirReader::read).unwrap_or(root);
+        let terminals = terminals.flat_map(|t| t.splits.terminals_mut());
+        for (terminal, reader) in terminals.zip(dirs) {
+            if let Some(dir) = reader.and_then(DirReader::read) {
+                terminal.dir = dir;
             }
         }
         layout
     }
 }
 
-/// `space` as `layout.json` keeps it, each terminal's directory left to
-/// read from what it pushes on `dirs`.
-fn saved_space(space: &Space, dirs: &mut Vec<(Option<DirReader>, String)>) -> SavedSpace {
+/// `space` as `layout.json` keeps it, each terminal's directory its
+/// root for now: what reads the real one is pushed on `dirs`, one per
+/// terminal in the tree's order, which [`Snapshot::read_dirs`] follows.
+fn saved_space(space: &Space, dirs: &mut Vec<Option<DirReader>>) -> SavedSpace {
     let tabs = space.tabs.iter().map(|tab| {
         let terminals = tab.terminals();
         let focus = terminals.iter().position(|t| t == tab.active());
         let splits = tab.layout().save(&mut |id| {
-            let reader = space.hosted(id).map(HostedTerminal::dir_reader);
-            dirs.push((reader, space.root.clone()));
+            dirs.push(space.hosted(id).map(HostedTerminal::dir_reader));
             SavedTerminal {
                 dir: space.root.clone(),
             }
@@ -235,20 +238,32 @@ fn write(dir: &Path, layout: &SavedLayout) -> Result<()> {
     }
     let tmp = dir.join(format!("{FILE}.{}.tmp", std::process::id()));
     let text = serde_json::to_vec_pretty(layout).context("cannot encode the layout")?;
-    let written = (|| {
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&tmp)?;
-        file.write_all(&text)?;
-        // On disk before it replaces the old one: a reboot is one reason
-        // to restore.
-        file.sync_all()
-    })();
-    written.with_context(|| format!("cannot write {}", tmp.display()))?;
-    std::fs::rename(&tmp, &path).with_context(|| format!("cannot write {}", path.display()))
+    let written = write_synced(&tmp, &text)
+        .with_context(|| format!("cannot write {}", tmp.display()))
+        .and_then(|()| {
+            std::fs::rename(&tmp, &path).with_context(|| format!("cannot write {}", path.display()))
+        });
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written?;
+    // The rename on disk too: a reboot is one reason to restore.
+    File::open(dir)
+        .and_then(|d| d.sync_all())
+        .with_context(|| format!("cannot sync {}", dir.display()))
+}
+
+/// Write `text` to a new file at `path`, mode 0600, and wait until it is
+/// on disk.
+fn write_synced(path: &Path, text: &[u8]) -> std::io::Result<()> {
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(text)?;
+    file.sync_all()
 }
 
 /// Writes the layout to `layout.json` when it changes, at most once
