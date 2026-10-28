@@ -555,9 +555,10 @@ fn follow_names(shared: &Shared) {
 }
 
 /// `program` on a new PTY in `cwd` (a shell, or a float's command),
-/// with the hook variables of terminal `id`, and its threads. Called with the state locked (`state`), so its
-/// reader waits until the terminal is in it (and no other shell starts
-/// meanwhile, see [`pty::spawn`]).
+/// with the hook variables of terminal `id`, and its threads. Called
+/// with the state locked (`state`), so its reader waits until the
+/// terminal is in it (and no other shell starts meanwhile, see
+/// [`pty::spawn`]).
 fn start_terminal(
     shared: &Arc<Shared>,
     state: &State,
