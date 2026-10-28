@@ -2,7 +2,8 @@
 //!
 //! ```toml
 //! [backend]
-//! kind = "tmux"     # the default; "native" (experimental) is paddock's own server
+//! kind = "native"   # the default: paddock's own server; "tmux" is the legacy
+//!                   # hidden tmux server, kept until v0.2
 //! ```
 
 use super::FILE_NAME;
@@ -14,10 +15,11 @@ use std::path::Path;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum BackendKind {
-    /// The hidden tmux server (ADR 0001).
-    #[default]
+    /// The hidden tmux server (ADR 0001): the legacy backend, kept until
+    /// v0.2.
     Tmux,
-    /// paddock's own server, experimental while it is built.
+    /// paddock's own server (ADR 0007), the default.
+    #[default]
     Native,
 }
 
@@ -59,8 +61,8 @@ mod tests {
     use crate::config::Config;
 
     #[test]
-    fn the_backend_is_tmux_unless_set_and_unknown_kinds_are_rejected() {
-        assert_eq!(Config::default().backend, BackendKind::Tmux);
+    fn the_backend_is_native_unless_set_and_unknown_kinds_are_rejected() {
+        assert_eq!(Config::default().backend, BackendKind::Native);
         let c = Config::parse("[backend]\nkind = \"native\"\n").unwrap();
         assert_eq!(c.backend, BackendKind::Native);
         let tmux = Config::parse("[backend]\nkind = \"tmux\"\n").unwrap();
@@ -75,11 +77,14 @@ mod tests {
 
     #[test]
     fn the_kind_reads_alone_and_leniently_but_not_an_unknown_kind() {
-        assert_eq!(BackendKind::read("").unwrap(), BackendKind::Tmux);
+        assert_eq!(BackendKind::read("").unwrap(), BackendKind::Native);
         // Another section's mistake is paddock's to report, not this read's.
-        let other = "[keys.commands]\nnew_tab = 1\n[backend]\nkind = \"native\"\n";
-        assert_eq!(BackendKind::read(other).unwrap(), BackendKind::Native);
-        assert_eq!(BackendKind::read("not toml [").unwrap(), BackendKind::Tmux);
+        let other = "[keys.commands]\nnew_tab = 1\n[backend]\nkind = \"tmux\"\n";
+        assert_eq!(BackendKind::read(other).unwrap(), BackendKind::Tmux);
+        assert_eq!(
+            BackendKind::read("not toml [").unwrap(),
+            BackendKind::Native
+        );
         assert!(BackendKind::read("[backend]\nkind = \"zellij\"\n").is_err());
     }
 }

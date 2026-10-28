@@ -314,7 +314,7 @@ fn open(cx: &Context, from: Option<&Path>, target: &str, json: bool) -> Result<(
         None => {
             let name = shared::space_name(repo, &tree.main, &w);
             cx.new_space(&name, Path::new(&w.path))
-                .map_err(|e| Fail::new(Code::Git, format!("{e:#}")))?
+                .map_err(|e| Fail::new(Code::GitOrBackend, format!("{e:#}")))?
         }
     };
     if json {
