@@ -5,7 +5,7 @@ description: Make, open, list and delete git worktrees as paddock spaces with th
 
 # Worktrees with paddock
 
-`paddock worktree` makes a git worktree and opens a paddock space (a tmux session) in it, so the user sees the work in paddock's sidebar. It never prompts and never needs a TTY.
+`paddock worktree` makes a git worktree and opens a paddock space in it, so the user sees the work in paddock's sidebar. It never prompts and never needs a TTY.
 
 ## When to make one
 
@@ -63,7 +63,7 @@ Otherwise, work where you are.
 |---|---|---|
 | 0 | ok | go on |
 | 1 | usage or config error | fix the command; stderr says what is wrong |
-| 2 | git or tmux error | read git's reason on stderr; report it |
+| 2 | git or backend error | read git's reason on stderr; report it |
 | 3 | refused for a risk (uncommitted changes, unmerged commits, an agent running or waiting there, not made by paddock, the main checkout, you are inside it) | stop and ask the user, quoting stderr |
 | 4 | timeout; nothing deleted by the check (a `rm` past its checks may have closed spaces) | run `paddock worktree list --json`, then retry once if the worktree is still there; else tell the user |
 
