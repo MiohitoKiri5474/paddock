@@ -17,7 +17,7 @@ mod tmux;
 
 pub use border::Border;
 pub use ids::{FloatId, SpaceId, TabId, TerminalId};
-pub use native::{check_handover, serve, take_over, OtherVersion};
+pub use native::{check_handover, serve, take_over, NoHandover, OtherVersion};
 pub use old_tmux::OldTmuxServer;
 pub use structure::{Float, Split, Structure, Tab};
 
@@ -212,7 +212,7 @@ impl Backend {
     /// Hand the running native server's terminals to this paddock's own
     /// binary, which then runs as it, whatever protocol version it
     /// speaks (ADR 0009): its pid. An error says why not, and the server
-    /// runs on unchanged (`NoHandover` if it cannot hand over at all,
+    /// runs on unchanged ([`NoHandover`] if it cannot hand over at all,
     /// so [`Self::restart`] is left). An error on tmux.
     pub fn upgrade(&self) -> Result<u32> {
         match self {

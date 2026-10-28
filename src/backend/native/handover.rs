@@ -34,7 +34,10 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-/// The record's format: a new binary refuses a record of another.
+/// The record's format: a new binary refuses a record of another. A
+/// field added to the header gets `#[serde(default)]` and keeps it; a
+/// change that cannot bumps it, keeping a reader for the one before, so
+/// every later paddock can take over from every earlier one.
 pub const FORMAT: u32 = 1;
 /// What the probe prints, alone on a line, once it has read the record.
 pub const PROBE_OK: &str = "paddock handover ok";

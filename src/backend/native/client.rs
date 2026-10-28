@@ -66,7 +66,7 @@ impl std::fmt::Display for NoHandover {
         write!(
             f,
             "the paddock server (pid {}) gave no answer to the upgrade: it may be too old \
-             to hand its terminals over, so restart it instead (see server.log)",
+             to hand its terminals over (see server.log)",
             self.pid
         )
     }

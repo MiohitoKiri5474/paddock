@@ -8,7 +8,7 @@ Takes up the "possible later" of [ADR 0007](0007-native-backend-with-a-server.md
 2. **Freeze.** The server takes its state lock and keeps it to the end. With the lock held:
    - No reader holds output it has not fed: readers wait for output with `poll`, outside the lock, and read it only once they hold the lock. So what they have not read stays in the PTY for the next server to read.
    - No waiter has reaped a program it has not marked: a waiter sees an exit with `waitid(…, WNOWAIT)`, which leaves the program unreaped, and reaps it and marks its terminal under the lock.
-   - Every program has taken all its queued input. If some input still waits, the server lets go of the lock and looks again, for up to 2 s. Then it refuses ("input waits for vim"), rather than lose part of a paste.
+   - Every program has taken all its queued input. If some input still waits, the server lets go of the lock and looks again, for up to 2 s. Then it refuses ("input still waits for vim in %3"), rather than lose part of a paste.
    - `layout.json`'s writer is idle: the server also holds its lock.
 3. **The record.** The server writes what it hands over to a temp file in the state directory, removed as soon as it is open. The record has its own version (`handover::FORMAT`), apart from the client protocol, so two paddocks of different protocol versions can hand over as long as the new one reads the old one's format. It holds:
    - the instance id, the next id, the current space and the restored count;
@@ -16,6 +16,8 @@ Takes up the "possible later" of [ADR 0007](0007-native-backend-with-a-server.md
    - every terminal's id, shell pid, tty, size, whether it was reaped, and the number of its PTY's master descriptor;
    - the descriptors of `server.lock` and the listening socket;
    - each terminal's snapshot: the bytes a client attaches with (scrollback, both screens, cursor, modes, scroll region, modifyOtherKeys), as raw blobs after the JSON header.
+
+   So that every later paddock can still take over from this one, the format changes by two rules. A field added to the header gets a default (`#[serde(default)]`), and the format stays the same. A change that cannot work that way bumps `FORMAT`, and the new paddock keeps a reader for the format before it.
 4. **The probe.** The server runs `<exe> server --check-handover` with the record on stdin, for at most 10 s. Only exit 0 with `paddock handover ok` on stdout counts as a yes. A binary that does not know the format, or an older paddock that prints its usage, refuses, and its words go back to the command.
 5. **Exec.** The server clears close-on-exec on these descriptors, which keep their numbers:
    - the lock;
@@ -39,7 +41,7 @@ Takes up the "possible later" of [ADR 0007](0007-native-backend-with-a-server.md
 | --- | --- | --- |
 | Request | Server from before this ADR | It closes the connection; the command says it cannot hand over |
 | Request | Server ending | `Refused`, nothing changes |
-| Freeze | Input still waits after 2 s | `Refused("input waits for …")`, the lock is let go |
+| Freeze | Input still waits after 2 s | `Refused("input still waits for … in …")`, the lock is let go |
 | Record | Cannot write the temp file | `Refused(why)`, the lock is let go |
 | Probe | Binary missing, refuses, prints no token, or runs past 10 s (killed and reaped) | `Refused(its words)`, the lock is let go: the old server serves on, unchanged |
 | Exec | `exec` returns an error | Close-on-exec is put back, `Refused(why)`, the lock is let go |

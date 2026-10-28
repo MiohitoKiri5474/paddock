@@ -79,7 +79,14 @@ fn main() -> anyhow::Result<()> {
 /// to this binary, whatever protocol version it speaks (ADR 0009).
 fn upgrade_server() -> anyhow::Result<()> {
     let paths = paths::Paths::from_env()?;
-    let pid = backend::Backend::new(paths, config::BackendKind::Native).upgrade()?;
+    let pid = match backend::Backend::new(paths, config::BackendKind::Native).upgrade() {
+        Ok(pid) => pid,
+        Err(e) if e.downcast_ref::<backend::NoHandover>().is_some() => anyhow::bail!(
+            "{e:#}; to restart it instead, start paddock and answer yes \
+             (its programs end, and its layout comes back)"
+        ),
+        Err(e) => return Err(e),
+    };
     println!(
         "the paddock server (pid {pid}) now runs paddock {}, its programs running on",
         env!("CARGO_PKG_VERSION")
