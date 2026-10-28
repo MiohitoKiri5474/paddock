@@ -205,11 +205,13 @@ fn reattaching_while_output_streams_loses_and_doubles_nothing() {
     again.wait_for_text(&format!("n{LINES}\n"));
 
     // Read every line from the top of the scrollback down, a screen at a
-    // time (screens overlap), and check they run on one by one.
+    // time (screens overlap), and check they run on one by one. A line's
+    // first word only: the top row also holds the `[N/N]` label, and on
+    // Linux `clear` empties the scrollback, so `n1` is that row.
     let numbers = |p: &Paddock| -> Vec<u32> {
         let rows = p.rows();
         rows.iter()
-            .filter_map(|r| r.strip_prefix('n')?.parse().ok())
+            .filter_map(|r| r.split_whitespace().next()?.strip_prefix('n')?.parse().ok())
             .collect()
     };
     // Past the top: the view stops at the first line, `[N/N]`.
