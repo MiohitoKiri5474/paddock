@@ -1,12 +1,12 @@
 # paddock
 
-A terminal workspace for one person on one Mac. It keeps every terminal alive on its own background server (`paddock server`), draws them itself (tabs, splits, mouse, scrollback), and tracks coding agents' sessions (Claude Code, Gemini CLI and Antigravity CLI) and the branches they and their subagents work on, so you can see at a glance which ones need you.
+A terminal workspace for one person on one Mac (or Linux machine). It keeps every terminal alive on its own background server (`paddock server`), draws them itself (tabs, splits, mouse, scrollback), and tracks coding agents' sessions (Claude Code, Gemini CLI and Antigravity CLI) and the branches they and their subagents work on, so you can see at a glance which ones need you.
 
 Design: [docs/design.md](docs/design.md). Glossary: [CONTEXT.md](CONTEXT.md). Decisions: [docs/adr/](docs/adr/).
 
 ## Requirements
 
-- macOS (the release binary is for Apple Silicon only)
+- macOS, or Linux on the native backend (the release binary is for Apple Silicon only; build from source on Linux). On Linux, notifications and copying a selection still call macOS tools (`osascript`, `pbcopy`), so they do not work there yet
 - tmux (tested with 3.8), only for the legacy tmux backend (`[backend] kind = "tmux"`, kept until v0.2): `brew install tmux` (Homebrew installs it with paddock)
 - Claude Code, Gemini CLI and/or Antigravity CLI (for session tracking; Gemini CLI tested with 0.64, Antigravity CLI with 1.4.3)
 - Rust 1.85+, only to build from source
@@ -486,7 +486,7 @@ gemini extensions validate .        # the Gemini extension (agy installs it too)
 
 A release bumps the version in `Cargo.toml` (and `Cargo.lock`), `plugins/paddock/.claude-plugin/plugin.json` and `gemini-extension.json` together; `cargo test` fails while either manifest differs from `Cargo.toml`.
 
-CI runs the unit tests, then the end-to-end tests on each backend (native, and tmux with its tmux-only tests), on macOS, and uploads a release binary when the unit tests pass. Pushing a `v*` tag that matches the version in `Cargo.toml` builds the Apple Silicon tarball and opens a draft pre-release.
+CI runs the unit tests, then the end-to-end tests on each backend (native, and tmux with its tmux-only tests), on macOS, then the unit tests and the native end-to-end tests on Linux (x86_64), and uploads a release binary when the unit tests pass. Pushing a `v*` tag that matches the version in `Cargo.toml` builds the Apple Silicon tarball and opens a draft pre-release.
 
 ## License
 

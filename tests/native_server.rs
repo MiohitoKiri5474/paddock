@@ -68,7 +68,7 @@ fn the_server_hosts_the_shell_in_the_sandbox_and_answers_debug_state() {
     assert!(terminal
         .tty
         .as_deref()
-        .is_some_and(|t| t.starts_with("/dev/ttys")));
+        .is_some_and(|t| t.starts_with("/dev/ttys") || t.starts_with("/dev/pts/")));
     assert_eq!(terminal.command.as_deref(), Some("zsh"));
     let mode = std::fs::metadata(sandbox.state_dir().join("server.sock")).unwrap();
     use std::os::unix::fs::PermissionsExt;

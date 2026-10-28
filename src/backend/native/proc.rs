@@ -1,6 +1,6 @@
 //! What the operating system says of a process (its name and directory),
 //! and a random number: the native server's platform seam. macOS asks
-//! `libproc`.
+//! `libproc`, Linux reads `/proc`.
 
 /// Process `pid`'s name (its command, as `ps -c` shows it).
 #[cfg(target_os = "macos")]
@@ -43,6 +43,39 @@ pub fn cwd(pid: i32) -> Option<String> {
 pub fn random() -> u32 {
     // SAFETY: arc4random has no preconditions.
     unsafe { libc::arc4random() }
+}
+
+/// Process `pid`'s name: its executable's, as `ps -c` shows it, cut to
+/// 15 bytes by the kernel.
+#[cfg(target_os = "linux")]
+pub fn name(pid: i32) -> Option<String> {
+    let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).ok()?;
+    Some(comm.trim_end_matches('\n').to_string()).filter(|n| !n.is_empty())
+}
+
+/// Process `pid`'s current directory (`None` once it is deleted).
+#[cfg(target_os = "linux")]
+pub fn cwd(pid: i32) -> Option<String> {
+    let path = std::fs::read_link(format!("/proc/{pid}/cwd")).ok()?;
+    let path = path.to_string_lossy().into_owned();
+    (!path.is_empty() && !path.ends_with(" (deleted)")).then_some(path)
+}
+
+/// A random number.
+#[cfg(target_os = "linux")]
+pub fn random() -> u32 {
+    let mut buf = [0u8; 4];
+    // SAFETY: getrandom writes at most `buf.len()` bytes to the buffer.
+    let n = unsafe { libc::getrandom(buf.as_mut_ptr().cast(), buf.len(), 0) };
+    if usize::try_from(n).ok() != Some(buf.len()) {
+        // Never short for 4 bytes once the pool is ready; fall back to
+        // the clock rather than fail a server's start.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        return now.subsec_nanos() ^ std::process::id();
+    }
+    u32::from_ne_bytes(buf)
 }
 
 #[cfg(test)]

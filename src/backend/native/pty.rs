@@ -59,11 +59,14 @@ pub fn spawn(
         .stdin(Stdio::from(slave.try_clone()?))
         .stdout(Stdio::from(slave.try_clone()?))
         .stderr(Stdio::from(slave));
+    // macOS's request is a u32, Linux's already the c_ulong ioctl takes.
+    #[allow(clippy::useless_conversion)]
+    let make_controlling: libc::c_ulong = libc::TIOCSCTTY.into();
     // SAFETY: only async-signal-safe calls between fork and exec.
     unsafe {
-        child.pre_exec(|| {
+        child.pre_exec(move || {
             // A session of its own, with the PTY as its controlling tty.
-            if libc::setsid() < 0 || libc::ioctl(0, libc::TIOCSCTTY.into(), 0) < 0 {
+            if libc::setsid() < 0 || libc::ioctl(0, make_controlling, 0) < 0 {
                 return Err(std::io::Error::last_os_error());
             }
             Ok(())
@@ -92,7 +95,8 @@ fn open((cols, rows): (u16, u16)) -> Result<(OwnedFd, OwnedFd)> {
             &mut slave,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
-            &mut size,
+            // A raw pointer: macOS's openpty takes it mutable, Linux's not.
+            std::ptr::from_mut(&mut size),
         )
     };
     if ok != 0 {
@@ -169,7 +173,12 @@ mod tests {
             &env,
         )
         .unwrap();
-        assert!(pty.tty.starts_with("/dev/ttys"), "{}", pty.tty);
+        // macOS names a PTY /dev/ttysNNN, Linux /dev/pts/N.
+        assert!(
+            pty.tty.starts_with("/dev/ttys") || pty.tty.starts_with("/dev/pts/"),
+            "{}",
+            pty.tty
+        );
         let pid = i32::try_from(pty.child.id()).unwrap();
         // The shell leads its own session, in the PTY's foreground.
         let start = std::time::Instant::now();
