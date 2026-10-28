@@ -117,7 +117,11 @@ impl Client {
         match UnixStream::connect(socket) {
             // None runs (a socket left behind refuses).
             Err(_) => Ok(()),
-            Ok(mut stream) => protocol::hello(&mut stream, true, 0).map(drop),
+            Ok(mut stream) => match protocol::hello(&mut stream, true, 0) {
+                // It ended as it was asked: none runs now.
+                Err(e) if no_server(&e) => Ok(()),
+                hello => hello.map(drop),
+            },
         }
     }
 
