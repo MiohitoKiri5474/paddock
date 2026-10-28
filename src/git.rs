@@ -189,10 +189,14 @@ pub fn current_branch(dir: &str) -> Option<String> {
 /// What is checked out in `dir`: its branch, else (detached) the short
 /// commit id; `None` outside a repository.
 pub fn head(dir: &str) -> Option<String> {
-    current_branch(dir).or_else(|| {
-        let sha = git(dir, &["rev-parse", "--short", "HEAD"])?;
-        Some(sha.trim().to_string()).filter(|s| !s.is_empty())
-    })
+    current_branch(dir).or_else(|| short_commit(dir))
+}
+
+/// The short id of the commit checked out in `dir`; `None` outside a
+/// repository or before its first commit.
+pub fn short_commit(dir: &str) -> Option<String> {
+    let sha = git(dir, &["rev-parse", "--short", "HEAD"])?;
+    Some(sha.trim().to_string()).filter(|s| !s.is_empty())
 }
 
 /// The repository's default branch: what `origin/HEAD` points at, else the
@@ -437,12 +441,23 @@ fn reason(said: &str) -> Option<String> {
 
 /// `branch`'s status, read in `dir`.
 pub fn status(dir: &str, branch: &str) -> Status {
+    let here = current_branch(dir).as_deref() == Some(branch);
+    status_with(dir, branch, here)
+}
+
+/// The status of `branch`, known to be checked out in `dir` (as
+/// [`current_branch`] just said): [`status`] without asking again.
+pub fn checked_out_status(dir: &str, branch: &str) -> Status {
+    status_with(dir, branch, true)
+}
+
+/// `branch`'s status in `dir`, its uncommitted changes read only if
+/// `checked_out` there.
+fn status_with(dir: &str, branch: &str, checked_out: bool) -> Status {
     let range = format!("refs/heads/{branch}...{branch}@{{upstream}}");
     let ahead_behind =
         git(dir, &["rev-list", "--left-right", "--count", &range]).and_then(|o| parse_counts(&o));
-    let changes = (current_branch(dir).as_deref() == Some(branch))
-        .then(|| changes(dir))
-        .flatten();
+    let changes = checked_out.then(|| changes(dir)).flatten();
     Status {
         ahead_behind,
         changes,

@@ -197,9 +197,12 @@ fn c_a_a_cycles_through_sessions_that_need_you() {
         vt100::Color::Idx(3),
         vt100::Color::Idx(2),
     );
-    // Rows: 0 SPACES, 1-4 two spaces, 5 blank, 6 AGENTS, 7 the waiting agent.
-    assert_eq!(paddock.sidebar()[7], " ● waiting             waiting");
-    assert_eq!(paddock.colors(7, 23), (black, yellow));
+    // Rows: 0 SPACES, 1-4 two spaces, 5 blank, 6 AGENTS, then the agents
+    // in space and tab order, not by state: idle (7), running (10), and the
+    // waiting agent last (13), though `C-a a` went to it first.
+    assert_eq!(paddock.sidebar()[7], " ● idle                   idle");
+    assert_eq!(paddock.sidebar()[13], " ● waiting             waiting");
+    assert_eq!(paddock.colors(13, 23), (black, yellow));
     paddock.command(b"w");
     paddock.send(b"k\r");
     paddock.wait_for_tabs(&["1:● claude", "2:claude"]);

@@ -40,8 +40,10 @@ pub enum State {
 }
 
 impl State {
-    /// Sort order of rows: waiting, done, idle, running, then unknown. A
-    /// stopped session (one that ended) has no row.
+    /// Urgency, most urgent first: waiting, done, idle, running, then
+    /// unknown. It picks a space's dot, a tab's marker and where `C-a a`
+    /// goes; rows never sort by it. A stopped session (one that ended) has
+    /// no row.
     pub fn rank(self) -> u8 {
         match self {
             State::Waiting => 0,
@@ -2056,7 +2058,7 @@ mod tests {
     }
 
     #[test]
-    fn rows_sort_waiting_done_idle_running_stopped_unknown() {
+    fn urgency_ranks_waiting_done_idle_running_stopped_unknown() {
         let mut all = [
             State::Unknown,
             State::Stopped,

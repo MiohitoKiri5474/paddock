@@ -7,7 +7,7 @@
 //!  ● api-server
 //!    ~/project/api  main
 //!    paddock
-//!    ~/p/paddock  feat/x  #42 ✓
+//!    ~/p/paddock  feat/x  +200 −10 ↑2↓1  #42 ✓
 //!
 //!  AGENTS
 //!  ● api-server  waiting
@@ -20,9 +20,17 @@
 //!
 //! A space's dot shows the most urgent state of the agents in it (none
 //! without agents); its second line, dim, shows its directory and the git
-//! branch checked out there, then, at the end and only where it fits after
-//! both uncut, the branch's pull request: its number in its state's colour
-//! and its checks mark (`✓`, `✗`, `•`). A space in a linked worktree is
+//! branch checked out there. After both, uncut, come the branch's status
+//! (as the dashboard writes it: its line changes `+200` in green and `−10`
+//! in red, then commits ahead of and behind upstream `↑2↓1`, dim; parts at
+//! zero left out, nothing for a detached HEAD or outside a repository; no
+//! colour on the selected, reversed, line), then, two cells or more on, at
+//! the end, the branch's pull request: its number in its state's colour
+//! and its checks mark (`✓`, `✗`, `•`). Each shows only where it fits
+//! whole; short of room for both, the PR mark goes first, so the status
+//! stays (the mark still shows alone when only it fits). The status is
+//! read on the git thread with the directory and branch, never per frame.
+//! A space in a linked worktree is
 //! listed one cell further in, under its repository's main-checkout space,
 //! or under a dim header with the repository's name when no space is in
 //! the main checkout:
@@ -41,11 +49,13 @@
 //! second line is dim and names its space and tab; the current agent (the
 //! one in the focused terminal) has the current space's background too.
 //! While the sidebar has the keyboard, the selected space or agent is drawn
-//! reversed. External sessions (agents outside paddock's terminals) close
-//! AGENTS under their own header, dim, their second line naming their branch
-//! (else their directory).
+//! reversed. Agents stay in space, tab and split order: a state change never
+//! moves one. External sessions (agents outside paddock's terminals) close
+//! AGENTS under their own header, dim, in label order, their second line
+//! naming their branch (else their directory).
 
-use super::{pr_style, STATE_DOT};
+use super::{pr_style, StatusText, STATE_DOT, STATUS_SEP};
+use crate::git::Status;
 use crate::github::Pr;
 use crate::sessions::{AgentKind, State};
 use ratatui::buffer::Buffer;
@@ -72,6 +82,10 @@ pub struct SpaceLine {
     pub path: Option<String>,
     /// The branch (or detached commit) checked out there, if a repository.
     pub branch: Option<String>,
+    /// That branch's git status, once read: its uncommitted changes and
+    /// commits ahead of and behind upstream, after the branch where they
+    /// fit.
+    pub status: Option<Status>,
     /// That branch's pull request, if `gh` gave one: marked after the
     /// branch where it fits.
     pub pr: Option<Pr>,
@@ -312,16 +326,37 @@ impl Sidebar<'_> {
                 };
                 let branch = s.branch.as_deref();
                 put(x, &place(path, branch, room), dim);
-                // The PR's mark at the end, only where it fits after the
-                // whole place: the directory and branch are never cut
-                // for it.
+                // After the whole place (the directory and branch are never
+                // cut for them): the branch's status, where it fits whole,
+                // then the PR's mark at the end, where it fits after that.
+                // Short of room for both, the mark goes first. On the
+                // selected (reversed) line the status keeps no colour, which
+                // would turn into a background there.
+                let mut used = place_width(path, branch);
+                let coloured = !base.add_modifier.contains(Modifier::REVERSED);
+                let parts = s
+                    .status
+                    .as_ref()
+                    .map(|st| status_parts(st, coloured))
+                    .unwrap_or_default();
+                let width: usize = parts.iter().map(|(t, _)| t.width()).sum();
+                if !parts.is_empty() && used + PART_GAP.width() + width <= room {
+                    let mut at = x.saturating_add(cells(used));
+                    at = put(at, PART_GAP, dim);
+                    for (text, style) in &parts {
+                        at = put(at, text, *style);
+                    }
+                    // The mark keeps two cells from the status too, as
+                    // `end_x` keeps one or more.
+                    used += PART_GAP.width() + width + 1;
+                }
                 let Some(pr) = &s.pr else {
                     return;
                 };
                 let number = format!("#{}", pr.number);
                 let checks = pr.checks.map(|c| format!(" {}", c.mark()));
                 let mark = number.width() + checks.as_deref().map_or(0, str::width);
-                if let Some(at) = end_x(x, place_width(path, branch), mark, end) {
+                if let Some(at) = end_x(x, used, mark, end) {
                     let at = put(at, &number, pr_style(pr.state));
                     if let Some(checks) = &checks {
                         put(at, checks, dim);
@@ -343,12 +378,50 @@ impl Sidebar<'_> {
     }
 }
 
+/// What goes between a space's branch and its status, and between its
+/// status and the PR mark.
+const PART_GAP: &str = "  ";
+
+/// A space's branch status as drawn after its branch, piece by piece: its
+/// line changes added (green) and removed (red), then its commits ahead of
+/// and behind upstream (dim), as the dashboard writes them (see
+/// [`StatusText`]); without colour unless `coloured`. Empty when there is
+/// nothing to show.
+fn status_parts(status: &Status, coloured: bool) -> Vec<(String, Style)> {
+    let text = StatusText::of(status);
+    let dim = Style::default().add_modifier(Modifier::DIM);
+    let colour = |c: Color| {
+        if coloured {
+            Style::default().fg(c)
+        } else {
+            Style::default()
+        }
+    };
+    let mut parts = Vec::new();
+    if let Some((added, removed)) = text.added_removed {
+        parts.push((added, colour(Color::Green)));
+        parts.push((STATUS_SEP.to_string(), dim));
+        parts.push((removed, colour(Color::Red)));
+    }
+    if !text.arrows.is_empty() {
+        if !parts.is_empty() {
+            parts.push((STATUS_SEP.to_string(), dim));
+        }
+        parts.push((text.arrows, dim));
+    }
+    parts
+}
+
+/// `w` cells as a screen offset, saturating.
+fn cells(w: usize) -> u16 {
+    u16::try_from(w).unwrap_or(u16::MAX)
+}
+
 /// Where something `width` cells wide (a kind tag, a PR mark) starts so
 /// that it ends at `end`, if it fits after `text` cells of text drawn from
 /// `x`, a cell or more apart.
 /// The text is never cut for it.
 fn end_x(x: u16, text: usize, width: usize, end: u16) -> Option<u16> {
-    let cells = |w: usize| u16::try_from(w).unwrap_or(u16::MAX);
     let at = end.saturating_sub(cells(width));
     (at > x.saturating_add(cells(text))).then_some(at)
 }
@@ -449,6 +522,7 @@ mod tests {
             current,
             path: Some(format!("~/p/{name}")),
             branch: None,
+            status: None,
             pr: None,
             linked: false,
         }
@@ -803,6 +877,97 @@ mod tests {
         assert_eq!(buf[(16, 2)].fg, Color::Green);
         assert!(!buf[(16, 2)].modifier.contains(Modifier::DIM));
         assert!(buf[(21, 2)].modifier.contains(Modifier::DIM));
+    }
+
+    /// The second line of one space `s`, drawn `width` cells wide (border
+    /// included), its end trimmed, and the buffer.
+    fn second_line(s: SpaceLine, width: u16) -> (String, Buffer) {
+        let area = Rect::new(0, 0, width, 3);
+        let mut buf = Buffer::empty(area);
+        render(&entries(&[s]), &[], None, GREY, area, &mut buf);
+        let line = text(&buf, 2).trim_end_matches([' ', '│']).to_string();
+        (line, buf)
+    }
+
+    #[test]
+    fn a_spaces_status_follows_its_branch_and_the_pr_mark_drops_first() {
+        let status = Status {
+            ahead_behind: Some((2, 1)),
+            changes: Some((200, 10)),
+        };
+        let pr = Some(Pr::sample(42, PrState::Open, Some(Checks::Passing), None));
+        let s = SpaceLine {
+            status: Some(status),
+            ..on("~/p/paddock", "feat/x", pr)
+        };
+        let line = |width| second_line(s.clone(), width).0;
+        let place = "   ~/p/paddock  feat/x";
+        let status = "  +200 −10 ↑2↓1";
+        // Room for all: the status after the branch, the mark at the end,
+        // two cells or more after it.
+        assert_eq!(line(46), format!("{place}{status}  #42 ✓"));
+        assert_eq!(line(50), format!("{place}{status}{}#42 ✓", " ".repeat(6)));
+        // A cell short for the mark: the mark goes, the status stays.
+        assert_eq!(line(45), format!("{place}{status}"));
+        assert_eq!(line(39), format!("{place}{status}"));
+        // Short of room for the status whole: it goes, the mark fits alone.
+        assert_eq!(line(38), format!("{place}{}#42 ✓", " ".repeat(9)));
+        assert_eq!(line(30), format!("{place} #42 ✓"));
+        // Neither: the place alone, uncut.
+        assert_eq!(line(29), place);
+        let (_, buf) = second_line(s.clone(), 45);
+        // `+200` green, `−10` red, the arrows dim, on the line's style.
+        let at = |x: u16| &buf[(x, 2)];
+        assert_eq!((at(24).symbol(), at(24).fg), ("+", Color::Green));
+        assert_eq!((at(29).symbol(), at(29).fg), ("−", Color::Red));
+        assert_eq!(at(33).symbol(), "↑");
+        assert!(at(33).modifier.contains(Modifier::DIM));
+        assert!(!at(24).modifier.contains(Modifier::DIM));
+        let current = SpaceLine {
+            current: true,
+            ..s.clone()
+        };
+        let (_, buf) = second_line(current, 45);
+        assert_eq!(buf[(24, 2)].bg, GREY, "the current background stays");
+    }
+
+    #[test]
+    fn a_selected_spaces_status_has_no_colour_to_turn_into_a_background() {
+        let s = SpaceLine {
+            status: Some(Status {
+                ahead_behind: None,
+                changes: Some((3, 1)),
+            }),
+            ..on("~/r", "main", None)
+        };
+        let area = Rect::new(0, 0, 30, 3);
+        let mut buf = Buffer::empty(area);
+        render(&entries(&[s]), &[], Some(0), GREY, area, &mut buf);
+        let line = text(&buf, 2);
+        assert_eq!(line.trim_end_matches([' ', '│']), "   ~/r  main  +3 −1");
+        for x in [14, 17] {
+            let cell = &buf[(x, 2)];
+            assert!(cell.modifier.contains(Modifier::REVERSED), "selected");
+            assert_eq!((cell.fg, cell.bg), (Color::Reset, Color::Reset), "{x}");
+        }
+    }
+
+    #[test]
+    fn a_spaces_status_shows_only_what_is_not_zero() {
+        let with = |ahead_behind, changes| SpaceLine {
+            status: Some(Status {
+                ahead_behind,
+                changes,
+            }),
+            ..on("~/r", "main", None)
+        };
+        let line = |s| second_line(s, 30).0;
+        assert_eq!(line(with(Some((0, 3)), None)), "   ~/r  main  ↓3");
+        assert_eq!(line(with(None, Some((5, 0)))), "   ~/r  main  +5 −0");
+        // Clean and even with upstream, or a detached HEAD (nothing read):
+        // nothing after the branch.
+        assert_eq!(line(with(Some((0, 0)), Some((0, 0)))), "   ~/r  main");
+        assert_eq!(line(with(None, None)), "   ~/r  main");
     }
 
     #[test]

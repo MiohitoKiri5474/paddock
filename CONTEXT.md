@@ -41,7 +41,7 @@ What hosts the terminals: paddock's own server (the native backend), or the hidd
 _Avoid_: engine, runtime
 
 **Sidebar**:
-The panel on the left, which can be shown or hidden: SPACES, two lines per space with a dot for the most urgent state of its agents, then its directory and branch and that branch's PR mark (`#123 ✓`) where it fits, then AGENTS, two lines per main agent in any space with its state, space and tab, and its agent kind's tag where it fits, external sessions last.
+The panel on the left, which can be shown or hidden: SPACES, two lines per space with a dot for the most urgent state of its agents, then its directory and branch, that branch's git status (`+200 −10 ↑2↓1`: uncommitted lines, commits ahead and behind) and its PR mark (`#123 ✓`) where each fits (the PR mark dropped first), then AGENTS, two lines per main agent in any space with its state, space and tab, and its agent kind's tag where it fits, in space and tab order (a state change never moves one), external sessions last.
 
 **Agent**:
 A main agent in the sidebar's AGENTS section. Subagents show only in the dashboard.
@@ -159,7 +159,7 @@ A repository's first working tree, the one `git clone` or `git init` made; the o
 _Avoid_: main worktree, root repo
 
 **Line changes**:
-Uncommitted lines added and removed in a task's working tree, shown as `+30 −144`.
+Uncommitted lines added and removed in a working tree, shown as `+30 −144`: a task's on the dashboard, and a space's (on its branch) in the sidebar, after its branch.
 _Avoid_: diff
 
 **Base diff**:

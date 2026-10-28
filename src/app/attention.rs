@@ -195,14 +195,18 @@ impl Attention {
     }
 }
 
-/// The row after the focused terminal's among those waiting or idle, in
-/// sidebar order and wrapping around; the first one if it is not among them.
-/// External sessions are skipped: there is no terminal to jump to.
+/// The row after the focused terminal's among those that need you, most
+/// urgent first (waiting, done, idle; sidebar order within a state, as the
+/// rows themselves are never sorted by state) and wrapping around; the
+/// most urgent one if the focused terminal's is not among them. External
+/// sessions are skipped: there is no terminal to jump to.
 pub fn next_needing<'a>(rows: &'a [Row], focused: Option<&str>) -> Option<&'a Row> {
-    let needy: Vec<&Row> = rows
+    let mut needy: Vec<&Row> = rows
         .iter()
         .filter(|r| r.state.needs_you() && !r.external)
         .collect();
+    // Stable: sidebar order within a state.
+    needy.sort_by_key(|r| r.state.rank());
     let at = needy.iter().position(|r| Some(r.pane.as_str()) == focused);
     let next = at.map_or(0, |i| (i + 1) % needy.len());
     needy.get(next).copied()
@@ -757,5 +761,23 @@ mod tests {
         assert_eq!(next(None), Some("w"));
         let running = [row("r", State::Running)];
         assert!(next_needing(&running, None).is_none());
+    }
+
+    #[test]
+    fn next_needing_picks_the_most_urgent_whatever_the_row_order() {
+        // Rows follow their tabs, not their states: an idle agent can come
+        // before a waiting one.
+        let rows = [
+            row("i", State::Idle),
+            row("d", State::Done),
+            row("w", State::Waiting),
+            row("w2", State::Waiting),
+        ];
+        let next = |focused| next_needing(&rows, focused).map(|r| r.pane.as_str());
+        assert_eq!(next(None), Some("w"));
+        assert_eq!(next(Some("w")), Some("w2"));
+        assert_eq!(next(Some("w2")), Some("d"));
+        assert_eq!(next(Some("d")), Some("i"));
+        assert_eq!(next(Some("i")), Some("w"));
     }
 }
