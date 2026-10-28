@@ -4,7 +4,7 @@
 //! [`Event`] on its [`Connection`]. Two backends fill it in, picked by
 //! `[backend] kind`: tmux (ADR 0001), whose commands, formats,
 //! notifications and ids stay in [`tmux`], and paddock's own server, in
-//! [`native`], which hosts one space with one terminal so far. Nothing
+//! [`native`], which hosts one space with its tabs and splits so far. Nothing
 //! outside this module knows which one runs.
 
 mod border;
@@ -317,7 +317,7 @@ impl Backend {
     pub fn new_tab(&self, space: &SpaceId, cwd: &Path) -> Result<TerminalId> {
         match self {
             Self::Tmux(t) => t.new_window(space.as_str(), cwd),
-            Self::Native(_) => Err(native::unsupported("new tabs")),
+            Self::Native(n) => n.new_tab(space, cwd),
         }
     }
 
@@ -341,7 +341,7 @@ impl Backend {
     pub fn swap_tabs(&self, a: &TabId, b: &TabId) -> Result<()> {
         match self {
             Self::Tmux(t) => t.swap_windows(a.as_str(), b.as_str()),
-            Self::Native(_) => Err(native::unsupported("moving tabs")),
+            Self::Native(n) => n.swap_tabs(a, b),
         }
     }
 
@@ -374,7 +374,7 @@ impl Backend {
     pub fn split(&self, terminal: &TerminalId, columns: bool, cwd: &Path) -> Result<TerminalId> {
         match self {
             Self::Tmux(t) => t.split(terminal.as_str(), columns, cwd),
-            Self::Native(_) => Err(native::unsupported("splits")),
+            Self::Native(n) => n.split(terminal, columns, cwd),
         }
     }
 
@@ -391,8 +391,7 @@ impl Backend {
     pub fn focus_towards(&self, terminal: &TerminalId, dir: Direction) -> Result<()> {
         match self {
             Self::Tmux(t) => t.select_towards(terminal.as_str(), dir),
-            // Alone in its tab: there is none.
-            Self::Native(_) => Ok(()),
+            Self::Native(n) => n.focus_towards(terminal, dir),
         }
     }
 
@@ -400,7 +399,7 @@ impl Backend {
     pub fn spread(&self, terminal: &TerminalId) -> Result<()> {
         match self {
             Self::Tmux(t) => t.spread(terminal.as_str()),
-            Self::Native(_) => Err(native::unsupported("splits")),
+            Self::Native(n) => n.spread(terminal),
         }
     }
 
@@ -408,7 +407,7 @@ impl Backend {
     pub fn zoom(&self, terminal: &TerminalId) -> Result<()> {
         match self {
             Self::Tmux(t) => t.zoom(terminal.as_str()),
-            Self::Native(_) => Err(native::unsupported("zoom")),
+            Self::Native(n) => n.zoom(terminal),
         }
     }
 
@@ -417,7 +416,7 @@ impl Backend {
     pub fn resize(&self, terminal: &TerminalId, dir: Direction, cells: u16) -> Result<()> {
         match self {
             Self::Tmux(t) => t.resize(terminal.as_str(), dir, cells),
-            Self::Native(_) => Err(native::unsupported("resizing splits")),
+            Self::Native(n) => n.resize(terminal, dir, cells),
         }
     }
 
@@ -426,8 +425,7 @@ impl Backend {
     pub fn border_at(&self, tab: &TabId, x: u16, y: u16) -> Result<Option<Border>> {
         match self {
             Self::Tmux(t) => t.border_at(tab.as_str(), x, y),
-            // One terminal per tab: no borders.
-            Self::Native(_) => Ok(None),
+            Self::Native(n) => n.border_at(tab, x, y),
         }
     }
 
@@ -436,7 +434,7 @@ impl Backend {
     pub fn drag_border(&self, border: &Border, size: u16) -> Result<()> {
         match self {
             Self::Tmux(t) => t.resize_to(border.terminal.as_str(), border.columns(), size),
-            Self::Native(_) => Err(native::unsupported("resizing splits")),
+            Self::Native(n) => n.drag_border(border, size),
         }
     }
 

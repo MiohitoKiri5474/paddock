@@ -1,19 +1,24 @@
 //! paddock as the native server's client: one short connection per
-//! request, and one long one for the attached space ([`Attached`]). Only
+//! request (but one kept for a border drag's many, see
+//! [`Client::drag_border`]), and one long one for the attached space
+//! ([`Attached`]). Only
 //! making a space starts the server; every other request finds none
 //! running and says so ([`NotRunning`]), or, if it only asks, has nothing
 //! for an answer. A server this paddock cannot talk to is an error.
 
+use super::axis::Axis;
 use super::protocol::{
     self, Answer, Closed, Ending, Frame, Message, Notice, Peer, Refusal, Request,
 };
 use super::server::log_path;
 use super::socket_path;
+use crate::backend::border::{Anchor, Border};
 use crate::backend::env::clean_env;
 use crate::backend::{
     Event, ListedSpace, Replay, SpaceId, SpaceTerminal, Structure, TabId, TerminalDetails,
     TerminalId,
 };
+use crate::input::Direction;
 use crate::paths::Paths;
 use anyhow::{anyhow, bail, Context, Result};
 use std::collections::HashMap;
@@ -21,6 +26,7 @@ use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// No server runs (nothing listens on its socket).
@@ -75,11 +81,16 @@ const POLL: Duration = Duration::from_millis(20);
 #[derive(Clone, Debug)]
 pub struct Client {
     paths: Paths,
+    /// The connection border drags share (see [`Self::drag_border`]).
+    drag: Arc<Mutex<Option<UnixStream>>>,
 }
 
 impl Client {
     pub fn new(paths: Paths) -> Self {
-        Self { paths }
+        Self {
+            paths,
+            drag: Arc::default(),
+        }
     }
 
     /// A connection to the running server, past the hello; an error if
@@ -240,6 +251,109 @@ impl Client {
 
     pub fn close_terminal(&self, terminal: &TerminalId) -> Result<()> {
         self.done(Request::CloseTerminal(terminal.clone()))
+    }
+
+    fn started(&self, request: Request) -> Result<TerminalId> {
+        match self.request(request)? {
+            Answer::Terminal(id) => Ok(id),
+            other => Err(unexpected(&other)),
+        }
+    }
+
+    pub fn new_tab(&self, space: &SpaceId, cwd: &Path) -> Result<TerminalId> {
+        self.started(Request::NewTab {
+            space: space.clone(),
+            cwd: cwd.into(),
+        })
+    }
+
+    pub fn split(&self, terminal: &TerminalId, columns: bool, cwd: &Path) -> Result<TerminalId> {
+        self.started(Request::Split {
+            terminal: terminal.clone(),
+            columns,
+            cwd: cwd.into(),
+        })
+    }
+
+    pub fn swap_tabs(&self, a: &TabId, b: &TabId) -> Result<()> {
+        self.done(Request::SwapTabs(a.clone(), b.clone()))
+    }
+
+    pub fn focus_towards(&self, terminal: &TerminalId, dir: Direction) -> Result<()> {
+        self.done(Request::FocusTowards(terminal.clone(), dir))
+    }
+
+    pub fn spread(&self, terminal: &TerminalId) -> Result<()> {
+        self.done(Request::Spread(terminal.clone()))
+    }
+
+    pub fn zoom(&self, terminal: &TerminalId) -> Result<()> {
+        self.done(Request::Zoom(terminal.clone()))
+    }
+
+    pub fn resize(&self, terminal: &TerminalId, dir: Direction, cells: u16) -> Result<()> {
+        self.done(Request::ResizeSplit {
+            terminal: terminal.clone(),
+            dir,
+            cells,
+        })
+    }
+
+    /// The border at `(x, y)` of tab `tab`: moved by sizing the cell
+    /// before it (see [`Self::drag_border`]).
+    pub fn border_at(&self, tab: &TabId, x: u16, y: u16) -> Result<Option<Border>> {
+        let request = Request::BorderAt {
+            tab: tab.clone(),
+            x,
+            y,
+        };
+        match self.request(request)? {
+            Answer::Border(hit) => Ok(hit.map(|hit| {
+                let anchor = Anchor::Before(hit.start);
+                Border::new(hit.terminal, hit.axis.is_columns(), anchor)
+            })),
+            other => Err(unexpected(&other)),
+        }
+    }
+
+    /// Move `border` to where the cell before it is `size` cells. A drag
+    /// sends many of these (at most one every 40 ms, see
+    /// `app::splits`): they share one connection, kept for drags.
+    pub fn drag_border(&self, border: &Border, size: u16) -> Result<()> {
+        let request = Request::DragBorder {
+            terminal: border.terminal.clone(),
+            axis: Axis::of(border.columns()),
+            len: size,
+        };
+        match self.drag_request(&request)? {
+            Answer::Done => Ok(()),
+            other => Err(unexpected(&other)),
+        }
+    }
+
+    /// Ask `request` on the connection kept for drags, opening it when
+    /// there is none. A connection that fails (the server ended, or a new
+    /// one runs) is dropped, and the request asked once more on a new one:
+    /// moving a border to a size twice moves it once.
+    fn drag_request(&self, request: &Request) -> Result<Answer> {
+        let mut kept = self.drag.lock().unwrap_or_else(|e| e.into_inner());
+        let frame = Frame::Message(Message::Request(request.clone()));
+        let mut last = None;
+        for _ in 0..2 {
+            let stream = match kept.as_mut() {
+                Some(stream) => stream,
+                None => kept.insert(self.connect()?.0),
+            };
+            let asked = protocol::write(stream, &frame).and_then(|()| read_reply(stream));
+            match asked {
+                Err(e) if e.downcast_ref::<Refused>().is_none() => {
+                    *kept = None;
+                    last = Some(e);
+                }
+                answer => return answer,
+            }
+        }
+        Err(last.unwrap_or_else(|| anyhow!("no answer from the paddock server")))
     }
 
     /// The server's answer to `request`, taken by `pick`; `None` if no

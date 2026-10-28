@@ -1,26 +1,32 @@
 //! The native backend (ADR 0007): `paddock server`, a background process
 //! that owns every terminal's PTY and an emulator for each, and paddock as
 //! its client over a Unix socket in the state directory. So far it hosts
-//! one space with one tab and one terminal; what it cannot do yet fails
-//! with [`unsupported`].
+//! one space, with its tabs and splits; what it cannot do yet (floats,
+//! more spaces) fails with [`unsupported`].
 //!
 //! - [`client`]: what the app, the CLI and `paddock debug state` ask, and
 //!   the attached space's connection. Starts the server when needed.
 //! - [`server`]: the server process: its socket, lock and lifetime.
 //! - [`state`]: the spaces it holds and what it answers about them.
+//! - [`space`], [`tab`] and [`layout`]: a space's tabs, a tab's focus and
+//!   zoom, and its tree of splits.
 //! - [`terminal`] and [`pty`]: one terminal, its shell and its emulator.
 //! - [`hook`]: the variables that tell a process which terminal it runs in.
 //! - [`queue`]: the queues to the threads that write to a client or a
 //!   program.
 //! - [`protocol`]: the frames between them.
 
+mod axis;
 mod client;
 mod hook;
+mod layout;
 mod protocol;
 mod pty;
 mod queue;
 mod server;
+mod space;
 mod state;
+mod tab;
 mod terminal;
 
 pub use client::{Attached, Client};
