@@ -5,6 +5,7 @@
 use crate::app::{Row, TaskRow};
 use crate::git::{age, Details};
 use crate::github::Pr;
+use crate::ui::StatusText;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -241,18 +242,7 @@ pub fn task(task: &TaskRow, details: Option<&Details>, pr: Option<&Pr>, now: u64
         Some(d) => format!("{d} · {}", task.branch),
         None => task.branch.clone(),
     };
-    let arrows: String = status
-        .ahead_behind
-        .map(|(ahead, behind)| [("↑", ahead), ("↓", behind)])
-        .into_iter()
-        .flatten()
-        .filter(|&(_, n)| n > 0)
-        .map(|(arrow, n)| format!("{arrow}{n}"))
-        .collect();
-    let changes = status
-        .changes
-        .filter(|&c| c != (0, 0))
-        .map(|(added, removed)| format!("+{added} −{removed}"));
+    let shown = StatusText::of(&status);
     let base = details.and_then(|d| d.base_diff).filter(|b| b.files > 0);
     let commit = details
         .and_then(|d| d.last_commit)
@@ -264,8 +254,8 @@ pub fn task(task: &TaskRow, details: Option<&Details>, pr: Option<&Pr>, now: u64
         .as_ref()
         .map(|s| s.state.label().to_string())
         .unwrap_or_default();
-    cells.text[Column::AheadBehind.index()] = arrows;
-    cells.text[Column::Changes.index()] = changes.unwrap_or_default();
+    cells.text[Column::Changes.index()] = shown.changes().unwrap_or_default();
+    cells.text[Column::AheadBehind.index()] = shown.arrows;
     if let Some(b) = base {
         cells.text[Column::Base.index()] = format!("+{} −{}", b.added, b.removed);
         cells.text[Column::Files.index()] = b.files.to_string();

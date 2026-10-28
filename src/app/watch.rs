@@ -84,6 +84,11 @@ pub struct Place {
     /// What is checked out at the root (as `branch` at `path`); `None`
     /// outside a git checkout.
     pub root_branch: Option<String>,
+    /// The status of `branch` in `path` (uncommitted changes, ahead and
+    /// behind upstream), read on the watcher's thread only (see
+    /// [`places`]); `None` until then or outside a repository. A detached
+    /// HEAD reads as nothing to show.
+    pub status: Option<git::Status>,
 }
 
 impl Place {
@@ -107,7 +112,8 @@ impl Place {
 }
 
 /// Space `id`'s directory, root and what is checked out in each, read
-/// now; `None` if the backend cannot say.
+/// now; `None` if the backend cannot say. Not the branch's status, which
+/// [`places`] adds off the UI thread.
 pub fn place(backend: &Backend, id: &SpaceId) -> Option<Place> {
     let path = space_dir(backend, id)?;
     let branch = git::head(&path);
@@ -123,14 +129,23 @@ pub fn place(backend: &Backend, id: &SpaceId) -> Option<Place> {
         tree,
         root,
         root_branch,
+        status: None,
     })
 }
 
-/// Read each of `spaces`' place.
+/// Read each of `spaces`' place, with the status of the branch checked
+/// out there.
 fn places(backend: &Backend, spaces: &[SpaceId]) -> Vec<(SpaceId, Place)> {
     spaces
         .iter()
-        .filter_map(|id| Some((id.clone(), place(backend, id)?)))
+        .filter_map(|id| {
+            let place = place(backend, id)?;
+            let status = place
+                .branch
+                .as_deref()
+                .map(|branch| git::status(&place.path, branch));
+            Some((id.clone(), Place { status, ..place }))
+        })
         .collect()
 }
 
@@ -262,6 +277,7 @@ mod tests {
             tree: None,
             root: root.map(str::to_string),
             root_branch: root_branch.map(str::to_string),
+            status: None,
         };
         // Made before roots: its directory is its root.
         assert_eq!(

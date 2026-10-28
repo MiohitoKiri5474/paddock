@@ -280,8 +280,11 @@ impl App {
         self.notice = Some(format!("{name}'s root: {}", HomePaths::new().show(&root)));
         // Read again now, so the finder is never stale, even for a space
         // whose place the background read has not reached yet.
+        // The branch's status is not read here, on the UI thread: the last
+        // one stays until the background read brings a new one.
         if let Some(place) = watch::place(&self.backend, &id) {
-            self.places.insert(id, place);
+            let status = self.places.get(&id).and_then(|p| p.status);
+            self.places.insert(id, watch::Place { status, ..place });
         }
         Ok(())
     }
