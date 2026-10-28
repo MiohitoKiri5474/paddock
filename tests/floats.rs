@@ -218,7 +218,7 @@ fn closing_the_last_tab_closes_its_space_with_the_float() {
     wait_hidden(&paddock);
     // The only tab's shell exits: paddock has nothing left and quits.
     paddock.type_line("exit");
-    assert!(paddock.wait_exit());
+    assert!(paddock.wait_exit(), "{}", paddock.full_screen());
     assert!(sandbox.space_names().is_empty(), "the float went too");
 }
 

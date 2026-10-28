@@ -151,6 +151,12 @@ fn tabs(sandbox: &Sandbox) -> usize {
     sandbox.space("space-1").tabs.len()
 }
 
+/// Wait until space-1 has `want` tabs: a closed terminal's tab goes once
+/// its last output is read, which may be after its rows have left.
+fn wait_for_tab_count(paddock: &Paddock, sandbox: &Sandbox, want: usize) {
+    paddock.wait_for(&format!("{want} tabs"), |_| tabs(sandbox) == want);
+}
+
 #[test]
 fn switching_branches_adds_a_task_row_for_each_branch() {
     let sandbox = Sandbox::new();
@@ -556,7 +562,7 @@ fn a_closed_terminals_rows_leave_at_once_and_stay_gone_after_reopening() {
     close_list(&mut paddock);
     paddock.type_line("exit");
     wait_for_list(&mut paddock, &[]);
-    assert_eq!(tabs(&sandbox), 1);
+    wait_for_tab_count(&paddock, &sandbox, 1);
 
     // Replaying the event log does not bring them back.
     paddock.detach_keys();
