@@ -1,18 +1,20 @@
-//! What the native server holds: its spaces, each with one tab and one
-//! terminal so far, and the one client attached to a space. It answers
-//! every request that only reads or renames; making and ending terminals
-//! is the server's ([`super::server`]), as it starts their threads.
+//! What the native server holds: its spaces ([`Space`]), and the one
+//! client attached to a space. It answers every request that reads, or
+//! changes a layout or a name; making and ending terminals is the
+//! server's ([`super::server`]), as it starts their threads. A change to
+//! the attached space's structure tells its client ([`Notice::Changed`]),
+//! which reads it again.
 
 use super::hook;
 use super::protocol::{self, Answer, Frame, Message, Notice, Request};
 use super::queue::Queue;
+use super::space::Space;
+use super::tab::Tab;
 use super::terminal::HostedTerminal;
-use super::unsupported;
 use crate::backend::{
-    ListedSpace, SpaceId, SpaceTerminal, Split, Structure, Tab, TabId, TerminalDetails, TerminalId,
+    ListedSpace, SpaceId, SpaceTerminal, Structure, TabId, TerminalDetails, TerminalId,
 };
 use anyhow::{anyhow, bail, Result};
-use ratatui::layout::Rect;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -27,18 +29,6 @@ const GRACE: Duration = Duration::from_secs(5);
 /// Bytes queued past which the client is let go at once, so a program
 /// writing fast never grows the server without bound meanwhile.
 const MAX_QUEUED: usize = 128 << 20;
-
-pub struct Space {
-    pub id: SpaceId,
-    pub name: String,
-    pub root: String,
-    pub tab: TabId,
-    pub tab_name: String,
-    /// The tab is named after its directory, not by the user.
-    pub auto_name: bool,
-    /// Its terminals: one so far.
-    pub terminals: Vec<HostedTerminal>,
-}
 
 /// The attached client: frames for it go through `queue`, in order, to
 /// a thread that writes them.
@@ -178,9 +168,22 @@ impl State {
         found.ok_or_else(|| anyhow!("no space {id}"))
     }
 
-    fn tab_mut(&mut self, tab: &TabId) -> Result<&mut Space> {
-        let found = self.spaces.iter_mut().find(|s| s.tab == *tab);
+    /// The space holding tab `tab`, and the tab's index there.
+    fn tab_mut(&mut self, tab: &TabId) -> Result<(&mut Space, usize)> {
+        let found = self.spaces.iter_mut().find_map(|s| {
+            let i = s.tab(tab)?;
+            Some((s, i))
+        });
         found.ok_or_else(|| anyhow!("no tab {tab}"))
+    }
+
+    /// The space holding `terminal`.
+    pub fn space_of_mut(&mut self, terminal: &TerminalId) -> Result<&mut Space> {
+        let found = self
+            .spaces
+            .iter_mut()
+            .find(|s| s.hosted(terminal).is_some());
+        found.ok_or_else(|| anyhow!("no terminal {terminal}"))
     }
 
     /// Every terminal, with its space.
@@ -222,36 +225,137 @@ impl State {
         self.send(None, Frame::Message(notice));
     }
 
-    /// Space `id`'s tab with its terminal, filling it.
     pub fn structure(&self, id: &SpaceId) -> Result<Structure> {
-        let space = self.space(id)?;
-        let term = space
-            .terminals
-            .first()
-            .ok_or_else(|| anyhow!("{id} is empty"))?;
-        let (cols, rows) = term.size;
-        let tab = Tab {
-            id: space.tab.clone(),
-            name: space.tab_name.clone(),
-            auto_name: space.auto_name,
-            splits: vec![Split {
-                id: term.id.clone(),
-                rect: Rect::new(0, 0, cols, rows),
-            }],
-            active: term.id.clone(),
-            zoomed: false,
-        };
-        Ok(Structure {
-            name: space.name.clone(),
-            tabs: vec![tab],
-            current: 0,
-            floats: Vec::new(),
-            float_active: false,
-        })
+        self.space(id).map(Space::structure)
     }
 
-    /// The answer to a request that reads or renames.
+    /// Change the tab holding `terminal` with `change`, given the tab and
+    /// its space's size; if that changed what it shows, size its
+    /// terminals to their places and tell its client. A change that fails
+    /// or does nothing tells nobody.
+    fn change(
+        &mut self,
+        terminal: &TerminalId,
+        change: impl FnOnce(&mut Tab, (u16, u16)) -> Result<()>,
+    ) -> Result<Answer> {
+        let space = self.space_of_mut(terminal)?;
+        let i = space.tab_index(terminal)?;
+        let before = space.tab_view(i);
+        let size = space.size;
+        let result = change(&mut space.tabs[i], size);
+        if space.tab_view(i) != before {
+            space.lay_out_tab(i);
+            let id = space.id.clone();
+            self.notify(&id, Notice::Changed);
+        }
+        result.map(|()| Answer::Done)
+    }
+
+    /// Change the space holding tab `tab` (its index `i` there) with
+    /// `change`; if that changed its structure, size that tab's terminals
+    /// and tell its client.
+    fn change_tab(
+        &mut self,
+        tab: &TabId,
+        change: impl FnOnce(&mut Space, usize) -> Result<()>,
+    ) -> Result<Answer> {
+        let (space, i) = self.tab_mut(tab)?;
+        let before = space.structure();
+        let result = change(space, i);
+        if space.structure() != before {
+            if let Some(i) = space.tab(tab) {
+                space.lay_out_tab(i);
+            }
+            let id = space.id.clone();
+            self.notify(&id, Notice::Changed);
+        }
+        result.map(|()| Answer::Done)
+    }
+
+    /// Name every tab that follows what runs in it, telling the attached
+    /// client of a change.
+    pub fn follow_names(&mut self) {
+        let changed: Vec<SpaceId> = self
+            .spaces
+            .iter_mut()
+            .filter_map(|s| s.follow_names().then(|| s.id.clone()))
+            .collect();
+        for id in changed {
+            self.notify(&id, Notice::Changed);
+        }
+    }
+
+    /// Every terminal of space `id`, in its tabs' order.
+    fn space_terminals(&self, id: &SpaceId) -> Result<Vec<SpaceTerminal>> {
+        let space = self.space(id)?;
+        let ids = space.tabs.iter().flat_map(Tab::terminals);
+        let terminals = ids.filter_map(|t| space.hosted(&t));
+        let listed = terminals.map(|h| SpaceTerminal {
+            id: h.id.clone(),
+            path: h.dir().unwrap_or_default(),
+            float: false,
+        });
+        Ok(listed.collect())
+    }
+
+    /// The answer to a request that changes a tab or its splits, as
+    /// `Ok(Ok(answer))`; any other request comes back as `Ok(Err(request))`
+    /// for [`Self::answer`] to answer.
+    fn answer_layout(&mut self, request: Request) -> Result<Result<Answer, Request>> {
+        Ok(Ok(match request {
+            Request::RenameTab(tab, name) => self.change_tab(&tab, |space, i| {
+                space.tabs[i].rename(name);
+                Ok(())
+            })?,
+            Request::Select(tab, terminal) => self.change_tab(&tab, |space, i| {
+                if let Some(t) = &terminal {
+                    if !space.tabs[i].contains(t) {
+                        bail!("no terminal {t} in tab {tab}");
+                    }
+                    space.tabs[i].focus(t);
+                }
+                space.select(i);
+                Ok(())
+            })?,
+            Request::SwapTabs(a, b) => self.change_tab(&a, |space, i| {
+                let j = space.tab(&b);
+                let j = j.ok_or_else(|| anyhow!("no tab {b} beside {a}"))?;
+                space.swap(i, j);
+                Ok(())
+            })?,
+            Request::BorderAt { tab, x, y } => {
+                let (space, i) = self.tab_mut(&tab)?;
+                Answer::Border(space.tabs[i].border_at(x, y, space.size))
+            }
+            Request::FocusTowards(t, dir) => self.change(&t, |tab, size| {
+                tab.focus_towards(&t, dir, size);
+                Ok(())
+            })?,
+            Request::Spread(t) => self.change(&t, |tab, size| tab.spread(&t, size))?,
+            Request::Zoom(t) => self.change(&t, |tab, _| {
+                tab.zoom(&t);
+                Ok(())
+            })?,
+            Request::ResizeSplit {
+                terminal: t,
+                dir,
+                cells,
+            } => self.change(&t, |tab, size| tab.resize(&t, dir, cells, size))?,
+            Request::DragBorder {
+                terminal: t,
+                axis,
+                len,
+            } => self.change(&t, |tab, size| tab.resize_to(&t, axis, len, size))?,
+            other => return Ok(Err(other)),
+        }))
+    }
+
+    /// The answer to a request that reads, or changes a layout or a name.
     pub fn answer(&mut self, request: Request) -> Result<Answer> {
+        let request = match self.answer_layout(request)? {
+            Ok(answer) => return Ok(answer),
+            Err(request) => request,
+        };
         Ok(match request {
             Request::Spaces => Answer::Spaces(
                 self.spaces
@@ -274,35 +378,7 @@ impl State {
             }
             Request::Root(id) => Answer::Text(self.space(&id).ok().map(|s| s.root.clone())),
             Request::Structure(id) => Answer::Structure(self.structure(&id)?),
-            Request::SpaceTerminals(id) => Answer::Terminals(
-                self.space(&id)?
-                    .terminals
-                    .iter()
-                    .map(|h| SpaceTerminal {
-                        id: h.id.clone(),
-                        path: h.dir().unwrap_or_default(),
-                        float: false,
-                    })
-                    .collect(),
-            ),
-            Request::RenameTab(tab, name) => {
-                let space = self.tab_mut(&tab)?;
-                space.tab_name = name;
-                space.auto_name = false;
-                let id = space.id.clone();
-                self.notify(&id, Notice::Changed);
-                Answer::Done
-            }
-            Request::Select(tab, terminal) => {
-                let (_, term) = self
-                    .terminals()
-                    .find(|(s, _)| s.tab == tab)
-                    .ok_or_else(|| anyhow!("no tab {tab}"))?;
-                if terminal.is_some_and(|t| t != term.id) {
-                    bail!(unsupported("more than one terminal in a tab"));
-                }
-                Answer::Done
-            }
+            Request::SpaceTerminals(id) => Answer::Terminals(self.space_terminals(&id)?),
             Request::TerminalDir(t) => {
                 Answer::Text(self.terminal(&t).ok().and_then(|(_, h)| h.dir()))
             }

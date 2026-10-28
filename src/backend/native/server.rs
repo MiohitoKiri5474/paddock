@@ -9,9 +9,12 @@
 //! exactly the output before it, and everything after it reaches the
 //! client after the snapshot: no byte lost or doubled.
 
+use super::axis::Axis;
 use super::protocol::{self, Answer, Ending, Frame, Message, Notice, Refusal, Request};
-use super::state::{Space, State, Subscriber};
-use super::terminal::{HostedTerminal, Input, Sent, INPUT_MAX};
+use super::space::Space;
+use super::state::{State, Subscriber};
+use super::tab::Tab;
+use super::terminal::{dir_name, HostedTerminal, Input, Sent, INPUT_MAX};
 use super::{lock, pty, socket_path, unsupported, LOG};
 use crate::backend::env::{clean_env, AGY_STATUS_VAR};
 use crate::backend::{SpaceId, TabId, TerminalId};
@@ -38,6 +41,8 @@ const READ_CHUNK: usize = 64 * 1024;
 const DRAIN: Duration = Duration::from_millis(500);
 /// How long a new server waits for an ending one's lock.
 const LOCK_WAIT: Duration = Duration::from_secs(3);
+/// How often tabs named after what runs in them look again.
+const TAB_NAME_POLL: Duration = Duration::from_millis(300);
 
 struct Shared {
     state: Mutex<State>,
@@ -78,6 +83,8 @@ pub fn serve() -> Result<()> {
         connections: AtomicU64::new(0),
     });
     watch_signals(&shared)?;
+    let names = Arc::clone(&shared);
+    std::thread::spawn(move || follow_names(&names));
     let idle = Arc::clone(&shared);
     std::thread::spawn(move || {
         std::thread::sleep(IDLE_EXIT);
@@ -246,6 +253,12 @@ fn serve_connection(shared: &Arc<Shared>, conn: u64, mut stream: UnixStream) -> 
                 shut_down(shared);
             }
             Request::NewSpace { name, cwd, size } => new_space(shared, &name, &cwd, size),
+            Request::NewTab { space, cwd } => new_tab(shared, &space, &cwd),
+            Request::Split {
+                terminal,
+                columns,
+                cwd,
+            } => split(shared, &terminal, columns, &cwd),
             Request::CloseSpace(space) => close_space(shared, &space),
             Request::CloseTerminal(terminal) => close_terminal(shared, &terminal),
             request => shared.lock().answer(request),
@@ -354,10 +367,10 @@ fn attach(
 ) -> Result<()> {
     let mut subscriber = Subscriber::new(conn, space.clone(), stream)?;
     let mut state = shared.lock();
-    let hosted = &mut state.space_mut(space)?.terminals;
-    for term in hosted.iter_mut() {
-        term.resize(size)?;
-    }
+    let shown = state.space_mut(space)?;
+    shown.size = size;
+    shown.lay_out();
+    let hosted = &mut shown.terminals;
     let terminals = hosted.iter().map(|t| (t.id.clone(), t.size)).collect();
     let snapshots: Vec<Frame> = hosted
         .iter_mut()
@@ -393,12 +406,15 @@ fn resize(shared: &Shared, conn: u64, size: (u16, u16)) {
     let Ok(s) = state.space_mut(&space) else {
         return;
     };
-    for term in &mut s.terminals {
-        if let Err(e) = term.resize(size) {
-            eprintln!("paddock server: {e:#}");
-        }
-    }
+    s.size = size;
+    s.lay_out();
     state.notify(&space, Notice::Changed);
+}
+
+/// A new tab named after `cwd`, holding `terminal`, with a new id.
+fn new_tab_for(state: &mut State, cwd: &Path, terminal: TerminalId) -> Tab {
+    let tab = TabId::new(format!("@{}", state.next()));
+    Tab::new(tab, dir_name(&cwd.to_string_lossy()), terminal)
 }
 
 /// Start the one space: a shell in `cwd`, at `size`.
@@ -411,25 +427,67 @@ fn new_space(shared: &Arc<Shared>, name: &str, cwd: &Path, size: (u16, u16)) -> 
         bail!(unsupported("more than one space"));
     }
     let space = SpaceId::new(format!("${}", state.next()));
-    let tab = TabId::new(format!("@{}", state.next()));
     let terminal = TerminalId::new(format!("%{}", state.next()));
+    let tab = new_tab_for(&mut state, cwd, terminal.clone());
     let term = start_terminal(shared, &state, &space, terminal, cwd, size)?;
-    let tab_name = cwd
-        .file_name()
-        .map_or_else(|| cwd.to_string_lossy(), |n| n.to_string_lossy())
-        .into_owned();
-    state.spaces.push(Space {
-        id: space.clone(),
-        name: name.to_string(),
-        root: cwd.to_string_lossy().into_owned(),
-        tab,
-        tab_name,
-        auto_name: true,
-        terminals: vec![term],
-    });
+    let root = cwd.to_string_lossy().into_owned();
+    let made = Space::new(space.clone(), name.to_string(), root, tab, term);
+    state.spaces.push(made);
     state.started = true;
     state.notify_spaces();
     Ok(Answer::Space(space))
+}
+
+/// Open a tab at the end of `space`, its shell in `cwd`, and make it
+/// current.
+fn new_tab(shared: &Arc<Shared>, space: &SpaceId, cwd: &Path) -> Result<Answer> {
+    let mut state = shared.lock();
+    let size = state.space(space)?.size;
+    let terminal = TerminalId::new(format!("%{}", state.next()));
+    let tab = new_tab_for(&mut state, cwd, terminal.clone());
+    let term = start_terminal(shared, &state, space, terminal.clone(), cwd, size)?;
+    let s = state.space_mut(space)?;
+    s.push_tab(tab, term);
+    state.notify(space, Notice::Changed);
+    Ok(Answer::Terminal(terminal))
+}
+
+/// Split `target` (side by side if `columns`): a shell in `cwd` takes the
+/// second half and the focus.
+fn split(shared: &Arc<Shared>, target: &TerminalId, columns: bool, cwd: &Path) -> Result<Answer> {
+    let mut state = shared.lock();
+    let terminal = TerminalId::new(format!("%{}", state.next()));
+    let s = state.space_of_mut(target)?;
+    let (space, size) = (s.id.clone(), s.size);
+    let i = s.tab_index(target)?;
+    // To put back as it was, zoom and shares, if the shell does not start.
+    let before = s.tabs[i].clone();
+    let tab = &mut s.tabs[i];
+    tab.split(target, terminal.clone(), Axis::of(columns), size)?;
+    let place = tab.splits(size).into_iter().find(|p| p.id == terminal);
+    let place = place.map_or(size, |p| (p.rect.width, p.rect.height));
+    let started = start_terminal(shared, &state, &space, terminal.clone(), cwd, place);
+    let s = state.space_mut(&space)?;
+    match started {
+        Ok(term) => s.terminals.push(term),
+        Err(e) => {
+            if let Some(tab) = s.tabs.get_mut(i) {
+                *tab = before;
+            }
+            return Err(e);
+        }
+    }
+    s.lay_out_tab(i);
+    state.notify(&space, Notice::Changed);
+    Ok(Answer::Terminal(terminal))
+}
+
+/// Name the tabs that follow what runs in them, every [`TAB_NAME_POLL`].
+fn follow_names(shared: &Shared) {
+    loop {
+        std::thread::sleep(TAB_NAME_POLL);
+        shared.lock().follow_names();
+    }
 }
 
 /// A shell on a new PTY in `cwd`, with the hook variables of terminal
@@ -524,8 +582,8 @@ fn wait_for_exit(
     let mut state = shared.lock();
     let mut ended = None;
     if let Ok(s) = state.space_mut(space) {
-        s.terminals.retain(|t| t.id != *id);
-        if s.terminals.is_empty() {
+        let empty = s.remove(id);
+        if empty {
             state.spaces.retain(|s| s.id != *space);
             state.notify(space, Notice::Ended);
             // Nothing follows its end.

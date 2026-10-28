@@ -100,7 +100,7 @@ impl Command {
 }
 
 /// A direction to move focus in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Direction {
     Left,
     Down,
