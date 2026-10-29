@@ -69,8 +69,8 @@ fn dashboard_order(paddock: &Paddock) -> Vec<&'static str> {
     order(&list)
 }
 
-/// The state word on an agent's sidebar line: the word after its label
-/// (`● label state space`).
+/// The state word on an agent's first sidebar line: the word after its
+/// label (`● label state`).
 fn state_of(line: &str) -> Option<&str> {
     line.split_whitespace().nth(2)
 }
@@ -108,7 +108,7 @@ fn three_agents(sandbox: &Sandbox) -> Paddock {
 }
 
 #[test]
-fn three_agents_take_three_lines_and_a_click_on_one_opens_it() {
+fn three_agents_take_two_lines_each_and_a_click_on_either_opens_it() {
     let sandbox = Sandbox::new();
     let mut paddock = three_agents(&sandbox);
     let lines = paddock.sidebar();
@@ -116,25 +116,35 @@ fn three_agents_take_three_lines_and_a_click_on_one_opens_it() {
         .iter()
         .position(|l| l.contains("AGENTS"))
         .unwrap_or_else(|| panic!("no AGENTS:\n{}", lines.join("\n")));
-    // One line each, right under the header: dot, label, state, space.
+    // Two lines each, right under the header: dot, label and state, then
+    // the space and kind under the label.
     let want = [
-        " ● alpha    done     space-1",
-        " ● bravo    waiting  space-1",
-        " ● charlie  running  space-1",
+        " ● alpha    done",
+        "   space-1  claude",
+        " ● bravo    waiting",
+        "   space-1  claude",
+        " ● charlie  running",
+        "   space-1  claude",
     ];
-    assert_eq!(lines[top + 1..top + 4], want, "{}", lines.join("\n"));
-    assert!(lines.get(top + 4).is_none_or(|l| l.is_empty()));
+    assert_eq!(lines[top + 1..top + 7], want, "{}", lines.join("\n"));
+    assert!(lines.get(top + 7).is_none_or(|l| l.is_empty()));
 
-    // A click on bravo's line opens its tab, and the line is the current
-    // agent's.
+    // A click on bravo's second line opens its tab, and both its lines are
+    // the current agent's.
     let row = |i: usize| u16::try_from(top + 1 + i).unwrap();
-    paddock.click_screen(5, row(1));
+    paddock.click_screen(5, row(3));
     paddock.wait_for("bravo current", |_| {
-        paddock.current_tab().starts_with("2:") && paddock.colors(row(1), 5).1 == CURRENT_ITEM
+        paddock.current_tab().starts_with("2:")
+            && [2, 3].map(|i| paddock.colors(row(i), 5).1) == [CURRENT_ITEM; 2]
     });
-    for other in [0, 2] {
+    for other in [0, 1, 4, 5] {
         assert_ne!(paddock.colors(row(other), 5).1, CURRENT_ITEM, "{other}");
     }
+    // A click on charlie's first line opens its tab.
+    paddock.click_screen(5, row(4));
+    paddock.wait_for("charlie current", |_| {
+        paddock.current_tab().starts_with("3:") && paddock.colors(row(4), 5).1 == CURRENT_ITEM
+    });
 }
 
 #[test]
