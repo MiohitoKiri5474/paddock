@@ -533,10 +533,25 @@ fn hand_over(shared: &Shared, stream: &mut UnixStream, exe: &Path) -> Result<Inf
     saver
         .write_now(layout)
         .context("cannot save the layout before handing over")?;
+    let_go_for_upgrade(&mut state);
     protocol::write(stream, &Frame::Upgrade(Upgrade::Probed))?;
     eprintln!("paddock server: handing over to {}", exe.display());
     let fds = record.descriptors();
     Err(handover::exec(exe, &file, stream.as_raw_fd(), &fds))
+}
+
+/// Tell every attached client the server is upgrading, and let each go
+/// once it has read that (or after [`LAST_WORDS`]): it attaches again to
+/// the new binary, or to this server if the `exec` fails. Their writers
+/// never need the state, so they are waited for with it locked.
+fn let_go_for_upgrade(state: &mut State) {
+    state.notify_all(&Notice::Upgrading);
+    for s in std::mem::take(&mut state.attached) {
+        state.let_go(s, LAST_WORDS);
+    }
+    for thread in state.take_leaving() {
+        let _ = thread.join();
+    }
 }
 
 /// The state, locked once every program has taken its input, so none is

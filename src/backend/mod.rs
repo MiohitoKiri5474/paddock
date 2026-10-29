@@ -47,6 +47,10 @@ pub enum Event {
     /// server let this paddock go (it stopped reading), or failed. (A
     /// server that ends on purpose sends [`Event::Ended`] first.)
     Lost,
+    /// The native server hands its terminals to a new binary (ADR 0009):
+    /// the connection ends next ([`Event::Lost`]), and the same spaces can
+    /// be attached again once the new binary serves.
+    Upgrading,
     /// Input to `terminal` was refused, and `why` (native only): once,
     /// until its program has taken all that waited.
     InputRefused { terminal: TerminalId, why: String },

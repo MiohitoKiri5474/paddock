@@ -296,6 +296,10 @@ pub struct App {
     /// The current space as last told to a backend that keeps it (see
     /// [`Backend::keeps_current`]).
     pub(super) told_current: Option<SpaceId>,
+    /// The spaces whose server said it is upgrading (ADR 0009), and
+    /// whether each one's connection has ended since: once all have, they
+    /// are attached again ([`App::reattach`]).
+    pub(super) upgrading: HashMap<SpaceId, bool>,
 }
 
 /// The part of a screen of `(cols, rows)` that shows the current tab's
@@ -388,6 +392,7 @@ impl App {
             external: config.external,
             new_tab_dir: config.new_tab_dir,
             told_current: None,
+            upgrading: HashMap::new(),
         };
         app.load_dismissed();
         app.open_spaces()?;

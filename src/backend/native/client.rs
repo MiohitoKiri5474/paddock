@@ -642,6 +642,7 @@ impl Client {
                     Frame::Message(Message::Notice(Notice::InputRefused { terminal, why })) => {
                         Event::InputRefused { terminal, why }
                     }
+                    Frame::Message(Message::Notice(Notice::Upgrading)) => Event::Upgrading,
                     Frame::Message(Message::Notice(Notice::Ended)) => {
                         deliver(Event::Ended);
                         return;

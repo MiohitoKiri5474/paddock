@@ -6,19 +6,23 @@ use super::rows::{EXTERNAL_CLOSE, EXTERNAL_FORK, EXTERNAL_OPEN};
 use super::space::clamp;
 use super::state::{is_session_id, next_name, App, CloseTarget, Mode, NameTarget, Renamed};
 use super::watch;
-use crate::backend::{SpaceId, TerminalId};
+use crate::backend::{OtherVersion, SpaceId, TerminalId};
 use crate::paths::HomePaths;
 use crate::sessions::{AgentKind, State};
 use crate::shell::quote;
 use crate::terminal::Terminal;
 use anyhow::{bail, Result};
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 /// New spaces are named `space-N` until the user renames them.
 const SPACE_STEM: &str = "space-";
 
 /// What acting on a row says when its terminal closed meanwhile.
 const TERMINAL_CLOSED: &str = "that terminal is closed";
+
+/// How long paddock waits for an upgraded server to answer (ADR 0009).
+const REATTACH_WAIT: Duration = Duration::from_secs(10);
 
 impl App {
     /// The name a new space gets unless the user picks one: the first free
@@ -54,6 +58,40 @@ impl App {
             return Err(e);
         }
         self.current = self.spaces.len() - 1;
+        Ok(())
+    }
+
+    /// Attach every space again once the server has handed its terminals
+    /// to a new binary (ADR 0009): the same spaces in the same order, the
+    /// same one current, each with a fresh connection and screens rebuilt
+    /// from the new server's snapshots (which keeps each space's current
+    /// tab and focus). An error if the new server cannot be talked to (it
+    /// speaks another protocol version, or failed).
+    pub(super) fn reattach(&mut self) -> Result<()> {
+        self.upgrading.clear();
+        // The old binary, until its `exec`, still takes connections, and
+        // closes them unanswered: ask until the new one answers.
+        let start = Instant::now();
+        while let Err(e) = self.backend.prepare() {
+            if e.downcast_ref::<OtherVersion>().is_some() || start.elapsed() > REATTACH_WAIT {
+                return Err(e);
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let current = self.spaces.get(self.current).map(|s| s.id.clone());
+        let ids: Vec<SpaceId> = self.spaces.iter().map(|s| s.id.clone()).collect();
+        self.spaces.clear();
+        self.terminals.clear();
+        let running = self.backend.spaces();
+        if running.is_empty() {
+            bail!("the upgraded paddock server holds no space");
+        }
+        for id in ids.iter().filter(|id| running.iter().any(|s| s.id == **id)) {
+            self.attach(id)?;
+        }
+        self.attach_new_spaces();
+        let found = current.and_then(|c| self.spaces.iter().position(|s| s.id == c));
+        self.current = found.unwrap_or(0);
         Ok(())
     }
 

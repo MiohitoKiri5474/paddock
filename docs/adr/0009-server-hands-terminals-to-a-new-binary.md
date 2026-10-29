@@ -32,15 +32,19 @@ Takes up the "possible later" of [ADR 0007](0007-native-backend-with-a-server.md
    The probe reads the record taken before the freeze, and the new image reads the one taken during it. The two differ only in content (output since, a new tab), never in format or kind, and both pass the same checks. A content-only difference is all the probe cannot vouch for.
 
    So that every later paddock can still take over from this one, the format changes by two rules. A field added to the header gets a default (`#[serde(default)]`), and the format stays the same. A change that cannot work that way bumps `FORMAT`, and the new paddock keeps a reader for the format before it.
-5. **Exec.** The server sends `Probed`. It then clears close-on-exec on these descriptors, which keep their numbers:
+5. **Exec.** The server tells every attached client `Notice::Upgrading` and lets each go once it has read that (at most 1 s). It sends `Probed`, then clears close-on-exec on these descriptors, which keep their numbers:
    - the lock;
    - the listening socket;
    - every PTY master;
    - the record;
    - the requesting connection.
 
-   It then `exec`s `<exe> server --take-over <record> <connection>`. Every other descriptor closes, so attached clients see their connection end (`Event::Lost`).
+   It then `exec`s `<exe> server --take-over <record> <connection>`. Every other descriptor closes.
 6. **Take over.** The new image reads the record and rebuilds every space with the same ids. Each terminal gets a fresh emulator fed its snapshot; the replies the snapshot provokes are dropped, not sent to the program. The new image starts each terminal's reader and waiter, and answers `Done` on the inherited connection. Then it serves as any server does, without binding, locking or restoring `layout.json`.
+7. **Clients attach again.** A paddock told `Upgrading` on a space's connection takes the end of that connection (`Event::Lost`) as the upgrade, not as a lost server. Once every space it was told about has lost its connection, it attaches every space again: the same spaces in the same order, the same one current. It asks until the new image answers, for up to 10 s, as the old one still takes connections until its `exec` and closes them unanswered. Each space's current tab and focus are the server's, so they come back with it. paddock says "paddock server upgraded: programs kept running".
+   - If the `exec` fails, the clients attach again to the old server.
+   - A paddock that cannot talk to the new server (it speaks another protocol version, or failed) quits, saying why.
+   - A paddock from before this ADR cannot read the notice, takes it as a lost connection, and quits as before.
 
 ## Who owns what during the switch
 
@@ -59,7 +63,7 @@ Takes up the "possible later" of [ADR 0007](0007-native-backend-with-a-server.md
 | Freeze | Cannot write the record or `layout.json` | `Refused(why)`, the lock is let go |
 | Exec | `exec` returns an error | Close-on-exec is put back, `Refused(why)` after `Probed`, the lock is let go: the old server serves on |
 | Take over | The new image cannot rebuild what the probe accepted (out of descriptors or memory) | It answers `Refused(why)` (saying it has ended) and exits. The programs are hung up as their PTYs close. `layout.json`, written just before `exec`, rebuilds the layout at the next start, as after a crash |
-| Take over | The new image dies before answering | The command says the server ended as it took over (see `server.log`) |
+| Take over | The new image dies before answering | The command says the server ended as it took over (see `server.log`); an attached paddock finds no server to attach to, and quits saying so |
 
 Every step before exec leaves the old server running as it was. After exec, nothing can go back: the old image is gone, and its binary may be too (a package manager replaces it). The probe makes the last two rows a matter of resources only.
 
@@ -78,12 +82,14 @@ A real handover between two protocol versions, or two record formats, needs two 
 - **Pass the descriptors to a new process over a Unix socket (`SCM_RIGHTS`).** The old server could keep running until the new one said it was ready, so every failure would leave it unchanged. But the programs would stay children of the old process. When it exits, launchd adopts them, and macOS has no subreaper to make the new server their parent. The new server could only watch them with `kqueue`, and could signal a pid already reaped and reused, which paddock never does. The lock and the socket would also have to change hands between two processes.
 - **Probe the frozen record**: the probe would vouch for the very record the new image reads, but the server would stall for up to 10 s while it runs.
 - **Restart, as before** ([ADR 0007](0007-native-backend-with-a-server.md)): stays for servers that cannot hand over.
-- **Keep the old client attached through the switch**: its connection would have to pass to the new image, mid-frame, and the old client may not speak the new protocol anyway. A paddock that attaches after the switch sees the same screens.
+- **Keep the client's connection through the switch**: it would have to pass to the new image mid-frame, and the client may not speak the new protocol. Attaching again costs one snapshot per terminal, which an attach sends anyway.
+- **Let attached clients quit, and attach on the next launch**: simpler, but every upgrade would close the window the user works in.
+- **Tell an upgrade from a lost server by retrying while the server's pid lives**: needs no new notice, but a client the server lets go for not reading, or one replaced by a takeover, would attach again too.
 
 ## Consequences
 
 - `paddock server upgrade [<binary>]` hands the running server to the binary it is run as, or to `<binary>`. Ticket 51's prompt calls the same thing (`Backend::upgrade`).
-- An attached paddock loses its connection at the switch and quits saying so. The next launch attaches to the same terminals.
+- An attached paddock attaches again by itself and keeps its place. `Notice::Upgrading` is a new message, so the protocol is version 2.
 - What a snapshot does not carry is lost at the switch, as on reattach: charsets, the title and hyperlinks.
 - A signal that comes between `exec` and the new image's handlers takes the default action: SIGTERM ends the server without hanging its shells up in order.
 - Output and input are never lost or doubled at the switch. Input waiting for a program that does not read refuses the upgrade instead.

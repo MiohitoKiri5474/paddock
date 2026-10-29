@@ -23,6 +23,11 @@ const MS_PER_SEC: u64 = 1000;
 const LOST: &str = "lost the connection to the paddock server (it let this paddock go, \
                     or failed; see server.log in paddock's state directory): run paddock \
                     again to attach to what still runs";
+/// Said once paddock has attached again to an upgraded server.
+const UPGRADED: &str = "paddock server upgraded: programs kept running";
+/// Why paddock quits when it cannot attach again to an upgraded server.
+const UPGRADE_LOST: &str = "the paddock server was upgraded, and this paddock cannot attach to \
+                            it again (run the new paddock)";
 
 /// Tells the git thread which task rows are on screen, and the pull
 /// requests' thread (while PR status is on) what shows PRs.
@@ -315,6 +320,36 @@ fn handle_backend(app: &mut App, space: &SpaceId, event: backend::Event) -> Back
                 flow: Flow::Continue,
                 changed: true,
                 terminals_changed: false,
+            }
+        }
+        backend::Event::Upgrading => {
+            app.upgrading.insert(space.clone(), false);
+            BackendHandled {
+                flow: Flow::Continue,
+                changed: false,
+                terminals_changed: false,
+            }
+        }
+        // The server upgrades: once every space it told has lost its
+        // connection, attach them again to the new binary.
+        backend::Event::Lost if app.upgrading.contains_key(space) => {
+            app.upgrading.insert(space.clone(), true);
+            if !app.upgrading.values().all(|&lost| lost) {
+                return BackendHandled {
+                    flow: Flow::Continue,
+                    changed: false,
+                    terminals_changed: false,
+                };
+            }
+            match app.reattach() {
+                Ok(()) => {
+                    app.notice = Some(UPGRADED.to_string());
+                    BackendHandled::terminals_changed(Flow::Continue)
+                }
+                Err(e) => {
+                    app.farewell = Some(format!("{UPGRADE_LOST}: {e:#}"));
+                    BackendHandled::terminals_changed(Flow::Quit)
+                }
             }
         }
         // Never a quiet quit: the terminals may run on, to attach again.

@@ -67,13 +67,6 @@ fn a_program_started_before_an_upgrade_is_still_running_with_its_screen_after_it
     assert!(said.contains(&format!("pid {server}")), "{said}");
     let log = std::fs::read_to_string(sandbox.state_dir().join("server.log")).unwrap();
     assert!(log.contains(&format!("took over as pid {server}")), "{log}");
-    // The attached paddock lost its connection at the switch.
-    assert!(!paddock.wait_exit(), "{}", paddock.full_screen());
-    paddock.wait_for("the farewell", |_| {
-        paddock
-            .full_screen()
-            .contains("lost the connection to the paddock server")
-    });
     // The same process, so the same lock, socket, instance and shells.
     assert_eq!(server_pid(&sandbox.state_dir()), Some(server));
     assert!(alive(server));
@@ -82,11 +75,44 @@ fn a_program_started_before_an_upgrade_is_still_running_with_its_screen_after_it
     let terminal = sandbox.terminal("space-1");
     assert_eq!(terminal.command.as_deref(), Some("cat"));
     assert_eq!(terminal.scrollback, scrollback, "the same scrollback");
-    // A new paddock sees the same screen, and the program still reads.
-    let mut again = sandbox.launch();
-    again.wait_for_text("typed-before\ntyped-before\n");
-    again.type_line("typed-after");
-    again.wait_for_text("typed-after\ntyped-after\n");
+    // The attached paddock attached again: the same screen, and the
+    // program still reads.
+    paddock.wait_for_text("programs kept running");
+    paddock.wait_for_text("typed-before\ntyped-before\n");
+    paddock.type_line("typed-after");
+    paddock.wait_for_text("typed-after\ntyped-after\n");
+}
+
+#[test]
+fn an_attached_paddock_attaches_again_where_it_was() {
+    let sandbox = native();
+    let mut paddock = ready(&sandbox);
+    paddock.type_line("echo CAT''-READY; cat");
+    paddock.wait_for_text("CAT-READY\n");
+    paddock.type_line("typed-before");
+    paddock.wait_for_text("typed-before\ntyped-before\n");
+    // A second space, holding a second tab, which is current.
+    paddock.command(b"C\r");
+    paddock.wait_for_text(PROMPT);
+    paddock.command(b"c");
+    paddock.wait_for_tabs(&["1:home", "2:home"]);
+    paddock.wait_for_current_tab("2:home");
+    paddock.type_line("echo in-second-tab");
+    paddock.wait_for_text("in-second-tab\n");
+
+    let out = sandbox.run(&["server", "upgrade"], &[], "");
+
+    assert!(out.status.success(), "{out:?}");
+    paddock.wait_for_text("programs kept running");
+    // The same space and tab, and its shell takes input.
+    assert_eq!(paddock.current_tab(), "2:home");
+    paddock.wait_for_text("in-second-tab\n");
+    paddock.type_line("echo after-upgrade");
+    paddock.wait_for_text("after-upgrade\n");
+    assert_eq!(sandbox.space("space-2").current, 1);
+    // The first space's program, there too.
+    let first = sandbox.terminal("space-1");
+    assert_eq!(first.command.as_deref(), Some("cat"));
 }
 
 #[test]
@@ -188,10 +214,10 @@ fn another_binary_takes_the_terminals_over() {
     let runs = format!("{} server --take-over", copy.display());
     assert!(command.starts_with(&runs), "{command}");
     assert_eq!(sandbox.shells(), shells, "the same shells");
-    let mut again = sandbox.launch();
-    again.wait_for_text("typed-before\ntyped-before\n");
-    again.type_line("typed-after");
-    again.wait_for_text("typed-after\ntyped-after\n");
+    paddock.wait_for_text("programs kept running");
+    paddock.wait_for_text("typed-before\ntyped-before\n");
+    paddock.type_line("typed-after");
+    paddock.wait_for_text("typed-after\ntyped-after\n");
 }
 
 /// Listen as a server of protocol version 999 would: send its hello,

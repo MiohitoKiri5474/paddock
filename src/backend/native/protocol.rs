@@ -41,7 +41,7 @@ use std::io::{ErrorKind, Read, Write};
 use std::path::PathBuf;
 
 /// The protocol's version: it changes whenever a message changes.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 /// The largest frame the client reads: a snapshot of 50,000 lines of
 /// scrollback, even with colours changing every few cells, fits.
@@ -281,6 +281,9 @@ pub enum Notice {
     /// waits for vim past 64 MiB"). Once per episode (until its program
     /// has taken all that waited).
     InputRefused { terminal: TerminalId, why: String },
+    /// The server hands its terminals to a new binary (ADR 0009): the
+    /// connection closes next, and the new binary serves the same spaces.
+    Upgrading,
 }
 
 /// Write `frame` and flush.

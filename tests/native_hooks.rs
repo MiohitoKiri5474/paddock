@@ -123,7 +123,7 @@ fn server_without_an_instance(sandbox: &Sandbox) {
             }
             let mut body = vec![0; u32::from_be_bytes(len) as usize];
             let _ = stream.read_exact(&mut body);
-            let hello = br#"{"Hello":{"version":1,"pid":4242}}"#;
+            let hello = br#"{"Hello":{"version":2,"pid":4242}}"#;
             let len = u32::try_from(hello.len() + 1).unwrap().to_be_bytes();
             let _ = stream.write_all(&len);
             let _ = stream.write_all(&[0]);
