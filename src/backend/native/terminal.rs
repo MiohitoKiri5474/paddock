@@ -337,10 +337,12 @@ impl DirReader {
         foreground.or_else(|| proc::cwd(self.shell?))
     }
 
-    /// The foreground program's name; `None` when it cannot be read (not
-    /// the shell's, unlike [`HostedTerminal::command`]).
-    pub fn program(self) -> Option<String> {
-        self.foreground.and_then(proc::name)
+    /// The foreground process group and its program's name; `None` when
+    /// either cannot be read (not the shell's, unlike
+    /// [`HostedTerminal::command`]).
+    pub fn program(self) -> Option<(i32, String)> {
+        let group = self.foreground?;
+        Some((group, proc::name(group)?))
     }
 }
 

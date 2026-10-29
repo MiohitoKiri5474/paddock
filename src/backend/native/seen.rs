@@ -44,6 +44,18 @@ struct Entry {
     /// A record of the session came in: its agent ran in this terminal,
     /// not only a restore seeded it there.
     heard: bool,
+    /// The process group its agent was last seen running in, in the
+    /// terminal's foreground, while the session was not over.
+    group: Option<i32>,
+}
+
+/// What runs in a terminal's foreground.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Foreground {
+    /// Its process group.
+    pub group: i32,
+    /// The group's program's name.
+    pub name: String,
 }
 
 /// An agent's report of its end.
@@ -57,6 +69,9 @@ struct End {
     /// Not reported: its terminal was seen back at the shell (see
     /// [`Seen::foregrounds`]), which seeing its agent again takes back.
     at_shell: bool,
+    /// For an end at the shell, the process group its agent ran in then:
+    /// that group in the foreground again (`fg`) takes the end back.
+    group: Option<i32>,
 }
 
 impl End {
@@ -66,6 +81,7 @@ impl End {
             ts,
             outside,
             at_shell: false,
+            group: None,
         }
     }
 }
@@ -90,37 +106,46 @@ impl Seen {
             session: agent.session,
             end,
             heard: false,
+            group: None,
         };
         self.terminals.insert(terminal, entry);
     }
 
     /// What ran in the foreground of each of `terminals` at `at` (ms since
-    /// the Unix epoch): its program's name, `None` when it could not be
-    /// read. A session of a kind that reports no end
-    /// ([`AgentKind::reports_end`]) is over once its terminal is at a
-    /// shell, if its agent has reported in there (a seeded one waits for
-    /// its resume to start); taken as ended from outside, as a reboot may
-    /// stop it before the server. Its agent in the foreground again (`fg`
-    /// after `C-z`: agy is a native program named `agy`) takes that back.
-    pub fn foregrounds(&mut self, terminals: &[(TerminalId, Option<String>)], at: u64) {
-        for (id, program) in terminals {
+    /// the Unix epoch), `None` when it could not be read. A session of a
+    /// kind that reports no end ([`AgentKind::reports_end`]) is over once
+    /// its terminal is at a shell, if its agent has reported in there (a
+    /// seeded one waits for its resume to start); taken as ended from
+    /// outside, as a reboot may stop it before the server. The process
+    /// group its agent ran in back in the foreground (`fg` after `C-z`;
+    /// agy is a native program named `agy`) takes that back; a fresh agy,
+    /// another group, does not: its own session's start will come.
+    pub fn foregrounds(&mut self, terminals: &[(TerminalId, Option<Foreground>)], at: u64) {
+        for (id, foreground) in terminals {
             let Some(seen) = self.terminals.get_mut(id) else {
                 continue;
             };
-            let Some(program) = program.as_deref() else {
+            let Some(Foreground { group, name }) = foreground else {
                 continue;
             };
             if seen.kind.reports_end() {
                 continue;
             }
-            if is_shell(program) && seen.heard && seen.end.is_none() {
-                seen.end = Some(End {
-                    ts: at,
-                    outside: true,
-                    at_shell: true,
-                });
-            } else if program == seen.kind.tag() && seen.end.is_some_and(|e| e.at_shell) {
-                seen.end = None;
+            let agent = name == seen.kind.tag();
+            match seen.end {
+                None if agent => seen.group = Some(*group),
+                None if is_shell(name) && seen.heard => {
+                    seen.end = Some(End {
+                        ts: at,
+                        outside: true,
+                        at_shell: true,
+                        group: seen.group,
+                    });
+                }
+                Some(end) if agent && end.at_shell && end.group == Some(*group) => {
+                    seen.end = None;
+                }
+                _ => {}
             }
         }
     }
@@ -189,6 +214,7 @@ impl Seen {
                     session: session.to_string(),
                     end,
                     heard: true,
+                    group: None,
                 };
                 self.terminals.insert(terminal, entry);
             }
@@ -390,13 +416,25 @@ mod tests {
         );
     }
 
-    /// `terminals`, each running `program`, as [`Seen::foregrounds`]
-    /// takes them.
-    fn running(terminals: &[&str], program: &str) -> Vec<(TerminalId, Option<String>)> {
-        let program = Some(program.to_string());
+    /// A shell's process group.
+    const SHELL: i32 = 100;
+    /// An agent's (or another program's) process group.
+    const AGENT: i32 = 200;
+
+    /// `terminals`, each running `program` in process group `group`, as
+    /// [`Seen::foregrounds`] takes them.
+    fn running(
+        terminals: &[&str],
+        group: i32,
+        program: &str,
+    ) -> Vec<(TerminalId, Option<Foreground>)> {
+        let foreground = Foreground {
+            group,
+            name: program.to_string(),
+        };
         terminals
             .iter()
-            .map(|t| (TerminalId::new(*t), program.clone()))
+            .map(|t| (TerminalId::new(*t), Some(foreground.clone())))
             .collect()
     }
 
@@ -436,7 +474,7 @@ mod tests {
         let seen = &mut log.seen;
         assert_eq!(at(seen, "%1"), agent(AGY, "a", false));
         seen.seed(TerminalId::new("%3"), agent(AGY, "c", false).unwrap());
-        seen.foregrounds(&running(&["%1", "%2", "%3"], "-zsh"), 1);
+        seen.foregrounds(&running(&["%1", "%2", "%3"], SHELL, "-zsh"), 1);
         assert_eq!(at(seen, "%1"), agent(AGY, "a", true));
         assert_eq!(
             at(seen, "%2"),
@@ -450,32 +488,53 @@ mod tests {
         // The resumed agy reports in: back at the shell, it is over.
         log.add(of(AGY, record("SessionStart", "%3", "c")));
         assert_eq!(at(&mut log.seen, "%3"), agent(AGY, "c", false));
-        log.seen.foregrounds(&running(&["%3"], "bash"), 3);
+        log.seen.foregrounds(&running(&["%3"], SHELL, "bash"), 3);
         assert_eq!(at(&mut log.seen, "%3"), agent(AGY, "c", true));
         // Another program in the foreground (vim, after agy quit) does
         // not take it back.
-        log.seen.foregrounds(&running(&["%3"], "vim"), 4);
+        log.seen.foregrounds(&running(&["%3"], AGENT, "vim"), 4);
         assert_eq!(at(&mut log.seen, "%3"), agent(AGY, "c", true));
     }
 
-    /// `C-z` puts the shell in agy's place for a while: `fg` (agy in the
-    /// foreground again) or any record of its session takes the end back.
+    /// `C-z` puts the shell in agy's place for a while: `fg` (the same
+    /// agy in the foreground again) or any record of its session takes
+    /// the end back. A fresh agy, in another process group, does not.
     #[test]
     fn a_suspended_agy_session_is_taken_back_by_fg_or_a_record() {
         let mut log = Log::new();
         log.add(of(AGY, record("SessionStart", "%1", "a")));
-        log.seen.foregrounds(&running(&["%1"], "zsh"), 1);
+        log.seen.foregrounds(&running(&["%1"], AGENT, "agy"), 1);
+        log.seen.foregrounds(&running(&["%1"], SHELL, "zsh"), 2);
         assert_eq!(at(&mut log.seen, "%1"), agent(AGY, "a", true), "C-z");
-        log.seen.foregrounds(&running(&["%1"], "agy"), 2);
+        log.seen.foregrounds(&running(&["%1"], AGENT, "agy"), 3);
         assert_eq!(at(&mut log.seen, "%1"), agent(AGY, "a", false), "fg");
 
-        log.seen.foregrounds(&running(&["%1"], "zsh"), 3);
-        log.add(of(AGY, record("Stop", "%1", "a")));
-        assert_eq!(at(&mut log.seen, "%1"), agent(AGY, "a", false), "a record");
+        // Quit, then a fresh agy before its own session's start lands.
+        log.seen.foregrounds(&running(&["%1"], SHELL, "zsh"), 4);
+        log.seen.foregrounds(&running(&["%1"], AGENT + 1, "agy"), 5);
+        assert_eq!(at(&mut log.seen, "%1"), agent(AGY, "a", true), "fresh");
+        // Even seen there again later.
+        log.seen.foregrounds(&running(&["%1"], AGENT + 1, "agy"), 6);
+        assert_eq!(at(&mut log.seen, "%1"), agent(AGY, "a", true), "fresh");
+        log.add(of(AGY, record("SessionStart", "%1", "z")));
+        assert_eq!(at(&mut log.seen, "%1"), agent(AGY, "z", false));
+        // A group never seen running agy (it ran between two looks) gives
+        // no group to take the end back by: only a record does.
+        let mut short = Log::new();
+        short.add(of(AGY, record("SessionStart", "%1", "a")));
+        short.seen.foregrounds(&running(&["%1"], SHELL, "zsh"), 1);
+        short.seen.foregrounds(&running(&["%1"], AGENT, "agy"), 2);
+        assert_eq!(at(&mut short.seen, "%1"), agent(AGY, "a", true));
+        short.add(of(AGY, record("Stop", "%1", "a")));
+        assert_eq!(
+            at(&mut short.seen, "%1"),
+            agent(AGY, "a", false),
+            "a record"
+        );
         // A reported end is taken back by its own start only.
         log.add(of(CLAUDE, record("SessionStart", "%2", "b")));
         log.add(of(CLAUDE, record("SessionEnd", "%2", "b")));
-        log.seen.foregrounds(&running(&["%2"], "claude"), 4);
+        log.seen.foregrounds(&running(&["%2"], AGENT, "claude"), 4);
         log.add(of(CLAUDE, record("Stop", "%2", "b")));
         assert_eq!(at(&mut log.seen, "%2"), agent(CLAUDE, "b", true));
     }
@@ -489,10 +548,10 @@ mod tests {
             of(AGY, record("SessionStart", "%1", "a")),
             of(AGY, record("SessionStart", "%2", "b")),
         ]);
-        seen.foregrounds(&running(&["%1"], "zsh"), close - CLOSE_WINDOW * 2);
-        seen.foregrounds(&running(&["%2"], "zsh"), close - 10);
+        seen.foregrounds(&running(&["%1"], SHELL, "zsh"), close - CLOSE_WINDOW * 2);
+        seen.foregrounds(&running(&["%2"], SHELL, "zsh"), close - 10);
         // Seen at the shell again later keeps when it was first.
-        seen.foregrounds(&running(&["%1"], "zsh"), close - 10);
+        seen.foregrounds(&running(&["%1"], SHELL, "zsh"), close - 10);
         seen.close(close);
         assert_eq!(at(&mut seen, "%1"), agent(AGY, "a", true));
         assert_eq!(at(&mut seen, "%2"), agent(AGY, "b", false));
