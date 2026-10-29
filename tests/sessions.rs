@@ -76,27 +76,21 @@ fn at_home() -> String {
     "   ~".into()
 }
 
-/// An agent's first line: dot, label, and its state at the right.
-fn agent(label: &str, state: &str) -> String {
-    let width = 30 - 3 - state.len();
-    format!(" ● {label:<width$}{state}")
+/// AGENTS' lines for these `(label, state)` agents, all in space-1: one
+/// line each, labels and states in columns, then the space.
+fn agents(list: &[(&str, &str)]) -> Vec<String> {
+    let label = list.iter().map(|(l, _)| l.len()).max().unwrap_or(0);
+    let state = list.iter().map(|(_, s)| s.len()).max().unwrap_or(0);
+    list.iter()
+        .map(|(l, s)| format!(" ● {l:<label$}  {s:<state$}  space-1"))
+        .collect()
 }
 
-/// An agent's second line: its space and tab, and its kind at the right.
-fn place(space: &str, tab: &str) -> String {
-    let place = format!("{space} · {tab}");
-    format!("   {place:<21}claude")
-}
-
-/// The sidebar with space-1 and one agent in its first tab.
-fn one_agent(label: &str, state: &str, tab: &str) -> Vec<String> {
-    vec![
-        space("space-1", true),
-        at_home(),
-        " AGENTS".into(),
-        agent(label, state),
-        place("space-1", tab),
-    ]
+/// The sidebar with space-1 and one agent in it.
+fn one_agent(label: &str, state: &str) -> Vec<String> {
+    let mut lines = vec![space("space-1", true), at_home(), " AGENTS".into()];
+    lines.extend(agents(&[(label, state)]));
+    lines
 }
 
 /// The sidebar with only space-1 and no agents.
@@ -134,7 +128,7 @@ fn hook_events_drive_the_agent_row() {
         let event = name.split('-').next().unwrap();
         let out = sandbox.hook("space-1", event, &payload(name));
         assert!(out.stdout.is_empty() && out.stderr.is_empty(), "{out:?}");
-        wait_for_lines(&paddock, &one_agent("repo", state, "claude"));
+        wait_for_lines(&paddock, &one_agent("repo", state));
     }
     // Claude quit: its agent leaves the sidebar.
     let out = sandbox.hook("space-1", "SessionEnd", &payload("SessionEnd"));
@@ -209,22 +203,19 @@ fn agents_of_every_space_are_listed_with_their_space_and_tab() {
 
     // In tab order, never by state; the turn that ended out of sight is
     // done; the session that ended is not listed.
-    wait_for_lines(
-        &paddock,
-        &[
-            space("space-1", true),
-            at_home(),
-            space("space-2", false),
-            at_home(),
-            " AGENTS".into(),
-            agent("running", "running"),
-            place("space-1", "claude"),
-            agent("idle", "done"),
-            place("space-1", "claude"),
-            agent("waiting", "waiting"),
-            place("space-1", "claude"),
-        ],
-    );
+    let mut want = vec![
+        space("space-1", true),
+        at_home(),
+        space("space-2", false),
+        at_home(),
+        " AGENTS".into(),
+    ];
+    want.extend(agents(&[
+        ("running", "running"),
+        ("idle", "done"),
+        ("waiting", "waiting"),
+    ]));
+    wait_for_lines(&paddock, &want);
     // The space's tabs show theirs; tabs running Claude are called so.
     paddock.command(b"w");
     paddock.send(b"k\r");
@@ -246,7 +237,7 @@ fn events_recorded_while_paddock_is_closed_appear_on_reopen() {
     );
 
     let again = ready(&sandbox);
-    wait_for_lines(&again, &one_agent("repo", "waiting", "claude"));
+    wait_for_lines(&again, &one_agent("repo", "waiting"));
 }
 
 #[test]
@@ -254,7 +245,7 @@ fn claude_agents_corrects_missed_events() {
     let sandbox = Sandbox::new();
     let paddock = ready(&sandbox);
     sandbox.hook("space-1", "UserPromptSubmit", &payload("UserPromptSubmit"));
-    wait_for_lines(&paddock, &one_agent("repo", "running", "claude"));
+    wait_for_lines(&paddock, &one_agent("repo", "running"));
 
     // Esc fires no Stop; claude still reports the session as idle.
     sandbox.set_agents(
@@ -262,7 +253,7 @@ fn claude_agents_corrects_missed_events() {
             .to_string(),
     );
 
-    wait_for_lines(&paddock, &one_agent("fix-login", "idle", "claude"));
+    wait_for_lines(&paddock, &one_agent("fix-login", "idle"));
 }
 
 #[test]
@@ -276,7 +267,7 @@ fn claude_agents_finds_sessions_no_hook_reported() {
             .to_string(),
     );
 
-    wait_for_lines(&paddock, &one_agent("older", "waiting", "claude"));
+    wait_for_lines(&paddock, &one_agent("older", "waiting"));
 }
 
 #[test]
@@ -364,7 +355,7 @@ fn c_a_s_starts_on_the_current_space_when_no_agent_is_focused() {
 
     paddock.command(b"s");
 
-    // Rows: 1-2 space-1, 3-4 space-2 (current), 7-8 the agent.
+    // Rows: 1-2 space-1, 3-4 space-2 (current), 7 the agent.
     paddock.wait_for("space-2 selected", |_| paddock.reversed(3, 5));
     assert!(!paddock.reversed(1, 5), "not the top item");
     assert!(!paddock.reversed(7, 5), "not the agent");
@@ -381,18 +372,9 @@ fn focused_agent_second(sandbox: &Sandbox) -> Paddock {
         &payload_for("PermissionRequest", "s1", "/w/first"),
     );
     sandbox.hook("space-1:1", "Stop", &payload_for("Stop", "s2", "/w/here"));
-    wait_for_lines(
-        &paddock,
-        &[
-            space("space-1", true),
-            at_home(),
-            " AGENTS".into(),
-            agent("first", "waiting"),
-            place("space-1", "claude"),
-            agent("here", "idle"),
-            place("space-1", "claude"),
-        ],
-    );
+    let mut want = vec![space("space-1", true), at_home(), " AGENTS".into()];
+    want.extend(agents(&[("first", "waiting"), ("here", "idle")]));
+    wait_for_lines(&paddock, &want);
     paddock
 }
 
@@ -401,19 +383,15 @@ fn the_focused_agent_has_the_current_background() {
     let sandbox = Sandbox::new();
     let paddock = focused_agent_second(&sandbox);
 
-    // Rows: 1-2 space-1, 4 AGENTS, 5-6 first, 7 blank, 8-9 here.
+    // Rows: 1-2 space-1, 4 AGENTS, 5 first, 6 here.
     paddock.wait_for("here highlighted", |_| {
-        paddock.colors(8, 5).1 == CURRENT_ITEM
+        paddock.colors(6, 5).1 == CURRENT_ITEM
     });
-    assert_eq!(
-        paddock.colors(9, 20).1,
-        CURRENT_ITEM,
-        "across both its lines"
-    );
+    assert_eq!(paddock.colors(6, 20).1, CURRENT_ITEM, "across its line");
     assert_eq!(
         paddock.colors(7, 5).1,
         vt100::Color::Default,
-        "not the blank"
+        "not the line below"
     );
     assert_eq!(paddock.colors(5, 5).1, vt100::Color::Default, "not first");
 }
@@ -424,7 +402,7 @@ fn c_a_s_starts_on_the_focused_agent_even_with_the_sidebar_hidden() {
     let mut paddock = focused_agent_second(&sandbox);
 
     paddock.command(b"s");
-    paddock.wait_for("here selected", |_| paddock.reversed(8, 5));
+    paddock.wait_for("here selected", |_| paddock.reversed(6, 5));
     assert!(!paddock.reversed(5, 5), "not the first agent");
     assert!(!paddock.reversed(1, 5), "not the top item");
 
@@ -433,7 +411,7 @@ fn c_a_s_starts_on_the_focused_agent_even_with_the_sidebar_hidden() {
     paddock.wait_for("sidebar hidden", |_| paddock.sidebar().is_empty());
     paddock.command(b"s");
     paddock.wait_for("shown, here selected", |_| {
-        !paddock.sidebar().is_empty() && paddock.reversed(8, 5)
+        !paddock.sidebar().is_empty() && paddock.reversed(6, 5)
     });
     assert!(!paddock.reversed(5, 5) && !paddock.reversed(1, 5));
 }
@@ -443,8 +421,8 @@ fn clicking_an_agent_row_jumps_to_its_pane() {
     let sandbox = Sandbox::new();
     let mut paddock = agent_in_another_space(&sandbox);
 
-    // Rows: 0 SPACES, 1-4 two spaces, 5 blank, 6 AGENTS, 7-8 the agent.
-    paddock.click_screen(5, 8);
+    // Rows: 0 SPACES, 1-4 two spaces, 5 blank, 6 AGENTS, 7 the agent.
+    paddock.click_screen(5, 7);
 
     paddock.wait_for_current_tab("2:● claude");
     paddock.type_line("echo typed-after-the-click");

@@ -61,13 +61,8 @@ fn a_gemini_session_goes_working_waiting_idle_then_ends() {
     paddock.wait_for_text(PROMPT);
 
     gemini(&sandbox, "space-1:0", &["SessionStart"]);
-    wait_row(&paddock, "idle at start", &["● repo", "idle"]);
-    // The tab named after the session, and the sidebar, take Gemini's tag.
-    wait_row(
-        &paddock,
-        "the sidebar's tag",
-        &["space-1 · gemini", "gemini │"],
-    );
+    // The sidebar names the agent's space; its kind is the dashboard's.
+    wait_row(&paddock, "idle at start", &["● repo", "idle", "space-1"]);
 
     gemini(&sandbox, "space-1:0", &["BeforeAgent"]);
     wait_row(&paddock, "working", &["● repo", "running"]);
@@ -140,7 +135,7 @@ fn an_external_gemini_session_lands_in_the_external_group() {
         header.is_some_and(|h| {
             rows[h + 1].contains("● repo")
                 && rows[h + 1].contains("waiting")
-                && rows[h + 2].contains("gemini")
+                && !rows[h + 1].contains("space-1")
         })
     });
     let state = sandbox.path("state/paddock/events/external.jsonl");

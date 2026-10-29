@@ -119,11 +119,13 @@ fn claude_log(sandbox: &Sandbox) -> String {
     std::fs::read_to_string(sandbox.path("claude.log")).unwrap_or_default()
 }
 
-/// How many agents the sidebar lists (each with its kind beside its
-/// place).
+/// How many agents the sidebar lists: the lines with a dot under AGENTS.
 fn agents_shown(paddock: &Paddock) -> usize {
     let sidebar = paddock.sidebar();
-    sidebar.iter().filter(|l| l.ends_with("claude")).count()
+    let Some(top) = sidebar.iter().position(|l| l.contains("AGENTS")) else {
+        return 0;
+    };
+    sidebar[top..].iter().filter(|l| l.contains("●")).count()
 }
 
 /// The server ends cleanly and a new paddock starts the next one.

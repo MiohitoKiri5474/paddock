@@ -119,8 +119,8 @@ fn an_agy_session_goes_idle_working_waiting_done_then_ends_at_the_shell() {
     paddock.wait_for_text(PROMPT);
 
     agy(&sandbox, "space-1:0", &["SessionStart"]);
-    wait_row(&paddock, "idle at start", &["● repo", "idle"]);
-    wait_row(&paddock, "the sidebar's tag", &["space-1 · agy"]);
+    // The sidebar names the agent's space; its kind is the dashboard's.
+    wait_row(&paddock, "idle at start", &["● repo", "idle", "space-1"]);
 
     agy(&sandbox, "space-1:0", &["PreInvocation"]);
     wait_row(&paddock, "working", &["● repo", "running"]);
@@ -407,7 +407,7 @@ fn an_external_agy_session_lands_in_the_external_group() {
         header.is_some_and(|h| {
             rows[h + 1].contains("● repo")
                 && rows[h + 1].contains("running")
-                && rows[h + 2].contains("agy")
+                && !rows[h + 1].contains("space-1")
         })
     });
     let log = std::fs::read_to_string(sandbox.path("state/paddock/events/external.jsonl")).unwrap();

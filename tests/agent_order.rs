@@ -4,7 +4,7 @@
 
 mod harness;
 
-use harness::{Paddock, Sandbox, PROMPT};
+use harness::{Paddock, Sandbox, CURRENT_ITEM, PROMPT};
 use serde_json::json;
 
 const SPIKE: &str = concat!(
@@ -69,6 +69,12 @@ fn dashboard_order(paddock: &Paddock) -> Vec<&'static str> {
     order(&list)
 }
 
+/// The state word on an agent's sidebar line: the word after its label
+/// (`● label state space`).
+fn state_of(line: &str) -> Option<&str> {
+    line.split_whitespace().nth(2)
+}
+
 /// Wait until the sidebar shows `states` (each agent's, in tab order).
 fn wait_for_states(paddock: &Paddock, states: [&str; 3]) {
     paddock.wait_for("states", |_| {
@@ -76,14 +82,15 @@ fn wait_for_states(paddock: &Paddock, states: [&str; 3]) {
         LABELS.iter().zip(states).all(|(label, state)| {
             lines
                 .iter()
-                .any(|l| l.contains(label) && l.trim_end().ends_with(state))
+                .any(|l| l.contains(label) && state_of(l) == Some(state))
         })
     });
 }
 
-#[test]
-fn a_state_change_moves_no_agent_in_the_sidebar_or_the_dashboard() {
-    let sandbox = Sandbox::new();
+/// Paddock with three tabs in space-1, the third current, and alpha done
+/// in the first, bravo waiting in the second and charlie running in the
+/// third: not in urgency order.
+fn three_agents(sandbox: &Sandbox) -> Paddock {
     // No `claude agents` snapshots: only the hooks set the states.
     sandbox.set_agents("not json");
     let mut paddock = sandbox.launch();
@@ -93,11 +100,47 @@ fn a_state_change_moves_no_agent_in_the_sidebar_or_the_dashboard() {
         paddock.wait_for_current_tab(tab);
         paddock.wait_for_text(PROMPT);
     }
-    // alpha done, bravo waiting, charlie running: not in urgency order.
-    hook(&sandbox, "space-1:0", "Stop", "s1", "alpha");
-    hook(&sandbox, "space-1:1", "PermissionRequest", "s2", "bravo");
-    hook(&sandbox, "space-1:2", "UserPromptSubmit", "s3", "charlie");
+    hook(sandbox, "space-1:0", "Stop", "s1", "alpha");
+    hook(sandbox, "space-1:1", "PermissionRequest", "s2", "bravo");
+    hook(sandbox, "space-1:2", "UserPromptSubmit", "s3", "charlie");
     wait_for_states(&paddock, ["done", "waiting", "running"]);
+    paddock
+}
+
+#[test]
+fn three_agents_take_three_lines_and_a_click_on_one_opens_it() {
+    let sandbox = Sandbox::new();
+    let mut paddock = three_agents(&sandbox);
+    let lines = paddock.sidebar();
+    let top = lines
+        .iter()
+        .position(|l| l.contains("AGENTS"))
+        .unwrap_or_else(|| panic!("no AGENTS:\n{}", lines.join("\n")));
+    // One line each, right under the header: dot, label, state, space.
+    let want = [
+        " ● alpha    done     space-1",
+        " ● bravo    waiting  space-1",
+        " ● charlie  running  space-1",
+    ];
+    assert_eq!(lines[top + 1..top + 4], want, "{}", lines.join("\n"));
+    assert!(lines.get(top + 4).is_none_or(|l| l.is_empty()));
+
+    // A click on bravo's line opens its tab, and the line is the current
+    // agent's.
+    let row = |i: usize| u16::try_from(top + 1 + i).unwrap();
+    paddock.click_screen(5, row(1));
+    paddock.wait_for("bravo current", |_| {
+        paddock.current_tab().starts_with("2:") && paddock.colors(row(1), 5).1 == CURRENT_ITEM
+    });
+    for other in [0, 2] {
+        assert_ne!(paddock.colors(row(other), 5).1, CURRENT_ITEM, "{other}");
+    }
+}
+
+#[test]
+fn a_state_change_moves_no_agent_in_the_sidebar_or_the_dashboard() {
+    let sandbox = Sandbox::new();
+    let mut paddock = three_agents(&sandbox);
     assert_eq!(sidebar_order(&paddock), LABELS);
     paddock.command(b"o");
     paddock.wait_for_text(OPEN);
@@ -163,10 +206,10 @@ fn a_snapshot_changing_states_moves_no_agent() {
         let lines = paddock.sidebar();
         lines
             .iter()
-            .any(|l| l.contains("charlie") && l.ends_with("running"))
+            .any(|l| l.contains("charlie") && state_of(l) == Some("running"))
             && lines
                 .iter()
-                .any(|l| l.contains("echo") && l.ends_with("waiting"))
+                .any(|l| l.contains("echo") && state_of(l) == Some("waiting"))
     });
     assert_eq!(shown(&paddock), all, "{}", paddock.sidebar().join("\n"));
 
@@ -179,10 +222,10 @@ fn a_snapshot_changing_states_moves_no_agent() {
         let lines = paddock.sidebar();
         lines
             .iter()
-            .any(|l| l.contains("charlie") && l.ends_with("waiting"))
+            .any(|l| l.contains("charlie") && state_of(l) == Some("waiting"))
             && lines
                 .iter()
-                .any(|l| l.contains("echo") && l.ends_with("running"))
+                .any(|l| l.contains("echo") && state_of(l) == Some("running"))
     });
     assert_eq!(shown(&paddock), all, "{}", paddock.sidebar().join("\n"));
     paddock.command(b"o");
@@ -245,7 +288,7 @@ fn agents_across_spaces_and_tabs_stay_put_when_one_starts_waiting() {
         p.sidebar()
             .iter()
             .filter(|l| l.contains("●"))
-            .filter_map(|l| l.split_whitespace().last().map(str::to_string))
+            .filter_map(|l| state_of(l).map(str::to_string))
             .collect()
     };
     paddock.wait_for("every agent", |_| shown(&paddock).len() == 6);
