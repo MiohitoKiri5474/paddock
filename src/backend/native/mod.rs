@@ -15,6 +15,7 @@
 //! - [`scrollback`]: each terminal's scrollback, saved as the server
 //!   ends and drawn again above its restored shell.
 //! - [`terminal`] and [`pty`]: one terminal, its shell and its emulator.
+//! - [`proc`]: a process's name and directory, as macOS or Linux says.
 //! - [`hook`]: the variables that tell a process which terminal it runs in.
 //! - [`queue`]: the queues to the threads that write to a client or a
 //!   program.
@@ -24,6 +25,7 @@ mod axis;
 mod client;
 mod hook;
 mod layout;
+mod proc;
 mod protocol;
 mod pty;
 mod queue;
@@ -54,9 +56,12 @@ const SOCKET: &str = "server.sock";
 const LOCK: &str = "server.lock";
 /// Where the server writes what goes wrong.
 const LOG: &str = "server.log";
-/// The longest socket path macOS takes (`sun_path` holds 104 bytes, its
-/// final NUL included).
+/// The longest socket path the platform takes (`sun_path` holds 104 bytes
+/// on macOS, 108 on Linux, its final NUL included).
+#[cfg(target_os = "macos")]
 const MAX_SOCKET_PATH: usize = 103;
+#[cfg(target_os = "linux")]
+const MAX_SOCKET_PATH: usize = 107;
 
 /// The native terminal a process runs in, from its environment as `var`
 /// reads it (see [`hook::terminal`]); `None` outside the terminals of the
@@ -75,7 +80,7 @@ fn socket_path(paths: &Paths) -> Result<PathBuf> {
     let len = path.as_os_str().len();
     if len > MAX_SOCKET_PATH {
         bail!(
-            "the paddock server's socket path is {len} bytes, longer than macOS allows \
+            "the paddock server's socket path is {len} bytes, longer than this system allows \
              ({MAX_SOCKET_PATH}): {}; set XDG_STATE_HOME to a shorter directory",
             path.display()
         );

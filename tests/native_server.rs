@@ -68,7 +68,7 @@ fn the_server_hosts_the_shell_in_the_sandbox_and_answers_debug_state() {
     assert!(terminal
         .tty
         .as_deref()
-        .is_some_and(|t| t.starts_with("/dev/ttys")));
+        .is_some_and(|t| t.starts_with("/dev/ttys") || t.starts_with("/dev/pts/")));
     assert_eq!(terminal.command.as_deref(), Some("zsh"));
     let mode = std::fs::metadata(sandbox.state_dir().join("server.sock")).unwrap();
     use std::os::unix::fs::PermissionsExt;
@@ -205,11 +205,13 @@ fn reattaching_while_output_streams_loses_and_doubles_nothing() {
     again.wait_for_text(&format!("n{LINES}\n"));
 
     // Read every line from the top of the scrollback down, a screen at a
-    // time (screens overlap), and check they run on one by one.
+    // time (screens overlap), and check they run on one by one. A line's
+    // first word only: the top row also holds the `[N/N]` label, and on
+    // Linux `clear` empties the scrollback, so `n1` is that row.
     let numbers = |p: &Paddock| -> Vec<u32> {
         let rows = p.rows();
         rows.iter()
-            .filter_map(|r| r.strip_prefix('n')?.parse().ok())
+            .filter_map(|r| r.split_whitespace().next()?.strip_prefix('n')?.parse().ok())
             .collect()
     };
     // Past the top: the view stops at the first line, `[N/N]`.

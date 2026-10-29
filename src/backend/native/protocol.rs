@@ -292,14 +292,16 @@ pub fn encode(frame: &Frame) -> Result<Vec<u8>> {
 }
 
 /// The next frame, of at most `max` bytes; `None` if the other side
-/// closed the connection between frames. A connection closed within a
-/// frame, its length included, is an error.
+/// closed the connection between frames (Linux reports one closed with
+/// what we sent unread as reset, macOS as closed). A connection closed
+/// within a frame, its length included, is an error.
 pub fn read(r: &mut impl Read, max: usize) -> Result<Option<Frame>> {
     let mut len = [0; 4];
     let mut got = 0;
     while got < len.len() {
         match r.read(&mut len[got..]) {
             Ok(0) if got == 0 => return Ok(None),
+            Err(e) if got == 0 && e.kind() == ErrorKind::ConnectionReset => return Ok(None),
             Ok(0) => bail!("the paddock server connection closed within a frame's length"),
             Ok(n) => got += n,
             Err(e) if e.kind() == ErrorKind::Interrupted => {}
@@ -404,14 +406,24 @@ pub struct Peer {
 
 /// Send our hello, with our `instance` id (0 from a client), and read
 /// theirs; an error if it speaks another version. `server` names the
-/// other side in that error.
+/// other side in that error. A side gone before our hello reaches it
+/// (the pipe broken or reset) is [`Closed`], as one that closes unanswered.
 pub fn hello(stream: &mut (impl Read + Write), server: bool, instance: u32) -> Result<Peer> {
     let ours = Message::Hello {
         version: VERSION,
         pid: std::process::id(),
         instance,
     };
-    write(stream, &Frame::Message(ours))?;
+    if let Err(e) = write(stream, &Frame::Message(ours)) {
+        let gone = e.downcast_ref::<std::io::Error>().is_some_and(|e| {
+            matches!(e.kind(), ErrorKind::BrokenPipe | ErrorKind::ConnectionReset)
+        });
+        return Err(if gone {
+            anyhow::Error::new(Closed).context("no hello from the other side")
+        } else {
+            e
+        });
+    }
     match read(stream, FROM_CLIENT)? {
         Some(Frame::Message(Message::Hello {
             version,
@@ -440,6 +452,51 @@ mod tests {
             read(&mut bytes.as_slice(), FROM_CLIENT).unwrap(),
             Some(frame)
         );
+    }
+
+    /// A connection the other side reset.
+    struct Reset;
+
+    impl Read for Reset {
+        fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+            Err(ErrorKind::ConnectionReset.into())
+        }
+    }
+
+    /// A connection whose other side went away before our first write.
+    struct Gone(ErrorKind);
+
+    impl Read for Gone {
+        fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+            Ok(0)
+        }
+    }
+
+    impl Write for Gone {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            Err(self.0.into())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_hello_to_a_side_already_gone_is_closed() {
+        for kind in [ErrorKind::BrokenPipe, ErrorKind::ConnectionReset] {
+            let e = hello(&mut Gone(kind), true, 0).unwrap_err();
+            assert!(e.downcast_ref::<Closed>().is_some(), "{kind:?}: {e:#}");
+        }
+        let e = hello(&mut Gone(ErrorKind::PermissionDenied), true, 0).unwrap_err();
+        assert!(e.downcast_ref::<Closed>().is_none(), "{e:#}");
+    }
+
+    #[test]
+    fn a_connection_reset_between_frames_reads_as_closed() {
+        assert_eq!(read(&mut Reset, FROM_CLIENT).unwrap(), None);
+        let mut cut = [0u8, 0].chain(Reset);
+        assert!(read(&mut cut, FROM_CLIENT).is_err());
     }
 
     #[test]

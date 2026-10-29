@@ -8,7 +8,6 @@ on:
 jobs:
   # Unit tests; the harness runs in `harness`, once per backend.
   test:
-    # ponytail: macOS only, paddock is a Mac-only tool.
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -45,6 +44,24 @@ jobs:
         env:
           PADDOCK_TEST_BACKEND: tmux
         run: cargo test --test '*' --locked --no-fail-fast
+
+  # Linux (ticket 52): the unit tests and the harness on the native
+  # backend alone, as tmux is legacy there. The tmux-only tests are skipped
+  # by scripts/test-native.sh.
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # zsh is the harness's shell; some unit tests and the old-server
+      # notice's test drive a real tmux server.
+      - name: Install zsh and tmux
+        run: sudo apt-get update && sudo apt-get install -y zsh tmux
+      - name: Unit tests
+        run: cargo test --bin paddock --locked
+      - name: Harness on the native backend
+        run: scripts/test-native.sh --locked --no-fail-fast
 
   build:
     needs: test
