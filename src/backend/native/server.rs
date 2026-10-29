@@ -207,7 +207,11 @@ fn adopt(record: File, conn: RawFd) -> Result<(Arc<Shared>, UnixListener, File)>
     let (record, snapshots) = handover::read(&mut BufReader::new(record))?;
     let mut keep = record.descriptors();
     keep.push(conn);
-    handover::close_strays(&keep)?;
+    // Best effort: the probe never ran this, so it must not end the
+    // takeover; a stray left open only keeps one client waiting.
+    if let Err(e) = handover::close_strays(&keep) {
+        eprintln!("paddock server: {e:#}");
+    }
     let lock = File::from(take_fd(record.lock)?);
     let listener = UnixListener::from(take_fd(record.listener)?);
     let state = State::handed(socket, record.instance, record.last_id);
