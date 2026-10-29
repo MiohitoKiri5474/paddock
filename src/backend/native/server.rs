@@ -203,12 +203,14 @@ pub fn take_over(record: &str, conn: &str) -> Result<()> {
 fn adopt(record: File, conn: RawFd) -> Result<(Arc<Shared>, UnixListener, File)> {
     let paths = Paths::from_env()?;
     let socket = socket_path(&paths)?;
-    // Read, the record's file is closed.
+    // The record's file closes once it is read, so it is not kept below.
     let (record, snapshots) = handover::read(&mut BufReader::new(record))?;
     let mut keep = record.descriptors();
     keep.push(conn);
-    // Best effort: the probe never ran this, so it must not end the
-    // takeover; a stray left open only keeps one client waiting.
+    // Best effort. The probe (`--check-handover`, which vouched for this
+    // takeover) only reads the record and never closes anything, so a
+    // failure here must not end a takeover it accepted: a stray left open
+    // only keeps one client waiting, until its read times out.
     if let Err(e) = handover::close_strays(&keep) {
         eprintln!("paddock server: {e:#}");
     }

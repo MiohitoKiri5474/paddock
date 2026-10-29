@@ -23,6 +23,9 @@ const TERMINAL_CLOSED: &str = "that terminal is closed";
 
 /// How long paddock waits for an upgraded server to answer (ADR 0009).
 const REATTACH_WAIT: Duration = Duration::from_secs(10);
+/// How long one ask of an upgraded server waits for its answer, before
+/// paddock asks again on a new connection.
+const REATTACH_ASK: Duration = Duration::from_secs(2);
 
 impl App {
     /// The name a new space gets unless the user picks one: the first free
@@ -81,17 +84,18 @@ impl App {
         }
         // The old binary, until its `exec`, still takes connections, and
         // closes them unanswered: ask until the new one answers, its hello
-        // and then its spaces (a closed connection is no answer).
+        // and then its spaces (a closed connection is no answer). Every
+        // read is bounded, so the wait is too: no answer within
+        // [`REATTACH_WAIT`] in all is an error.
         let start = Instant::now();
         let running = loop {
-            let asked = self
-                .backend
-                .prepare()
-                .and_then(|()| self.backend.upgraded_spaces());
-            match asked {
+            let left = REATTACH_WAIT.saturating_sub(start.elapsed());
+            // Never a zero timeout, which would mean none.
+            let ask = left.clamp(Duration::from_millis(1), REATTACH_ASK);
+            match self.backend.upgraded_spaces(ask) {
                 Ok(running) => break running,
                 Err(e) if e.downcast_ref::<OtherVersion>().is_some() => return Err(e),
-                Err(e) if start.elapsed() > REATTACH_WAIT => return Err(e),
+                Err(e) if start.elapsed() >= REATTACH_WAIT => return Err(e),
                 Err(_) => std::thread::sleep(Duration::from_millis(50)),
             }
         };

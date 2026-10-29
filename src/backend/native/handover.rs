@@ -532,8 +532,8 @@ pub fn close_on_exec(fd: RawFd, on: bool) -> std::io::Result<()> {
 /// `accept` and `openpty` set close-on-exec only once they return, so a
 /// descriptor the old image opened as it `exec`ed passes over unnamed. One
 /// such is a client's connection, accepted but never served: left open,
-/// that client would wait for a hello forever, where a closed one makes
-/// it ask again.
+/// that client would wait for a hello until its read times out (for ever
+/// if it reads with none), where a closed one makes it ask again.
 pub fn close_strays(keep: &[RawFd]) -> Result<()> {
     // Read whole first: the listing's own descriptor is closed once read.
     let open: Vec<RawFd> = std::fs::read_dir("/dev/fd")

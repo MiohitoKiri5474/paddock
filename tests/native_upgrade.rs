@@ -283,11 +283,12 @@ fn a_paddock_with_a_busy_space_attaches_again_once_and_stays() {
     // Bounded, and stopped below: nothing is left running. Stopped by a
     // file, which a builtin checks, not by Ctrl-C: while the terminal's
     // output waits to be read (a loaded machine), zsh now and then lets a
-    // Ctrl-C go by and runs this loop on, in a bare terminal too.
+    // Ctrl-C go by and runs this loop on, in a bare terminal too. Only
+    // the stop says `loop-stopped`: a loop that runs to its end does not.
     let stop = sandbox.path("stop-ticking");
     paddock.type_line(&format!(
-        "for i in $(seq 1 6000); do [ -e '{}' ] && break; echo tick-$i; sleep 0.005; done; \
-         echo loop''-stopped",
+        "for i in $(seq 1 6000); do [ -e '{}' ] && {{ echo loop''-stopped; break; }}; \
+         echo tick-$i; sleep 0.005; done",
         stop.display()
     ));
     paddock.wait_for_text("tick-5\n");
