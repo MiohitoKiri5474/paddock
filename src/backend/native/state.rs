@@ -105,7 +105,7 @@ impl Subscriber {
 fn size(frame: &Frame) -> usize {
     match frame {
         Frame::Bytes { data, .. } | Frame::Part { data, .. } => data.len(),
-        Frame::Message(_) => 64,
+        Frame::Message(_) | Frame::Upgrade(_) => 64,
     }
 }
 
@@ -147,6 +147,21 @@ impl State {
             restored: None,
             leaving: Vec::new(),
         }
+    }
+
+    /// The state of a server that took over from another (ADR 0009), as
+    /// [`Self::new`], its new ids going on after `last_id`, the last the
+    /// other gave.
+    pub fn handed(socket: PathBuf, instance: u32, last_id: u64) -> Self {
+        Self {
+            next_id: last_id,
+            ..Self::new(socket, instance)
+        }
+    }
+
+    /// The last number [`Self::next`] gave.
+    pub fn last_id(&self) -> u64 {
+        self.next_id
     }
 
     /// The server's socket.

@@ -78,6 +78,12 @@ impl Input {
         self.refused()
     }
 
+    /// Whether the program has taken all its input (or its writer has
+    /// ended): nothing queued for it would be lost.
+    pub fn idle(&self) -> bool {
+        self.queue.waiting() == 0 || self.queue.ended()
+    }
+
     /// Refuse an input too big to ever queue, as [`Self::send`] would.
     pub fn refuse(&self) -> Sent {
         if self.queue.ended() {
@@ -146,12 +152,30 @@ impl HostedTerminal {
         input: Input,
         size: (u16, u16),
     ) -> Result<Self> {
-        Ok(Self {
+        let master = pty.master.try_clone()?;
+        let (pid, tty) = (pty.child.id(), pty.tty.clone());
+        Ok(Self::hosting(id, saved_as, pid, tty, master, input, size))
+    }
+
+    /// Terminal `id` with a fresh emulator, its scrollback saved as
+    /// `saved_as`, its program `pid` on the PTY `master` (`tty`): one
+    /// just started, or one another server handed over (ADR 0009), whose
+    /// screen [`Self::replay`] then rebuilds.
+    pub fn hosting(
+        id: TerminalId,
+        saved_as: ScrollbackName,
+        pid: u32,
+        tty: String,
+        master: File,
+        input: Input,
+        size: (u16, u16),
+    ) -> Self {
+        Self {
             id,
             saved_as,
-            pid: pty.child.id(),
-            tty: pty.tty.clone(),
-            master: pty.master.try_clone()?,
+            pid,
+            tty,
+            master,
             input,
             size,
             exited: false,
@@ -159,7 +183,17 @@ impl HostedTerminal {
             emulator: Emulator::answering(size.0, size.1, SCROLLBACK),
             keys: KeyModeScanner::default(),
             scanner: Scanner::default(),
-        })
+        }
+    }
+
+    /// Rebuild its fresh emulator from `snapshot` ([`Self::snapshot`]'s,
+    /// from the server that handed it over). What the snapshot makes the
+    /// emulator answer is dropped: the program asked nothing.
+    pub fn replay(&mut self, snapshot: &[u8]) {
+        self.keys.feed(snapshot);
+        self.emulator.feed(snapshot);
+        let _ = self.emulator.take_replies();
+        self.scanner.feed(snapshot, self.size.1);
     }
 
     /// Hang up its program and its process group, as closing its

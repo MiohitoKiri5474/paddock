@@ -42,9 +42,11 @@ use std::sync::{mpsc, Arc};
 /// Everything the event loop waits on, from the backend and from the outer
 /// terminal.
 pub enum Event {
-    /// What space `space`'s connection reported.
+    /// What space `space`'s connection reported: connection `connection`
+    /// ([`App::attach`] numbers each), so one replaced since is told apart.
     Backend {
         space: SpaceId,
+        connection: u64,
         event: backend::Event,
     },
     Input(ct::Event),
