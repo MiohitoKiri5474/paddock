@@ -1,6 +1,6 @@
 //! The sidebar, with a border on its right edge: a SPACES section with one
-//! line per space (tmux session, ADR 0006), then an AGENTS section with one
-//! line per main agent session, across every space:
+//! line per space (tmux session, ADR 0006), then an AGENTS section with two
+//! lines per main agent session, across every space:
 //!
 //! ```text
 //!  SPACES
@@ -10,10 +10,13 @@
 //!    ~/p/paddock  feat/x  #42 ✓
 //!
 //!  AGENTS
-//!  ● PR-1434     waiting  core
-//!  ● api-server  running  api
+//!  ● PR-1434     waiting
+//!    core  claude
+//!  ● api-server  running
+//!    api  gemini
 //!  EXTERNAL
 //!  ● web         idle
+//!    claude
 //! ```
 //!
 //! A space's dot shows the most urgent state of the agents in it (none
@@ -46,22 +49,25 @@
 //! ```
 //!
 //! The current space has its own background over both lines. An agent's
-//! line is its dot, label and state, then its space, dim; labels and states
-//! line up in columns across the section, the labels' at most 12 cells
-//! (longer labels cut with `…`). Short of room the space goes first (left
-//! out whole), then the state column is cut, then left out under 4 cells,
-//! then the label column is cut; the dot always shows. The agent's kind is left to the dashboard.
-//! The current agent (the one in the focused terminal) has the current
-//! space's background too. While the sidebar has the keyboard, the selected
-//! space or agent is drawn reversed. Agents stay in space, tab and split
+//! first line is its dot, label and state; labels and states line up in
+//! columns across the section, the labels' at most 12 cells (longer labels
+//! cut with `…`). Short of room the state column is cut, then left out
+//! under 4 cells, then the label column is cut; the dot always shows. Its
+//! second line, dim, under the label, is its space, then, two cells on, its
+//! kind (`claude`, `gemini`, `agy`). Short of room the space is cut with
+//! `…` down to its first eight cells, then left out whole; the kind is never
+//! cut, only left out when even it does not fit. The current agent (the one
+//! in the focused terminal) has the current space's background over both
+//! its lines too. While the sidebar has the keyboard, the selected space or
+//! agent is drawn reversed, both lines. Agents stay in space, tab and split
 //! order: a state change never moves one. External sessions (agents outside
 //! paddock's terminals) close AGENTS under their own header, dim, in label
-//! order, in the same form without a space.
+//! order, in the same form, their second line only the kind.
 
 use super::{pr_style, StatusText, STATE_DOT, STATUS_SEP};
 use crate::git::Status;
 use crate::github::Pr;
-use crate::sessions::State;
+use crate::sessions::{AgentKind, State};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -112,9 +118,11 @@ pub enum Entry {
 pub struct AgentLine {
     pub label: String,
     pub state: State,
-    /// The space it runs in, dim at the end of its line; `None` for an
+    /// The space it runs in, dim on its second line; `None` for an
     /// external session.
     pub space: Option<String>,
+    /// Its agent, dim on its second line after the space.
+    pub kind: AgentKind,
     /// Its pane is the focused terminal of the page shown now.
     pub current: bool,
     /// It runs outside paddock's terminals: drawn dim, in the external
@@ -132,8 +140,10 @@ pub enum Line {
     SpacePlace(usize),
     /// A repository's header over its worktree spaces.
     RepoHeader(usize),
-    /// An agent's line: dot, label, state and space.
+    /// An agent's first line: dot, label and state.
     Agent(usize),
+    /// An agent's second line: its space and kind.
+    AgentPlace(usize),
     Blank,
 }
 
@@ -142,7 +152,7 @@ pub enum Line {
 pub fn pick(line: Line, spaces: usize) -> Option<usize> {
     match line {
         Line::Space(i) | Line::SpacePlace(i) => Some(i),
-        Line::Agent(i) => Some(spaces + i),
+        Line::Agent(i) | Line::AgentPlace(i) => Some(spaces + i),
         Line::Header(_) | Line::RepoHeader(_) | Line::Blank => None,
     }
 }
@@ -172,7 +182,7 @@ pub fn lines(entries: &[Entry], agents: usize, external: usize) -> Vec<Line> {
         if i == first_external {
             out.push(Line::Header(EXTERNAL));
         }
-        out.push(Line::Agent(i));
+        out.extend([Line::Agent(i), Line::AgentPlace(i)]);
     }
     out
 }
@@ -267,7 +277,7 @@ impl Sidebar<'_> {
         let mut base = Style::default();
         let current = match line {
             Line::Space(i) | Line::SpacePlace(i) => self.spaces[i].current,
-            Line::Agent(i) => self.agents[i].current,
+            Line::Agent(i) | Line::AgentPlace(i) => self.agents[i].current,
             Line::Header(_) | Line::RepoHeader(_) | Line::Blank => false,
         };
         if current {
@@ -336,11 +346,7 @@ impl Sidebar<'_> {
                 // An external session is dim all along: dot, label, state.
                 let faded = |style: Style| if a.external { style.patch(dim) } else { style };
                 put(dot_x, STATE_DOT, faded(dot(a.state)));
-                let Columns {
-                    label,
-                    state,
-                    space,
-                } = self.columns;
+                let Columns { label, state } = self.columns;
                 put(name_x, &cut(&a.label, label), faded(Style::default()));
                 let state_x = name_x.saturating_add(cells(label + AGENT_GAP));
                 put(
@@ -348,10 +354,11 @@ impl Sidebar<'_> {
                     &cut(a.state.label(), state),
                     faded(highlight(a.state)),
                 );
-                // The space only whole, never cut.
-                if let Some(name) = a.space.as_deref().filter(|n| n.width() <= space) {
-                    put(state_x.saturating_add(cells(state + AGENT_GAP)), name, dim);
-                }
+            }
+            Line::AgentPlace(i) => {
+                let a = &self.agents[i];
+                let room = usize::from(end.saturating_sub(name_x));
+                put(name_x, &agent_place(a.space.as_deref(), a.kind, room), dim);
             }
             Line::SpacePlace(i) => {
                 let s = &self.spaces[i];
@@ -448,7 +455,8 @@ fn cells(w: usize) -> u16 {
     u16::try_from(w).unwrap_or(u16::MAX)
 }
 
-/// The fewest cells between an agent's label, state and space columns.
+/// The fewest cells between an agent's label and state columns, and
+/// between its space and kind.
 const AGENT_GAP: usize = 2;
 /// The label column's width at most, as the dashboard's columns: longer
 /// labels are cut so that one long label leaves the states their room.
@@ -460,15 +468,12 @@ const STATE_LEAST: usize = 4;
 /// The columns of the agents' lines, in cells, the same for every agent so
 /// that labels and states line up: each as wide as its widest entry, where
 /// it fits, the label column at most [`LABEL_MOST`]. Short of room the
-/// space goes first, then the state column is cut (left out under
-/// [`STATE_LEAST`]), then the label column.
+/// state column is cut (left out under [`STATE_LEAST`]), then the label
+/// column.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Columns {
     label: usize,
     state: usize,
-    /// The room left for a space after the state column whole; none once
-    /// the state column is cut.
-    space: usize,
 }
 
 impl Columns {
@@ -483,16 +488,26 @@ impl Columns {
         } else {
             state
         };
-        let space = if state == full_state {
-            room.saturating_sub(label + state + 2 * AGENT_GAP)
-        } else {
-            0
-        };
-        Columns {
-            label,
-            state,
-            space,
-        }
+        Columns { label, state }
+    }
+}
+
+/// An agent's second line in `room` cells: `space  kind`. Short of room
+/// the space is cut with `…` down to its first [`NAME_LEAST`] cells, then
+/// left out; the kind is never cut, only left out when it does not fit.
+fn agent_place(space: Option<&str>, kind: AgentKind, room: usize) -> String {
+    let kind = kind.tag();
+    let space_room = room.checked_sub(kind.width() + AGENT_GAP);
+    if let Some((space, space_room)) = space
+        .zip(space_room)
+        .filter(|(s, r)| *r >= s.width().min(NAME_LEAST + 1))
+    {
+        return format!("{}  {kind}", head(space, space_room));
+    }
+    if kind.width() <= room {
+        kind.to_string()
+    } else {
+        String::new()
     }
 }
 
@@ -613,6 +628,7 @@ mod tests {
             label: label.into(),
             state,
             space: Some(space.into()),
+            kind: AgentKind::Claude,
             current: false,
         }
     }
@@ -647,7 +663,7 @@ mod tests {
         selected: Option<usize>,
         width: u16,
     ) -> Buffer {
-        let area = Rect::new(0, 0, width, 12);
+        let area = Rect::new(0, 0, width, 16);
         let mut buf = Buffer::empty(area);
         render(entries, agents, selected, GREY, area, &mut buf);
         buf
@@ -676,18 +692,19 @@ mod tests {
             "   ~/p/paddock         │",
             "                       │",
             " AGENTS                │",
-            " ● api  waiting  core  │",
+            " ● api  waiting        │",
+            "   core  claude        │",
             " ● web  running        │",
+            "   api-server  claude  │",
             "                       │",
         ];
         for (y, line) in want.iter().enumerate() {
             assert_eq!(text(&buf, y as u16), *line, "row {y}");
         }
         assert!(buf[(3, 2)].modifier.contains(Modifier::DIM), "path is dim");
-        assert!(
-            buf[(17, 7)].modifier.contains(Modifier::DIM),
-            "space is dim"
-        );
+        for x in [3, 9] {
+            assert!(buf[(x, 8)].modifier.contains(Modifier::DIM), "{x}: dim");
+        }
         assert!(!buf[(3, 7)].modifier.contains(Modifier::DIM), "label");
     }
 
@@ -722,13 +739,13 @@ mod tests {
             },
         ];
         let buf = draw(&spaces, &agents, None);
-        // 0 SPACES, 1-2 a, 3 blank, 4 AGENTS, 5 x, 6 y.
-        for (x, y) in [(0, 6), (22, 6)] {
-            assert_eq!(buf[(x, y)].bg, GREY, "({x}, {y}): its line");
+        // 0 SPACES, 1-2 a, 3 blank, 4 AGENTS, 5-6 x, 7-8 y.
+        for (x, y) in [(0, 7), (22, 7), (0, 8), (22, 8)] {
+            assert_eq!(buf[(x, y)].bg, GREY, "({x}, {y}): both its lines");
         }
-        assert_eq!(buf[(23, 6)].bg, Color::Reset, "not the border");
-        assert_eq!(buf[(5, 7)].bg, Color::Reset, "not the line below");
-        assert_eq!(buf[(5, 5)].bg, Color::Reset, "not another agent");
+        assert_eq!(buf[(23, 7)].bg, Color::Reset, "not the border");
+        assert_eq!(buf[(5, 9)].bg, Color::Reset, "not the line below");
+        assert_eq!(buf[(5, 6)].bg, Color::Reset, "not another agent");
         assert_eq!(buf[(5, 1)].bg, Color::Reset, "no current space");
     }
 
@@ -740,10 +757,10 @@ mod tests {
         let buf = draw(&spaces, &agents, Some(1));
         assert!(reversed(&buf, 3) && reversed(&buf, 4));
         assert!(!reversed(&buf, 1) && !reversed(&buf, 2));
-        // 5 blank, 6 AGENTS, 7 x, 8 y.
+        // 5 blank, 6 AGENTS, 7-8 x, 9-10 y.
         let buf = draw(&spaces, &agents, Some(3));
-        assert!(reversed(&buf, 8));
-        assert!(!reversed(&buf, 7) && !reversed(&buf, 9) && !reversed(&buf, 3));
+        assert!(reversed(&buf, 9) && reversed(&buf, 10), "both lines");
+        assert!(!reversed(&buf, 8) && !reversed(&buf, 11) && !reversed(&buf, 3));
     }
 
     #[test]
@@ -760,7 +777,7 @@ mod tests {
             &[agent(evil, State::Idle, evil)],
             None,
         );
-        for y in 0..12 {
+        for y in 0..16 {
             let drawn = text(&buf, y);
             assert!(!drawn.contains(char::is_control), "{drawn:?}");
         }
@@ -797,6 +814,7 @@ mod tests {
             "                       │",
             " AGENTS                │",
             " ● x  waiting          │",
+            "   api/feat/x  claude  │",
         ];
         for (y, line) in want.iter().enumerate() {
             assert_eq!(text(&buf, y as u16), *line, "row {y}");
@@ -813,32 +831,33 @@ mod tests {
             assert_eq!(buf[(x, y)].bg, GREY, "({x}, {y}): current space");
         }
         // Clicks: the header picks nothing; the spaces count without it.
-        let area = Rect::new(0, 0, 24, 12);
+        let area = Rect::new(0, 0, 24, 14);
         let at = |y| pick_at(&entries, (1, 0), area, y);
         assert_eq!((at(1), at(4)), (Some(0), Some(1)));
         assert_eq!(at(5), None, "header");
         assert_eq!((at(6), at(7)), (Some(2), Some(2)));
-        assert_eq!(at(10), Some(3), "the agent");
+        assert_eq!((at(10), at(11)), (Some(3), Some(3)), "the agent");
     }
 
     #[test]
     fn clicks_find_what_is_drawn_under_them() {
         let area = Rect::new(0, 3, 24, 14);
         // 3 SPACES, 4-5 space 0, 6-7 space 1, 8 blank, 9 AGENTS,
-        // 10 agent 0, 11 agent 1.
+        // 10-11 agent 0, 12-13 agent 1.
         let two = entries(&[space("a", None, false), space("b", None, false)]);
         let at = |y| pick_at(&two, (2, 0), area, y);
         assert_eq!(at(3), None, "header");
         assert_eq!((at(4), at(5)), (Some(0), Some(0)));
         assert_eq!((at(6), at(7)), (Some(1), Some(1)));
         assert_eq!((at(8), at(9)), (None, None));
-        assert_eq!((at(10), at(11)), (Some(2), Some(3)));
-        assert_eq!(at(12), None, "below the last line");
+        assert_eq!((at(10), at(11)), (Some(2), Some(2)), "either line");
+        assert_eq!((at(12), at(13)), (Some(3), Some(3)), "either line");
+        assert_eq!(at(14), None, "below the last line");
         assert_eq!(at(20), None, "below the sidebar");
     }
 
     #[test]
-    fn lines_give_each_agent_one_line_with_no_blank_between() {
+    fn lines_give_each_agent_two_lines_with_no_blank_between() {
         use Line::*;
         assert_eq!(
             lines(&entries(&[space("a", None, false)]), 3, 0),
@@ -849,8 +868,11 @@ mod tests {
                 Blank,
                 Header(AGENTS),
                 Agent(0),
+                AgentPlace(0),
                 Agent(1),
+                AgentPlace(1),
                 Agent(2),
+                AgentPlace(2),
             ]
         );
     }
@@ -861,31 +883,52 @@ mod tests {
         let ent = entries(&[space("a", None, false)]);
         assert_eq!(
             lines(&ent, 2, 1)[3..],
-            [Blank, Header(AGENTS), Agent(0), Header(EXTERNAL), Agent(1)]
+            [
+                Blank,
+                Header(AGENTS),
+                Agent(0),
+                AgentPlace(0),
+                Header(EXTERNAL),
+                Agent(1),
+                AgentPlace(1)
+            ]
         );
         assert_eq!(
             lines(&ent, 1, 1)[3..],
-            [Blank, Header(AGENTS), Header(EXTERNAL), Agent(0)]
+            [
+                Blank,
+                Header(AGENTS),
+                Header(EXTERNAL),
+                Agent(0),
+                AgentPlace(0)
+            ]
         );
         let area = Rect::new(0, 0, 24, 20);
-        // 4 AGENTS, 5 api, 6 EXTERNAL, 7 web: the external header picks
-        // nothing; its agent is pick 2.
-        assert_eq!(pick_at(&ent, (2, 1), area, 6), None);
-        assert_eq!(pick_at(&ent, (2, 1), area, 7), Some(2));
+        // 4 AGENTS, 5-6 api, 7 EXTERNAL, 8-9 web: the external header
+        // picks nothing; its agent is pick 2.
+        assert_eq!(pick_at(&ent, (2, 1), area, 7), None);
+        assert_eq!(pick_at(&ent, (2, 1), area, 8), Some(2));
+        assert_eq!(pick_at(&ent, (2, 1), area, 9), Some(2));
         let agents = [
             agent("api", State::Running, "a"),
-            external("web", State::Waiting),
+            AgentLine {
+                kind: AgentKind::Gemini,
+                ..external("web", State::Waiting)
+            },
         ];
         let buf = draw(&[space("a", Some(State::Running), false)], &agents, None);
         let trimmed = |y| text(&buf, y).trim_end_matches([' ', '│']).to_string();
-        assert_eq!(trimmed(5), " ● api  running  a");
-        assert_eq!(trimmed(6), " EXTERNAL");
-        assert_eq!(trimmed(7), " ● web  waiting", "no space");
-        // The whole line is dim: dot, label and state word.
+        assert_eq!(trimmed(5), " ● api  running");
+        assert_eq!(trimmed(6), "   a  claude");
+        assert_eq!(trimmed(7), " EXTERNAL");
+        assert_eq!(trimmed(8), " ● web  waiting");
+        assert_eq!(trimmed(9), "   gemini", "only the kind");
+        // Both lines are dim: dot, label, state word and kind.
         for x in [1, 3, 8] {
-            assert!(buf[(x, 7)].modifier.contains(Modifier::DIM), "dim at {x}");
+            assert!(buf[(x, 8)].modifier.contains(Modifier::DIM), "dim at {x}");
             assert!(!buf[(x, 5)].modifier.contains(Modifier::DIM), "{x}");
         }
+        assert!(buf[(3, 9)].modifier.contains(Modifier::DIM), "kind");
     }
 
     /// The AGENTS and EXTERNAL lines of `agents` drawn `width` wide, without
@@ -894,58 +937,63 @@ mod tests {
         let buf = draw_sized(&[], agents, None, width);
         (3..buf.area.height)
             .map(|y| text(&buf, y).trim_end_matches([' ', '│']).to_string())
-            .take(agents.len() + 1)
+            .take(2 * agents.len() + 1)
             .collect()
+    }
+
+    /// `line` of `kind`.
+    fn of(kind: AgentKind, line: AgentLine) -> AgentLine {
+        AgentLine { kind, ..line }
     }
 
     /// The ticket's agents: three in spaces, one external.
     fn four_agents() -> [AgentLine; 4] {
         [
             agent("PR-1434", State::Waiting, "core"),
-            agent("api-server", State::Running, "api"),
-            agent("paddock", State::Idle, "paddock"),
+            of(
+                AgentKind::Gemini,
+                agent("api-server", State::Running, "api"),
+            ),
+            of(AgentKind::Agy, agent("paddock", State::Idle, "paddock")),
             external("web", State::Idle),
         ]
     }
 
     #[test]
-    fn labels_and_states_line_up_in_columns_with_the_space_after() {
+    fn two_lines_per_agent_at_the_default_width() {
         assert_eq!(
-            agent_rows(&four_agents(), 33),
+            agent_rows(&four_agents(), crate::config::DEFAULT_SIDEBAR_WIDTH),
             [
-                " ● PR-1434     waiting  core",
-                " ● api-server  running  api",
-                " ● paddock     idle     paddock",
+                " ● PR-1434     waiting",
+                "   core  claude",
+                " ● api-server  running",
+                "   api  gemini",
+                " ● paddock     idle",
+                "   paddock  agy",
                 " EXTERNAL",
                 " ● web         idle",
+                "   claude",
             ]
         );
     }
 
     #[test]
-    fn short_of_room_the_space_goes_then_the_state_then_the_label() {
+    fn short_of_room_the_state_is_cut_then_goes_then_the_label() {
         let rows = |width| agent_rows(&four_agents(), width);
-        // The space goes whole, line by line: `paddock` first.
+        let firsts =
+            |width| -> Vec<String> { rows(width).into_iter().step_by(2).take(3).collect() };
         assert_eq!(
-            rows(32)[..3],
-            [
-                " ● PR-1434     waiting  core",
-                " ● api-server  running  api",
-                " ● paddock     idle",
-            ]
-        );
-        assert_eq!(
-            rows(26)[..3],
+            firsts(24),
             [
                 " ● PR-1434     waiting",
                 " ● api-server  running",
                 " ● paddock     idle",
             ]
         );
-        // Then the state column is cut, down to 4 cells, then gone: never
-        // `…` alone.
+        // The state column is cut, down to 4 cells, then gone: never `…`
+        // alone.
         assert_eq!(
-            rows(22)[..3],
+            firsts(22),
             [
                 " ● PR-1434     wait…",
                 " ● api-server  runn…",
@@ -953,21 +1001,57 @@ mod tests {
             ]
         );
         assert_eq!(
-            rows(21)[..3],
+            firsts(21),
             [
                 " ● PR-1434     wai…",
                 " ● api-server  run…",
                 " ● paddock     idle",
             ]
         );
-        assert_eq!(rows(20)[..3], [" ● PR-1434", " ● api-server", " ● paddock"]);
-        assert_eq!(rows(15)[..3], [" ● PR-1434", " ● api-server", " ● paddock"]);
-        // Then the label; the dot always shows.
+        assert_eq!(firsts(20), [" ● PR-1434", " ● api-server", " ● paddock"]);
+        assert_eq!(firsts(15), [" ● PR-1434", " ● api-server", " ● paddock"]);
+        // Then the label; the dot always shows. A kind that does not fit
+        // goes whole.
         assert_eq!(
             rows(10),
-            [" ● PR-1…", " ● api-…", " ● padd…", " EXTERNAL", " ● web"]
+            [
+                " ● PR-1…",
+                "",
+                " ● api-…",
+                "",
+                " ● padd…",
+                "   agy",
+                " EXTERNAL",
+                " ● web",
+                ""
+            ]
         );
-        assert_eq!(rows(5)[..3], [" ●", " ●", " ●"]);
+        assert_eq!(firsts(5), [" ●", " ●", " ●"]);
+    }
+
+    #[test]
+    fn short_of_room_the_space_is_cut_then_goes_before_the_kind() {
+        let place =
+            |space: &str, width| agent_rows(&[agent("x", State::Idle, space)], width)[1].clone();
+        let long = "arx-platform-core";
+        assert_eq!(place(long, 30), "   arx-platform-core  claude");
+        // Cut from its end, down to its first eight cells.
+        assert_eq!(place(long, 29), "   arx-platform-co…  claude");
+        assert_eq!(place(long, 22), "   arx-plat…  claude");
+        // Below that it goes whole; the kind stays, never cut.
+        assert_eq!(place(long, 21), "   claude");
+        assert_eq!(place(long, 11), "   claude");
+        assert_eq!(place(long, 10), "", "not even the kind fits");
+        // A short space is never cut: it goes whole.
+        assert_eq!(place("core", 17), "   core  claude");
+        assert_eq!(place("core", 16), "   claude");
+        // Wide characters are cut by their cells (here in the room the
+        // line has, as the buffer pads each wide one with a blank cell).
+        let wide = |room| agent_place(Some("設計稿審查空間"), AgentKind::Claude, room);
+        assert_eq!(wide(22), "設計稿審查空間  claude");
+        assert_eq!(wide(21), "設計稿審查空…  claude");
+        assert_eq!(wide(17), "設計稿審…  claude");
+        assert_eq!(wide(16), "claude");
     }
 
     #[test]
@@ -977,18 +1061,25 @@ mod tests {
             agent("a-very-long-agent-label", State::Running, "api"),
         ];
         assert_eq!(
-            agent_rows(&agents, 32)[..2],
+            agent_rows(&agents, 32)[..4],
             [
-                " ● api           waiting  core",
-                " ● a-very-long…  running  api",
+                " ● api           waiting",
+                "   core  claude",
+                " ● a-very-long…  running",
+                "   api  claude",
             ]
         );
-        // Past the cap, the ticket's order: the space, then the state.
         assert_eq!(
-            agent_rows(&agents, 26)[..2],
-            [" ● api           waiting", " ● a-very-long…  running"]
+            agent_rows(&agents, 25)[..4],
+            [
+                " ● api           waiti…",
+                "   core  claude",
+                " ● a-very-long…  runni…",
+                "   api  claude",
+            ]
         );
-        assert_eq!(agent_rows(&agents, 17)[..2], [" ● api", " ● a-very-long…"]);
+        let narrow = agent_rows(&agents, 17);
+        assert_eq!((&*narrow[0], &*narrow[2]), (" ● api", " ● a-very-long…"));
     }
 
     #[test]
@@ -1001,16 +1092,21 @@ mod tests {
         let buf = draw_sized(&[], &agents, None, 33);
         // The state column starts 12 + 2 cells after the label's start:
         // the widest label (18 cells) is cut to 12, `…` included.
-        for y in 3..6 {
+        for y in [3, 5, 7] {
             let state = buf[(17, y)].symbol();
             assert!(["w", "r", "i"].contains(&state), "row {y}: {state:?}");
             assert_eq!(buf[(16, y)].symbol(), " ", "row {y}: the gap");
         }
         assert_eq!(buf[(3, 3)].symbol(), "修");
-        assert_eq!(buf[(3, 5)].symbol(), "很");
+        assert_eq!(buf[(3, 7)].symbol(), "很");
         // Five wide characters (10 cells; a sixth would split) and `…`.
-        assert_eq!(buf[(13, 5)].symbol(), "…");
+        assert_eq!(buf[(13, 7)].symbol(), "…");
         assert_eq!(buf[(5, 3)].symbol(), "正");
+        // The second line sits under the label.
+        assert_eq!(
+            text(&buf, 4).trim_end_matches([' ', '│']),
+            "   core  claude"
+        );
     }
 
     /// A space in `path` on `branch`, with `pr`.

@@ -97,8 +97,8 @@ fn wait_for_sidebar(paddock: &Paddock, what: &str, pred: impl Fn(&[String]) -> b
     paddock.wait_for(what, |_| pred(&sidebar(paddock)));
 }
 
-/// The line of an external agent alone in the sidebar: dot, label and
-/// state, without a space.
+/// The first line of an external agent alone in the sidebar: dot, label
+/// and state.
 fn agent(label: &str, state: &str) -> String {
     format!(" ● {label}  {state}")
 }
@@ -126,16 +126,24 @@ fn an_external_session_shows_dim_and_last_with_its_state_and_branch() {
     outside(&sandbox, "UserPromptSubmit", "e1", web);
     outside(&sandbox, "PermissionRequest", "e1", web);
 
-    // Last in AGENTS, under its own header, in the same columns without a
-    // space; even waiting, it comes after the running agent in paddock.
-    let (mine, web) = (" ● mine  running  space-1", " ● web   waiting");
-    let want = [mine.to_string(), " EXTERNAL".to_string(), web.to_string()];
+    // Last in AGENTS, under its own header, in the same columns, its
+    // second line only its kind; even waiting, it comes after the running
+    // agent in paddock.
+    let want = [
+        " ● mine  running",
+        "   space-1  claude",
+        " EXTERNAL",
+        " ● web   waiting",
+        "   claude",
+    ]
+    .map(String::from);
     wait_for_sidebar(&paddock, "the external agent", |lines| {
         lines.ends_with(&want)
     });
-    let y = row_of(&paddock, web);
+    let y = row_of(&paddock, &want[3]);
     assert!(paddock.dim(y, 3), "the external label is dim");
-    let mine = row_of(&paddock, mine);
+    assert!(paddock.dim(y + 1, 3), "and its kind");
+    let mine = row_of(&paddock, &want[0]);
     assert!(!paddock.dim(mine, 3));
     // It counts for notifications.
     let said = sandbox.wait_for_notifications(1);

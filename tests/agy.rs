@@ -119,8 +119,13 @@ fn an_agy_session_goes_idle_working_waiting_done_then_ends_at_the_shell() {
     paddock.wait_for_text(PROMPT);
 
     agy(&sandbox, "space-1:0", &["SessionStart"]);
-    // The sidebar names the agent's space; its kind is the dashboard's.
-    wait_row(&paddock, "idle at start", &["● repo", "idle", "space-1"]);
+    // The sidebar names the agent's space and kind under its label.
+    paddock.wait_for("idle at start", |_| {
+        let lines = paddock.sidebar();
+        lines
+            .windows(2)
+            .any(|l| l == [" ● repo  idle", "   space-1  agy"])
+    });
 
     agy(&sandbox, "space-1:0", &["PreInvocation"]);
     wait_row(&paddock, "working", &["● repo", "running"]);
@@ -401,11 +406,14 @@ fn an_external_agy_session_lands_in_the_external_group() {
         assert_eq!(out.stdout, b"{}", "{out:?}");
         assert!(out.stderr.is_empty(), "{out:?}");
     }
-    // One line under the header: dot, label and state, no space.
+    // Two lines under the header: dot, label and state, then only the
+    // kind, no space.
     paddock.wait_for("the external group", |_| {
         let lines = paddock.sidebar();
         let header = lines.iter().position(|l| l == " EXTERNAL");
-        header.is_some_and(|h| lines.get(h + 1).map(String::as_str) == Some(" ● repo  running"))
+        header.is_some_and(|h| {
+            lines.get(h + 1..h + 3) == Some(&[" ● repo  running".into(), "   agy".into()])
+        })
     });
     // Its kind is the dashboard's.
     paddock.command(b"o");
