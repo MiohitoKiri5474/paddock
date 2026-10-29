@@ -9,7 +9,11 @@
 //! open: the format (a big-endian `u32`), the JSON header's length (a
 //! big-endian `u64`), the header ([`Record`]), then each terminal's
 //! snapshot, in the header's order, as raw bytes of the length the
-//! header gives.
+//! header gives, and then the input held in each terminal that holds
+//! some ([`HandedHold`]), in the same order. A paddock from before
+//! held input reads no `hold`: given held bytes, it finds more than the
+//! header gives and refuses the record (the old server runs on); given
+//! a hold with none, it reads the record and drops that resume.
 //!
 //! Before it `exec`s, the server runs the new binary as a probe
 //! ([`probe`], `paddock server --check-handover`) on the record: one
@@ -119,6 +123,25 @@ pub struct HandedTerminal {
     pub scrollback: Option<String>,
     /// How many bytes its snapshot takes, after the header.
     pub snapshot: usize,
+    /// Its resume command, not typed yet, and the input held behind it
+    /// (ticket 59); a record without one holds none.
+    #[serde(default)]
+    pub hold: Option<HandedHold>,
+}
+
+/// A restored terminal's resume command still to type, and the input
+/// held behind it ([`super::terminal::Input::hold_behind`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HandedHold {
+    /// The command, with its Enter.
+    pub first: Vec<u8>,
+    /// How many bytes of input are held, after the snapshots.
+    pub held: usize,
+    /// Its shell has written something: the command may be typed.
+    pub spoke: bool,
+    /// The held input, read after the snapshots.
+    #[serde(skip)]
+    pub bytes: Vec<u8>,
 }
 
 /// The descriptors a server holds as long as it runs, which a handover
@@ -139,7 +162,8 @@ impl Held {
 }
 
 /// What `state` hands over, with it locked, holding `held`; each
-/// terminal's snapshot taken now, in the record's order.
+/// terminal's snapshot taken now, in the record's order, then the input
+/// held in each terminal that holds some.
 pub fn record(state: &mut State, held: Held) -> (Record, Vec<Vec<u8>>) {
     let Held { lock, listener } = held;
     let mut snapshots = Vec::new();
@@ -155,6 +179,8 @@ pub fn record(state: &mut State, held: Held) -> (Record, Vec<Vec<u8>>) {
         listener,
         spaces,
     };
+    let holds = record.terminals().filter_map(|t| t.hold.as_ref());
+    snapshots.extend(holds.map(|h| h.bytes.clone()));
     (record, snapshots)
 }
 
@@ -187,6 +213,12 @@ fn handed_space(space: &mut Space, snapshots: &mut Vec<Vec<u8>>) -> HandedSpace 
             master: t.master.as_raw_fd(),
             scrollback: Some(t.saved_as.as_str().to_string()),
             snapshot: snapshot.len(),
+            hold: t.input.held().map(|(first, bytes)| HandedHold {
+                first,
+                held: bytes.len(),
+                spoke: t.spoke,
+                bytes,
+            }),
         };
         snapshots.push(snapshot);
         handed
@@ -320,6 +352,11 @@ pub fn read(r: &mut impl Read) -> Result<(Record, Vec<Vec<u8>>)> {
     record.check().context("the handover record")?;
     let snapshots = record.terminals().map(|t| take(r, t.snapshot as u64));
     let snapshots = snapshots.collect::<Result<Vec<_>>>()?;
+    let mut record = record;
+    let holds = record.spaces.iter_mut().flat_map(|s| &mut s.terminals);
+    for hold in holds.filter_map(|t| t.hold.as_mut()) {
+        hold.bytes = take(r, hold.held as u64)?;
+    }
     ensure!(
         r.read(&mut [0])? == 0,
         "more in the handover record than it holds"
@@ -583,6 +620,7 @@ mod tests {
             master,
             scrollback: Some("00000007-2".into()),
             snapshot,
+            hold: None,
         }
     }
 
@@ -672,6 +710,35 @@ mod tests {
         assert!(restored.remove("cannot_resume").is_some());
         let older: Record = serde_json::from_value(json).unwrap();
         assert_eq!(older.restored.unwrap().cannot_resume, []);
+    }
+
+    /// A resume not typed yet, and the input held behind it, are handed
+    /// over after the snapshots (ticket 59); a record from a server that
+    /// never wrote them holds none.
+    #[test]
+    fn a_record_hands_over_a_pending_resume_and_the_input_held_behind_it() {
+        let (mut record, mut raw) = record();
+        let terminals = &mut record.spaces[0].terminals;
+        for (i, held) in [(0, b"ec".to_vec()), (2, Vec::new())] {
+            terminals[i].hold = Some(HandedHold {
+                first: b"claude --resume x\r".to_vec(),
+                held: held.len(),
+                spoke: i == 0,
+                bytes: held.clone(),
+            });
+            raw.push(held);
+        }
+        let written = bytes(&record, &raw);
+        let read_back = read(&mut written.as_slice()).unwrap();
+        assert_eq!(read_back, (record.clone(), raw[..3].to_vec()));
+        let hold = read_back.0.spaces[0].terminals[0].hold.clone().unwrap();
+        assert_eq!((hold.bytes, hold.spoke), (b"ec".to_vec(), true));
+
+        let mut json = serde_json::to_value(&record).unwrap();
+        let first = json["spaces"][0]["terminals"][0].as_object_mut().unwrap();
+        assert!(first.remove("hold").is_some());
+        let older: Record = serde_json::from_value(json).unwrap();
+        assert_eq!(older.spaces[0].terminals[0].hold, None);
     }
 
     #[test]
