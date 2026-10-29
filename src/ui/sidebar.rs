@@ -12,7 +12,6 @@
 //!  AGENTS
 //!  ● PR-1434     waiting  core
 //!  ● api-server  running  api
-//!
 //!  EXTERNAL
 //!  ● web         idle
 //! ```
@@ -170,7 +169,7 @@ pub fn lines(entries: &[Entry], agents: usize, external: usize) -> Vec<Line> {
     let first_external = agents.saturating_sub(external);
     for i in 0..agents {
         if i == first_external {
-            out.extend([Line::Blank, Line::Header(EXTERNAL)]);
+            out.push(Line::Header(EXTERNAL));
         }
         out.push(Line::Agent(i));
     }
@@ -849,24 +848,17 @@ mod tests {
         let ent = entries(&[space("a", None, false)]);
         assert_eq!(
             lines(&ent, 2, 1)[3..],
-            [
-                Blank,
-                Header(AGENTS),
-                Agent(0),
-                Blank,
-                Header(EXTERNAL),
-                Agent(1)
-            ]
+            [Blank, Header(AGENTS), Agent(0), Header(EXTERNAL), Agent(1)]
         );
         assert_eq!(
             lines(&ent, 1, 1)[3..],
-            [Blank, Header(AGENTS), Blank, Header(EXTERNAL), Agent(0)]
+            [Blank, Header(AGENTS), Header(EXTERNAL), Agent(0)]
         );
         let area = Rect::new(0, 0, 24, 20);
-        // 4 AGENTS, 5 api, 6 blank, 7 EXTERNAL, 8 web: the external header
-        // picks nothing; its agent is pick 2.
-        assert_eq!(pick_at(&ent, (2, 1), area, 7), None);
-        assert_eq!(pick_at(&ent, (2, 1), area, 8), Some(2));
+        // 4 AGENTS, 5 api, 6 EXTERNAL, 7 web: the external header picks
+        // nothing; its agent is pick 2.
+        assert_eq!(pick_at(&ent, (2, 1), area, 6), None);
+        assert_eq!(pick_at(&ent, (2, 1), area, 7), Some(2));
         let agents = [
             agent("api", State::Running, "a"),
             external("web", State::Waiting),
@@ -874,11 +866,11 @@ mod tests {
         let buf = draw(&[space("a", Some(State::Running), false)], &agents, None);
         let trimmed = |y| text(&buf, y).trim_end_matches([' ', '│']).to_string();
         assert_eq!(trimmed(5), " ● api  running  a");
-        assert_eq!(trimmed(7), " EXTERNAL");
-        assert_eq!(trimmed(8), " ● web  waiting", "no space");
+        assert_eq!(trimmed(6), " EXTERNAL");
+        assert_eq!(trimmed(7), " ● web  waiting", "no space");
         // The whole line is dim: dot, label and state word.
         for x in [1, 3, 8] {
-            assert!(buf[(x, 8)].modifier.contains(Modifier::DIM), "dim at {x}");
+            assert!(buf[(x, 7)].modifier.contains(Modifier::DIM), "dim at {x}");
             assert!(!buf[(x, 5)].modifier.contains(Modifier::DIM), "{x}");
         }
     }
@@ -889,7 +881,7 @@ mod tests {
         let buf = draw_sized(&[], agents, None, width);
         (3..buf.area.height)
             .map(|y| text(&buf, y).trim_end_matches([' ', '│']).to_string())
-            .take(agents.len() + 2)
+            .take(agents.len() + 1)
             .collect()
     }
 
@@ -911,7 +903,6 @@ mod tests {
                 " ● PR-1434     waiting  core",
                 " ● api-server  running  api",
                 " ● paddock     idle     paddock",
-                "",
                 " EXTERNAL",
                 " ● web         idle",
             ]
@@ -951,14 +942,7 @@ mod tests {
         // Then the label; the dot always shows.
         assert_eq!(
             rows(10),
-            [
-                " ● PR-1…",
-                " ● api-…",
-                " ● padd…",
-                "",
-                " EXTERNAL",
-                " ● web"
-            ]
+            [" ● PR-1…", " ● api-…", " ● padd…", " EXTERNAL", " ● web"]
         );
         assert_eq!(rows(5)[..3], [" ●", " ●", " ●"]);
     }
