@@ -20,7 +20,7 @@ tmux gave paddock terminals that outlive the app. It also brought format-expande
 - **Keep tmux and only restore after a reboot**: least work, but every tmux limit above stays.
 - **Several clients on one server, as herdr does**: not needed for one window. Possible later.
 - **The server sends drawn frames**: a thinner client, but copy mode, search and selection would have to move into the server.
-- **Hand PTYs to the new binary on upgrade (`exec` with inherited descriptors)**: programs would survive an upgrade, but it is much more work. Possible later.
+- **Hand PTYs to the new binary on upgrade (`exec` with inherited descriptors)**: programs would survive an upgrade, but it is much more work. Possible later (done in [ADR 0009](0009-server-hands-terminals-to-a-new-binary.md)).
 - **Replace tmux in one step**: no fallback while the native backend is new.
 
 ## Consequences

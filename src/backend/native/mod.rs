@@ -15,6 +15,8 @@
 //! - [`scrollback`]: each terminal's scrollback, saved as the server
 //!   ends and drawn again above its restored shell.
 //! - [`terminal`] and [`pty`]: one terminal, its shell and its emulator.
+//! - [`handover`]: what the server hands to a new binary on an upgrade
+//!   (ADR 0009), so programs run on.
 //! - [`proc`]: a process's name and directory, as macOS or Linux says.
 //! - [`hook`]: the variables that tell a process which terminal it runs in.
 //! - [`queue`]: the queues to the threads that write to a client or a
@@ -23,6 +25,7 @@
 
 mod axis;
 mod client;
+mod handover;
 mod hook;
 mod layout;
 mod proc;
@@ -39,9 +42,10 @@ mod state;
 mod tab;
 mod terminal;
 
-pub use client::{Attached, Client};
+pub use client::{Attached, Client, NoHandover};
+pub use handover::check as check_handover;
 pub use protocol::OtherVersion;
-pub use server::serve;
+pub use server::{serve, take_over};
 
 use crate::paths::Paths;
 use anyhow::{bail, Context, Result};

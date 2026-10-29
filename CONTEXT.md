@@ -36,6 +36,14 @@ _Avoid_: tmux session
 paddock's own background process (`paddock server`) that holds every terminal and the layout while the app is closed: the default backend. The app is its client.
 _Avoid_: daemon (in user-facing text), hidden server (that is tmux's)
 
+**Upgrade**:
+Moving the running server onto a new paddock binary with its programs still running (`paddock server upgrade`): the server hands over its terminals and becomes the new binary, keeping its pid. Unlike a restart, which ends every program and brings back only the layout.
+_Avoid_: update, reload, migration (that is tmux's terminals not moving to the server)
+
+**Handover**:
+What the server gives the new binary in an upgrade: every space, tab, float and terminal with its PTY, program and screen, as a record with its own format version, apart from the protocol's.
+_Avoid_: snapshot (that is one terminal's screen), transfer
+
 **Backend**:
 What hosts the terminals (`[backend] kind`): paddock's own server (the native backend, the default), or the hidden tmux server (the legacy tmux backend, until v0.2). Terminals never move from one to the other: an older paddock's tmux server keeps its own until closed.
 _Avoid_: engine, runtime

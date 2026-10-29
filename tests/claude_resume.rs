@@ -307,3 +307,38 @@ fn a_session_whose_directory_is_gone_is_not_resumed() {
     mark(&mut again);
     assert_eq!(claude_log(&sandbox), "", "claude never run");
 }
+
+#[test]
+fn a_live_session_survives_a_server_upgrade_and_is_still_resumed_after_a_restart() {
+    let sandbox = native();
+    let dir = sandbox.path("home/proj");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut paddock = ready(&sandbox);
+    paddock.type_line(&format!("cd '{}'", dir.display()));
+    let real = real(&dir);
+    paddock.wait_for("the cd", |_| {
+        sandbox.terminal("space-1").dir.as_deref() == Some(real.as_str())
+    });
+    let cwd = format!("\"{real}\"");
+    for event in ["SessionStart", "UserPromptSubmit"] {
+        let p = payload(event, LIVE).replace(FIXTURE_CWD, &cwd);
+        sandbox.hook("space-1", event, &p);
+    }
+    wait_for_saved(&sandbox, "the session saved", |s| saved_as(s, LIVE, false));
+    // Gone, so only what the new server saves is there to read.
+    std::fs::remove_file(sandbox.state_dir().join("layout.json")).unwrap();
+
+    let out = sandbox.run(&["server", "upgrade"], &[], "");
+
+    assert!(out.status.success(), "{out:?}");
+    paddock.wait_for_text("programs kept running");
+    // The new server knows the session from the hook log, so its first
+    // save names it, as its last will.
+    wait_for_saved(&sandbox, "the session saved again", |s| {
+        saved_as(s, LIVE, false)
+    });
+    let mut again = restart(&sandbox, paddock);
+    again.wait_for_text("resumed 1 session");
+    mark(&mut again);
+    assert_eq!(sandbox.claude_calls(), [format!("{real} --resume {LIVE}")]);
+}

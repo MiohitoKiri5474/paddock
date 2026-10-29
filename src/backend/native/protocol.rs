@@ -11,10 +11,16 @@
 //!   big-endian `u64`), then the part's bytes. An input (a key, a paste)
 //!   comes as parts of at most 64 KiB, in order, the last with 0 to
 //!   follow: the server queues it once all has come, or refuses all of
-//!   it, and discards one whose connection ends before its last part.
+//!   it, and discards one whose connection ends before its last part;
+//! - kind 3, an [`Upgrade`] as JSON: the handover of the server's
+//!   terminals to a new binary (ADR 0009). Unlike every other frame, it
+//!   is frozen: it never changes with [`VERSION`], as it is sent exactly
+//!   when the two sides may speak different versions.
 //!
 //! Both sides start with [`Message::Hello`], carrying [`VERSION`]. A side
-//! that reads another version says so and goes no further. Then the
+//! that reads another version says so and goes no further; but a client
+//! may answer the server's hello, whatever its version, with
+//! [`Upgrade::Ask`] instead, and read one [`Upgrade`] back. Then the
 //! client sends a [`Request`] and reads its [`Message::Reply`]; one
 //! connection can ask many. After [`Request::Attach`] the connection
 //! carries the space: its reply, snapshots, output and [`Notice`]s from
@@ -45,6 +51,7 @@ pub const FROM_CLIENT: usize = 16 << 20;
 const MESSAGE: u8 = 0;
 const BYTES: u8 = 1;
 const PART: u8 = 2;
+const UPGRADE: u8 = 3;
 
 /// One frame.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,6 +67,27 @@ pub enum Frame {
         rest: u64,
         data: Vec<u8>,
     },
+    Upgrade(Upgrade),
+}
+
+/// The handover of the server's terminals to a new binary (ADR 0009), on
+/// a frame of its own (kind 3). Frozen: every paddock that knows it reads
+/// it the same, whatever protocol version it speaks.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Upgrade {
+    /// From a client, in place of its hello: hand every terminal to the
+    /// binary `exe`, which then runs as the server.
+    Ask { exe: PathBuf },
+    /// From the server: `exe` read what it is handed, and the server
+    /// becomes it now. `Done` or `Refused` follows, unless the new server
+    /// fails before it can answer.
+    Probed,
+    /// From the server, once `exe` runs as it, still as pid `pid`.
+    Done { pid: u32 },
+    /// From the server: why it did not hand over. Before `Probed`, or
+    /// after it from a failed `exec`, the server runs on unchanged; from
+    /// the new server, it could not take over, and has ended.
+    Refused(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -253,6 +281,9 @@ pub enum Notice {
     /// waits for vim past 64 MiB"). Once per episode (until its program
     /// has taken all that waited).
     InputRefused { terminal: TerminalId, why: String },
+    /// The server hands its terminals to a new binary (ADR 0009): the
+    /// connection closes next, and the new binary serves the same spaces.
+    Upgrading,
 }
 
 /// Write `frame` and flush.
@@ -283,6 +314,10 @@ pub fn encode(frame: &Frame) -> Result<Vec<u8>> {
             push_id(&mut body, terminal)?;
             body.extend_from_slice(&rest.to_be_bytes());
             body.extend_from_slice(data);
+        }
+        Frame::Upgrade(u) => {
+            body.push(UPGRADE);
+            serde_json::to_writer(&mut body, u)?;
         }
     }
     let len = u32::try_from(body.len()).context("frame too long")?;
@@ -340,6 +375,7 @@ fn decode(body: &[u8]) -> Result<Frame> {
                 data: data.to_vec(),
             })
         }
+        Some((&UPGRADE, json)) => Ok(Frame::Upgrade(serde_json::from_slice(json)?)),
         _ => bail!("unknown frame kind"),
     }
 }
@@ -409,6 +445,13 @@ pub struct Peer {
 /// other side in that error. A side gone before our hello reaches it
 /// (the pipe broken or reset) is [`Closed`], as one that closes unanswered.
 pub fn hello(stream: &mut (impl Read + Write), server: bool, instance: u32) -> Result<Peer> {
+    send_hello(stream, instance)?;
+    let theirs = read(stream, FROM_CLIENT)?;
+    check_hello(theirs, server)
+}
+
+/// Send our hello, with our `instance` id (0 from a client).
+pub fn send_hello(stream: &mut impl Write, instance: u32) -> Result<()> {
     let ours = Message::Hello {
         version: VERSION,
         pid: std::process::id(),
@@ -424,7 +467,14 @@ pub fn hello(stream: &mut (impl Read + Write), server: bool, instance: u32) -> R
             e
         });
     }
-    match read(stream, FROM_CLIENT)? {
+    Ok(())
+}
+
+/// The other side, from `frame`, the first it sent: an error unless it
+/// is a hello of our version. `server` names the other side in that
+/// error.
+pub fn check_hello(frame: Option<Frame>, server: bool) -> Result<Peer> {
+    match frame {
         Some(Frame::Message(Message::Hello {
             version,
             pid,
@@ -541,6 +591,30 @@ mod tests {
             rest: 1 << 40,
             data: b"\x1b[200~paste".to_vec(),
         });
+        round_trip(Frame::Upgrade(Upgrade::Ask {
+            exe: "/opt/homebrew/bin/paddock".into(),
+        }));
+        round_trip(Frame::Upgrade(Upgrade::Probed));
+        round_trip(Frame::Upgrade(Upgrade::Done { pid: 42 }));
+        round_trip(Frame::Upgrade(Upgrade::Refused("no".into())));
+    }
+
+    #[test]
+    fn the_upgrade_frame_is_frozen() {
+        // What every paddock since ADR 0009 writes and reads: changing it
+        // breaks the handover between two versions.
+        let body = |u: Upgrade| encode(&Frame::Upgrade(u)).unwrap()[4..].to_vec();
+        let ask = body(Upgrade::Ask { exe: "/p".into() });
+        assert_eq!(ask, b"\x03{\"Ask\":{\"exe\":\"/p\"}}");
+        assert_eq!(body(Upgrade::Probed), b"\x03\"Probed\"");
+        assert_eq!(
+            body(Upgrade::Done { pid: 7 }),
+            b"\x03{\"Done\":{\"pid\":7}}"
+        );
+        assert_eq!(
+            body(Upgrade::Refused("x".into())),
+            b"\x03{\"Refused\":\"x\"}"
+        );
     }
 
     #[test]
