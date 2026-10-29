@@ -7,7 +7,7 @@ When a server starts and finds that file, it rebuilds the layout without asking.
 ## Considered options
 
 - **Nothing after a restart, as with tmux**: simplest, but an upgrade restart would cost the whole layout.
-- **Also resume agents (`claude --resume <id>`, and Gemini or agy where they can) and restore scrollback**: planned next, on top of this file.
+- **Also resume agents (`claude --resume <id>`, and Gemini or agy where they can) and restore scrollback**: built on top of this file since. Scrollback came in ticket 47, and resuming Claude sessions in ticket 48 (both below); resuming Gemini and agy sessions is still planned.
 
 ## Consequences
 
@@ -15,3 +15,7 @@ When a server starts and finds that file, it rebuilds the layout without asking.
 - Programs other than shells are not restarted, so an editor or a server left running in a terminal has to be started again.
 - Servers from before this file wrote none, so the first upgrade to a paddock that reads it restores nothing.
 - Since ticket 48 the file also keeps the agent session last seen in each terminal. A Claude Code session whose conversation is not over (it did not quit, nor was it cleared) is resumed (`claude --resume <id>` typed into the new shell) rather than coming back as a plain shell; Gemini and Antigravity sessions still come back as plain shells.
+
+## Scrollback (ticket 47)
+
+The scrollback half of the option above is no longer planned: it is done. As the server ends, it saves each terminal's scrollback beside this file, one file per terminal in `scrollback/`, named by a scrollback name that `layout.json` keeps with the terminal. Each file holds the terminal's text with its colours, at most its newest 1 MiB. A restored terminal shows it above its fresh shell, under a dim line saying when it was saved. A server killed outright saves none, so its terminals show what the last clean end saved. Files no terminal of the layout names are removed whenever the layout is written.

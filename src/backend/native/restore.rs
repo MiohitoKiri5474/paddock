@@ -7,13 +7,16 @@
 //! <id>`, [`AgentKind::resume_command`]) typed into its shell once the
 //! shell has started (the server types it, see [`Resume`]), so quitting
 //! the agent leaves a prompt (ticket 48); any other agent is not
-//! restarted. A file any space of which cannot be rebuilt is set aside
-//! before anything is written over it.
+//! restarted. Each terminal's saved scrollback is drawn above its new
+//! shell (see [`super::scrollback`]); scrollback missing or unreadable
+//! is left out, and never stops the restore. A file any space of which
+//! cannot be rebuilt is set aside before anything is written over it.
 //!
 //! [`AgentKind::resume_command`]: crate::sessions::AgentKind::resume_command
 
 use super::layout::Layout;
 use super::saved::{self, SavedAgent, SavedLayout, SavedSpace, SavedTab, SavedTerminal};
+use super::scrollback::{self, ScrollbackName};
 use super::space::Space;
 use super::state::State;
 use super::tab::Tab;
@@ -53,7 +56,7 @@ pub fn from_file(
         return 0;
     };
     let total = saved.spaces.len();
-    let restored = rebuild_layout(state, saved, start, resumed);
+    let restored = rebuild_layout(dir, state, saved, start, resumed);
     if restored < total {
         let lost = total - restored;
         saved::set_aside(dir, &anyhow!("{lost} of {total} saved spaces not rebuilt"));
@@ -61,10 +64,12 @@ pub fn from_file(
     restored
 }
 
-/// Rebuild every space of `saved` in `state`, adding the sessions to
-/// resume in them to `resumed`; one that cannot be is left out, and why
-/// logged. Returns how many came back.
+/// Rebuild every space of `saved` in `state`, with the scrollback saved
+/// in the state directory `dir`, adding the sessions to resume in them
+/// to `resumed`; one that cannot be is left out, and why logged. Returns
+/// how many came back.
 fn rebuild_layout(
+    dir: &Path,
     state: &mut State,
     saved: SavedLayout,
     start: &mut Start<'_>,
@@ -74,7 +79,7 @@ fn rebuild_layout(
     for (i, space) in saved.spaces.into_iter().enumerate() {
         let name = space.name.clone();
         let before = resumed.len();
-        match rebuild_space(state, space, start, resumed) {
+        match rebuild_space(dir, state, space, start, resumed) {
             Ok(made) => {
                 if saved.current == Some(i) {
                     state.current = Some(made.id.clone());
@@ -103,6 +108,7 @@ fn rebuild_layout(
 /// resume in them added to `resumed`; on an error, the shells already
 /// started are hung up.
 fn rebuild_space(
+    dir: &Path,
     state: &mut State,
     saved: SavedSpace,
     start: &mut Start<'_>,
@@ -113,7 +119,8 @@ fn rebuild_space(
     let mut terminals = Vec::new();
     let mut tabs = Vec::new();
     for tab in saved.tabs {
-        match rebuild_tab(state, &id, tab, size, start, &mut terminals, resumed) {
+        let made = rebuild_tab(dir, state, &id, tab, size, start, &mut terminals, resumed);
+        match made {
             Ok(tab) => tabs.push(tab),
             Err(e) => {
                 for t in &terminals {
@@ -137,9 +144,11 @@ fn rebuild_space(
 }
 
 /// Tab `saved` of space `space` with new ids, each of its shells started
-/// at `size` (laid out later) and added to `terminals`, and the sessions
-/// to resume in them to `resumed`.
+/// at `size` (laid out later), under its saved scrollback, and added to
+/// `terminals`, and the sessions to resume in them to `resumed`.
+#[allow(clippy::too_many_arguments)]
 fn rebuild_tab(
+    dir: &Path,
     state: &mut State,
     space: &SpaceId,
     saved: SavedTab,
@@ -154,8 +163,21 @@ fn rebuild_tab(
         (terminal, t)
     });
     for (terminal, saved) in tree.terminals() {
-        let dir = Path::new(&saved.dir);
-        terminals.push(start(state, space, terminal.clone(), dir, size)?);
+        let cwd = Path::new(&saved.dir);
+        let mut term = start(state, space, terminal.clone(), cwd, size)?;
+        // With the state locked, so before its shell's first output.
+        if let Some(raw) = saved.scrollback.as_deref() {
+            match ScrollbackName::parse(raw) {
+                Some(name) => {
+                    if let Some(text) = scrollback::load(dir, &name) {
+                        term.seed(&text);
+                    }
+                    term.saved_as = name;
+                }
+                None => eprintln!("paddock server: no scrollback named {raw:?}"),
+            }
+        }
+        terminals.push(term);
         resumed.extend(resume(terminal, saved));
     }
     let tree = tree.map(&mut |(terminal, _)| terminal);
@@ -192,7 +214,7 @@ fn resume(terminal: &TerminalId, saved: &SavedTerminal) -> Option<Resume> {
 #[cfg(test)]
 mod tests {
     use super::super::layout::SavedTree;
-    use super::super::saved::{SavedTerminal, FILE};
+    use super::super::saved::FILE;
     use super::*;
     use anyhow::bail;
     use std::path::PathBuf;
@@ -213,7 +235,7 @@ mod tests {
                     "focus": 0,
                     "splits": SavedTree::Terminal(SavedTerminal {
                         dir: "/w/api".into(),
-                        agent: None,
+                        ..SavedTerminal::default()
                     }),
                 }],
             }],
@@ -253,6 +275,7 @@ mod tests {
                 session: id.into(),
                 over,
             }),
+            ..SavedTerminal::default()
         };
         let live = saved(dir.path(), AgentKind::Claude, false);
         let resumed = resume(&terminal, &live).expect("resumed");

@@ -1,7 +1,8 @@
 //! `layout.json` in the state directory (ADR 0008): the server's spaces
 //! in order, each with its name, root, size and current tab, its tabs
 //! with their names (and whether each is automatic), focus, zoom and tree
-//! of splits with their shares, each terminal by its directory and the
+//! of splits with their shares, each terminal by its directory (and the
+//! name of its saved scrollback, see [`super::scrollback`]) and the
 //! agent session last seen in it (if any, and whether it is over), and
 //! the space paddock showed last. No terminal id is kept: a restored
 //! terminal is a new one, which resumes its saved session if that is not
@@ -10,13 +11,17 @@
 //!
 //! The server writes it whenever it changes ([`Saver`]), at most once
 //! every [`GAP`], by an atomic replace; a server with no space left
-//! removes it, so the next starts clean. The layout is taken with the
+//! removes it, so the next starts clean. Each write also removes the
+//! saved scrollback no terminal of it names. The layout is taken with the
 //! server's state locked ([`snapshot`]), but its directories are read,
-//! and the file written, after ([`Snapshot::read_dirs`]). A server that
+//! and the file written, after ([`Snapshot::read_dirs`]); but for the
+//! last, written as the server ends, with each terminal's scrollback
+//! before it, both with the state locked. A server that
 //! starts and finds it rebuilds the layout from it (see
 //! [`super::restore`]).
 
 use super::layout::SavedTree;
+use super::scrollback;
 use super::seen::Seen;
 use super::space::Space;
 use super::state::State;
@@ -70,10 +75,14 @@ pub struct SavedTab {
     pub splits: SavedTree<SavedTerminal>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SavedTerminal {
     /// Its program's directory when last saved.
     pub dir: String,
+    /// The name of its saved scrollback, in `scrollback/` (see
+    /// [`scrollback::ScrollbackName`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scrollback: Option<String>,
     /// The agent session last seen running in it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<SavedAgent>,
@@ -190,10 +199,11 @@ fn saved_space(space: &Space, hosted: &mut Vec<(TerminalId, Option<DirReader>)>)
         let terminals = tab.terminals();
         let focus = terminals.iter().position(|t| t == tab.active());
         let splits = tab.layout().save(&mut |id| {
-            let reader = space.hosted(id).map(HostedTerminal::dir_reader);
-            hosted.push((id.clone(), reader));
+            let terminal = space.hosted(id);
+            hosted.push((id.clone(), terminal.map(HostedTerminal::dir_reader)));
             SavedTerminal {
                 dir: space.root.clone(),
+                scrollback: terminal.map(|t| t.saved_as.as_str().to_string()),
                 agent: None,
             }
         });
@@ -260,7 +270,16 @@ fn read(path: &Path) -> Result<Option<SavedLayout>> {
 
 /// Write `layout` to `dir`, replacing the old file in one step (a file
 /// beside it, renamed over it); a layout of no space removes the file.
+/// Then remove the saved scrollback it does not name.
 fn write(dir: &Path, layout: &SavedLayout) -> Result<()> {
+    write_layout(dir, layout)?;
+    let terminals = layout.spaces.iter().flat_map(|s| &s.tabs);
+    let terminals = terminals.flat_map(|t| t.splits.terminals());
+    let names = terminals.filter_map(|t| t.scrollback.as_deref());
+    scrollback::prune(dir, &names.collect())
+}
+
+fn write_layout(dir: &Path, layout: &SavedLayout) -> Result<()> {
     let path = dir.join(FILE);
     if layout.spaces.is_empty() {
         return match std::fs::remove_file(&path) {
@@ -289,7 +308,7 @@ fn write(dir: &Path, layout: &SavedLayout) -> Result<()> {
 
 /// Write `text` to a new file at `path`, mode 0600, and wait until it is
 /// on disk.
-fn write_synced(path: &Path, text: &[u8]) -> std::io::Result<()> {
+pub fn write_synced(path: &Path, text: &[u8]) -> std::io::Result<()> {
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create(true)
@@ -319,6 +338,11 @@ impl Saver {
             last: None,
             sealed: false,
         }
+    }
+
+    /// The state directory it writes to.
+    pub fn dir(&self) -> &Path {
+        &self.dir
     }
 
     /// Whether `layout`, offered at `now`, is to be written: it is not
@@ -372,7 +396,7 @@ mod tests {
     fn terminal(dir: &str) -> SavedTree<SavedTerminal> {
         SavedTree::Terminal(SavedTerminal {
             dir: dir.into(),
-            agent: None,
+            ..SavedTerminal::default()
         })
     }
 
@@ -429,6 +453,7 @@ mod tests {
         cells[1].node = SavedTree::Terminal(SavedTerminal {
             dir: "/w/api/src".into(),
             agent: Some(agent),
+            ..SavedTerminal::default()
         });
         write(dir.path(), &saved).unwrap();
         assert_eq!(load(dir.path()), Some(saved));
