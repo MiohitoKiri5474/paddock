@@ -1,50 +1,22 @@
 //! Ticket 07: sessions that need you stand out, notify, and are one key away.
 //!
-//! Notifications go to the sandbox's stub `osascript`, which logs each
+//! Notifications go to the sandbox's stub notifier, which logs each
 //! message. To show that something never notifies, a test makes it happen,
 //! then makes one thing that should notify, and checks that only that one did.
 
 mod harness;
 
+use harness::alerts::{hooks, payload, ready};
 use harness::{Paddock, Sandbox, PROMPT};
 
-const SPIKE: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/spikes/02-subagent-worktree/fixtures"
-);
-const OURS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/hooks");
 const SESSION: &str = "11111111-2222-4333-8444-555555555555";
 const WAITING: &str = "repo is waiting";
 const IDLE: &str = "repo is idle";
-
-fn payload(name: &str) -> String {
-    let path = if name.starts_with("PermissionRequest") || name.starts_with("Notification") {
-        format!("{OURS}/{name}.json")
-    } else {
-        format!("{SPIKE}/{name}.json")
-    };
-    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"))
-}
 
 fn payload_for(name: &str, session: &str, cwd: &str) -> String {
     payload(name)
         .replace(SESSION, session)
         .replace("\"/tmp/repo\"", &format!("\"{cwd}\""))
-}
-
-/// Run hooks in order in terminal `terminal`; `-` separates an event from
-/// its payload variant (`Notification-permission_prompt`).
-fn hooks(sandbox: &Sandbox, terminal: &str, names: &[&str]) {
-    for name in names {
-        let event = name.split('-').next().unwrap();
-        sandbox.hook(terminal, event, &payload(name));
-    }
-}
-
-fn ready(sandbox: &Sandbox) -> Paddock {
-    let paddock = sandbox.launch();
-    paddock.wait_for_text(PROMPT);
-    paddock
 }
 
 fn new_tab(paddock: &mut Paddock, label: &str) {
@@ -308,7 +280,7 @@ fn a_turn_finished_in_view_is_idle_at_once() {
 #[test]
 fn a_notifier_that_fails_says_so_in_a_notice() {
     let sandbox = Sandbox::new();
-    let stub = sandbox.path("bin/osascript");
+    let stub = sandbox.notifier_stub();
     std::fs::write(&stub, "#!/bin/sh\necho 'syntax error' >&2\nexit 1\n").unwrap();
     let mut paddock = ready(&sandbox);
     new_tab(&mut paddock, "2:home"); // look away from the first tab

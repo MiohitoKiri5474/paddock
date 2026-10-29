@@ -30,7 +30,7 @@
 //! height = 80
 //! G = "lazygit"              # the default; "" removes it
 //!
-//! [notify]                   # macOS notifications, on unless set false
+//! [notify]                   # desktop notifications, on unless set false
 //! waiting = true             # a session or one of its subagents starts waiting on you
 //! idle = true                # a main agent finishes its turn
 //!
@@ -101,7 +101,7 @@ pub struct Config {
     pub tabs: TabColors,
     /// The sidebar's starting width, while none was saved.
     pub sidebar_width: u16,
-    /// Which macOS notifications to send.
+    /// Which desktop notifications to send.
     pub notify: Notify,
     /// The floats and the size of their box.
     pub floats: Floats,
@@ -196,7 +196,7 @@ impl Default for Worktrees {
     }
 }
 
-/// Which macOS notifications to send; states, markers and the dashboard
+/// Which desktop notifications to send; states, markers and the dashboard
 /// show every change either way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Notify {
