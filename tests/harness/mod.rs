@@ -16,6 +16,7 @@
 
 #![allow(dead_code)] // Each test binary uses a different part of the harness.
 
+pub mod alerts;
 pub mod backend;
 pub mod native_skip;
 mod paddock;
@@ -76,6 +77,8 @@ const CURSOR_QUERY: &[u8] = b"\x1b[6n";
 /// Directories and environment one paddock under test lives in.
 pub struct Sandbox {
     root: TempDir,
+    /// Variables a test set (`Some`) or removed (`None`) for the next launch.
+    env_changes: Mutex<Vec<(String, Option<String>)>>,
 }
 
 impl Sandbox {
@@ -103,8 +106,12 @@ impl Sandbox {
         write_claude_stub(root.path());
         write_copy_stub(root.path());
         write_osascript_stub(root.path());
+        write_desktop_stubs(root.path());
         write_gh_stub(root.path());
-        let sandbox = Self { root };
+        let sandbox = Self {
+            root,
+            env_changes: Mutex::default(),
+        };
         sandbox.write_config("");
         sandbox
     }
@@ -156,8 +163,29 @@ impl Sandbox {
         env.filter(|(k, _)| kept.contains(&k.as_str())).collect()
     }
 
-    /// Variables paddock runs with, including ones that must not leak.
+    /// Set (`Some`) or remove (`None`) variable `name` for paddock and
+    /// its hooks from now on.
+    pub fn set_env(&self, name: &str, value: Option<&str>) {
+        self.env_changes
+            .lock()
+            .unwrap()
+            .push((name.into(), value.map(Into::into)));
+    }
+
+    /// Variables paddock runs with, including ones that must not leak,
+    /// with the test's changes (see [`Sandbox::set_env`]).
     fn env(&self) -> Vec<(String, String)> {
+        let mut env = self.base_env();
+        for (name, value) in self.env_changes.lock().unwrap().iter() {
+            env.retain(|(k, _)| k != name);
+            if let Some(value) = value {
+                env.push((name.clone(), value.clone()));
+            }
+        }
+        env
+    }
+
+    fn base_env(&self) -> Vec<(String, String)> {
         let p = |n: &str| self.path(n).to_string_lossy().into_owned();
         vec![
             ("HOME".into(), p("home")),
@@ -175,7 +203,6 @@ impl Sandbox {
             ("TERM_PROGRAM".into(), "leaky-terminal".into()),
             // As if launched from inside someone's tmux pane.
             ("TMUX".into(), "/tmp/nope,1,0".into()),
-            ("PADDOCK_OSASCRIPT".into(), p("bin/osascript")),
             // Never the real gh: the stub answers from the sandbox (see
             // `set_gh`); without `bin/gh`, as if gh were not installed.
             ("PADDOCK_GH".into(), p("bin/gh")),
@@ -395,6 +422,64 @@ impl Sandbox {
         assert_eq!(self.clipboard().as_deref(), Some(text), "clipboard");
     }
 
+    /// The platform's notifier in the sandbox's `bin`, first on `PATH`.
+    pub fn notifier_stub(&self) -> PathBuf {
+        let name = if cfg!(target_os = "macos") {
+            "osascript"
+        } else {
+            "notify-send"
+        };
+        self.path("bin").join(name)
+    }
+
+    /// Calls of the stub `notify-send`, `wl-copy` and `xclip`, one
+    /// `<program> <arguments>` line each, oldest first.
+    pub fn desktop_calls(&self) -> Vec<String> {
+        std::fs::read_to_string(self.path("desktop-calls.log"))
+            .unwrap_or_default()
+            .lines()
+            .map(|l| l.trim_end().to_string())
+            .collect()
+    }
+
+    /// Take the stubs `names` out of the sandbox's `bin` and hide the real
+    /// ones (see [`Sandbox::hide_from_path`]), so paddock finds none.
+    pub fn remove_tools(&self, names: &[&str]) {
+        for name in names {
+            std::fs::remove_file(self.path("bin").join(name)).expect("remove stub");
+        }
+        self.hide_from_path(names);
+    }
+
+    /// Set paddock's `PATH` to the sandbox's `bin`, then the real `PATH`
+    /// with each directory holding one of `names` shadowed: replaced by a
+    /// sandbox directory of links to all it holds but those, so the rest
+    /// (`cat`, `zsh`, ...) still resolves. Returns the new `PATH`.
+    pub fn hide_from_path(&self, names: &[&str]) -> String {
+        let real = std::env::var("PATH").unwrap_or_default();
+        let mut path = vec![self.path("bin").to_string_lossy().into_owned()];
+        for (i, dir) in real.split(':').filter(|d| !d.is_empty()).enumerate() {
+            let dir = std::path::Path::new(dir);
+            if !names.iter().any(|n| dir.join(n).exists()) {
+                path.push(dir.to_string_lossy().into_owned());
+                continue;
+            }
+            let shadow = self.path(&format!("shadow/{i}"));
+            std::fs::create_dir_all(&shadow).expect("mkdir shadow");
+            for entry in std::fs::read_dir(dir).expect("read PATH dir").flatten() {
+                let name = entry.file_name();
+                if !names.iter().any(|n| name == *n) {
+                    std::os::unix::fs::symlink(entry.path(), shadow.join(&name))
+                        .expect("link into shadow");
+                }
+            }
+            path.push(shadow.to_string_lossy().into_owned());
+        }
+        let path = path.join(":");
+        self.set_env("PATH", Some(&path));
+        path
+    }
+
     /// Messages of the notifications shown so far, oldest first.
     pub fn notifications(&self) -> Vec<String> {
         std::fs::read_to_string(self.path("notifications.log"))
@@ -522,8 +607,7 @@ fn write_copy_stub(root: &std::path::Path) {
 
 /// An `osascript` that appends each notification's message (its last
 /// argument) to `notifications.log` in the sandbox, so tests never show real
-/// notifications. paddock is pointed at it by path and finds it first on
-/// `PATH` too.
+/// notifications. paddock finds it first on `PATH`.
 fn write_osascript_stub(root: &std::path::Path) {
     let script = format!(
         "#!/bin/sh\nfor a in \"$@\"; do last=\"$a\"; done\nprintf '%s\\n' \"$last\" >> '{}/notifications.log'\n",
@@ -533,6 +617,36 @@ fn write_osascript_stub(root: &std::path::Path) {
     std::fs::write(&path, script).expect("osascript stub");
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod stub");
+}
+
+/// The desktop tools paddock copies and notifies with on Linux, and macOS's
+/// `pbcopy`, first on `PATH` so tests never reach the real ones: each
+/// appends `<program> <arguments>` to `desktop-calls.log` in the sandbox.
+/// `notify-send` also logs its message (its last argument) to
+/// `notifications.log`, as the `osascript` stub does; the copiers write
+/// what they read to `clipboard`, as the copy stub does.
+fn write_desktop_stubs(root: &std::path::Path) {
+    let dir = root.display();
+    let log = format!("echo \"$(basename \"$0\") $*\" >> '{dir}/desktop-calls.log'\n");
+    let notify = format!(
+        "#!/bin/sh\n{log}for a in \"$@\"; do last=\"$a\"; done\nprintf '%s\\n' \"$last\" >> '{dir}/notifications.log'\n"
+    );
+    let copy = format!(
+        "#!/bin/sh\n{log}cat > '{dir}/clipboard.tmp' && mv '{dir}/clipboard.tmp' '{dir}/clipboard'\n"
+    );
+    use std::os::unix::fs::PermissionsExt;
+    let stubs = [
+        ("notify-send", &notify),
+        ("wl-copy", &copy),
+        ("xclip", &copy),
+        ("pbcopy", &copy),
+    ];
+    for (name, script) in stubs {
+        let path = root.join("bin").join(name);
+        std::fs::write(&path, script).expect("desktop stub");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod stub");
+    }
 }
 
 /// A `gh` that appends `<directory> <arguments>` to `gh-calls.log` in the

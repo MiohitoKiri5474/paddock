@@ -44,8 +44,8 @@ G = "lazygit"             # the default float; "" removes it
 y = "yazi"
 
 [notify]
-waiting = true            # a macOS notification when a session or one of its subagents waits on you; false turns it off
-idle = true               # a macOS notification when a main agent finishes its turn; false turns it off
+waiting = true            # a desktop notification when a session or one of its subagents waits on you; false turns it off
+idle = true               # a desktop notification when a main agent finishes its turn; false turns it off
 
 [worktrees]
 directory = "~/.paddock/worktrees"  # C-a W checks new worktrees out in <directory>/<repo>/<branch>

@@ -6,7 +6,8 @@ Design: [docs/design.md](docs/design.md). Glossary: [CONTEXT.md](CONTEXT.md). De
 
 ## Requirements
 
-- macOS, or Linux on the native backend (the release binary is for Apple Silicon only; build from source on Linux). On Linux, notifications and copying a selection still call macOS tools (`osascript`, `pbcopy`), so they do not work there yet
+- macOS, or Linux on the native backend (the release binary is for Apple Silicon only; build from source on Linux)
+- On Linux, for notifications and copying: `notify-send` (libnotify, e.g. `apt install libnotify-bin`), and `wl-copy` (`wl-clipboard`) on Wayland or `xclip` on X11 (on Wayland, when `wl-copy` is missing or fails, paddock tries `xclip`, which works under XWayland). macOS has its own (`osascript`, `pbcopy`). Without one, paddock says so once in the tab bar and goes on; `PADDOCK_COPY_COMMAND` names another copy program (it reads the text on stdin)
 - tmux (tested with 3.8), only for the legacy tmux backend (`[backend] kind = "tmux"`, kept until v0.2): `brew install tmux` (Homebrew installs it with paddock)
 - Claude Code, Gemini CLI and/or Antigravity CLI (for session tracking; Gemini CLI tested with 0.64, Antigravity CLI with 1.4.3)
 - Rust 1.85+, only to build from source
