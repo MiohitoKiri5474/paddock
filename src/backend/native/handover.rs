@@ -150,7 +150,7 @@ pub fn record(state: &mut State, held: Held) -> (Record, Vec<Vec<u8>>) {
         last_id: state.last_id(),
         started: state.started,
         current: state.current.clone(),
-        restored: state.restored,
+        restored: state.restored.clone(),
         lock,
         listener,
         spaces,
@@ -604,6 +604,7 @@ mod tests {
             restored: Some(Restored {
                 spaces: 1,
                 sessions: 1,
+                cannot_resume: Vec::new(),
             }),
             lock: 3,
             listener: 4,
@@ -628,6 +629,26 @@ mod tests {
         let read_back = read(&mut written.as_slice()).unwrap();
         assert_eq!(read_back, (record.clone(), snapshots));
         assert_eq!(record.descriptors(), vec![3, 4, 10, 11, 12]);
+    }
+
+    /// The sessions a restore could not resume are handed over with its
+    /// counts, so the notice still names them after an upgrade; a record
+    /// from a server that never wrote them reads as none (FORMAT 1).
+    #[test]
+    fn a_record_hands_over_the_kinds_a_restore_could_not_resume() {
+        use crate::sessions::AgentKind;
+        let (mut record, snapshots) = record();
+        let cannot = vec![AgentKind::Gemini, AgentKind::Agy];
+        record.restored.as_mut().unwrap().cannot_resume = cannot.clone();
+        let written = bytes(&record, &snapshots);
+        let (read_back, _) = read(&mut written.as_slice()).unwrap();
+        assert_eq!(read_back.restored.unwrap().cannot_resume, cannot);
+
+        let mut json = serde_json::to_value(&record).unwrap();
+        let restored = json["restored"].as_object_mut().unwrap();
+        assert!(restored.remove("cannot_resume").is_some());
+        let older: Record = serde_json::from_value(json).unwrap();
+        assert_eq!(older.restored.unwrap().cannot_resume, []);
     }
 
     #[test]
