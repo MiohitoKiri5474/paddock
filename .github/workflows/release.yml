@@ -49,7 +49,8 @@ jobs:
         run: |
           archive="paddock-$TAG-$TARGET.tar.gz"
           # ponytail: files sit at the archive root, so `tar xzf` drops `paddock` right there.
-          tar -czf "$archive" -C "target/$TARGET/release" paddock -C "$PWD" LICENSE README.md
+          # docs/ and CONTEXT.md ride along so the README's relative links work offline.
+          tar -czf "$archive" -C "target/$TARGET/release" paddock -C "$PWD" LICENSE README.md CONTEXT.md docs
           shasum -a 256 "$archive" > "$archive.sha256"
       # A draft pre-release: check the notes and the tarball, then publish by hand.
       - name: Create draft release
