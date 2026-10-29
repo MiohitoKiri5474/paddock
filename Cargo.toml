@@ -26,8 +26,10 @@ unicode-width = "0.2"
 # name is still `alacritty_terminal`; pinned exactly until the fix is upstream.
 alacritty_terminal = { package = "yas-alacritty-terminal", version = "=0.26.0-yas.1" }
 serde_json = { version = "1.0.154", features = ["preserve_order"] }
+# The copy tool's stderr goes to a file: a pipe would be held open by the
+# child `xclip` and `wl-copy` leave behind.
+tempfile = "3"
 
 [dev-dependencies]
 portable-pty = "0.9"
-tempfile = "3"
 vt100 = "0.18"

@@ -5,6 +5,7 @@
 //! before the hook that reports the same change, and must neither swallow
 //! nor repeat its notification.
 
+use super::desktop::SayOnce;
 use super::rows::Row;
 use super::sidebar::Pick;
 use super::state::{App, Mode};
@@ -150,9 +151,9 @@ pub struct Attention {
     /// Whether the outer window has focus, as far as the terminal reports
     /// focus changes (CSI ?1004); assumed until it says otherwise.
     pub window_focused: bool,
-    /// A failure to notify was shown; later ones are not, to avoid a notice
-    /// on every notification.
-    notify_failure_shown: bool,
+    /// A failure to notify is said once, to avoid a notice on every
+    /// notification.
+    notify_failure: SayOnce,
     /// Which kinds of alert show a notification (`[notify]`).
     notify: Notify,
 }
@@ -165,18 +166,14 @@ impl Attention {
             alerts: Alerts::default(),
             started: now_ms(),
             window_focused: true,
-            notify_failure_shown: false,
+            notify_failure: SayOnce::default(),
         }
     }
 
     /// The notice for a notification that failed with `error`: the first
     /// time only.
     pub fn notify_failed(&mut self, error: &str) -> Option<String> {
-        if self.notify_failure_shown {
-            return None;
-        }
-        self.notify_failure_shown = true;
-        Some(format!("cannot notify: {error}"))
+        self.notify_failure.say(format!("cannot notify: {error}"))
     }
 }
 

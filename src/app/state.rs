@@ -5,6 +5,7 @@
 use super::attention::{Attention, PendingStatus};
 use super::copy::CopyMode;
 use super::dashboard::Dashboard;
+use super::desktop::SayOnce;
 use super::finder::Finder;
 use super::floats::Shown;
 use super::mouse::Press;
@@ -230,8 +231,8 @@ pub struct App {
     pub(super) mode: Mode,
     /// A message for the user, shown in the tab bar until the next key.
     pub(super) notice: Option<String>,
-    /// A copy tool that could not be run was shown; later ones are not.
-    pub(super) copy_not_run_shown: bool,
+    /// That a copy tool cannot be run is said once.
+    pub(super) copy_not_run: SayOnce,
     /// Why paddock quits, said once the screen is back; `None` for a
     /// quit that needs no word.
     pub(super) farewell: Option<String>,
@@ -372,7 +373,7 @@ impl App {
             mode: Mode::Normal,
             // Settings that work but may surprise.
             notice: (!config.warnings.is_empty()).then(|| config.warnings.join("; ")),
-            copy_not_run_shown: false,
+            copy_not_run: SayOnce::default(),
             farewell: None,
             screen,
             start_dir,

@@ -10,7 +10,6 @@
 use super::splits::SplitDrag;
 use super::state::{App, Mode, TAB_BAR_ROWS};
 use crate::backend::TerminalId;
-use crate::desktop;
 use crate::input::mouse::WHEEL_LINES;
 use crate::input::{route_mouse, MouseAction};
 use crate::terminal::emulator::Emulator;
@@ -19,8 +18,6 @@ use crate::ui::tab_bar::{self, Part};
 use anyhow::Result;
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Position, Rect};
-use std::io::Write;
-use std::process::Stdio;
 
 /// Where a held button went when it was pressed. Its drags and its release
 /// go the same way, even outside that pane.
@@ -382,59 +379,6 @@ fn select_held(
     let text = dragged.then(|| emu.selected_text()).flatten();
     emu.clear_selection();
     text
-}
-
-/// Why copying failed, as a notice.
-pub(super) enum CopyFailure {
-    /// The copy tool could not be run: missing, most likely.
-    NotRun(String),
-    /// It ran and failed.
-    Failed(String),
-}
-
-impl App {
-    /// Put `text` on the clipboard; a failure shows a notice, except that
-    /// a copy tool that cannot be run is said once only.
-    pub(super) fn copy_to_clipboard(&mut self, text: &str) {
-        match copy(text) {
-            Ok(()) => {}
-            Err(CopyFailure::NotRun(notice)) => {
-                if !self.copy_not_run_shown {
-                    self.copy_not_run_shown = true;
-                    self.notice = Some(notice);
-                }
-            }
-            Err(CopyFailure::Failed(notice)) => self.notice = Some(notice),
-        }
-    }
-}
-
-/// Put `text` on the clipboard with the platform's copy tool, or with the
-/// program named by `PADDOCK_COPY_COMMAND` (see [`desktop::copier`]).
-/// Its output is not read: `xclip` and `wl-copy` leave a child behind
-/// that serves the clipboard and would hold a pipe open.
-fn copy(text: &str) -> Result<(), CopyFailure> {
-    let mut command = desktop::copier();
-    let name = command.get_program().to_string_lossy().into_owned();
-    let mut child = command
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| CopyFailure::NotRun(format!("cannot copy: cannot run {name}: {e}")))?;
-    let written = match child.stdin.take() {
-        Some(mut stdin) => stdin.write_all(text.as_bytes()),
-        None => Err(std::io::Error::other("no stdin")),
-    };
-    let status = child
-        .wait()
-        .map_err(|e| CopyFailure::Failed(format!("cannot copy: {name}: {e}")))?;
-    written
-        .map_err(|e| CopyFailure::Failed(format!("cannot copy: writing to {name} failed: {e}")))?;
-    if !status.success() {
-        return Err(CopyFailure::Failed(format!("cannot copy: {name} failed")));
-    }
-    Ok(())
 }
 
 #[cfg(test)]

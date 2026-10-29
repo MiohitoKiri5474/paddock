@@ -1,13 +1,18 @@
 //! The desktop tools paddock runs: the one that shows a notification and
 //! the one that copies to the clipboard. This is their platform seam:
 //! macOS runs `osascript` and `pbcopy`; Linux runs `notify-send`, and
-//! `wl-copy` on Wayland or `xclip` on X11.
+//! `wl-copy` on Wayland (falling back to `xclip` under XWayland) or
+//! `xclip` on X11.
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+compile_error!("paddock's desktop tools are macOS's and Linux's only");
 
 use std::ffi::OsString;
-use std::process::Command;
+use std::io::{Read, Seek, Write};
+use std::process::{Command, Stdio};
 
 /// Names the program run in place of the platform's notifier, with the
-/// same arguments (tests use it to make the notifier missing).
+/// same arguments (a test hook: tests use it to make the notifier missing).
 const NOTIFY_VAR: &str = "PADDOCK_NOTIFY_COMMAND";
 /// Names the program that copies its stdin, in place of the platform's
 /// (tests use it to keep off the real clipboard).
@@ -26,17 +31,92 @@ pub fn notifier(message: &str) -> Command {
     command
 }
 
-/// The command that puts what it reads on stdin on the clipboard.
-pub fn copier() -> Command {
-    match program_from(COPY_VAR) {
-        Some(program) => Command::new(program),
-        None => {
-            let (program, args) = default_copier();
-            let mut command = Command::new(program);
-            command.args(args);
-            command
+/// Why copying failed, as a notice.
+#[derive(Debug, PartialEq, Eq)]
+pub enum CopyFailure {
+    /// No copy tool could be run: missing, most likely.
+    NotRun(String),
+    /// One ran and failed.
+    Failed(String),
+}
+
+/// Put `text` on the clipboard with the program `PADDOCK_COPY_COMMAND`
+/// names, else the platform's copy tool, trying the next one while one
+/// cannot be run.
+pub fn copy(text: &str) -> Result<(), CopyFailure> {
+    let commands: Vec<Command> = match program_from(COPY_VAR) {
+        Some(program) => vec![Command::new(program)],
+        None => copiers()
+            .iter()
+            .map(|(program, args)| {
+                let mut command = Command::new(program);
+                command.args(*args);
+                command
+            })
+            .collect(),
+    };
+    let mut not_run = Vec::new();
+    for command in commands {
+        let name = command.get_program().to_string_lossy().into_owned();
+        match run_copier(command, text) {
+            Err(Run::NotRun(e)) => not_run.push((name, e)),
+            Err(Run::Failed(why)) => {
+                return Err(CopyFailure::Failed(format!("cannot copy: {name} {why}")))
+            }
+            Ok(()) => return Ok(()),
         }
     }
+    let names: Vec<&str> = not_run.iter().map(|(n, _)| n.as_str()).collect();
+    let error = not_run
+        .last()
+        .map(|(_, e)| e.to_string())
+        .unwrap_or_default();
+    Err(CopyFailure::NotRun(format!(
+        "cannot copy: cannot run {}: {error}",
+        names.join(" or ")
+    )))
+}
+
+/// How one copy tool's run went wrong.
+enum Run {
+    NotRun(std::io::Error),
+    /// What to say after its name.
+    Failed(String),
+}
+
+/// Run one copy tool on `text`. Its stdout is not read, and its stderr
+/// goes to a file, not a pipe: `xclip` and `wl-copy` leave a child behind
+/// that serves the clipboard and would hold a pipe open.
+fn run_copier(mut command: Command, text: &str) -> Result<(), Run> {
+    let failed = |what: &str, e: std::io::Error| Run::Failed(format!("{what}: {e}"));
+    let mut stderr = tempfile::tempfile().map_err(|e| failed("has no stderr file", e))?;
+    let for_child = stderr
+        .try_clone()
+        .map_err(|e| failed("has no stderr file", e))?;
+    let mut child = command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(for_child)
+        .spawn()
+        .map_err(Run::NotRun)?;
+    let written = match child.stdin.take() {
+        Some(mut stdin) => stdin.write_all(text.as_bytes()),
+        None => Err(std::io::Error::other("no stdin")),
+    };
+    let status = child.wait().map_err(|e| failed("failed", e))?;
+    if status.success() {
+        return written.map_err(|e| failed("failed: writing to it", e));
+    }
+    let mut said = String::new();
+    // Best effort: without its words the status still says it failed.
+    let _ = stderr
+        .rewind()
+        .and_then(|()| stderr.read_to_string(&mut said));
+    let first = said.lines().map(str::trim).find(|l| !l.is_empty());
+    Err(Run::Failed(match first {
+        Some(line) => format!("failed: {line}"),
+        None => format!("failed ({status})"),
+    }))
 }
 
 #[cfg(target_os = "macos")]
@@ -60,32 +140,47 @@ fn notify_args(message: &str) -> Vec<String> {
         .collect()
 }
 
+/// The copy tools to try in turn, with their arguments.
 #[cfg(target_os = "macos")]
-fn default_copier() -> (&'static str, &'static [&'static str]) {
-    ("pbcopy", &[])
+fn copiers() -> &'static [(&'static str, &'static [&'static str])] {
+    &[("pbcopy", &[])]
 }
 
 #[cfg(target_os = "linux")]
 const NOTIFIER: &str = "notify-send";
 
-/// `--` ends the options, so a message starting with `-` is not one.
+/// `--` ends the options, so a message starting with `-` is not one. The
+/// body is escaped: servers that read it as Pango markup would garble
+/// `R&D` or `a<b`.
 #[cfg(target_os = "linux")]
 fn notify_args(message: &str) -> Vec<String> {
-    vec!["--".into(), "paddock".into(), message.into()]
+    vec!["--".into(), "paddock".into(), escape_markup(message)]
 }
 
+/// `message` with `&`, `<` and `>` as markup entities.
 #[cfg(target_os = "linux")]
-fn default_copier() -> (&'static str, &'static [&'static str]) {
-    linux_copier(std::env::var_os("WAYLAND_DISPLAY").is_some_and(|v| !v.is_empty()))
+fn escape_markup(message: &str) -> String {
+    message
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
-/// `wl-copy` under a Wayland compositor, else X11's `xclip`.
+/// The copy tools to try in turn, with their arguments.
 #[cfg(target_os = "linux")]
-fn linux_copier(wayland: bool) -> (&'static str, &'static [&'static str]) {
+fn copiers() -> &'static [(&'static str, &'static [&'static str])] {
+    linux_copiers(std::env::var_os("WAYLAND_DISPLAY").is_some_and(|v| !v.is_empty()))
+}
+
+/// `wl-copy` under a Wayland compositor, then `xclip` (XWayland); only
+/// `xclip` on X11.
+#[cfg(target_os = "linux")]
+fn linux_copiers(wayland: bool) -> &'static [(&'static str, &'static [&'static str])] {
+    const XCLIP: (&str, &[&str]) = ("xclip", &["-selection", "clipboard"]);
     if wayland {
-        ("wl-copy", &[])
+        &[("wl-copy", &[]), XCLIP]
     } else {
-        ("xclip", &["-selection", "clipboard"])
+        &[XCLIP]
     }
 }
 
@@ -114,8 +209,8 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn the_message_is_the_scripts_argument() {
-        let args = notify_args("repo is idle");
-        assert_eq!(args.last().map(String::as_str), Some("repo is idle"));
+        let args = notify_args("R&D is idle");
+        assert_eq!(args.last().map(String::as_str), Some("R&D is idle"));
         assert_eq!(args.len(), 2 * NOTIFY_SCRIPT.len() + 1);
     }
 
@@ -127,11 +222,53 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn wayland_copies_with_wl_copy_and_x11_with_xclip() {
-        assert_eq!(linux_copier(true), ("wl-copy", &[][..]));
+    fn notify_sends_message_is_escaped_markup() {
         assert_eq!(
-            linux_copier(false),
-            ("xclip", &["-selection", "clipboard"][..])
+            notify_args("R&D <a> is idle")[2],
+            "R&amp;D &lt;a&gt; is idle"
         );
+        assert_eq!(escape_markup("&amp;"), "&amp;amp;");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn wayland_tries_wl_copy_then_xclip_and_x11_only_xclip() {
+        let names = |wayland| {
+            linux_copiers(wayland)
+                .iter()
+                .map(|(p, a)| [&[*p][..], a].concat().join(" "))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names(true), ["wl-copy", "xclip -selection clipboard"]);
+        assert_eq!(names(false), ["xclip -selection clipboard"]);
+    }
+
+    #[test]
+    fn a_copier_that_fails_gives_its_first_stderr_line() {
+        let mut command = Command::new("/bin/sh");
+        command.args([
+            "-c",
+            "cat >/dev/null; echo; echo 'Error: no display' >&2; exit 1",
+        ]);
+        match run_copier(command, "text") {
+            Err(Run::Failed(why)) => assert_eq!(why, "failed: Error: no display"),
+            _ => panic!("expected a failure"),
+        }
+    }
+
+    #[test]
+    fn a_copier_that_cannot_run_says_so() {
+        let command = Command::new("/nonexistent/paddock-copier");
+        assert!(matches!(run_copier(command, "text"), Err(Run::NotRun(_))));
+    }
+
+    #[test]
+    fn a_copier_that_works_takes_the_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("out");
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "cat > \"$0\"", &out.to_string_lossy()]);
+        assert!(run_copier(command, "hello").is_ok());
+        assert_eq!(std::fs::read_to_string(out).unwrap(), "hello");
     }
 }

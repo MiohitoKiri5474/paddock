@@ -1,50 +1,26 @@
 //! Ticket 53: the desktop tools. Notifications go through `osascript` on
 //! macOS and `notify-send` on Linux; copying through `pbcopy` on macOS,
-//! `wl-copy` on Wayland and `xclip` on X11, unless `PADDOCK_COPY_COMMAND`
-//! names another. The sandbox's stubs stand in for all of them (first on
-//! `PATH`), so no test notifies or copies for real. A tool that cannot be
-//! run is said once in the tab bar, and paddock goes on.
+//! `wl-copy` on Wayland (else `xclip`) and `xclip` on X11, unless
+//! `PADDOCK_COPY_COMMAND` names another. The sandbox's stubs stand in for
+//! all of them (first on `PATH`), so no test notifies or copies for real.
+//! A tool that cannot be run is said once in the tab bar, and paddock goes
+//! on; a copy tool that runs and fails is said on each copy.
 
 mod harness;
 
-use harness::{Paddock, Sandbox, PROMPT};
+use harness::alerts::{hooks, ready};
+use harness::{Paddock, Sandbox};
 
-const SPIKE: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/spikes/02-subagent-worktree/fixtures"
-);
-const OURS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/hooks");
+const FIRST: &str = "space-1:0";
 const CANNOT_NOTIFY: &str = "cannot notify: cannot run";
 const CANNOT_COPY: &str = "cannot copy: cannot run";
 const COPY: &str = " COPY  line";
-
-fn payload(name: &str) -> String {
-    let path = if name.starts_with("PermissionRequest") {
-        format!("{OURS}/{name}.json")
-    } else {
-        format!("{SPIKE}/{name}.json")
-    };
-    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"))
-}
-
-/// Run hooks in order in the first tab's terminal.
-fn hooks(sandbox: &Sandbox, names: &[&str]) {
-    for name in names {
-        sandbox.hook("space-1:0", name, &payload(name));
-    }
-}
-
-fn ready(sandbox: &Sandbox) -> Paddock {
-    let paddock = sandbox.launch();
-    paddock.wait_for_text(PROMPT);
-    paddock
-}
 
 /// A second tab, so the first one's session notifies.
 fn look_away(paddock: &mut Paddock) {
     paddock.command(b"c");
     paddock.wait_for_current_tab("2:home");
-    paddock.wait_for_text(PROMPT);
+    paddock.wait_for_text(harness::PROMPT);
 }
 
 /// Print a word and copy it in copy mode.
@@ -66,6 +42,22 @@ fn still_runs(p: &mut Paddock, n: u32) {
     p.wait_for_text(&format!("alive-{n}"));
 }
 
+/// Copy twice with the copy tool missing: one notice, then none; nothing
+/// copied, and paddock goes on.
+fn copy_without_a_tool(sandbox: &Sandbox, p: &mut Paddock, notice: &str) {
+    copy_word(p, "first");
+    p.wait_for_text(notice);
+    still_runs(p, 1);
+    assert!(!p.full_screen().contains(notice));
+
+    // A notice would be drawn in the frame that leaves copy mode, the tab
+    // bar before the copy-mode line.
+    copy_word(p, "second");
+    assert!(!p.full_screen().contains(notice));
+    still_runs(p, 2);
+    assert_eq!(sandbox.clipboard(), None);
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn linux_notifies_through_notify_send() {
@@ -73,7 +65,7 @@ fn linux_notifies_through_notify_send() {
     let mut paddock = ready(&sandbox);
     look_away(&mut paddock);
 
-    hooks(&sandbox, &["UserPromptSubmit", "PermissionRequest"]);
+    hooks(&sandbox, FIRST, &["UserPromptSubmit", "PermissionRequest"]);
 
     assert_eq!(sandbox.wait_for_notifications(1), ["repo is waiting"]);
     assert_eq!(
@@ -93,7 +85,22 @@ fn linux_copies_with_wl_copy_on_wayland() {
     copy_word(&mut p, "wayland");
 
     sandbox.wait_for_clipboard("wayland");
-    assert_eq!(sandbox.desktop_calls(), ["wl-copy "]);
+    assert_eq!(sandbox.desktop_calls(), ["wl-copy"]);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_copies_with_xclip_on_wayland_without_wl_copy() {
+    let sandbox = Sandbox::new();
+    sandbox.set_env("PADDOCK_COPY_COMMAND", None);
+    sandbox.set_env("WAYLAND_DISPLAY", Some("wayland-test"));
+    sandbox.remove_tools(&["wl-copy"]);
+    let mut p = ready(&sandbox);
+
+    copy_word(&mut p, "xwayland");
+
+    sandbox.wait_for_clipboard("xwayland");
+    assert_eq!(sandbox.desktop_calls(), ["xclip -selection clipboard"]);
 }
 
 #[cfg(target_os = "linux")]
@@ -109,6 +116,31 @@ fn linux_copies_with_xclip_without_wayland() {
     assert_eq!(sandbox.desktop_calls(), ["xclip -selection clipboard"]);
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_without_xclip_on_its_path_says_so_once() {
+    let sandbox = Sandbox::new();
+    sandbox.set_env("PADDOCK_COPY_COMMAND", None);
+    sandbox.remove_tools(&["xclip"]);
+    let mut p = ready(&sandbox);
+
+    copy_without_a_tool(&sandbox, &mut p, "cannot copy: cannot run xclip");
+    assert!(sandbox.desktop_calls().is_empty());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_without_notify_send_on_its_path_says_so_once() {
+    let sandbox = Sandbox::new();
+    sandbox.remove_tools(&["notify-send"]);
+    let mut paddock = ready(&sandbox);
+    look_away(&mut paddock);
+
+    hooks(&sandbox, FIRST, &["UserPromptSubmit", "PermissionRequest"]);
+    paddock.wait_for_text("cannot notify: cannot run notify-send");
+    assert!(sandbox.notifications().is_empty());
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn macos_copies_with_pbcopy() {
@@ -119,7 +151,7 @@ fn macos_copies_with_pbcopy() {
     copy_word(&mut p, "mac");
 
     sandbox.wait_for_clipboard("mac");
-    assert_eq!(sandbox.desktop_calls(), ["pbcopy "]);
+    assert_eq!(sandbox.desktop_calls(), ["pbcopy"]);
 }
 
 #[test]
@@ -143,7 +175,7 @@ fn a_missing_notifier_is_said_once_and_paddock_goes_on() {
     let mut paddock = ready(&sandbox);
     look_away(&mut paddock);
 
-    hooks(&sandbox, &["UserPromptSubmit", "PermissionRequest"]);
+    hooks(&sandbox, FIRST, &["UserPromptSubmit", "PermissionRequest"]);
     paddock.wait_for_text(CANNOT_NOTIFY);
     // Any key clears the notice; this one goes to the shell.
     still_runs(&mut paddock, 1);
@@ -151,7 +183,7 @@ fn a_missing_notifier_is_said_once_and_paddock_goes_on() {
 
     // The finished turn notifies, and fails, as it is marked done: a
     // notice would be drawn in that frame, the tab bar before the sidebar.
-    hooks(&sandbox, &["UserPromptSubmit", "Stop"]);
+    hooks(&sandbox, FIRST, &["UserPromptSubmit", "Stop"]);
     paddock.wait_for("done", |_| paddock.full_screen().contains("done"));
     assert!(!paddock.full_screen().contains(CANNOT_NOTIFY));
     still_runs(&mut paddock, 2);
@@ -165,15 +197,32 @@ fn a_missing_copy_tool_is_said_once_and_paddock_goes_on() {
     sandbox.set_env("PADDOCK_COPY_COMMAND", Some(&missing.to_string_lossy()));
     let mut p = ready(&sandbox);
 
-    copy_word(&mut p, "first");
-    p.wait_for_text(CANNOT_COPY);
-    still_runs(&mut p, 3);
-    assert!(!p.full_screen().contains(CANNOT_COPY));
+    copy_without_a_tool(&sandbox, &mut p, CANNOT_COPY);
+}
 
-    // A notice would be drawn in the frame that leaves copy mode, the tab
-    // bar before the copy-mode line.
+#[test]
+fn a_copy_tool_that_fails_says_why_on_each_copy() {
+    let sandbox = Sandbox::new();
+    // Short: the notice must fit the tab bar with the sandbox's path.
+    let failing = sandbox.path("bin/c");
+    std::fs::write(
+        &failing,
+        "#!/bin/sh\ncat >/dev/null\necho 'Error: no display' >&2\nexit 1\n",
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&failing, std::fs::Permissions::from_mode(0o755)).unwrap();
+    sandbox.set_env("PADDOCK_COPY_COMMAND", Some(&failing.to_string_lossy()));
+    let mut p = ready(&sandbox);
+    let notice = "bin/c failed: Error: no display";
+
+    copy_word(&mut p, "first");
+    p.wait_for_text(notice);
+    still_runs(&mut p, 1);
+    assert!(!p.full_screen().contains(notice));
+
     copy_word(&mut p, "second");
-    assert!(!p.full_screen().contains(CANNOT_COPY));
-    still_runs(&mut p, 4);
+    p.wait_for_text(notice);
+    still_runs(&mut p, 2);
     assert_eq!(sandbox.clipboard(), None);
 }

@@ -16,6 +16,7 @@
 
 #![allow(dead_code)] // Each test binary uses a different part of the harness.
 
+pub mod alerts;
 pub mod backend;
 pub mod native_skip;
 mod paddock;
@@ -437,8 +438,28 @@ impl Sandbox {
         std::fs::read_to_string(self.path("desktop-calls.log"))
             .unwrap_or_default()
             .lines()
-            .map(str::to_string)
+            .map(|l| l.trim_end().to_string())
             .collect()
+    }
+
+    /// Take the stubs `names` out of the sandbox's `bin`, and leave out of
+    /// `PATH` every other directory holding one of them, so paddock finds
+    /// none, never a real one.
+    pub fn remove_tools(&self, names: &[&str]) {
+        for name in names {
+            std::fs::remove_file(self.path("bin").join(name)).expect("remove stub");
+        }
+        let real = std::env::var("PATH").unwrap_or_default();
+        let kept = real.split(':').filter(|dir| {
+            !names
+                .iter()
+                .any(|n| std::path::Path::new(dir).join(n).exists())
+        });
+        let path = std::iter::once(self.path("bin").to_string_lossy().into_owned())
+            .chain(kept.map(str::to_string))
+            .collect::<Vec<_>>()
+            .join(":");
+        self.set_env("PATH", Some(&path));
     }
 
     /// Messages of the notifications shown so far, oldest first.
