@@ -204,7 +204,12 @@ pub const COMMANDS: &[Binding<Command>] = &[
         "move split border right",
     ),
     bind("zoom", Command::Zoom, &["z"], "zoom the focused split"),
-    bind("close", Command::Close, &["x"], "close pane (asks if busy)"),
+    bind(
+        "close",
+        Command::Close,
+        &["x"],
+        "close split (asks if busy)",
+    ),
     bind("fork", Command::Fork, &["f"], "fork Claude into a new tab"),
     bind(
         "new_worktree",
@@ -301,13 +306,13 @@ pub const SIDEBAR: &[Binding<SidebarAction>] = &[
         "open",
         SidebarAction::Open,
         &["Enter"],
-        "show the space's tabs, or jump to the agent's pane",
+        "show the space's tabs, or jump to the agent's terminal",
     ),
     bind(
         "close",
         SidebarAction::Close,
         &["x"],
-        "close the space (a worktree space paddock made: delete it, asking), or the agent's pane",
+        "close the space (a worktree space paddock made: delete it, asking), or the agent's terminal",
     ),
     bind(
         "fork",

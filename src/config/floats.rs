@@ -119,7 +119,7 @@ impl Floats {
         Ok(())
     }
 
-    /// Rows for the README's table of keys after the prefix, one per
+    /// Rows for docs/keys.md's table of keys after the prefix, one per
     /// float, to follow the commands' rows.
     #[cfg(test)]
     pub fn markdown(&self) -> String {
@@ -280,22 +280,28 @@ mod tests {
     }
 
     #[test]
-    fn the_readme_lists_the_default_floats_and_size() {
-        let readme = include_str!("../../README.md");
-        let configure = &readme[readme.find("## Configure").unwrap()..];
+    fn the_docs_list_the_default_floats_and_size() {
+        let keys = include_str!("../../docs/keys.md");
+        let configure = include_str!("../../docs/config.md");
         for f in &Floats::default().list {
             let line = format!("\n{} = {:?}", f.key.name(), f.command);
-            assert!(configure.contains(&line), "README is missing {line:?}");
+            assert!(
+                configure.contains(&line),
+                "docs/config.md is missing {line:?}"
+            );
             let key = format!("`C-a {}` shows {}", f.key.name(), f.command);
-            assert!(readme.contains(&key), "README is missing {key:?}");
+            assert!(keys.contains(&key), "docs/keys.md is missing {key:?}");
         }
         // Its keys in the table of keys after the prefix, after the
         // commands.
         let rows = Keys::defaults(&COMMAND_KEYS).markdown() + &Floats::default().markdown();
-        assert!(readme.contains(&rows), "README is missing:\n{rows}");
+        assert!(keys.contains(&rows), "docs/keys.md is missing:\n{rows}");
         for setting in [WIDTH, HEIGHT] {
             let line = format!("\n{setting} = {DEFAULT_SIZE} ");
-            assert!(configure.contains(&line), "README is missing {line:?}");
+            assert!(
+                configure.contains(&line),
+                "docs/config.md is missing {line:?}"
+            );
         }
     }
 
