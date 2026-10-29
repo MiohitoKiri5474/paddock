@@ -199,3 +199,64 @@ fn a_snapshot_changing_states_moves_no_agent() {
     // The external rows are under the list's fold at this size.
     assert_eq!(dashboard, LABELS, "{}", paddock.screen());
 }
+
+#[test]
+fn agents_across_spaces_and_tabs_stay_put_when_one_starts_waiting() {
+    let sandbox = Sandbox::new();
+    sandbox.set_agents("not json");
+    let mut paddock = sandbox.launch();
+    paddock.wait_for_text(PROMPT);
+    // Three spaces of two tabs each.
+    for first in [false, true, true] {
+        if first {
+            paddock.command(b"C\r");
+            paddock.wait_for_tabs(&["1:home"]);
+            paddock.wait_for_text(PROMPT);
+        }
+        paddock.command(b"c");
+        paddock.wait_for_current_tab("2:home");
+        paddock.wait_for_text(PROMPT);
+    }
+    // Running agents in each space's first tab, finished ones in its second:
+    // urgency would list b, d, f first.
+    let agents = [
+        ("space-1:0", "UserPromptSubmit", "a"),
+        ("space-1:1", "Stop", "b"),
+        ("space-2:0", "UserPromptSubmit", "c"),
+        ("space-2:1", "Stop", "d"),
+        ("space-3:0", "UserPromptSubmit", "e"),
+        ("space-3:1", "Stop", "f"),
+    ];
+    for (terminal, event, label) in agents {
+        hook(&sandbox, terminal, event, label, label);
+    }
+    let labels: Vec<&str> = agents.iter().map(|(_, _, label)| *label).collect();
+    // Each agent's first line: its dot, label and state.
+    let shown = |p: &Paddock| -> Vec<String> {
+        let lines = p.sidebar();
+        let agents = lines.iter().position(|l| l.contains("AGENTS")).unwrap_or(0);
+        lines[agents..]
+            .iter()
+            .filter(|l| l.contains("●"))
+            .filter_map(|l| l.split_whitespace().nth(1).map(str::to_string))
+            .collect()
+    };
+    let states = |p: &Paddock| -> Vec<String> {
+        p.sidebar()
+            .iter()
+            .filter(|l| l.contains("●"))
+            .filter_map(|l| l.split_whitespace().last().map(str::to_string))
+            .collect()
+    };
+    paddock.wait_for("every agent", |_| shown(&paddock).len() == 6);
+    paddock.wait_for("every state", |_| {
+        states(&paddock).iter().filter(|s| *s == "running").count() == 3
+    });
+    assert_eq!(shown(&paddock), labels, "{}", paddock.sidebar().join("\n"));
+
+    hook(&sandbox, "space-2:0", "PermissionRequest", "c", "c");
+    paddock.wait_for("c waiting", |_| {
+        states(&paddock).iter().any(|s| s == "waiting")
+    });
+    assert_eq!(shown(&paddock), labels, "{}", paddock.sidebar().join("\n"));
+}
