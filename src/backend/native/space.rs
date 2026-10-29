@@ -292,6 +292,7 @@ impl Space {
 #[cfg(test)]
 mod tests {
     use super::super::pty::{self, Program, Pty};
+    use super::super::scrollback::ScrollbackName;
     use super::super::terminal::Input;
     use super::*;
 
@@ -311,7 +312,11 @@ mod tests {
         .unwrap();
         let id = TerminalId::new(id);
         let input = Input::start(&id, pty.master.try_clone().unwrap());
-        (HostedTerminal::new(id, &pty, input, size).unwrap(), pty)
+        (
+            HostedTerminal::new(id.clone(), ScrollbackName::new(1, &id), &pty, input, size)
+                .unwrap(),
+            pty,
+        )
     }
 
     /// A space of one tab holding `%1`, at 80x24, with a float on `G`

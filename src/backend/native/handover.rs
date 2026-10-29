@@ -113,6 +113,10 @@ pub struct HandedTerminal {
     pub exited: bool,
     /// The descriptor of its PTY's master side.
     pub master: RawFd,
+    /// The name its scrollback is saved under as the server ends; a
+    /// record without one names it after the instance and the terminal.
+    #[serde(default)]
+    pub scrollback: Option<String>,
     /// How many bytes its snapshot takes, after the header.
     pub snapshot: usize,
 }
@@ -181,6 +185,7 @@ fn handed_space(space: &mut Space, snapshots: &mut Vec<Vec<u8>>) -> HandedSpace 
             size: t.size,
             exited: t.exited,
             master: t.master.as_raw_fd(),
+            scrollback: Some(t.saved_as.as_str().to_string()),
             snapshot: snapshot.len(),
         };
         snapshots.push(snapshot);
@@ -553,6 +558,7 @@ mod tests {
             size: (80, 24),
             exited: false,
             master,
+            scrollback: Some("00000007-2".into()),
             snapshot,
         }
     }
