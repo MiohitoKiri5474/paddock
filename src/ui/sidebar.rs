@@ -121,7 +121,7 @@ pub struct AgentLine {
     /// The space it runs in, dim on its second line; `None` for an
     /// external session.
     pub space: Option<String>,
-    /// Its agent, dim on its second line after the space.
+    /// Its kind, dim on its second line after the space.
     pub kind: AgentKind,
     /// Its pane is the focused terminal of the page shown now.
     pub current: bool,
@@ -331,7 +331,7 @@ impl Sidebar<'_> {
                 // gap, which stays whatever the name (even an empty one).
                 let room = usize::from(at.saturating_sub(x))
                     .checked_sub(STATUS_GAP)
-                    .filter(|&r| !parts.is_empty() && r >= s.name.width().min(NAME_LEAST + 1));
+                    .filter(|&r| !parts.is_empty() && name_fits(&s.name, r));
                 let Some(room) = room else {
                     put(x, &s.name, Style::default());
                     return;
@@ -492,16 +492,20 @@ impl Columns {
     }
 }
 
+/// Whether a space's name shows in `room` cells, whole or cut with `…`
+/// down to its first [`NAME_LEAST`] cells, to make room for what follows
+/// it.
+fn name_fits(name: &str, room: usize) -> bool {
+    room >= name.width().min(NAME_LEAST + 1)
+}
+
 /// An agent's second line in `room` cells: `space  kind`. Short of room
 /// the space is cut with `…` down to its first [`NAME_LEAST`] cells, then
 /// left out; the kind is never cut, only left out when it does not fit.
 fn agent_place(space: Option<&str>, kind: AgentKind, room: usize) -> String {
     let kind = kind.tag();
     let space_room = room.checked_sub(kind.width() + AGENT_GAP);
-    if let Some((space, space_room)) = space
-        .zip(space_room)
-        .filter(|(s, r)| *r >= s.width().min(NAME_LEAST + 1))
-    {
+    if let Some((space, space_room)) = space.zip(space_room).filter(|(s, r)| name_fits(s, *r)) {
         return format!("{}  {kind}", head(space, space_room));
     }
     if kind.width() <= room {
@@ -942,7 +946,7 @@ mod tests {
     }
 
     /// `line` of `kind`.
-    fn of(kind: AgentKind, line: AgentLine) -> AgentLine {
+    fn with_kind(kind: AgentKind, line: AgentLine) -> AgentLine {
         AgentLine { kind, ..line }
     }
 
@@ -950,11 +954,11 @@ mod tests {
     fn four_agents() -> [AgentLine; 4] {
         [
             agent("PR-1434", State::Waiting, "core"),
-            of(
+            with_kind(
                 AgentKind::Gemini,
                 agent("api-server", State::Running, "api"),
             ),
-            of(AgentKind::Agy, agent("paddock", State::Idle, "paddock")),
+            with_kind(AgentKind::Agy, agent("paddock", State::Idle, "paddock")),
             external("web", State::Idle),
         ]
     }
@@ -1045,8 +1049,9 @@ mod tests {
         // A short space is never cut: it goes whole.
         assert_eq!(place("core", 17), "   core  claude");
         assert_eq!(place("core", 16), "   claude");
-        // Wide characters are cut by their cells (here in the room the
-        // line has, as the buffer pads each wide one with a blank cell).
+        // Wide characters are cut by their cells. Called directly with
+        // the room line 2 has (the width less 5): `text` pads each wide
+        // character with a blank cell.
         let wide = |room| agent_place(Some("設計稿審查空間"), AgentKind::Claude, room);
         assert_eq!(wide(22), "設計稿審查空間  claude");
         assert_eq!(wide(21), "設計稿審查空…  claude");

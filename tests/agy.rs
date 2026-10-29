@@ -415,7 +415,7 @@ fn an_external_agy_session_lands_in_the_external_group() {
             lines.get(h + 1..h + 3) == Some(&[" ● repo  running".into(), "   agy".into()])
         })
     });
-    // Its kind is the dashboard's.
+    // The dashboard's row has its kind too.
     paddock.command(b"o");
     paddock.wait_for("the dashboard's row", |s| {
         s.lines()

@@ -412,6 +412,7 @@ fn c_a_s_starts_on_the_focused_agent_even_with_the_sidebar_hidden() {
         paddock.reversed(7, 5) && paddock.reversed(8, 5)
     });
     assert!(!paddock.reversed(5, 5), "not the first agent");
+    assert!(!paddock.reversed(6, 5), "nor its second line");
     assert!(!paddock.reversed(1, 5), "not the top item");
 
     // Prefix commands work in the sidebar: hiding it gives the keyboard back.
@@ -419,9 +420,9 @@ fn c_a_s_starts_on_the_focused_agent_even_with_the_sidebar_hidden() {
     paddock.wait_for("sidebar hidden", |_| paddock.sidebar().is_empty());
     paddock.command(b"s");
     paddock.wait_for("shown, here selected", |_| {
-        !paddock.sidebar().is_empty() && paddock.reversed(7, 5)
+        !paddock.sidebar().is_empty() && paddock.reversed(7, 5) && paddock.reversed(8, 5)
     });
-    assert!(!paddock.reversed(5, 5) && !paddock.reversed(1, 5));
+    assert!(!paddock.reversed(5, 5) && !paddock.reversed(6, 5) && !paddock.reversed(1, 5));
 }
 
 #[test]
