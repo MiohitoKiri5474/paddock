@@ -3,8 +3,10 @@
 //! program's terminal queries (DA and `CSI ? u` through alacritty,
 //! XTVERSION here), and makes the snapshot a client attaches with.
 
+use super::proc;
 use super::pty::{self, Pty};
 use super::queue::Queue;
+use super::scrollback::ScrollbackName;
 use crate::backend::TerminalId;
 use crate::terminal::emulator::Emulator;
 use crate::terminal::key_modes::KeyModeScanner;
@@ -76,6 +78,12 @@ impl Input {
         self.refused()
     }
 
+    /// Whether the program has taken all its input (or its writer has
+    /// ended): nothing queued for it would be lost.
+    pub fn idle(&self) -> bool {
+        self.queue.waiting() == 0 || self.queue.ended()
+    }
+
     /// Refuse an input too big to ever queue, as [`Self::send`] would.
     pub fn refuse(&self) -> Sent {
         if self.queue.ended() {
@@ -125,25 +133,67 @@ pub struct HostedTerminal {
     /// Its program has exited and been reaped: its pid may be another
     /// process's now, so it is never signalled again.
     pub exited: bool,
+    /// Its program has written something: a shell has started.
+    pub spoke: bool,
+    /// The name its scrollback is saved under: its own, or the one it
+    /// was restored from.
+    pub saved_as: ScrollbackName,
     emulator: Emulator,
     keys: KeyModeScanner,
     scanner: Scanner,
 }
 
 impl HostedTerminal {
-    pub fn new(id: TerminalId, pty: &Pty, input: Input, size: (u16, u16)) -> Result<Self> {
-        Ok(Self {
+    /// Terminal `id` on `pty`, its scrollback saved as `saved_as`.
+    pub fn new(
+        id: TerminalId,
+        saved_as: ScrollbackName,
+        pty: &Pty,
+        input: Input,
+        size: (u16, u16),
+    ) -> Result<Self> {
+        let master = pty.master.try_clone()?;
+        let (pid, tty) = (pty.child.id(), pty.tty.clone());
+        Ok(Self::hosting(id, saved_as, pid, tty, master, input, size))
+    }
+
+    /// Terminal `id` with a fresh emulator, its scrollback saved as
+    /// `saved_as`, its program `pid` on the PTY `master` (`tty`): one
+    /// just started, or one another server handed over (ADR 0009), whose
+    /// screen [`Self::replay`] then rebuilds.
+    pub fn hosting(
+        id: TerminalId,
+        saved_as: ScrollbackName,
+        pid: u32,
+        tty: String,
+        master: File,
+        input: Input,
+        size: (u16, u16),
+    ) -> Self {
+        Self {
             id,
-            pid: pty.child.id(),
-            tty: pty.tty.clone(),
-            master: pty.master.try_clone()?,
+            saved_as,
+            pid,
+            tty,
+            master,
             input,
             size,
             exited: false,
+            spoke: false,
             emulator: Emulator::answering(size.0, size.1, SCROLLBACK),
             keys: KeyModeScanner::default(),
             scanner: Scanner::default(),
-        })
+        }
+    }
+
+    /// Rebuild its fresh emulator from `snapshot` ([`Self::snapshot`]'s,
+    /// from the server that handed it over). What the snapshot makes the
+    /// emulator answer is dropped: the program asked nothing.
+    pub fn replay(&mut self, snapshot: &[u8]) {
+        self.keys.feed(snapshot);
+        self.emulator.feed(snapshot);
+        let _ = self.emulator.take_replies();
+        self.scanner.feed(snapshot, self.size.1);
     }
 
     /// Hang up its program and its process group, as closing its
@@ -166,6 +216,7 @@ impl HostedTerminal {
     /// Feed what the program wrote, and send it the answers to the
     /// queries in it.
     pub fn output(&mut self, bytes: &[u8]) {
+        self.spoke = true;
         self.keys.feed(bytes);
         self.emulator.feed(bytes);
         let mut replies = self.emulator.take_replies();
@@ -200,6 +251,19 @@ impl HostedTerminal {
         bytes
     }
 
+    /// Draw `bytes` (a restored terminal's saved scrollback, made safe)
+    /// before anything its program writes; the program is told nothing.
+    pub fn seed(&mut self, bytes: &[u8]) {
+        self.emulator.feed(bytes);
+        let _ = self.emulator.take_replies();
+    }
+
+    /// Its normal screen's text, scrollback first, as it is saved (see
+    /// [`Emulator::history_text`]).
+    pub fn history_text(&mut self) -> Vec<u8> {
+        self.emulator.history_text()
+    }
+
     /// Lines of scrollback above the screen.
     pub fn scrollback(&self) -> usize {
         self.emulator.history_len()
@@ -219,14 +283,14 @@ impl HostedTerminal {
     /// the server's lock): the pids it reads it from, taken now.
     pub fn dir_reader(&self) -> DirReader {
         DirReader {
-            foreground: self.foreground(),
+            foreground: pty::foreground(&self.master),
             shell: i32::try_from(self.pid).ok(),
         }
     }
 
     /// The foreground program's name, as tmux's `pane_current_command`.
     pub fn command(&self) -> Option<String> {
-        pty::name(self.foreground())
+        proc::name(self.foreground())
     }
 
     /// The name of a tab that follows what runs in this terminal, as
@@ -235,7 +299,7 @@ impl HostedTerminal {
     /// say (the shell not started yet).
     pub fn auto_name(&self) -> Option<String> {
         let foreground = self.foreground();
-        let command = pty::name(foreground)?;
+        let command = proc::name(foreground)?;
         // Forked from the server, not yet the shell.
         if command == "paddock" && u32::try_from(foreground).is_ok_and(|p| p == self.pid) {
             return None;
@@ -243,7 +307,7 @@ impl HostedTerminal {
         if !is_shell(&command) {
             return Some(command);
         }
-        pty::cwd(foreground).map(|dir| dir_name(&dir))
+        proc::cwd(foreground).map(|dir| dir_name(&dir))
     }
 }
 
@@ -257,17 +321,28 @@ fn is_shell(command: &str) -> bool {
     matches!(kind, "" | "ba" | "z" | "fi" | "da" | "k" | "tc" | "c")
 }
 
-/// A terminal's directory to read (see [`HostedTerminal::dir_reader`]).
+/// A terminal's directory to read (see [`HostedTerminal::dir_reader`]),
+/// and what runs in its foreground.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DirReader {
-    foreground: i32,
+    /// The foreground process group, if it could be read.
+    foreground: Option<i32>,
     shell: Option<i32>,
 }
 
 impl DirReader {
     /// The foreground program's directory, else the shell's.
     pub fn read(self) -> Option<String> {
-        pty::cwd(self.foreground).or_else(|| pty::cwd(self.shell?))
+        let foreground = self.foreground.and_then(proc::cwd);
+        foreground.or_else(|| proc::cwd(self.shell?))
+    }
+
+    /// The foreground process group and its program's name; `None` when
+    /// either cannot be read (not the shell's, unlike
+    /// [`HostedTerminal::command`]).
+    pub fn program(self) -> Option<(i32, String)> {
+        let group = self.foreground?;
+        Some((group, proc::name(group)?))
     }
 }
 

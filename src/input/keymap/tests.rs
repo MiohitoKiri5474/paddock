@@ -1,5 +1,5 @@
 //! Tests of the key bindings: parsing, sections, configuration errors,
-//! the TOML and the README tables.
+//! the TOML and the key tables in docs/keys.md.
 
 use super::*;
 use crate::terminal::emulator::Motion;
@@ -456,8 +456,8 @@ fn a_default_that_is_the_prefix_is_an_error_outside_copy_mode() {
 }
 
 #[test]
-fn the_readme_lists_the_default_keys() {
-    let readme = include_str!("../../../README.md");
+fn the_keys_page_lists_the_default_keys() {
+    let page = include_str!("../../../docs/keys.md");
     let keymap = Keymap::default();
     for table in [
         keymap.commands.markdown(),
@@ -466,6 +466,6 @@ fn the_readme_lists_the_default_keys() {
         keymap.dashboard.markdown(),
         keymap.copy.markdown(),
     ] {
-        assert!(readme.contains(&table), "README is missing:\n{table}");
+        assert!(page.contains(&table), "docs/keys.md is missing:\n{table}");
     }
 }

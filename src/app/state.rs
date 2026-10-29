@@ -5,6 +5,7 @@
 use super::attention::{Attention, PendingStatus};
 use super::copy::CopyMode;
 use super::dashboard::Dashboard;
+use super::desktop::SayOnce;
 use super::finder::Finder;
 use super::floats::Shown;
 use super::mouse::Press;
@@ -20,14 +21,14 @@ use super::space::Space;
 use super::watch::Place;
 use super::worktrees::{DeleteQuestion, WorktreeList};
 use super::Event;
-use crate::backend::{Backend, SpaceId, Tab, TerminalId};
+use crate::backend::{Backend, Restored, SpaceId, Tab, TerminalId};
 use crate::config::{Config, External, Floats, NewTabDir, Worktrees};
 use crate::git::WorkingTree;
 use crate::hooks::now_ms;
 use crate::input::keymap::Keymap;
 use crate::input::line::LineEdit;
 use crate::input::PrefixKeys;
-use crate::sessions::{dismissed, Session, Sessions, State};
+use crate::sessions::{dismissed, AgentKind, Session, Sessions, State};
 use crate::terminal::Terminal;
 use crate::ui::tab_bar::TabColors;
 use crate::worktree::{space_root, Risks, WorktreeSpace};
@@ -230,6 +231,8 @@ pub struct App {
     pub(super) mode: Mode,
     /// A message for the user, shown in the tab bar until the next key.
     pub(super) notice: Option<String>,
+    /// That a copy tool cannot be run is said once.
+    pub(super) copy_not_run: SayOnce,
     /// Why paddock quits, said once the screen is back; `None` for a
     /// quit that needs no word.
     pub(super) farewell: Option<String>,
@@ -296,6 +299,19 @@ pub struct App {
     /// The current space as last told to a backend that keeps it (see
     /// [`Backend::keeps_current`]).
     pub(super) told_current: Option<SpaceId>,
+    /// The server said it is upgrading (ADR 0009), on some space's
+    /// connection, when the last connection made was this one: a
+    /// connection that ends now is part of the upgrade. One made after it
+    /// is to the new server.
+    pub(super) upgrading: Option<u64>,
+    /// The connections that ended in the upgrade: once every one made
+    /// before it has, the spaces are attached again ([`App::reattach`]).
+    pub(super) upgrade_lost: HashSet<u64>,
+    /// The number the last connection got (see [`Event::Backend`]).
+    pub(super) next_connection: u64,
+    /// The connections replaced by attaching again, until they end: what
+    /// they still report is left out.
+    pub(super) replaced: HashSet<u64>,
 }
 
 /// The part of a screen of `(cols, rows)` that shows the current tab's
@@ -319,6 +335,34 @@ fn set_aside(dir: &std::path::Path, name: &str, e: &anyhow::Error) -> String {
         Ok(()) => format!("{e:#} (kept as {})", bad.display()),
         Err(r) => format!("{e:#} (cannot keep it: {r})"),
     }
+}
+
+/// The one-line notice of what the backend rebuilt: "restored 2 spaces",
+/// with ", resumed 1 session" after it if it resumed any, and ", could
+/// not resume 1 gemini session" for the sessions it left as plain shells
+/// whose ids it could not type, by kind.
+fn restored_notice(restored: &Restored) -> String {
+    let plural = |n: usize| if n == 1 { "" } else { "s" };
+    let spaces = restored.spaces;
+    let mut notice = format!("restored {spaces} space{}", plural(spaces));
+    if let n @ 1.. = restored.sessions {
+        notice.push_str(&format!(", resumed {n} session{}", plural(n)));
+    }
+    let cannot: Vec<String> = AgentKind::ALL
+        .into_iter()
+        .map(|k| {
+            (
+                k,
+                restored.cannot_resume.iter().filter(|c| **c == k).count(),
+            )
+        })
+        .filter(|(_, n)| *n > 0)
+        .map(|(k, n)| format!("{n} {} session{}", k.tag(), plural(n)))
+        .collect();
+    if !cannot.is_empty() {
+        notice.push_str(&format!(", could not resume {}", cannot.join(" and ")));
+    }
+    notice
 }
 
 /// The first `<stem>N` not already taken.
@@ -358,6 +402,7 @@ impl App {
             mode: Mode::Normal,
             // Settings that work but may surprise.
             notice: (!config.warnings.is_empty()).then(|| config.warnings.join("; ")),
+            copy_not_run: SayOnce::default(),
             farewell: None,
             screen,
             start_dir,
@@ -388,6 +433,10 @@ impl App {
             external: config.external,
             new_tab_dir: config.new_tab_dir,
             told_current: None,
+            upgrading: None,
+            upgrade_lost: HashSet::new(),
+            next_connection: 0,
+            replaced: HashSet::new(),
         };
         app.load_dismissed();
         app.open_spaces()?;
@@ -446,13 +495,13 @@ impl App {
         Ok(())
     }
 
-    /// Say how many spaces the backend rebuilt from its saved layout, if
-    /// it just did (ADR 0008).
+    /// Say how many spaces the backend rebuilt from its saved layout, and
+    /// how many agent sessions it resumed, if it just did (ADR 0008).
     fn note_restored(&mut self) {
-        let Some(n) = self.backend.restored() else {
+        let Some(restored) = self.backend.restored() else {
             return;
         };
-        let restored = format!("restored {n} space{}", if n == 1 { "" } else { "s" });
+        let restored = restored_notice(&restored);
         self.notice = Some(match self.notice.take() {
             Some(other) => format!("{restored}; {other}"),
             None => restored,
@@ -539,16 +588,20 @@ impl App {
     pub(super) fn attach(&mut self, id: &SpaceId) -> Result<()> {
         let events = self.events.clone();
         let space = id.clone();
+        self.next_connection += 1;
+        let connection = self.next_connection;
         let deliver = move |event| {
             events
                 .send(Event::Backend {
                     space: space.clone(),
+                    connection,
                     event,
                 })
                 .is_ok()
         };
         let size = (self.area().width, self.area().height);
         let (mut space, terminals) = Space::attach(&self.backend, id, size, deliver)?;
+        space.connection_id = connection;
         self.close_orphan_floats(&mut space.structure);
         self.remember_float_panes(&space.structure);
         // Not the panes of floats just closed.
@@ -716,27 +769,43 @@ mod tests {
     }
 
     #[test]
+    fn the_restored_notice_names_resumed_sessions_only_if_any() {
+        let notice = |spaces, sessions| {
+            restored_notice(&Restored {
+                spaces,
+                sessions,
+                cannot_resume: Vec::new(),
+            })
+        };
+        assert_eq!(notice(1, 0), "restored 1 space");
+        assert_eq!(notice(2, 1), "restored 2 spaces, resumed 1 session");
+        assert_eq!(notice(1, 3), "restored 1 space, resumed 3 sessions");
+    }
+
+    #[test]
+    fn the_restored_notice_names_each_kind_whose_sessions_it_could_not_resume() {
+        use crate::sessions::AgentKind::{Agy, Gemini};
+        let notice = |sessions, cannot_resume| {
+            restored_notice(&Restored {
+                spaces: 1,
+                sessions,
+                cannot_resume,
+            })
+        };
+        assert_eq!(
+            notice(1, vec![Gemini]),
+            "restored 1 space, resumed 1 session, could not resume 1 gemini session"
+        );
+        assert_eq!(
+            notice(0, vec![Agy, Gemini, Agy]),
+            "restored 1 space, could not resume 1 gemini session and 2 agy sessions"
+        );
+    }
+
+    #[test]
     fn new_names_fill_the_first_gap() {
         assert_eq!(next_name("w-", Vec::<&str>::new()), "w-1");
         assert_eq!(next_name("w-", vec!["w-1", "w-3"]), "w-2");
         assert_eq!(next_name("w-", vec!["w-2", "logs"]), "w-1");
-    }
-}
-
-/// Whether `id` looks like a Claude session id (a UUID: hex digits and `-`).
-pub(super) fn is_session_id(id: &str) -> bool {
-    !id.is_empty() && id.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
-}
-
-#[cfg(test)]
-mod session_id_tests {
-    use super::is_session_id;
-
-    #[test]
-    fn only_uuid_shaped_session_ids_are_typed_into_a_shell() {
-        assert!(is_session_id("7f3c2a10-1b2c-4d5e-8f90-0123456789ab"));
-        for bad in ["", "x\r; rm -rf ~", "a b", "abc$(id)", "abc\u{1b}"] {
-            assert!(!is_session_id(bad), "{bad:?}");
-        }
     }
 }

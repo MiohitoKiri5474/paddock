@@ -1,5 +1,5 @@
 //! The native server's PTYs: a shell started on a new one, its size, and
-//! what macOS (`libproc`) says of the program in its foreground.
+//! the program in its foreground (named and placed by [`super::proc`]).
 
 use anyhow::{Context, Result};
 use std::ffi::CStr;
@@ -59,11 +59,14 @@ pub fn spawn(
         .stdin(Stdio::from(slave.try_clone()?))
         .stdout(Stdio::from(slave.try_clone()?))
         .stderr(Stdio::from(slave));
+    // macOS's request is a u32, Linux's already the c_ulong ioctl takes.
+    #[allow(clippy::useless_conversion)]
+    let make_controlling: libc::c_ulong = libc::TIOCSCTTY.into();
     // SAFETY: only async-signal-safe calls between fork and exec.
     unsafe {
-        child.pre_exec(|| {
+        child.pre_exec(move || {
             // A session of its own, with the PTY as its controlling tty.
-            if libc::setsid() < 0 || libc::ioctl(0, libc::TIOCSCTTY.into(), 0) < 0 {
+            if libc::setsid() < 0 || libc::ioctl(0, make_controlling, 0) < 0 {
                 return Err(std::io::Error::last_os_error());
             }
             Ok(())
@@ -92,7 +95,8 @@ fn open((cols, rows): (u16, u16)) -> Result<(OwnedFd, OwnedFd)> {
             &mut slave,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
-            &mut size,
+            // A raw pointer: macOS's openpty takes it mutable, Linux's not.
+            std::ptr::from_mut(&mut size),
         )
     };
     if ok != 0 {
@@ -149,41 +153,9 @@ pub fn foreground(master: &File) -> Option<i32> {
     (group > 0).then_some(group)
 }
 
-/// Process `pid`'s name (its command, as `ps -c` shows it).
-pub fn name(pid: i32) -> Option<String> {
-    let mut buf = [0u8; 256];
-    let size = u32::try_from(buf.len()).ok()?;
-    // SAFETY: proc_name writes at most `size` bytes to the buffer.
-    let n = unsafe { libc::proc_name(pid, buf.as_mut_ptr().cast(), size) };
-    let n = usize::try_from(n).ok().filter(|&n| n > 0)?;
-    Some(String::from_utf8_lossy(&buf[..n]).into_owned())
-}
-
-/// Process `pid`'s current directory.
-pub fn cwd(pid: i32) -> Option<String> {
-    // SAFETY: an all-zero proc_vnodepathinfo is a valid value.
-    let mut info: libc::proc_vnodepathinfo = unsafe { std::mem::zeroed() };
-    let size = i32::try_from(std::mem::size_of::<libc::proc_vnodepathinfo>()).ok()?;
-    // SAFETY: proc_pidinfo writes at most `size` bytes to `info`.
-    let n = unsafe {
-        libc::proc_pidinfo(
-            pid,
-            libc::PROC_PIDVNODEPATHINFO,
-            0,
-            std::ptr::from_mut(&mut info).cast(),
-            size,
-        )
-    };
-    if n != size {
-        return None;
-    }
-    // SAFETY: the kernel writes the path NUL-terminated within the array.
-    let path = unsafe { CStr::from_ptr(info.pvi_cdir.vip_path.as_ptr().cast()) };
-    Some(path.to_string_lossy().into_owned()).filter(|p| !p.is_empty())
-}
-
 #[cfg(test)]
 mod tests {
+    use super::super::proc;
     use super::*;
     use std::io::Read;
 
@@ -200,7 +172,12 @@ mod tests {
             &env,
         )
         .unwrap();
-        assert!(pty.tty.starts_with("/dev/ttys"), "{}", pty.tty);
+        // macOS names a PTY /dev/ttysNNN, Linux /dev/pts/N.
+        assert!(
+            pty.tty.starts_with("/dev/ttys") || pty.tty.starts_with("/dev/pts/"),
+            "{}",
+            pty.tty
+        );
         let pid = i32::try_from(pty.child.id()).unwrap();
         // The shell leads its own session, in the PTY's foreground.
         let start = std::time::Instant::now();
@@ -208,9 +185,9 @@ mod tests {
             assert!(start.elapsed().as_secs() < 5, "never in the foreground");
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        assert_eq!(name(pid).as_deref(), Some("sh"));
+        assert_eq!(proc::name(pid).as_deref(), Some("sh"));
         let real = std::fs::canonicalize(dir.path()).unwrap();
-        assert_eq!(cwd(pid), Some(real.to_string_lossy().into_owned()));
+        assert_eq!(proc::cwd(pid), Some(real.to_string_lossy().into_owned()));
         resize(&pty.master, (50, 12)).unwrap();
         use std::io::Write;
         pty.master

@@ -5,7 +5,6 @@
 //! with the output that came meanwhile.
 
 use super::input::Flow;
-use super::mouse::copy as to_clipboard;
 use super::state::{App, Mode};
 use crate::backend::TerminalId;
 use crate::input::keymap::CopyAction;
@@ -223,7 +222,7 @@ impl App {
                 let text = emu.selected_text();
                 self.leave_copy(&copy);
                 if let Some(text) = text {
-                    self.report(|_| to_clipboard(&text));
+                    self.copy_to_clipboard(&text);
                 }
                 return Flow::Continue;
             }

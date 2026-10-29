@@ -6,9 +6,9 @@
 mod harness;
 
 use harness::backend::{alive, server_pid, stop_server, NATIVE};
+use harness::older_server::{fake_older_server, fake_server_ending_at_upgrade};
 use harness::{Paddock, Sandbox, PROMPT};
-use std::io::{Read, Write};
-use std::os::unix::net::UnixListener;
+use std::io::Write;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -146,28 +146,6 @@ fn a_server_ended_with_its_last_shell_leaves_nothing_to_restore() {
     assert_eq!(sandbox.space_names(), ["space-1"]);
 }
 
-/// Listen as an older server would: it answers every hello with its
-/// own, version 999 and pid `pid`.
-fn fake_older_server(sandbox: &Sandbox, pid: u32) {
-    let listener = UnixListener::bind(sandbox.state_dir().join("server.sock")).unwrap();
-    std::thread::spawn(move || {
-        for stream in listener.incoming() {
-            let Ok(mut stream) = stream else { return };
-            let mut len = [0; 4];
-            if stream.read_exact(&mut len).is_err() {
-                continue;
-            }
-            let mut body = vec![0; u32::from_be_bytes(len) as usize];
-            let _ = stream.read_exact(&mut body);
-            let hello = format!(r#"{{"Hello":{{"version":999,"pid":{pid}}}}}"#);
-            let len = u32::try_from(hello.len() + 1).unwrap().to_be_bytes();
-            let _ = stream.write_all(&len);
-            let _ = stream.write_all(&[0]);
-            let _ = stream.write_all(hello.as_bytes());
-        }
-    });
-}
-
 /// A process holding the server lock, as an older server would: a
 /// `sleep` whose pid the lock names, the lock let go once it ends.
 fn lock_holder(sandbox: &Sandbox) -> u32 {
@@ -219,11 +197,38 @@ fn restarting_a_server_of_another_version_restores_its_layout() {
     fake_older_server(&sandbox, 4242);
 
     let mut again = sandbox.launch();
+    again.wait_for_text("Upgrade it?");
+    again.type_line("y");
     again.wait_for_text("Restart it?");
     assert!(again.screen().contains("speaks protocol version 999"));
     again.type_line("y");
 
     again.wait_for_text("restored 1 space");
+    assert_eq!(shape(&sandbox, "", ""), before);
+    assert_eq!(
+        sandbox.terminal("space-1:0.1").dir.as_deref(),
+        Some(real(&dir).as_str())
+    );
+    assert!(server_pid(&sandbox.state_dir()).is_some_and(alive));
+}
+
+/// An upgrade that fails once the server switched (ticket 51): its
+/// programs ended with it, so no restart is offered, and the next server
+/// restores the layout it saved.
+#[test]
+fn an_upgrade_failing_after_the_switch_restores_the_layout() {
+    let sandbox = native();
+    let dir = sandbox.path("home/proj");
+    let before = left_by_an_older_server(&sandbox, &dir);
+    fake_server_ending_at_upgrade(&sandbox);
+
+    let mut again = sandbox.launch();
+    again.wait_for_text("Upgrade it?");
+    again.type_line("y");
+
+    again.wait_for_text("its programs ended");
+    again.wait_for_text("restored 1 space");
+    assert!(!again.full_screen().contains("Restart it?"));
     assert_eq!(shape(&sandbox, "", ""), before);
     assert_eq!(
         sandbox.terminal("space-1:0.1").dir.as_deref(),
@@ -241,6 +246,8 @@ fn restarting_ends_the_server_holding_the_lock() {
     fake_older_server(&sandbox, older);
 
     let mut again = sandbox.launch();
+    again.wait_for_text("Upgrade it?");
+    again.type_line("y");
     again.wait_for_text("Restart it?");
     again.type_line("y");
 
@@ -259,6 +266,8 @@ fn restarting_signals_nothing_when_the_lock_names_another_pid() {
     fake_older_server(&sandbox, 4242);
 
     let mut again = sandbox.launch();
+    again.wait_for_text("Upgrade it?");
+    again.type_line("y");
     again.wait_for_text("Restart it?");
     again.type_line("y");
 
@@ -284,18 +293,21 @@ fn agents_shown(paddock: &Paddock) -> usize {
 }
 
 /// A server killed outright saves nothing as it ends: the next one
-/// rebuilds what it last wrote, and the agent that ran is not listed.
+/// rebuilds what it last wrote, with the agent that ran resumed in its
+/// terminal (ticket 48), and the old server's events are not listed.
 #[test]
-fn a_killed_server_restores_from_its_last_save_and_its_agents_end() {
+fn a_killed_server_restores_from_its_last_save_and_resumes_its_agent() {
     let sandbox = native();
     let dir = sandbox.path("home/proj");
     std::fs::create_dir_all(&dir).unwrap();
     let mut paddock = ready(&sandbox);
     split_in(&mut paddock, &sandbox, &dir);
     let payload = std::fs::read_to_string(PROMPT_SUBMIT).unwrap();
+    let session = "11111111-2222-4333-8444-555555555555";
     sandbox.hook("space-1:0.1", "UserPromptSubmit", &payload);
     paddock.wait_for("the agent", |_| agents_shown(&paddock) == 1);
     wait_for_saved(&sandbox, 1, "/proj\"");
+    wait_for_saved(&sandbox, 1, session);
     let before = shape(&sandbox, "", "");
     let pid = server_pid(&sandbox.state_dir()).expect("a server");
 
@@ -310,11 +322,12 @@ fn a_killed_server_restores_from_its_last_save_and_its_agents_end() {
     drop(paddock);
     let again = sandbox.launch();
 
-    again.wait_for_text("restored 1 space");
+    again.wait_for_text("restored 1 space, resumed 1 session");
     assert_eq!(shape(&sandbox, "", ""), before);
+    let resumed = format!("{} --resume {session}", real(&dir));
+    assert_eq!(sandbox.claude_calls(), [resumed]);
     // A new session's event shows once the new server's log is read:
     // the old one's would have shown by then, but is not in it.
-    let session = "11111111-2222-4333-8444-555555555555";
     let new = payload.replace(session, "22222222-2222-4333-8444-555555555555");
     sandbox.hook("space-1:0.0", "UserPromptSubmit", &new);
     again.wait_for("the new agent", |_| agents_shown(&again) > 0);

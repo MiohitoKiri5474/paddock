@@ -36,6 +36,14 @@ _Avoid_: tmux session
 paddock's own background process (`paddock server`) that holds every terminal and the layout while the app is closed: the default backend. The app is its client.
 _Avoid_: daemon (in user-facing text), hidden server (that is tmux's)
 
+**Upgrade**:
+Moving the running server onto a new paddock binary with its programs still running (`paddock server upgrade`, or yes when a new paddock finds a server of another protocol version): the server hands over its terminals and becomes the new binary, keeping its pid. Unlike a restart, which ends every program and brings back only the layout.
+_Avoid_: update, reload, migration (that is tmux's terminals not moving to the server)
+
+**Handover**:
+What the server gives the new binary in an upgrade: every space, tab, float and terminal with its PTY, program and screen, as a record with its own format version, apart from the protocol's.
+_Avoid_: snapshot (that is one terminal's screen), transfer
+
 **Backend**:
 What hosts the terminals (`[backend] kind`): paddock's own server (the native backend, the default), or the hidden tmux server (the legacy tmux backend, until v0.2). Terminals never move from one to the other: an older paddock's tmux server keeps its own until closed.
 _Avoid_: engine, runtime
@@ -80,7 +88,7 @@ _Avoid_: agent type, provider, model
 
 **Status report**:
 An agent's report of its state (working, waiting on you, done, failed, idle) that it writes to its terminal's output (OSC 7501), read by paddock from that output. Only Antigravity CLI's count, and only in paddock's terminals; they are how its waits show.
-_Avoid_: status line, notification (that is macOS's)
+_Avoid_: status line, notification (that is the desktop's)
 
 **Ended**:
 A session whose terminal was closed or whose agent quit (agy: its terminal is back at the shell). It leaves the dashboard and the sidebar; a new agent in the same terminal is a new session. `/clear` (Claude's or Gemini's) does not end it.

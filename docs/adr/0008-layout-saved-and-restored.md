@@ -7,10 +7,15 @@ When a server starts and finds that file, it rebuilds the layout without asking.
 ## Considered options
 
 - **Nothing after a restart, as with tmux**: simplest, but an upgrade restart would cost the whole layout.
-- **Also resume agents (`claude --resume <id>`, and Gemini or agy where they can) and restore scrollback**: planned next, on top of this file.
+- **Also resume agents (`claude --resume <id>`, and Gemini or agy where they can) and restore scrollback**: built on top of this file since. Scrollback came in ticket 47, resuming Claude sessions in ticket 48, and resuming Gemini and agy sessions in ticket 49 (all below).
 
 ## Consequences
 
 - `layout.json` replaces the layout tmux held and the current space kept in `layout.toml`; only the sidebar width stays there.
 - Programs other than shells are not restarted, so an editor or a server left running in a terminal has to be started again.
 - Servers from before this file wrote none, so the first upgrade to a paddock that reads it restores nothing.
+- Since ticket 48 the file also keeps the agent session last seen in each terminal. A Claude Code session whose conversation is not over (it did not quit, nor was it cleared) is resumed (`claude --resume <id>` typed into the new shell) rather than coming back as a plain shell. Since ticket 49 Gemini CLI sessions (`gemini --resume <id>`) and Antigravity CLI sessions (`agy --conversation <id>`) are resumed the same way. agy reports no end, so its session is over once its terminal is seen back at a shell, until agy is seen again. A session not over whose id paddock will not type into a shell (not a UUID) comes back as a plain shell, and the notice names it by kind.
+
+## Scrollback (ticket 47)
+
+The scrollback half of the option above is no longer planned: it is done. As the server ends, it saves each terminal's scrollback beside this file, one file per terminal in `scrollback/`, named by a scrollback name that `layout.json` keeps with the terminal. Each file holds the terminal's text with its colours, at most its newest 1 MiB. A restored terminal shows it above its fresh shell, under a dim line saying when it was saved. A server killed outright saves none, so its terminals show what the last clean end saved. Files no terminal of the layout names are removed whenever the layout is written.
