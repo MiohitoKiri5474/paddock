@@ -184,7 +184,7 @@ A task is a branch ([ADR 0004](adr/0004-task-is-a-branch.md)), and, after herdr,
 - **v0.1**: paddock's own server is the backend (ADR 0007, tickets 40-45), with its layout saved and restored (ADR 0008); the tmux backend stays behind `[backend] kind = "tmux"` until v0.2.
 - **v1**: hidden tmux server, control-mode rendering with own scrollback, single instance, layout kept in tmux; spaces (tmux sessions) and agents in the sidebar, tabs, minimal splits (split, close, move focus, even out), prefix keys, mouse (click, wheel, drag to copy); hooks, states, highlights, notifications; dashboard with the task tree including subagents, git fields, dismiss, live and interactive preview; close and fork.
 - **v1.2**: a root directory per space (done: see Space root), scrollback search and keyboard copy mode (done: see Copy mode), external sessions group, resizing splits by key and by dragging their border (done: see Splits).
-- **Later**: checking against the real Gemini CLI and agy that their sessions resume (built from their docs in ticket 49, see *Native layout*), checking on a real reboot that agent sessions come back (an end Claude logs more than 2 s before the server's signal still counts; see *Native layout*), a Gemini extension carrying the hooks, Linux notifications and clipboard. (The PR column is done: see Pull requests.)
+- **Later**: checking against the real Gemini CLI and agy that their sessions resume (built from their docs in ticket 49, see *Native layout*), checking on a real reboot that agent sessions come back (an end Claude logs more than 2 s before the server's signal still counts; see *Native layout*), and a Gemini extension carrying the hooks. (The PR column is done: see Pull requests.)
 
 ## Build order
 
