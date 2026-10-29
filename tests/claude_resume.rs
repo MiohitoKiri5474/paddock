@@ -346,8 +346,58 @@ fn a_live_session_survives_a_server_upgrade_and_is_still_resumed_after_a_restart
     let mut again = restart(&sandbox, paddock);
     again.wait_for_text("resumed 1 session");
     // The server types the resume once the shell has drawn its prompt,
-    // after the notice: a line typed before it runs would be mixed into it.
+    // after the notice; a line typed before then is held until after it.
     wait_for_claude_run(&sandbox);
     mark(&mut again);
     assert_eq!(sandbox.claude_calls(), [format!("{real} --resume {LIVE}")]);
+}
+
+/// Ticket 59: keys typed into a restored terminal before its resume
+/// command is typed are held and come after it, so the command runs
+/// whole and the keys are kept. The restored shells wait in their rc,
+/// silent, until a gate file goes, so the keys surely come first.
+#[test]
+fn keys_typed_before_the_resume_come_after_it_and_are_kept() {
+    let sandbox = native();
+    let dir = sandbox.path("home/proj");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut paddock = ready(&sandbox);
+    two_sessions(&mut paddock, &sandbox, &dir);
+    let gate = sandbox.path("gate");
+    std::fs::write(&gate, "").unwrap();
+    let rc = sandbox.path("home/.zshrc");
+    let mut text = std::fs::read_to_string(&rc).unwrap();
+    text.push_str(&format!(
+        "while [ -e '{}' ]; do sleep 0.05; done\n",
+        gate.display()
+    ));
+    std::fs::write(&rc, text).unwrap();
+
+    let mut again = restart(&sandbox, paddock);
+
+    again.wait_for_text("resumed 1 session");
+    again.wait_for("the focus on the resumed split", |_| {
+        sandbox.terminal("space-1:0.1").focused
+    });
+    // Half a line, no Enter, as the ticket saw (`eclaude --resume …`).
+    again.send(b"echo EARLY''-KEYS");
+    // paddock sends the keys before it asks to move the focus: once the
+    // focus has moved, the keys are on their way to the server (and the
+    // gated shell takes more than a poll to speak after the gate goes).
+    again.command(b"h");
+    again.wait_for("the focus on the first split", |_| {
+        sandbox.terminal("space-1:0.0").focused
+    });
+    std::fs::remove_file(&gate).unwrap();
+
+    assert_eq!(
+        sandbox.claude_calls(),
+        [format!("{} --resume {LIVE}", real(&dir))]
+    );
+    again.command(b"l");
+    again.wait_for("the focus back on the resumed split", |_| {
+        sandbox.terminal("space-1:0.1").focused
+    });
+    again.send(b"\r");
+    again.wait_for_text("EARLY-KEYS");
 }

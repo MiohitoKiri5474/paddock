@@ -15,6 +15,7 @@ use anyhow::Result;
 use std::fs::File;
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 
 /// How the server names itself to XTVERSION.
 const NAME: &str = concat!("paddock ", env!("CARGO_PKG_VERSION"));
@@ -31,6 +32,16 @@ pub struct Input {
     /// Input is being refused: from the first refusal until the program
     /// has taken all that waited (an episode).
     refusing: AtomicBool,
+    /// Bytes due before any input, and the input held behind them until
+    /// they go ([`Self::hold_behind`]); `None` when nothing is held.
+    hold: Mutex<Option<Hold>>,
+}
+
+/// Input held behind bytes that must reach the program first: a restored
+/// terminal's resume command (ticket 59).
+struct Hold {
+    first: Vec<u8>,
+    held: Vec<u8>,
 }
 
 /// What became of an input.
@@ -60,14 +71,48 @@ impl Input {
         Self {
             queue,
             refusing: AtomicBool::new(false),
+            hold: Mutex::new(None),
         }
     }
 
+    /// Hold every input from now on until [`Self::release`], which sends
+    /// `first` and then what was held, in order. Replies to the program's
+    /// queries are never held.
+    pub fn hold_behind(&self, first: Vec<u8>) {
+        *self.hold() = Some(Hold {
+            first,
+            held: Vec::new(),
+        });
+    }
+
+    /// Queue the bytes held behind ([`Self::hold_behind`]), and stop
+    /// holding; nothing if nothing is held.
+    pub fn release(&self) {
+        let Some(Hold { mut first, held }) = self.hold().take() else {
+            return;
+        };
+        first.extend_from_slice(&held);
+        let _ = self.queue.push(first);
+    }
+
+    fn hold(&self) -> std::sync::MutexGuard<'_, Option<Hold>> {
+        self.hold.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// Queue one whole input (a key, a paste), unless it would take what
-    /// waits for the program past [`INPUT_MAX`].
+    /// waits for the program past [`INPUT_MAX`]; held instead while
+    /// [`Self::hold_behind`] holds, under the same cap.
     pub fn send(&self, bytes: Vec<u8>) -> Sent {
         if self.queue.ended() {
             return Sent::Ended;
+        }
+        let mut hold = self.hold();
+        if let Some(h) = hold.as_mut() {
+            if !self.fits(h.first.len() + h.held.len() + bytes.len()) {
+                return self.refused();
+            }
+            h.held.extend_from_slice(&bytes);
+            return Sent::Queued;
         }
         if self.fits(bytes.len()) {
             if self.queue.push(bytes).is_some() {
@@ -79,9 +124,9 @@ impl Input {
     }
 
     /// Whether the program has taken all its input (or its writer has
-    /// ended): nothing queued for it would be lost.
+    /// ended): nothing queued or held for it would be lost.
     pub fn idle(&self) -> bool {
-        self.queue.waiting() == 0 || self.queue.ended()
+        (self.queue.waiting() == 0 && self.hold().is_none()) || self.queue.ended()
     }
 
     /// Refuse an input too big to ever queue, as [`Self::send`] would.
@@ -488,6 +533,42 @@ mod tests {
             input.send(vec![b'k'; 1 << 20]),
             Sent::Refused { first: true }
         );
+    }
+
+    #[test]
+    fn input_held_behind_a_command_comes_after_it_and_replies_are_not_held() {
+        use std::io::Read;
+        let (input, read) = unread_input();
+        let mut read = File::from(read);
+        input.hold_behind(b"claude --resume x\r".to_vec());
+        assert_eq!(input.send(b"e".to_vec()), Sent::Queued);
+        assert_eq!(input.send(b"cho hi".to_vec()), Sent::Queued);
+        assert!(!input.idle(), "held input waits");
+        input.reply(b"R".to_vec());
+        let mut reply = [0; 1];
+        read.read_exact(&mut reply).unwrap();
+        assert_eq!(&reply, b"R", "the reply goes at once, alone");
+
+        input.release();
+
+        let want = b"claude --resume x\recho hi";
+        let mut got = vec![0; want.len()];
+        read.read_exact(&mut got).unwrap();
+        assert_eq!(got, want);
+        // Released once: input goes straight on after.
+        input.release();
+        assert_eq!(input.send(b"!".to_vec()), Sent::Queued);
+        let mut next = [0; 1];
+        read.read_exact(&mut next).unwrap();
+        assert_eq!(&next, b"!");
+    }
+
+    #[test]
+    fn held_input_is_refused_past_the_cap() {
+        let (input, _read) = unread_input();
+        input.hold_behind(b"cmd\r".to_vec());
+        assert_eq!(input.send(vec![b'x'; INPUT_MAX - 10]), Sent::Queued);
+        assert_eq!(input.send(vec![b'k'; 20]), Sent::Refused { first: true });
     }
 
     #[test]

@@ -150,6 +150,13 @@ pub fn serve() -> Result<()> {
         for r in &resumed {
             seen.seed(r.terminal.clone(), r.agent.clone());
         }
+        // Before any client can type: keys typed before the resume is
+        // typed come after it, not inside it (ticket 59).
+        for (_, t) in state.terminals() {
+            if let Some(r) = resumed.iter().find(|r| r.terminal == t.id) {
+                t.input.hold_behind(format!("{}\r", r.command).into_bytes());
+            }
+        }
     }
     if !resumed.is_empty() {
         let typing = Arc::clone(&shared);
@@ -449,7 +456,8 @@ fn save_layout(shared: &Shared) {
 /// Type each resume command into its restored terminal once the shell
 /// there has written something (its rc files have run, so it reads the
 /// line, not something they ask), or after [`RESUME_WAIT`] if it stays
-/// silent; drop one whose terminal has closed.
+/// silent, followed by the keys typed there meanwhile, which were held
+/// behind it ([`Input::hold_behind`]); drop one whose terminal has closed.
 fn type_resumes(shared: &Shared, mut pending: Vec<Resume>) {
     let started = Instant::now();
     while !pending.is_empty() {
@@ -464,7 +472,7 @@ fn type_resumes(shared: &Shared, mut pending: Vec<Resume>) {
             if !ready_to_type(t.spoke, waited) {
                 return true;
             }
-            t.input.send(format!("{}\r", r.command).into_bytes());
+            t.input.release();
             false
         });
     }
@@ -655,6 +663,11 @@ fn freeze(shared: &Shared) -> Result<MutexGuard<'_, State>> {
         let state = shared.lock();
         if state.closing {
             return Err(Ending.into());
+        }
+        // A resume not typed yet would go with this process, and the keys
+        // held behind it: typed now, early (ticket 59).
+        for (_, t) in state.terminals() {
+            t.input.release();
         }
         let busy = state.terminals().find(|(_, t)| !t.input.idle());
         let Some((_, term)) = busy else {
