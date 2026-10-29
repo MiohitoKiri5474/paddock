@@ -309,26 +309,28 @@ fn a_launch_right_after_the_last_shell_exits_gets_a_new_server() {
     last.wait_for_text("still-fine\n");
 }
 
-/// Listen as an older server would: it reads paddock's hello and
-/// answers with its own, version 999 and pid 4242.
+/// Listen as an older server would: it sends its hello, version 999
+/// and pid 4242, and closes at an upgrade it does not know.
 fn fake_older_server(sandbox: &Sandbox) {
     std::fs::create_dir_all(sandbox.state_dir()).unwrap();
     let listener = UnixListener::bind(sandbox.state_dir().join("server.sock")).unwrap();
-    // An older server: it reads paddock's hello and answers with its own.
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { return };
+            // Its hello first, as every server sends it; then it reads one
+            // frame and closes, as a server from before upgrades does at an
+            // upgrade frame it does not know.
+            let hello = br#"{"Hello":{"version":999,"pid":4242}}"#;
+            let len = u32::try_from(hello.len() + 1).unwrap().to_be_bytes();
+            let _ = stream.write_all(&len);
+            let _ = stream.write_all(&[0]);
+            let _ = stream.write_all(hello);
             let mut len = [0; 4];
             if stream.read_exact(&mut len).is_err() {
                 continue;
             }
             let mut body = vec![0; u32::from_be_bytes(len) as usize];
             let _ = stream.read_exact(&mut body);
-            let hello = br#"{"Hello":{"version":999,"pid":4242}}"#;
-            let len = u32::try_from(hello.len() + 1).unwrap().to_be_bytes();
-            let _ = stream.write_all(&len);
-            let _ = stream.write_all(&[0]);
-            let _ = stream.write_all(hello);
         }
     });
 }
@@ -346,7 +348,7 @@ fn a_server_speaking_another_protocol_version_is_a_clear_error() {
         "{}",
         paddock.screen()
     );
-    paddock.wait_for_text("Restart it?");
+    paddock.wait_for_text("Upgrade it? Its programs keep running. [Y/n]");
     paddock.type_line("n");
     assert!(!paddock.wait_exit(), "declining fails");
     assert!(

@@ -94,7 +94,12 @@ A real handover between two protocol versions, or two record formats, needs two 
 
 ## Consequences
 
-- `paddock server upgrade [<binary>]` hands the running server to the binary it is run as, or to `<binary>`. Ticket 51's prompt calls the same thing (`Backend::upgrade`).
+- `paddock server upgrade [<binary>]` hands the running server to the binary it is run as, or to `<binary>`.
+- A new paddock that finds a server of another protocol version offers the same upgrade, to its own binary ("Upgrade it? Its programs keep running. [Y/n]"; ticket 51, `Backend::upgrade_other`), and then opens on it. It tells how the upgrade went by what answers afterwards, not by the answer alone, because a `Refused` after `Probed` can come from a failed `exec` (the old server serves on) or from the new image (it has ended):
+  - The server answers at this paddock's version: the upgrade is done, even if `Done` was lost.
+  - The server still answers at the other version: it did not hand over (from before this ADR, a refusal, or no answer). paddock says why and offers the restart of [ADR 0007](0007-native-backend-with-a-server.md) as before.
+  - Nothing answers: it failed after the switch, and its programs have ended. paddock says so and offers no restart, as nothing runs to restart. It waits for the lock to go and starts a new server, which rebuilds `layout.json` as after a restart.
+  - Saying no to either prompt stops paddock, as before.
 - An attached paddock attaches again by itself and keeps its place. `Notice::Upgrading` is a new message, so the protocol is version 2.
 - What a snapshot does not carry is lost at the switch, as on reattach: charsets, the title and hyperlinks.
 - A signal that comes between `exec` and the new image's handlers takes the default action: SIGTERM ends the server without hanging its shells up in order.

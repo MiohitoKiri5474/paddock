@@ -70,8 +70,8 @@ fn no_old_tmux_server_no_notice() {
     assert!(!screen.contains(NOTICE), "{screen}");
 }
 
-/// Listen as a native server of another protocol version would: it reads
-/// paddock's hello and answers with its own, version 999 (as
+/// Listen as a native server of another protocol version would: it sends
+/// its hello, version 999, and reads one frame (as
 /// `tests/native_server.rs` does).
 fn fake_older_server(sandbox: &Sandbox) {
     std::fs::create_dir_all(sandbox.state_dir()).unwrap();
@@ -79,17 +79,20 @@ fn fake_older_server(sandbox: &Sandbox) {
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { return };
+            // Its hello first, as every server sends it; then it reads one
+            // frame and closes, as a server from before upgrades does at an
+            // upgrade frame it does not know.
+            let hello = br#"{"Hello":{"version":999,"pid":4242}}"#;
+            let len = u32::try_from(hello.len() + 1).unwrap().to_be_bytes();
+            let _ = stream.write_all(&len);
+            let _ = stream.write_all(&[0]);
+            let _ = stream.write_all(hello);
             let mut len = [0; 4];
             if stream.read_exact(&mut len).is_err() {
                 continue;
             }
             let mut body = vec![0; u32::from_be_bytes(len) as usize];
             let _ = stream.read_exact(&mut body);
-            let hello = br#"{"Hello":{"version":999,"pid":4242}}"#;
-            let len = u32::try_from(hello.len() + 1).unwrap().to_be_bytes();
-            let _ = stream.write_all(&len);
-            let _ = stream.write_all(&[0]);
-            let _ = stream.write_all(hello);
         }
     });
 }
@@ -101,9 +104,9 @@ fn a_start_that_fails_after_finding_the_old_server_still_says_so() {
     sandbox.start_old_tmux_server();
     fake_older_server(&sandbox);
 
-    // Declining the restart stops paddock before it draws anything.
+    // Declining the upgrade stops paddock before it draws anything.
     let mut paddock = sandbox.launch();
-    paddock.wait_for_text("Restart it?");
+    paddock.wait_for_text("Upgrade it?");
     paddock.type_line("n");
     assert!(!paddock.wait_exit(), "declining fails");
     wait_printed(&paddock);

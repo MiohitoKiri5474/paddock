@@ -42,7 +42,7 @@ mod state;
 mod tab;
 mod terminal;
 
-pub use client::{Attached, Client, NoHandover};
+pub use client::{Attached, Client, NoHandover, Upgraded};
 pub use handover::check as check_handover;
 pub use protocol::OtherVersion;
 pub use server::{serve, take_over};

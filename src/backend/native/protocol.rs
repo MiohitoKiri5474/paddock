@@ -401,7 +401,8 @@ fn take_id(body: &[u8]) -> Result<(TerminalId, &[u8])> {
 }
 
 /// The running server speaks another protocol version: its pid and
-/// version, as its hello tells. paddock offers to restart it.
+/// version, as its hello tells. paddock offers to upgrade it, or to
+/// restart it if it cannot hand over.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OtherVersion {
     pub pid: u32,

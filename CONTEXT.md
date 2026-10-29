@@ -37,7 +37,7 @@ paddock's own background process (`paddock server`) that holds every terminal an
 _Avoid_: daemon (in user-facing text), hidden server (that is tmux's)
 
 **Upgrade**:
-Moving the running server onto a new paddock binary with its programs still running (`paddock server upgrade`): the server hands over its terminals and becomes the new binary, keeping its pid. Unlike a restart, which ends every program and brings back only the layout.
+Moving the running server onto a new paddock binary with its programs still running (`paddock server upgrade`, or yes when a new paddock finds a server of another protocol version): the server hands over its terminals and becomes the new binary, keeping its pid. Unlike a restart, which ends every program and brings back only the layout.
 _Avoid_: update, reload, migration (that is tmux's terminals not moving to the server)
 
 **Handover**:

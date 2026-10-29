@@ -96,7 +96,10 @@ pub fn run() -> Result<()> {
 fn run_claimed(paths: Paths, config: &Config, notice: Option<String>) -> Result<()> {
     let state_dir = paths.state_dir.clone();
     let backend = Backend::new(paths, config.backend);
-    prepare(&backend)?;
+    let notice = match (notice, prepare(&backend)?) {
+        (Some(old), Some(upgraded)) => Some(format!("{upgraded}; {old}")),
+        (old, upgraded) => upgraded.or(old),
+    };
     let start_dir = std::env::current_dir().context("no current directory")?;
 
     let (tx, rx) = mpsc::channel();
@@ -162,34 +165,75 @@ fn run_claimed(paths: Paths, config: &Config, notice: Option<String>) -> Result<
 
 /// Get the backend ready ([`Backend::prepare`]) and bring back a saved
 /// layout ([`Backend::resume`]). A server that speaks another protocol
-/// version is said so, with an offer to restart it (ADR 0007): on yes it
-/// ends, programs and all, and a new one rebuilds its layout; on no, or
-/// with no terminal to ask on, paddock stops with the same words.
-fn prepare(backend: &Backend) -> Result<()> {
+/// version is said so, with an offer to upgrade it in place to this
+/// paddock (ADR 0009); on no, or with no terminal to ask on, paddock
+/// stops with the same words. See [`upgrade`] for how it goes. A notice
+/// for the tab bar of how an upgrade went, if one ran.
+fn prepare(backend: &Backend) -> Result<Option<String>> {
+    let mut notice = None;
     if let Err(e) = backend.prepare() {
         let Some(other) = e.downcast_ref::<OtherVersion>() else {
             return Err(e);
         };
-        if !ask_to_restart(other)? {
+        let question = format!(
+            "paddock: {}.\nUpgrade it? Its programs keep running. [Y/n] ",
+            other.mismatch()
+        );
+        if !ask(&question, true)? {
             return Err(e);
         }
-        backend.restart(other)?;
+        notice = upgrade(backend, other)?;
         backend.prepare()?;
     }
-    backend.resume()
+    backend.resume()?;
+    Ok(notice)
 }
 
-fn ask_to_restart(other: &OtherVersion) -> Result<bool> {
+/// Upgrade the server `other` to this paddock's own binary: a notice of
+/// how it went, if any. A server that cannot hand over runs on as it
+/// was: paddock says why and offers to restart it (ADR 0007), which ends
+/// it, programs and all, so a new one rebuilds its layout; declined,
+/// paddock stops with `other`. One that failed after it switched has
+/// ended with its programs: paddock says so, and goes on as after a
+/// restart.
+fn upgrade(backend: &Backend, other: &OtherVersion) -> Result<Option<String>> {
+    let exe = std::env::current_exe().context("cannot find paddock's own binary")?;
+    match backend.upgrade_other(other, &exe)? {
+        backend::Upgraded::Done => Ok(Some(event_loop::UPGRADED.to_string())),
+        backend::Upgraded::Unchanged(why) => {
+            println!("paddock: it cannot be upgraded: {why:#}");
+            let question = "Restart it? Its programs end; its layout comes back. [y/N] ";
+            if !ask(question, false)? {
+                return Err((*other).into());
+            }
+            backend.restart(other)?;
+            Ok(None)
+        }
+        backend::Upgraded::Ended(why) => {
+            eprintln!(
+                "paddock: the upgrade failed after the server switched to this paddock, so \
+                 its programs have ended; its layout comes back: {why:#}"
+            );
+            Ok(Some(
+                "paddock server upgrade failed: its programs ended".to_string(),
+            ))
+        }
+    }
+}
+
+/// Ask `question` on the terminal: whether the answer is yes, `default`
+/// for an empty one; no, with no terminal to ask on.
+fn ask(question: &str, default: bool) -> Result<bool> {
     if !std::io::stdin().is_terminal() {
         return Ok(false);
     }
-    print!(
-        "paddock: {}.\nRestart it? Its programs end; its layout comes back. [y/N] ",
-        other.mismatch()
-    );
+    print!("{question}");
     std::io::stdout().flush()?;
     let mut answer = String::new();
     std::io::stdin().read_line(&mut answer)?;
     let answer = answer.trim();
+    if answer.is_empty() {
+        return Ok(default);
+    }
     Ok(answer.eq_ignore_ascii_case("y") || answer.eq_ignore_ascii_case("yes"))
 }

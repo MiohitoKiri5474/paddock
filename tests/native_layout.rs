@@ -146,24 +146,28 @@ fn a_server_ended_with_its_last_shell_leaves_nothing_to_restore() {
     assert_eq!(sandbox.space_names(), ["space-1"]);
 }
 
-/// Listen as an older server would: it answers every hello with its
-/// own, version 999 and pid `pid`.
+/// Listen as an older server would: it sends its hello, version 999 and
+/// pid `pid`, and closes at an upgrade it does not know, so paddock
+/// falls back to restarting it.
 fn fake_older_server(sandbox: &Sandbox, pid: u32) {
     let listener = UnixListener::bind(sandbox.state_dir().join("server.sock")).unwrap();
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { return };
+            // Its hello first, as every server sends it; then it reads one
+            // frame and closes, as a server from before upgrades does at an
+            // upgrade frame it does not know.
+            let hello = format!(r#"{{"Hello":{{"version":999,"pid":{pid}}}}}"#);
+            let len = u32::try_from(hello.len() + 1).unwrap().to_be_bytes();
+            let _ = stream.write_all(&len);
+            let _ = stream.write_all(&[0]);
+            let _ = stream.write_all(hello.as_bytes());
             let mut len = [0; 4];
             if stream.read_exact(&mut len).is_err() {
                 continue;
             }
             let mut body = vec![0; u32::from_be_bytes(len) as usize];
             let _ = stream.read_exact(&mut body);
-            let hello = format!(r#"{{"Hello":{{"version":999,"pid":{pid}}}}}"#);
-            let len = u32::try_from(hello.len() + 1).unwrap().to_be_bytes();
-            let _ = stream.write_all(&len);
-            let _ = stream.write_all(&[0]);
-            let _ = stream.write_all(hello.as_bytes());
         }
     });
 }
@@ -219,6 +223,8 @@ fn restarting_a_server_of_another_version_restores_its_layout() {
     fake_older_server(&sandbox, 4242);
 
     let mut again = sandbox.launch();
+    again.wait_for_text("Upgrade it?");
+    again.type_line("y");
     again.wait_for_text("Restart it?");
     assert!(again.screen().contains("speaks protocol version 999"));
     again.type_line("y");
@@ -241,6 +247,8 @@ fn restarting_ends_the_server_holding_the_lock() {
     fake_older_server(&sandbox, older);
 
     let mut again = sandbox.launch();
+    again.wait_for_text("Upgrade it?");
+    again.type_line("y");
     again.wait_for_text("Restart it?");
     again.type_line("y");
 
@@ -259,6 +267,8 @@ fn restarting_signals_nothing_when_the_lock_names_another_pid() {
     fake_older_server(&sandbox, 4242);
 
     let mut again = sandbox.launch();
+    again.wait_for_text("Upgrade it?");
+    again.type_line("y");
     again.wait_for_text("Restart it?");
     again.type_line("y");
 

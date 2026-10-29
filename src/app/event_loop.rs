@@ -25,7 +25,7 @@ const LOST: &str = "lost the connection to the paddock server (it let this paddo
                     or failed; see server.log in paddock's state directory): run paddock \
                     again to attach to what still runs";
 /// Said once paddock has attached again to an upgraded server.
-const UPGRADED: &str = "paddock server upgraded: programs kept running";
+pub(super) const UPGRADED: &str = "paddock server upgraded: programs kept running";
 /// Why paddock quits when it cannot attach again to an upgraded server.
 const UPGRADE_LOST: &str = "the paddock server was upgraded, and this paddock cannot attach to \
                             it again (run the new paddock)";

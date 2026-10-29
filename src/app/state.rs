@@ -304,7 +304,7 @@ pub struct App {
     /// The connections that ended in the upgrade: once every one made
     /// before it has, the spaces are attached again ([`App::reattach`]).
     pub(super) upgrade_lost: HashSet<u64>,
-    /// The number the next connection gets (see [`Event::Backend`]).
+    /// The number the last connection got (see [`Event::Backend`]).
     pub(super) next_connection: u64,
     /// The connections replaced by attaching again, until they end: what
     /// they still report is left out.

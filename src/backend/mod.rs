@@ -17,7 +17,7 @@ mod tmux;
 
 pub use border::Border;
 pub use ids::{FloatId, SpaceId, TabId, TerminalId};
-pub use native::{check_handover, serve, take_over, NoHandover, OtherVersion};
+pub use native::{check_handover, serve, take_over, NoHandover, OtherVersion, Upgraded};
 pub use old_tmux::OldTmuxServer;
 pub use structure::{Float, Split, Structure, Tab};
 
@@ -194,7 +194,7 @@ impl Backend {
 
     /// Get ready to start the host, if it does not run yet; an error if
     /// one runs that this paddock cannot talk to ([`OtherVersion`] on
-    /// native, see [`Self::restart`]).
+    /// native, see [`Self::upgrade_other`] and [`Self::restart`]).
     pub fn prepare(&self) -> Result<()> {
         match self {
             Self::Tmux(t) => t.write_config(),
@@ -236,6 +236,16 @@ impl Backend {
         match self {
             Self::Tmux(_) => anyhow::bail!("the tmux backend has no paddock server to upgrade"),
             Self::Native(n) => n.upgrade(exe),
+        }
+    }
+
+    /// [`Self::upgrade`] the running native server `other`, which this
+    /// paddock cannot talk to, to `exe`, and tell how it went from what
+    /// runs after it ([`Upgraded`]). An error on tmux.
+    pub fn upgrade_other(&self, other: &OtherVersion, exe: &Path) -> Result<Upgraded> {
+        match self {
+            Self::Tmux(_) => anyhow::bail!("the tmux backend has no paddock server to upgrade"),
+            Self::Native(n) => n.upgrade_other(other, exe),
         }
     }
 
