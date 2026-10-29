@@ -1,6 +1,6 @@
 //! Ticket 07: sessions that need you stand out, notify, and are one key away.
 //!
-//! Notifications go to the sandbox's stub `osascript`, which logs each
+//! Notifications go to the sandbox's stub notifier, which logs each
 //! message. To show that something never notifies, a test makes it happen,
 //! then makes one thing that should notify, and checks that only that one did.
 
@@ -308,7 +308,7 @@ fn a_turn_finished_in_view_is_idle_at_once() {
 #[test]
 fn a_notifier_that_fails_says_so_in_a_notice() {
     let sandbox = Sandbox::new();
-    let stub = sandbox.path("bin/osascript");
+    let stub = sandbox.notifier_stub();
     std::fs::write(&stub, "#!/bin/sh\necho 'syntax error' >&2\nexit 1\n").unwrap();
     let mut paddock = ready(&sandbox);
     new_tab(&mut paddock, "2:home"); // look away from the first tab
