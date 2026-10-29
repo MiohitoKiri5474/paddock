@@ -10,8 +10,10 @@
 //! big-endian `u64`), the header ([`Record`]), then each terminal's
 //! snapshot, in the header's order, as raw bytes of the length the
 //! header gives, and then the input held in each terminal that holds
-//! some ([`HandedHold`]), in the same order. A paddock that reads no
-//! held input finds more than the header gives, and refuses the record.
+//! some ([`HandedHold`]), in the same order. A paddock from before
+//! held input reads no `hold`: given held bytes, it finds more than the
+//! header gives and refuses the record (the old server runs on); given
+//! a hold with none, it reads the record and drops that resume.
 //!
 //! Before it `exec`s, the server runs the new binary as a probe
 //! ([`probe`], `paddock server --check-handover`) on the record: one

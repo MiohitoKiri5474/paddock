@@ -17,8 +17,9 @@ const KEPT_VARS: &[&str] = &[
     // `paddock hook` in a terminal needs paddock's own state dir and socket.
     "XDG_STATE_HOME",
     "PADDOCK_TMUX_SOCKET",
-    // Tests only: the native server's wait for a silent restored shell
-    // (it keeps it from its shells).
+    // Tests only: the native server's wait for a silent restored shell.
+    // The native server keeps it from its shells; tmux's inherit it,
+    // where nothing reads it.
     "PADDOCK_RESUME_WAIT_MS",
 ];
 
