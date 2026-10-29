@@ -17,6 +17,8 @@ const STATE_FORMAT: &str = "#{alternate_on} #{cursor_x} #{cursor_y} #{cursor_fla
 #{mouse_any_flag} #{mouse_sgr_flag} #{scroll_region_upper} #{scroll_region_lower} #{history_size} \
 #{pane_key_mode}";
 const STATE_FIELDS: usize = 14;
+/// How many times [`fetch`] asks for the panes' states before it settles.
+const STATE_ASKS: usize = 5;
 
 /// What tmux holds for a pane, as captured.
 #[derive(Debug, Default, Clone)]
@@ -39,11 +41,34 @@ fn commands(pane: &str) -> String {
 
 /// Ask tmux for everything needed to rebuild each of `panes`, all on one
 /// control line (ADR 0006). Pane output that arrives before the replies is
-/// discarded; output after them stays queued on `rx`.
+/// discarded; output after them stays queued on `rx`. Notifications that
+/// arrive meanwhile go to `held`.
+///
+/// tmux gives up on a format that takes more than 100 ms to expand and
+/// returns what it has, which a loaded machine reaches now and then: a
+/// state cut short is asked again, for all panes at once, so the captures
+/// still follow each other with no output read in between.
 pub fn fetch(
     control: &mut ControlClient,
     rx: &Receiver<Message>,
     panes: &[&str],
+    held: &mut Vec<Message>,
+) -> Result<Vec<Seed>> {
+    let mut asks = 1;
+    loop {
+        let seeds = fetch_once(control, rx, panes, held)?;
+        if asks == STATE_ASKS || seeds.iter().all(|s| state_fields(&s.state).is_some()) {
+            return Ok(seeds);
+        }
+        asks += 1;
+    }
+}
+
+fn fetch_once(
+    control: &mut ControlClient,
+    rx: &Receiver<Message>,
+    panes: &[&str],
+    held: &mut Vec<Message>,
 ) -> Result<Vec<Seed>> {
     if panes.is_empty() {
         return Ok(Vec::new());
@@ -53,18 +78,24 @@ pub fn fetch(
     panes
         .iter()
         .map(|_| {
-            let state = wait_reply(rx)?;
+            let state = wait_reply(rx, held)?;
             Ok(Seed {
                 state: state
                     .first()
                     .map(|l| String::from_utf8_lossy(l).into_owned())
                     .unwrap_or_default(),
-                history: wait_reply(rx)?,
-                saved_screen: wait_reply(rx)?,
-                visible: wait_reply(rx)?,
+                history: wait_reply(rx, held)?,
+                saved_screen: wait_reply(rx, held)?,
+                visible: wait_reply(rx, held)?,
             })
         })
         .collect()
+}
+
+/// The fields of a pane's state; `None` if tmux cut it short.
+fn state_fields(state: &str) -> Option<Vec<&str>> {
+    let f: Vec<&str> = state.split_whitespace().collect();
+    (f.len() >= STATE_FIELDS).then_some(f)
 }
 
 /// Lines of `capture-pane -e` output as a byte stream that redraws them.
@@ -82,10 +113,9 @@ fn lines_to_stream(lines: &[Vec<u8>]) -> Vec<u8> {
 
 /// The bytes that, fed to a fresh emulator of the pane's size, rebuild it.
 pub fn stream(seed: &Seed) -> Result<Vec<u8>> {
-    let f: Vec<&str> = seed.state.split_whitespace().collect();
-    if f.len() < STATE_FIELDS {
+    let Some(f) = state_fields(&seed.state) else {
         bail!("unexpected pane state from tmux: {:?}", seed.state);
-    }
+    };
     let flag = |i: usize| f[i] == "1";
     let num = |i: usize| f[i].parse::<u16>().unwrap_or(0);
     let mut s = Vec::new();

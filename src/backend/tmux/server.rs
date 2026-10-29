@@ -177,8 +177,28 @@ impl Server {
 
     /// Session `id`'s windows and panes; see [`structure`].
     pub fn structure(&self, id: &str) -> Result<Structure> {
-        self.run(&["list-panes", "-s", "-t", id, "-F", structure::FORMAT])
-            .map(|out| structure::parse(&out))
+        let structure = self
+            .run(&["list-panes", "-s", "-t", id, "-F", structure::FORMAT])
+            .map(|out| structure::parse(&out))?;
+        for tab in structure
+            .tabs
+            .iter()
+            .filter(|t| t.auto_name && t.name.is_empty())
+        {
+            self.rename_again(tab.id.as_str());
+        }
+        Ok(structure)
+    }
+
+    /// Have tmux name window `window` after what runs in it again. tmux
+    /// gives up on a format that takes more than 100 ms to expand, which a
+    /// loaded machine reaches now and then, and names the window `""`
+    /// until its program writes again, maybe never (a shell at its
+    /// prompt). Setting `automatic-rename` makes tmux look again at once;
+    /// the new name comes as `%window-renamed`. Best effort: a tab left
+    /// unnamed is no reason to fail the read.
+    fn rename_again(&self, window: &str) {
+        let _ = self.run(&["set-option", "-w", "-t", window, "automatic-rename", "on"]);
     }
 
     /// Open a new window (tab) running the user's shell in `cwd` at the end
