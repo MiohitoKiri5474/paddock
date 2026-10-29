@@ -74,6 +74,21 @@ impl std::fmt::Display for NoHandover {
 
 impl std::error::Error for NoHandover {}
 
+/// How an upgrade of a server that speaks another protocol version went
+/// ([`Client::upgrade_other`]), told by what runs after it.
+#[derive(Debug)]
+pub enum Upgraded {
+    /// The new binary runs as the server, its programs running on.
+    Done,
+    /// The server did not hand over, and runs on as it was: why. It can
+    /// still be restarted.
+    Unchanged(anyhow::Error),
+    /// The handover failed after the server switched to the new binary:
+    /// why. The server has ended with every program in it, and the next
+    /// one rebuilds the layout it saved.
+    Ended(anyhow::Error),
+}
+
 /// Whether `e` says no server could answer: none runs, or it was ending
 /// or went away as it was asked (the next request starts a new one).
 fn no_server(e: &anyhow::Error) -> bool {
@@ -136,6 +151,16 @@ impl Client {
         let mut stream = UnixStream::connect(&socket).context(NotRunning)?;
         let server = protocol::hello(&mut stream, true, 0)?;
         Ok((stream, server))
+    }
+
+    /// The running server, as its hello tells, read within `timeout`
+    /// (an error past it); an error, as [`Self::connect`], if none runs
+    /// or it speaks another protocol version.
+    fn hello_within(&self, timeout: Duration) -> Result<Peer> {
+        let socket = socket_path(&self.paths)?;
+        let mut stream = UnixStream::connect(&socket).context(NotRunning)?;
+        stream.set_read_timeout(Some(timeout))?;
+        protocol::hello(&mut stream, true, 0)
     }
 
     fn request(&self, request: Request) -> Result<Answer> {
@@ -218,16 +243,53 @@ impl Client {
                 return Err(err).with_context(|| format!("cannot end pid {}", other.pid));
             }
         }
+        self.wait_ended(other.pid)
+    }
+
+    /// Wait until the ending server `pid` lets its lock go, then remove
+    /// the socket it may leave.
+    fn wait_ended(&self, pid: u32) -> Result<()> {
         let start = Instant::now();
-        while held(state_dir)? {
+        while held(&self.paths.state_dir)? {
             if start.elapsed() > END_TIMEOUT {
-                bail!("the paddock server (pid {}) did not end", other.pid);
+                bail!("the paddock server (pid {pid}) did not end");
             }
             std::thread::sleep(POLL);
         }
         // An ending server removes its socket; one killed leaves it.
         let _ = std::fs::remove_file(socket_path(&self.paths)?);
         Ok(())
+    }
+
+    /// [`Self::upgrade`] the running server `other`, which speaks another
+    /// protocol version, to `exe`, and tell from what runs after a
+    /// failure whether the server ran on unchanged (it could not hand
+    /// over, from too old to know how to a refusal) or ended after the
+    /// switch, every program with it: the same server (`other`'s pid) at
+    /// this version means done, another server means it ended and a new
+    /// one started. Once ended with none running, its lock is let go, so
+    /// a new server can start. An error only if what runs cannot be told,
+    /// as when the server gives no hello within [`START_TIMEOUT`].
+    pub fn upgrade_other(&self, other: &OtherVersion, exe: &Path) -> Result<Upgraded> {
+        let why = match self.upgrade(exe) {
+            Ok(_) => return Ok(Upgraded::Done),
+            Err(why) => why,
+        };
+        match self.hello_within(START_TIMEOUT) {
+            Err(e) if e.downcast_ref::<OtherVersion>().is_some() => Ok(Upgraded::Unchanged(why)),
+            // The switch happened, though its answer was lost.
+            Ok(server) if server.pid == other.pid => Ok(Upgraded::Done),
+            // Another server, started (from `layout.json`) since the old
+            // one ended.
+            Ok(_) => Ok(Upgraded::Ended(why)),
+            Err(e) if no_server(&e) => {
+                self.wait_ended(other.pid)?;
+                Ok(Upgraded::Ended(why))
+            }
+            Err(e) => Err(e.context(format!(
+                "the upgrade failed ({why:#}), and the server cannot be asked how it is"
+            ))),
+        }
     }
 
     /// Ask the running server, whatever protocol version it speaks, to

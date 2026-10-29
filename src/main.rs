@@ -92,8 +92,8 @@ fn upgrade_server(binary: Option<&str>) -> anyhow::Result<()> {
     let pid = match backend.upgrade(&exe) {
         Ok(pid) => pid,
         Err(e) if e.downcast_ref::<backend::NoHandover>().is_some() => anyhow::bail!(
-            "{e:#}; to restart it instead, start paddock and answer yes \
-             (its programs end, and its layout comes back)"
+            "{e:#}; to restart it instead, start paddock and answer yes when it \
+             offers to (its programs end, and its layout comes back)"
         ),
         Err(e) => return Err(e),
     };
