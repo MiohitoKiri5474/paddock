@@ -6,6 +6,7 @@ mod backend;
 mod cli;
 mod config;
 mod debug;
+mod desktop;
 mod fuzzy;
 mod git;
 mod github;

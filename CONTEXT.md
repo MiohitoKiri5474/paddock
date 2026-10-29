@@ -88,7 +88,7 @@ _Avoid_: agent type, provider, model
 
 **Status report**:
 An agent's report of its state (working, waiting on you, done, failed, idle) that it writes to its terminal's output (OSC 7501), read by paddock from that output. Only Antigravity CLI's count, and only in paddock's terminals; they are how its waits show.
-_Avoid_: status line, notification (that is macOS's)
+_Avoid_: status line, notification (that is the desktop's)
 
 **Ended**:
 A session whose terminal was closed or whose agent quit (agy: its terminal is back at the shell). It leaves the dashboard and the sidebar; a new agent in the same terminal is a new session. `/clear` (Claude's or Gemini's) does not end it.

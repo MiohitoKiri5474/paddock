@@ -4,6 +4,7 @@
 mod attention;
 mod copy;
 mod dashboard;
+mod desktop;
 mod event_loop;
 mod finder;
 mod floats;

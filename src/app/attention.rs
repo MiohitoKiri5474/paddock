@@ -5,28 +5,22 @@
 //! before the hook that reports the same change, and must neither swallow
 //! nor repeat its notification.
 
+use super::desktop::SayOnce;
 use super::rows::Row;
 use super::sidebar::Pick;
 use super::state::{App, Mode};
 use super::Event;
 use crate::backend::TerminalId;
 use crate::config::Notify;
+use crate::desktop;
 use crate::hooks::now_ms;
 use crate::sessions::{self, is_external, log, state_after, HookRecord, ProgramState, State};
 use crate::terminal::program_status::Report;
 use std::collections::HashMap;
 use std::io::Read;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
-
-/// The AppleScript that shows a notification; its message is the script's
-/// first argument, so it needs no AppleScript quoting.
-const NOTIFY_SCRIPT: [&str; 3] = [
-    "on run argv",
-    "display notification (item 1 of argv) with title \"paddock\"",
-    "end run",
-];
 
 /// How long a notification may take before it counts as failed.
 const NOTIFY_TIMEOUT: Duration = Duration::from_secs(10);
@@ -67,9 +61,6 @@ fn wait_notifier(mut child: Child, timeout: Duration) -> Result<(), String> {
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| status.to_string()))
 }
-
-/// Overrides the command that shows notifications (tests use a stub).
-const OSASCRIPT_VAR: &str = "PADDOCK_OSASCRIPT";
 
 /// Why a session needs you.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -160,38 +151,29 @@ pub struct Attention {
     /// Whether the outer window has focus, as far as the terminal reports
     /// focus changes (CSI ?1004); assumed until it says otherwise.
     pub window_focused: bool,
-    osascript: String,
-    /// A failure to notify was shown; later ones are not, to avoid a notice
-    /// on every notification.
-    notify_failure_shown: bool,
+    /// A failure to notify is said once, to avoid a notice on every
+    /// notification.
+    notify_failure: SayOnce,
     /// Which kinds of alert show a notification (`[notify]`).
     notify: Notify,
 }
 
 impl Attention {
-    /// Notify the kinds `notify` allows, through `PADDOCK_OSASCRIPT` if set.
+    /// Notify the kinds `notify` allows.
     pub fn from_env(notify: Notify) -> Self {
         Self {
             notify,
             alerts: Alerts::default(),
             started: now_ms(),
             window_focused: true,
-            osascript: std::env::var(OSASCRIPT_VAR)
-                .ok()
-                .filter(|v| !v.is_empty())
-                .unwrap_or_else(|| "osascript".into()),
-            notify_failure_shown: false,
+            notify_failure: SayOnce::default(),
         }
     }
 
     /// The notice for a notification that failed with `error`: the first
     /// time only.
     pub fn notify_failed(&mut self, error: &str) -> Option<String> {
-        if self.notify_failure_shown {
-            return None;
-        }
-        self.notify_failure_shown = true;
-        Some(format!("cannot notify: {error}"))
+        self.notify_failure.say(format!("cannot notify: {error}"))
     }
 }
 
@@ -403,12 +385,9 @@ impl App {
             Alert::Idle => "idle",
         };
         let message = format!("{label} is {what}");
-        let mut command = Command::new(&self.attention.osascript);
-        for line in NOTIFY_SCRIPT {
-            command.args(["-e", line]);
-        }
+        let mut command = desktop::notifier(&message);
+        let program = command.get_program().to_string_lossy().into_owned();
         let child = command
-            .arg(&message)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
@@ -425,8 +404,10 @@ impl App {
                     }
                 });
             }
+            // Missing, most likely: said once, like any failure to notify.
             Err(e) => {
-                if let Some(notice) = self.attention.notify_failed(&e.to_string()) {
+                let error = format!("cannot run {program}: {e}");
+                if let Some(notice) = self.attention.notify_failed(&error) {
                     self.notice = Some(notice);
                 }
             }
@@ -509,30 +490,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_notification_script_compiles() {
-        // `osacompile` checks the AppleScript without running it; skip
-        // where there is none (not macOS).
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
-        let out = dir.path().join("notify.scpt");
-        let mut cmd = Command::new("osacompile");
-        for line in NOTIFY_SCRIPT {
-            cmd.args(["-e", line]);
-        }
-        let Ok(result) = cmd.arg("-o").arg(&out).output() else {
-            return;
-        };
-        assert!(
-            result.status.success(),
-            "{}",
-            String::from_utf8_lossy(&result.stderr)
-        );
-    }
-
     fn sh(script: &str) -> std::process::Child {
-        Command::new("/bin/sh")
+        std::process::Command::new("/bin/sh")
             .args(["-c", script])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
