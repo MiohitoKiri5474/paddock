@@ -98,6 +98,11 @@ jobs:
       - name: Show glibc floor
         if: runner.os == 'Linux'
         run: objdump -T "target/$TARGET/release/paddock" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1
+      - name: TEMPORARY glibc symbol detail
+        if: runner.os == 'Linux'
+        run: |
+          objdump -T "target/$TARGET/release/paddock" | grep -E 'GLIBC_2\.(2[6-9]|3[0-9])' || true
+          readelf -V "target/$TARGET/release/paddock" | sed -n '/.gnu.version_r/,$p'
       - name: Package
         run: |
           archive="paddock-$TAG-$TARGET.tar.gz"
