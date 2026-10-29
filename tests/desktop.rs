@@ -130,7 +130,7 @@ fn linux_without_xclip_on_its_path_says_so_once() {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn linux_without_notify_send_on_its_path_says_so_once() {
+fn linux_without_notify_send_on_its_path_says_so() {
     let sandbox = Sandbox::new();
     sandbox.remove_tools(&["notify-send"]);
     let mut paddock = ready(&sandbox);
