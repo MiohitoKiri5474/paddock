@@ -9,14 +9,15 @@
 use super::axis::Axis;
 use super::protocol::{
     self, Answer, Closed, Ending, Frame, Message, Notice, OtherVersion, Peer, Refusal, Request,
+    Upgrade,
 };
 use super::server::log_path;
 use super::{held, saved, socket_path, LOCK};
 use crate::backend::border::{Anchor, Border};
 use crate::backend::env::clean_env;
 use crate::backend::{
-    Event, FloatId, ListedSpace, Replay, SpaceId, SpaceTerminal, Structure, TabId, TerminalDetails,
-    TerminalId,
+    Event, FloatId, ListedSpace, Replay, Restored, SpaceId, SpaceTerminal, Structure, TabId,
+    TerminalDetails, TerminalId,
 };
 use crate::input::Direction;
 use crate::paths::Paths;
@@ -53,12 +54,57 @@ impl std::fmt::Display for Refused {
 
 impl std::error::Error for Refused {}
 
+/// The running server gave no answer to an upgrade: it is from before
+/// ADR 0009, or its new binary failed once it ran (see `server.log`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NoHandover {
+    pub pid: u32,
+}
+
+impl std::fmt::Display for NoHandover {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the paddock server (pid {}) gave no answer to the upgrade: it may be too old \
+             to hand its terminals over (see server.log)",
+            self.pid
+        )
+    }
+}
+
+impl std::error::Error for NoHandover {}
+
+/// How an upgrade of a server that speaks another protocol version went
+/// ([`Client::upgrade_other`]), told by what runs after it.
+#[derive(Debug)]
+pub enum Upgraded {
+    /// The new binary runs as the server, its programs running on.
+    Done,
+    /// The server did not hand over, and runs on as it was: why. It can
+    /// still be restarted.
+    Unchanged(anyhow::Error),
+    /// The handover failed after the server switched to the new binary:
+    /// why. The server has ended with every program in it, and the next
+    /// one rebuilds the layout it saved.
+    Ended(anyhow::Error),
+}
+
 /// Whether `e` says no server could answer: none runs, or it was ending
 /// or went away as it was asked (the next request starts a new one).
 fn no_server(e: &anyhow::Error) -> bool {
     e.downcast_ref::<NotRunning>().is_some()
         || e.downcast_ref::<Ending>().is_some()
         || e.downcast_ref::<Closed>().is_some()
+}
+
+/// Whether `e` is a read that waited past its timeout.
+fn timed_out(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<std::io::Error>().is_some_and(|e| {
+        matches!(
+            e.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+        )
+    })
 }
 
 /// A closure taking the value of answer `variant`, and giving any other
@@ -78,6 +124,9 @@ const INPUT_FRAME: usize = 64 << 10;
 const START_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long a server asked to end for a restart gets to let its lock go.
 const END_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long a server gets to answer an upgrade: its probe of the new
+/// binary has 10 s, and the new binary rebuilds every terminal.
+const UPGRADE_TIMEOUT: Duration = Duration::from_secs(60);
 const POLL: Duration = Duration::from_millis(20);
 
 #[derive(Clone, Debug)]
@@ -98,14 +147,37 @@ impl Client {
     /// A connection to the running server, past the hello; an error if
     /// none runs or it speaks another protocol version.
     fn connect(&self) -> Result<(UnixStream, Peer)> {
+        self.connect_within(None)
+    }
+
+    /// [`Self::connect`], each read on the connection within `timeout`
+    /// (an error past it) if there is one.
+    fn connect_within(&self, timeout: Option<Duration>) -> Result<(UnixStream, Peer)> {
         let socket = socket_path(&self.paths)?;
         let mut stream = UnixStream::connect(&socket).context(NotRunning)?;
+        stream.set_read_timeout(timeout)?;
         let server = protocol::hello(&mut stream, true, 0)?;
         Ok((stream, server))
     }
 
+    /// The running server, as its hello tells, read within `timeout`
+    /// (an error past it); an error, as [`Self::connect`], if none runs
+    /// or it speaks another protocol version.
+    fn hello_within(&self, timeout: Duration) -> Result<Peer> {
+        let socket = socket_path(&self.paths)?;
+        let mut stream = UnixStream::connect(&socket).context(NotRunning)?;
+        stream.set_read_timeout(Some(timeout))?;
+        protocol::hello(&mut stream, true, 0)
+    }
+
     fn request(&self, request: Request) -> Result<Answer> {
-        let (mut stream, _) = self.connect()?;
+        self.request_within(request, None)
+    }
+
+    /// [`Self::request`], the hello and the reply each read within
+    /// `timeout` if there is one.
+    fn request_within(&self, request: Request, timeout: Option<Duration>) -> Result<Answer> {
+        let (mut stream, _) = self.connect_within(timeout)?;
         protocol::write(&mut stream, &Frame::Message(Message::Request(request)))?;
         read_reply(&mut stream)
     }
@@ -117,7 +189,11 @@ impl Client {
         match UnixStream::connect(socket) {
             // None runs (a socket left behind refuses).
             Err(_) => Ok(()),
-            Ok(mut stream) => protocol::hello(&mut stream, true, 0).map(drop),
+            Ok(mut stream) => match protocol::hello(&mut stream, true, 0) {
+                // It ended as it was asked: none runs now.
+                Err(e) if no_server(&e) => Ok(()),
+                hello => hello.map(drop),
+            },
         }
     }
 
@@ -180,10 +256,16 @@ impl Client {
                 return Err(err).with_context(|| format!("cannot end pid {}", other.pid));
             }
         }
+        self.wait_ended(other.pid)
+    }
+
+    /// Wait until the ending server `pid` lets its lock go, then remove
+    /// the socket it may leave.
+    fn wait_ended(&self, pid: u32) -> Result<()> {
         let start = Instant::now();
-        while held(state_dir)? {
+        while held(&self.paths.state_dir)? {
             if start.elapsed() > END_TIMEOUT {
-                bail!("the paddock server (pid {}) did not end", other.pid);
+                bail!("the paddock server (pid {pid}) did not end");
             }
             std::thread::sleep(POLL);
         }
@@ -192,9 +274,85 @@ impl Client {
         Ok(())
     }
 
-    /// How many spaces the server rebuilt from `layout.json` when it
-    /// started; `None` if none, or paddock was told already.
-    pub fn take_restored(&self) -> Result<Option<usize>> {
+    /// [`Self::upgrade`] the running server `other`, which speaks another
+    /// protocol version, to `exe`, and tell from what runs after a
+    /// failure whether the server ran on unchanged (it could not hand
+    /// over, from too old to know how to a refusal) or ended after the
+    /// switch, every program with it: the same server (`other`'s pid) at
+    /// this version means done, another server means it ended and a new
+    /// one started. Once ended with none running, its lock is let go, so
+    /// a new server can start. An error only if what runs cannot be told,
+    /// as when the server gives no hello within [`START_TIMEOUT`].
+    pub fn upgrade_other(&self, other: &OtherVersion, exe: &Path) -> Result<Upgraded> {
+        let why = match self.upgrade(exe) {
+            Ok(_) => return Ok(Upgraded::Done),
+            Err(why) => why,
+        };
+        match self.hello_within(START_TIMEOUT) {
+            Err(e) if e.downcast_ref::<OtherVersion>().is_some() => Ok(Upgraded::Unchanged(why)),
+            // The switch happened, though its answer was lost.
+            Ok(server) if server.pid == other.pid => Ok(Upgraded::Done),
+            // Another server, started (from `layout.json`) since the old
+            // one ended.
+            Ok(_) => Ok(Upgraded::Ended(why)),
+            Err(e) if no_server(&e) => {
+                self.wait_ended(other.pid)?;
+                Ok(Upgraded::Ended(why))
+            }
+            Err(e) => Err(e.context(format!(
+                "the upgrade failed ({why:#}), and the server cannot be asked how it is"
+            ))),
+        }
+    }
+
+    /// Ask the running server, whatever protocol version it speaks, to
+    /// hand every terminal to the binary `exe`, which then runs as it
+    /// (ADR 0009): the server's pid, the same as before. An error says
+    /// why not. A refusal from the old server, or [`NoHandover`] (it
+    /// cannot hand over at all, so it has to be restarted instead), leaves
+    /// it running unchanged; but once `exe` runs, a refusal from it, or
+    /// the connection ending, means the server has ended, and every
+    /// program in it.
+    pub fn upgrade(&self, exe: &Path) -> Result<u32> {
+        let socket = socket_path(&self.paths)?;
+        let mut stream = UnixStream::connect(socket).context(NotRunning)?;
+        // The probe and the rebuild of a big scrollback take a while.
+        stream.set_read_timeout(Some(UPGRADE_TIMEOUT))?;
+        let server = match protocol::read(&mut stream, protocol::FROM_SERVER)? {
+            Some(Frame::Message(Message::Hello { pid, .. })) => pid,
+            other => bail!("expected the paddock server's hello, got {other:?}"),
+        };
+        let ask = Upgrade::Ask { exe: exe.into() };
+        protocol::write(&mut stream, &Frame::Upgrade(ask))?;
+        let mut probed = false;
+        loop {
+            match protocol::read(&mut stream, protocol::FROM_SERVER) {
+                Ok(Some(Frame::Upgrade(Upgrade::Probed))) => probed = true,
+                Ok(Some(Frame::Upgrade(Upgrade::Done { pid }))) => return Ok(pid),
+                Ok(Some(Frame::Upgrade(Upgrade::Refused(why)))) => return Err(Refused(why).into()),
+                Ok(Some(other)) => {
+                    bail!("the paddock server answered the upgrade with {other:?}")
+                }
+                // A server from before ADR 0009 closes the connection at a
+                // frame it does not know.
+                Ok(None) if !probed => return Err(NoHandover { pid: server }.into()),
+                Ok(None) => bail!(
+                    "the paddock server (pid {server}) ended as it took over, without an \
+                     answer: its programs may have ended (see server.log)"
+                ),
+                Err(e) if timed_out(&e) => bail!(
+                    "the paddock server (pid {server}) gave no answer to the upgrade within \
+                     {} s (see server.log)",
+                    UPGRADE_TIMEOUT.as_secs()
+                ),
+                Err(e) => return Err(e.context("a broken answer to the upgrade")),
+            }
+        }
+    }
+
+    /// What the server rebuilt from `layout.json` when it started; `None`
+    /// if nothing, or paddock was told already.
+    pub fn take_restored(&self) -> Result<Option<Restored>> {
         let restored = self.query(Request::TakeRestored, pick!(Answer::Restored))?;
         Ok(restored.flatten())
     }
@@ -265,6 +423,17 @@ impl Client {
     pub fn spaces(&self) -> Result<Vec<ListedSpace>> {
         let spaces = self.query(Request::Spaces, pick!(Answer::Spaces))?;
         Ok(spaces.unwrap_or_default())
+    }
+
+    /// Every space, as [`Self::spaces`], asked within `timeout`; none
+    /// only if no server runs. A connection that closes unanswered, or
+    /// gives no answer within `timeout`, is an error, not none (see
+    /// `Backend::upgraded_spaces`).
+    pub fn upgraded_spaces(&self, timeout: Duration) -> Result<Vec<ListedSpace>> {
+        match self.ask(Request::Spaces, Some(timeout), pick!(Answer::Spaces)) {
+            Err(e) if e.downcast_ref::<NotRunning>().is_some() => Ok(Vec::new()),
+            asked => asked,
+        }
     }
 
     pub fn new_space(&self, name: &str, cwd: &Path, size: (u16, u16)) -> Result<SpaceId> {
@@ -461,11 +630,23 @@ impl Client {
         request: Request,
         pick: impl FnOnce(Answer) -> Result<T, Answer>,
     ) -> Result<Option<T>> {
-        match self.request(request) {
-            Ok(answer) => pick(answer).map(Some).map_err(|a| unexpected(&a)),
+        match self.ask(request, None, pick) {
+            Ok(value) => Ok(Some(value)),
             Err(e) if no_server(&e) || e.downcast_ref::<Refused>().is_some() => Ok(None),
             Err(e) => Err(e),
         }
+    }
+
+    /// The server's answer to `request`, read within `timeout` if there is
+    /// one, and taken by `pick`; an error for any other answer.
+    fn ask<T>(
+        &self,
+        request: Request,
+        timeout: Option<Duration>,
+        pick: impl FnOnce(Answer) -> Result<T, Answer>,
+    ) -> Result<T> {
+        let answer = self.request_within(request, timeout)?;
+        pick(answer).map_err(|a| unexpected(&a))
     }
 
     pub fn root(&self, space: &SpaceId) -> Result<Option<String>> {
@@ -563,12 +744,14 @@ impl Client {
                     Frame::Message(Message::Notice(Notice::InputRefused { terminal, why })) => {
                         Event::InputRefused { terminal, why }
                     }
+                    Frame::Message(Message::Notice(Notice::Upgrading)) => Event::Upgrading,
                     Frame::Message(Message::Notice(Notice::Ended)) => {
                         deliver(Event::Ended);
                         return;
                     }
-                    // Input parts only go to the server.
-                    Frame::Message(_) | Frame::Part { .. } => continue,
+                    // Input parts only go to the server, and an upgrade's
+                    // answer only on its own connection.
+                    Frame::Message(_) | Frame::Part { .. } | Frame::Upgrade(_) => continue,
                 };
                 if !deliver(event) {
                     return;
@@ -602,6 +785,12 @@ pub struct Attached {
 }
 
 impl Attached {
+    /// Shut the connection down both ways, so its reader (which holds
+    /// a clone of it) sees it end.
+    pub fn close(&self) {
+        let _ = self.stream.shutdown(std::net::Shutdown::Both);
+    }
+
     /// Send `bytes` to `terminal`'s program as one input, in parts of at
     /// most [`INPUT_FRAME`] bytes (a paste of any size fits the server's
     /// frame limit); the server queues or refuses all of it.
@@ -664,5 +853,57 @@ mod instance_tests {
             err.contains("no instance id") && err.contains("pid 7"),
             "{err}"
         );
+    }
+}
+
+#[cfg(test)]
+mod upgraded_spaces_tests {
+    use super::*;
+    use std::os::unix::net::UnixListener;
+
+    /// A client whose state directory is `dir` (short, for the socket).
+    fn client(dir: &Path) -> Client {
+        Client::new(Paths {
+            socket: "paddock-unit-none".into(),
+            state_dir: dir.to_path_buf(),
+            config_dir: dir.join("config"),
+        })
+    }
+
+    fn short_dir() -> tempfile::TempDir {
+        tempfile::Builder::new()
+            .prefix("pdk")
+            .tempdir_in("/tmp")
+            .unwrap()
+    }
+
+    /// A connection accepted and never served (the old image's, near its
+    /// `exec`) is an error within the timeout, not a wait for ever.
+    #[test]
+    fn a_server_that_never_answers_is_an_error_in_time() {
+        let dir = short_dir();
+        let listener = UnixListener::bind(dir.path().join(super::super::SOCKET)).unwrap();
+        // Accepted and held open, unanswered, until the client gives up.
+        let held = std::thread::spawn(move || listener.accept().map(|(s, _)| s));
+        let start = Instant::now();
+
+        let asked = client(dir.path()).upgraded_spaces(Duration::from_millis(200));
+
+        assert!(asked.is_err(), "{asked:?}");
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            start.elapsed()
+        );
+        drop(held.join());
+    }
+
+    #[test]
+    fn no_server_running_is_no_spaces() {
+        let dir = short_dir();
+
+        let asked = client(dir.path()).upgraded_spaces(Duration::from_millis(200));
+
+        assert!(asked.unwrap().is_empty());
     }
 }

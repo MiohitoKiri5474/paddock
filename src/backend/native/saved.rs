@@ -1,23 +1,34 @@
 //! `layout.json` in the state directory (ADR 0008): the server's spaces
 //! in order, each with its name, root, size and current tab, its tabs
 //! with their names (and whether each is automatic), focus, zoom and tree
-//! of splits with their shares, each terminal by its directory, and the
-//! space paddock showed last. No terminal id is kept: a restored terminal
-//! is a new one, so it inherits no agent session. Floats are left out:
-//! their keys make them again when wanted.
+//! of splits with their shares, each terminal by its directory (and the
+//! name of its saved scrollback, see [`super::scrollback`]) and the
+//! agent session last seen in it (if any, and whether it is over), and
+//! the space paddock showed last. No terminal id is kept: a restored
+//! terminal is a new one, which resumes its saved session if that is not
+//! over (ticket 48). Floats are left out: their keys make them again when
+//! wanted.
 //!
 //! The server writes it whenever it changes ([`Saver`]), at most once
 //! every [`GAP`], by an atomic replace; a server with no space left
-//! removes it, so the next starts clean. The layout is taken with the
+//! removes it, so the next starts clean. Each write also removes the
+//! saved scrollback no terminal of it names. The layout is taken with the
 //! server's state locked ([`snapshot`]), but its directories are read,
-//! and the file written, after ([`Snapshot::read_dirs`]). A server that
+//! and the file written, after ([`Snapshot::read_dirs`]); but for the
+//! last, written as the server ends, with each terminal's scrollback
+//! before it, both with the state locked. A server that
 //! starts and finds it rebuilds the layout from it (see
 //! [`super::restore`]).
 
 use super::layout::SavedTree;
+use super::scrollback;
+use super::seen::{Foreground, Seen};
 use super::space::Space;
 use super::state::State;
 use super::terminal::{DirReader, HostedTerminal};
+use crate::backend::TerminalId;
+use crate::hooks::now_ms;
+use crate::sessions::AgentKind;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -65,10 +76,30 @@ pub struct SavedTab {
     pub splits: SavedTree<SavedTerminal>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SavedTerminal {
     /// Its program's directory when last saved.
     pub dir: String,
+    /// The name of its saved scrollback, in `scrollback/` (see
+    /// [`scrollback::ScrollbackName`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scrollback: Option<String>,
+    /// The agent session last seen running in it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<SavedAgent>,
+}
+
+/// An agent session seen in a terminal, from the server's hook log.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SavedAgent {
+    pub kind: AgentKind,
+    /// Its session id, which resumes it.
+    pub session: String,
+    /// Its conversation is over: the agent reported its end (it quit, or
+    /// `/clear` began another conversation), so it is not resumed. Not
+    /// the dashboard's *ended* (CONTEXT.md), which `/clear` is not.
+    #[serde(default)]
+    pub over: bool,
 }
 
 impl SavedLayout {
@@ -108,59 +139,82 @@ impl SavedSpace {
     }
 }
 
-/// What `layout.json` keeps of `state`, but its terminals' directories,
-/// which [`Snapshot::read_dirs`] reads once the state is let go.
+/// What `layout.json` keeps of `state`, but its terminals' directories
+/// and sessions, which [`Snapshot::read_dirs`] reads once the state is
+/// let go.
 pub struct Snapshot {
     layout: SavedLayout,
-    /// Where to read each terminal's directory, in the layout's order
-    /// (`None` for a terminal not hosted, which keeps its placeholder).
-    dirs: Vec<Option<DirReader>>,
+    /// Each terminal's id, and where to read its directory, in the
+    /// layout's order (`None` for a terminal not hosted, which keeps its
+    /// placeholder).
+    terminals: Vec<(TerminalId, Option<DirReader>)>,
 }
 
 /// Take what `layout.json` keeps of `state`, with it locked: no read of
 /// a directory, nor of the file.
 pub fn snapshot(state: &State) -> Snapshot {
     let current = state.current.as_ref();
-    let mut dirs = Vec::new();
-    let spaces = state.spaces.iter().map(|s| saved_space(s, &mut dirs));
+    let mut terminals = Vec::new();
+    let spaces = state.spaces.iter().map(|s| saved_space(s, &mut terminals));
     let layout = SavedLayout {
         version: VERSION,
         current: current.and_then(|c| state.spaces.iter().position(|s| s.id == *c)),
         spaces: spaces.collect(),
     };
-    Snapshot { layout, dirs }
+    Snapshot { layout, terminals }
 }
 
 impl Snapshot {
     /// The layout, each terminal's directory read: its foreground
     /// program's, else its shell's, else (a shell not started yet, or
-    /// gone) the placeholder [`saved_space`] left, its space's root.
-    pub fn read_dirs(self) -> SavedLayout {
-        let Self { mut layout, dirs } = self;
+    /// gone) the placeholder [`saved_space`] left, its space's root; and
+    /// the session `seen` last in it ([`Seen::agents`], which forgets
+    /// the terminals not in the layout).
+    pub fn read_dirs(self, seen: &mut Seen) -> SavedLayout {
+        let Self {
+            mut layout,
+            terminals: hosted,
+        } = self;
+        let (ids, readers): (Vec<_>, Vec<_>) = hosted.into_iter().unzip();
+        let programs = ids.iter().zip(&readers);
+        let programs = programs.map(|(id, r)| {
+            let program = r.and_then(DirReader::program);
+            (
+                id.clone(),
+                program.map(|(group, name)| Foreground { group, name }),
+            )
+        });
+        seen.foregrounds(&programs.collect::<Vec<_>>(), now_ms());
+        let agents = seen.agents(&ids);
         // Spaces, tabs and each tree's terminals walk in the order
         // `saved_space` pushed the readers in.
         let terminals = layout.spaces.iter_mut().flat_map(|s| &mut s.tabs);
         let terminals = terminals.flat_map(|t| t.splits.terminals_mut());
-        for (terminal, reader) in terminals.zip(dirs) {
+        for (terminal, (reader, agent)) in terminals.zip(readers.into_iter().zip(agents)) {
             if let Some(dir) = reader.and_then(DirReader::read) {
                 terminal.dir = dir;
             }
+            terminal.agent = agent;
         }
         layout
     }
 }
 
 /// `space` as `layout.json` keeps it, each terminal's directory its
-/// root for now: what reads the real one is pushed on `dirs`, one per
-/// terminal in the tree's order, which [`Snapshot::read_dirs`] follows.
-fn saved_space(space: &Space, dirs: &mut Vec<Option<DirReader>>) -> SavedSpace {
+/// root for now: each terminal's id, and what reads its real directory,
+/// is pushed on `hosted`, in the tree's order, which
+/// [`Snapshot::read_dirs`] follows.
+fn saved_space(space: &Space, hosted: &mut Vec<(TerminalId, Option<DirReader>)>) -> SavedSpace {
     let tabs = space.tabs.iter().map(|tab| {
         let terminals = tab.terminals();
         let focus = terminals.iter().position(|t| t == tab.active());
         let splits = tab.layout().save(&mut |id| {
-            dirs.push(space.hosted(id).map(HostedTerminal::dir_reader));
+            let terminal = space.hosted(id);
+            hosted.push((id.clone(), terminal.map(HostedTerminal::dir_reader)));
             SavedTerminal {
                 dir: space.root.clone(),
+                scrollback: terminal.map(|t| t.saved_as.as_str().to_string()),
+                agent: None,
             }
         });
         SavedTab {
@@ -226,7 +280,16 @@ fn read(path: &Path) -> Result<Option<SavedLayout>> {
 
 /// Write `layout` to `dir`, replacing the old file in one step (a file
 /// beside it, renamed over it); a layout of no space removes the file.
+/// Then remove the saved scrollback it does not name.
 fn write(dir: &Path, layout: &SavedLayout) -> Result<()> {
+    write_layout(dir, layout)?;
+    let terminals = layout.spaces.iter().flat_map(|s| &s.tabs);
+    let terminals = terminals.flat_map(|t| t.splits.terminals());
+    let names = terminals.filter_map(|t| t.scrollback.as_deref());
+    scrollback::prune(dir, &names.collect())
+}
+
+fn write_layout(dir: &Path, layout: &SavedLayout) -> Result<()> {
     let path = dir.join(FILE);
     if layout.spaces.is_empty() {
         return match std::fs::remove_file(&path) {
@@ -255,7 +318,7 @@ fn write(dir: &Path, layout: &SavedLayout) -> Result<()> {
 
 /// Write `text` to a new file at `path`, mode 0600, and wait until it is
 /// on disk.
-fn write_synced(path: &Path, text: &[u8]) -> std::io::Result<()> {
+pub fn write_synced(path: &Path, text: &[u8]) -> std::io::Result<()> {
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create(true)
@@ -287,6 +350,11 @@ impl Saver {
         }
     }
 
+    /// The state directory it writes to.
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
     /// Whether `layout`, offered at `now`, is to be written: it is not
     /// the one last written, and [`GAP`] has passed since that, and the
     /// saver has not been flushed.
@@ -312,11 +380,16 @@ impl Saver {
     /// Write `layout` at once unless it is the one last written, and
     /// write nothing after: the server ends.
     pub fn flush(&mut self, layout: SavedLayout) -> Result<()> {
-        if self.sealed {
-            return Ok(());
-        }
+        let written = self.write_now(layout);
         self.sealed = true;
-        if self.last.as_ref().is_some_and(|(last, _)| *last == layout) {
+        written
+    }
+
+    /// Write `layout` at once unless it is the one last written (or the
+    /// saver was flushed), whatever the gap: before a server hands over
+    /// (ADR 0009), so a new one that fails finds it.
+    pub fn write_now(&mut self, layout: SavedLayout) -> Result<()> {
+        if self.sealed || self.last.as_ref().is_some_and(|(last, _)| *last == layout) {
             return Ok(());
         }
         self.write(layout, Instant::now())
@@ -336,7 +409,10 @@ mod tests {
     use super::*;
 
     fn terminal(dir: &str) -> SavedTree<SavedTerminal> {
-        SavedTree::Terminal(SavedTerminal { dir: dir.into() })
+        SavedTree::Terminal(SavedTerminal {
+            dir: dir.into(),
+            ..SavedTerminal::default()
+        })
     }
 
     /// A layout of one space, `name`, with a tab split in two.
@@ -375,6 +451,30 @@ mod tests {
         assert_eq!(load(dir.path()), Some(layout("api")));
         let names: Vec<_> = std::fs::read_dir(dir.path()).unwrap().collect();
         assert_eq!(names.len(), 1, "no file left beside it");
+    }
+
+    #[test]
+    fn a_terminals_agent_reads_back_and_a_terminal_without_one_writes_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut saved = layout("api");
+        let agent = SavedAgent {
+            kind: AgentKind::Claude,
+            session: "7f3c2a10-1b2c-4d5e-8f90-0123456789ab".into(),
+            over: false,
+        };
+        let SavedTree::Split { cells, .. } = &mut saved.spaces[0].tabs[0].splits else {
+            unreachable!("split in two");
+        };
+        cells[1].node = SavedTree::Terminal(SavedTerminal {
+            dir: "/w/api/src".into(),
+            agent: Some(agent),
+            ..SavedTerminal::default()
+        });
+        write(dir.path(), &saved).unwrap();
+        assert_eq!(load(dir.path()), Some(saved));
+        let text = std::fs::read_to_string(dir.path().join(FILE)).unwrap();
+        assert_eq!(text.matches("\"agent\"").count(), 1, "{text}");
+        assert!(text.contains("\"kind\": \"claude\""), "{text}");
     }
 
     #[test]

@@ -30,7 +30,7 @@
 //! height = 80
 //! G = "lazygit"              # the default; "" removes it
 //!
-//! [notify]                   # macOS notifications, on unless set false
+//! [notify]                   # desktop notifications, on unless set false
 //! waiting = true             # a session or one of its subagents starts waiting on you
 //! idle = true                # a main agent finishes its turn
 //!
@@ -75,7 +75,7 @@ const DEFAULT_PREFIX: &str = "C-a";
 /// `repeat-time` does for `bind -r`.
 const DEFAULT_REPEAT_MS: u64 = 500;
 /// Columns the sidebar takes, border included, until resized.
-const DEFAULT_SIDEBAR_WIDTH: u16 = 32;
+pub(crate) const DEFAULT_SIDEBAR_WIDTH: u16 = 32;
 /// A dark grey, a little darker than most dark themes' background.
 const DEFAULT_CURRENT_SPACE: Color = Color::Indexed(236);
 /// Where new worktrees go unless `[worktrees] directory` says otherwise.
@@ -101,7 +101,7 @@ pub struct Config {
     pub tabs: TabColors,
     /// The sidebar's starting width, while none was saved.
     pub sidebar_width: u16,
-    /// Which macOS notifications to send.
+    /// Which desktop notifications to send.
     pub notify: Notify,
     /// The floats and the size of their box.
     pub floats: Floats,
@@ -196,7 +196,7 @@ impl Default for Worktrees {
     }
 }
 
-/// Which macOS notifications to send; states, markers and the dashboard
+/// Which desktop notifications to send; states, markers and the dashboard
 /// show every change either way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Notify {
@@ -805,9 +805,8 @@ mod tests {
     }
 
     #[test]
-    fn the_readme_example_config_is_valid() {
-        let readme = include_str!("../README.md");
-        let configure = &readme[readme.find("## Configure").unwrap()..];
+    fn the_docs_example_config_is_valid() {
+        let configure = include_str!("../docs/config.md");
         let start = configure.find("```toml\n").unwrap() + "```toml\n".len();
         let example = &configure[start..start + configure[start..].find("```").unwrap()];
         let c = Config::parse(example).unwrap();

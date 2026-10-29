@@ -9,7 +9,7 @@ tmux gave paddock terminals that outlive the app. It also brought format-expande
 - **Attach.** The server sends each terminal's screen, scrollback, cursor and key modes as a snapshot, then streams its raw output. The app keeps its own emulator, so rendering, selection, copy mode and search do not change.
 - **Clean environment.** Shells start with the same allowlisted environment the tmux server used, so variables from whichever terminal app launched paddock do not leak in.
 - **Agent hooks.** Each terminal gets `PADDOCK_PANE`, `PADDOCK_SOCKET` and `PADDOCK_INSTANCE`, plus `AGY_CLI_OSC7501=on`. `paddock hook` decides in this order. A set `TMUX` decides first: paddock's socket means its tmux pane (`TMUX_PANE`), another socket an external session (the user's own tmux, even one started in a native terminal). Otherwise `STY` or `ZELLIJ` (screen or zellij started in a native terminal) means an external session. Otherwise the `PADDOCK_*` variables name the native terminal. Native shells never have `TMUX`, so in them the `PADDOCK_*` variables decide. The event log is keyed by the server's instance id, new each start, instead of the tmux server's pid, in a file apart from tmux's.
-- **Upgrades.** Client and server exchange a protocol version on connect. If the running server speaks another version (older, or newer after a downgrade), paddock says so and offers to restart it. Restarting ends the running programs; the layout comes back ([ADR 0008](0008-layout-saved-and-restored.md)).
+- **Upgrades.** Client and server exchange a protocol version on connect. If the running server speaks another version (older, or newer after a downgrade), paddock says so and offers to restart it. Restarting ends the running programs; the layout comes back ([ADR 0008](0008-layout-saved-and-restored.md)). Since [ADR 0009](0009-server-hands-terminals-to-a-new-binary.md), paddock first offers to upgrade the server in place, its programs running on; the restart is offered when the server cannot hand over.
 
 ## Both backends during v0.1
 
@@ -20,7 +20,7 @@ tmux gave paddock terminals that outlive the app. It also brought format-expande
 - **Keep tmux and only restore after a reboot**: least work, but every tmux limit above stays.
 - **Several clients on one server, as herdr does**: not needed for one window. Possible later.
 - **The server sends drawn frames**: a thinner client, but copy mode, search and selection would have to move into the server.
-- **Hand PTYs to the new binary on upgrade (`exec` with inherited descriptors)**: programs would survive an upgrade, but it is much more work. Possible later.
+- **Hand PTYs to the new binary on upgrade (`exec` with inherited descriptors)**: programs would survive an upgrade, but it is much more work. Possible later (done in [ADR 0009](0009-server-hands-terminals-to-a-new-binary.md)).
 - **Replace tmux in one step**: no fallback while the native backend is new.
 
 ## Consequences

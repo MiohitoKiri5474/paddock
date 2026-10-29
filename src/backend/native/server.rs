@@ -7,12 +7,18 @@
 //! its input and query replies; one waits for its shell to exit. All
 //! share one [`State`] behind one lock, so a snapshot taken under it holds
 //! exactly the output before it, and everything after it reaches the
-//! client after the snapshot: no byte lost or doubled.
+//! client after the snapshot: no byte lost or doubled. A reader reads
+//! only with the lock held, and a waiter reaps only with it held, so with
+//! it held no output is half taken and no program half reaped: the server
+//! can hand everything to a new binary (ADR 0009, [`handover`]).
 
 use super::axis::Axis;
-use super::protocol::{self, Answer, Ending, Frame, Message, Notice, Refusal, Request};
+use super::handover::{self, HandedTerminal, Held};
+use super::protocol::{self, Answer, Ending, Frame, Message, Notice, Refusal, Request, Upgrade};
 use super::pty::Program::{self, LoginShell};
 use super::saved::{self, Saver};
+use super::scrollback::{self, ScrollbackName};
+use super::seen::Seen;
 use super::space::{HostedFloat, Space};
 use super::state::{State, Subscriber};
 use super::tab::Tab;
@@ -20,14 +26,17 @@ use super::terminal::{dir_name, HostedTerminal, Input, Sent, INPUT_MAX};
 use super::{lock, pty, restore, socket_path, LOG};
 use crate::backend::env::{clean_env, AGY_STATUS_VAR};
 use crate::backend::{FloatId, SpaceId, TabId, TerminalId};
+use crate::hooks::now_ms;
 use crate::paths::Paths;
 use anyhow::{bail, Context, Result};
 use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
 use signal_hook::iterator::Signals;
-use std::io::Read;
+use std::convert::Infallible;
+use std::fs::File;
+use std::io::{BufReader, Read};
+use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::process::Child;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -48,6 +57,17 @@ const TAB_NAME_POLL: Duration = Duration::from_millis(300);
 /// How often the layout is offered to `layout.json` (written only when
 /// it changed, at most once every [`saved::GAP`]).
 const SAVE_POLL: Duration = Duration::from_millis(100);
+/// How long an upgrade waits for every program to take its input.
+const INPUT_WAIT: Duration = Duration::from_secs(2);
+/// How often a restored terminal is looked at for its shell's first
+/// output, before its resume command is typed.
+const RESUME_POLL: Duration = Duration::from_millis(20);
+/// How long a restored shell may stay silent before its resume command
+/// is typed anyway.
+const RESUME_WAIT: Duration = Duration::from_secs(3);
+/// Milliseconds to wait in place of [`RESUME_WAIT`]: for tests, which
+/// keep a shell silent on purpose. Not passed on to the shells.
+pub const RESUME_WAIT_VAR: &str = "PADDOCK_RESUME_WAIT_MS";
 
 struct Shared {
     state: Mutex<State>,
@@ -55,14 +75,57 @@ struct Shared {
     home: PathBuf,
     /// The shells' environment.
     env: Vec<(String, String)>,
+    /// How long a silent restored shell gets before its resume command
+    /// is typed ([`RESUME_WAIT`], or [`RESUME_WAIT_VAR`]'s).
+    resume_wait: Duration,
     connections: AtomicU64,
     /// Writes `layout.json`; locked after `state`, if both are.
     saver: Mutex<Saver>,
+    state_dir: PathBuf,
+    /// Its lock's and listening socket's descriptors, which an upgrade
+    /// hands over.
+    held: Held,
+    /// The agent session last seen in each terminal, from the server's
+    /// hook log, for `layout.json`; locked after `state`, if both are,
+    /// and before `saver`.
+    seen: Mutex<Seen>,
 }
 
 impl Shared {
+    /// A server's shared parts, from its environment: holding `state`,
+    /// its lock and listening socket on `held`.
+    fn new(state: State, paths: &Paths, held: Held) -> Self {
+        let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
+        let mut env = clean_env(std::env::vars());
+        env.retain(|(k, _)| k != RESUME_WAIT_VAR);
+        env.push(("COLORTERM".into(), "truecolor".into()));
+        env.push((AGY_STATUS_VAR.into(), "on".into()));
+        // A server that took over (ADR 0009) reads its hook log again from
+        // its start: the same instance, so the same log, and folding it
+        // again gives what the server before it had seen.
+        let seen = Seen::new(&paths.state_dir, state.instance());
+        Self {
+            state: Mutex::new(state),
+            shell: var("SHELL").unwrap_or_else(|| "/bin/sh".into()),
+            home: var("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from),
+            env,
+            resume_wait: var(RESUME_WAIT_VAR)
+                .and_then(|ms| ms.parse().ok())
+                .map_or(RESUME_WAIT, Duration::from_millis),
+            connections: AtomicU64::new(0),
+            saver: Mutex::new(Saver::new(paths.state_dir.clone())),
+            state_dir: paths.state_dir.clone(),
+            held,
+            seen: Mutex::new(seen),
+        }
+    }
+
     fn lock(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn seen(&self) -> MutexGuard<'_, Seen> {
+        self.seen.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 
@@ -74,37 +137,174 @@ pub fn serve() -> Result<()> {
     std::fs::create_dir_all(&paths.state_dir)
         .with_context(|| format!("cannot create {}", paths.state_dir.display()))?;
     let socket = socket_path(&paths)?;
-    let Some(_lock) = wait_for_lock(&paths.state_dir)? else {
+    let Some(lock) = wait_for_lock(&paths.state_dir)? else {
         return Ok(());
     };
     let listener = bind(&socket)?;
-    let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
-    let mut env = clean_env(std::env::vars());
-    env.push(("COLORTERM".into(), "truecolor".into()));
-    env.push((AGY_STATUS_VAR.into(), "on".into()));
-    let shared = Arc::new(Shared {
-        state: Mutex::new(State::new(socket, new_instance())),
-        shell: var("SHELL").unwrap_or_else(|| "/bin/sh".into()),
-        home: var("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from),
-        env,
-        connections: AtomicU64::new(0),
-        saver: Mutex::new(Saver::new(paths.state_dir.clone())),
-    });
+    let state = State::new(socket, new_instance());
+    let held = Held::of(&lock, &listener);
+    let shared = Arc::new(Shared::new(state, &paths, held));
     // Before any signal is handled: one that ends the server mid-way
     // would save half the layout.
+    let mut resumed = Vec::new();
     {
         let mut state = shared.lock();
         let mut start = |state: &State, space: &SpaceId, id, cwd: &Path, size: (u16, u16)| {
             start_terminal(&shared, state, space, id, LoginShell, cwd, size)
         };
-        restore::from_file(&paths.state_dir, &mut state, &mut start);
+        restore::from_file(&paths.state_dir, &mut state, &mut start, &mut resumed);
+        // Saved as running until the resumed agents' hooks say otherwise,
+        // so a restart before they report keeps them.
+        let mut seen = shared.seen();
+        for r in &resumed {
+            seen.seed(r.terminal.clone(), r.agent.clone());
+        }
+        // Before any client can type: keys typed before the resume is
+        // typed come after it, not inside it (ticket 59).
+        for (_, t) in state.terminals() {
+            if let Some(r) = resumed.iter().find(|r| r.terminal == t.id) {
+                let command = format!("{}\r", r.command).into_bytes();
+                t.input.hold_behind(command, Vec::new());
+            }
+        }
     }
-    watch_signals(&shared)?;
-    let names = Arc::clone(&shared);
+    let pending = resumed.into_iter().map(|r| r.terminal).collect();
+    start_typing_resumes(&shared, pending);
+    run(&shared, &listener, lock)
+}
+
+/// `paddock server --take-over <record> <connection>`: what the server
+/// becomes when it hands over (ADR 0009), from the descriptors it passed.
+/// Takes over the spaces in the record, answers on the connection, and
+/// serves on as the server did; an error, which ends it (hanging up every
+/// program as their PTYs close), if it cannot.
+pub fn take_over(record: &str, conn: &str) -> Result<()> {
+    let record: RawFd = record.parse().context("a record descriptor")?;
+    let conn: RawFd = conn.parse().context("a connection descriptor")?;
+    for fd in [record, conn] {
+        if fd <= 2 || !handover::is_open(fd) {
+            bail!("no descriptor {fd} to take over from");
+        }
+        handover::close_on_exec(fd, true)?;
+    }
+    // SAFETY: the server that became this process passed these two open
+    // descriptors, named on its command line, and nothing else owns them.
+    let (record, mut conn) = unsafe { (File::from_raw_fd(record), UnixStream::from_raw_fd(conn)) };
+    let pid = std::process::id();
+    match adopt(record, conn.as_raw_fd()) {
+        Ok((shared, listener, lock)) => {
+            eprintln!("paddock server: took over as pid {pid}");
+            let done = Frame::Upgrade(Upgrade::Done { pid });
+            if let Err(e) = protocol::write(&mut conn, &done) {
+                eprintln!("paddock server: cannot answer the upgrade: {e:#}");
+            }
+            drop(conn);
+            run(&shared, &listener, lock)
+        }
+        Err(e) => {
+            let why = format!(
+                "the new paddock server could not take over, and has ended with every \
+                 program in it (the next paddock rebuilds the layout): {e:#}"
+            );
+            let _ = protocol::write(&mut conn, &Frame::Upgrade(Upgrade::Refused(why)));
+            Err(e)
+        }
+    }
+}
+
+/// The server the handover record `record` describes, its terminals'
+/// threads started, its listener and its lock. Every other descriptor
+/// passed over but the connection `conn` is closed first.
+fn adopt(record: File, conn: RawFd) -> Result<(Arc<Shared>, UnixListener, File)> {
+    let paths = Paths::from_env()?;
+    let socket = socket_path(&paths)?;
+    // The record's file closes once it is read, so it is not kept below.
+    let (record, snapshots) = handover::read(&mut BufReader::new(record))?;
+    let mut keep = record.descriptors();
+    keep.push(conn);
+    // Best effort. The probe (`--check-handover`, which vouched for this
+    // takeover) only reads the record and never closes anything, so a
+    // failure here must not end a takeover it accepted: a stray left open
+    // only keeps one client waiting, until its read times out.
+    if let Err(e) = handover::close_strays(&keep) {
+        eprintln!("paddock server: {e:#}");
+    }
+    let lock = File::from(take_fd(record.lock)?);
+    let listener = UnixListener::from(take_fd(record.listener)?);
+    let state = State::handed(socket, record.instance, record.last_id);
+    let held = Held::of(&lock, &listener);
+    let shared = Arc::new(Shared::new(state, &paths, held));
+    let pending = {
+        let mut state = shared.lock();
+        let instance = record.instance;
+        let mut adopt = |space: &SpaceId, handed: HandedTerminal, snapshot: &[u8]| {
+            adopt_terminal(&shared, instance, space, handed, snapshot)
+        };
+        handover::rebuild(&mut state, record, snapshots, &mut adopt)?;
+        // The resumes the server before had not typed yet (ticket 59).
+        let pending = state.terminals().filter(|(_, t)| t.input.holding());
+        pending.map(|(_, t)| t.id.clone()).collect()
+    };
+    start_typing_resumes(&shared, pending);
+    Ok((shared, listener, lock))
+}
+
+/// The descriptor `fd`, which the record names, as this process's own,
+/// closed on its next exec.
+fn take_fd(fd: RawFd) -> Result<std::os::fd::OwnedFd> {
+    if !handover::is_open(fd) {
+        bail!("no descriptor {fd} passed over");
+    }
+    handover::close_on_exec(fd, true)?;
+    // SAFETY: open, passed over by the server this process was, and
+    // named once in the record (`handover::read` checks), so owned once.
+    Ok(unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) })
+}
+
+/// Terminal `handed` of `space`, on its PTY as passed over, its emulator
+/// rebuilt from `snapshot`, and its threads (see [`start_terminal`]).
+fn adopt_terminal(
+    shared: &Arc<Shared>,
+    instance: u32,
+    space: &SpaceId,
+    handed: HandedTerminal,
+    snapshot: &[u8],
+) -> Result<HostedTerminal> {
+    let master = File::from(take_fd(handed.master)?);
+    let input = Input::start(&handed.id, master.try_clone()?);
+    let reader = master.try_clone()?;
+    let HandedTerminal {
+        id,
+        pid,
+        tty,
+        size,
+        exited,
+        scrollback,
+        hold,
+        ..
+    } = handed;
+    let spoke = hold.as_ref().is_some_and(|h| h.spoke);
+    if let Some(hold) = hold {
+        input.hold_behind(hold.first, hold.bytes);
+    }
+    let saved_as = scrollback.as_deref().and_then(ScrollbackName::parse);
+    let saved_as = saved_as.unwrap_or_else(|| ScrollbackName::new(instance, &id));
+    let mut term = HostedTerminal::hosting(id.clone(), saved_as, pid, tty, master, input, size);
+    term.exited = exited;
+    term.spoke = spoke;
+    term.replay(snapshot);
+    watch(shared, space, id, reader, (!exited).then_some(pid));
+    Ok(term)
+}
+
+/// Serve on `listener` until the server ends, holding its lock `_lock`.
+fn run(shared: &Arc<Shared>, listener: &UnixListener, _lock: File) -> Result<()> {
+    watch_signals(shared)?;
+    let names = Arc::clone(shared);
     std::thread::spawn(move || follow_names(&names));
-    let saving = Arc::clone(&shared);
+    let saving = Arc::clone(shared);
     std::thread::spawn(move || save_layout(&saving));
-    let idle = Arc::clone(&shared);
+    let idle = Arc::clone(shared);
     std::thread::spawn(move || {
         std::thread::sleep(IDLE_EXIT);
         if !idle.lock().started {
@@ -113,8 +313,8 @@ pub fn serve() -> Result<()> {
     });
     for stream in listener.incoming() {
         let Ok(stream) = stream else { continue };
-        let shared = Arc::clone(&shared);
-        std::thread::spawn(move || {
+        let shared = Arc::clone(shared);
+        let serving = std::thread::Builder::new().spawn(move || {
             let conn = shared.connections.fetch_add(1, Ordering::Relaxed);
             if let Err(e) = serve_connection(&shared, conn, stream) {
                 eprintln!("paddock server: connection {conn}: {e:#}");
@@ -122,6 +322,12 @@ pub fn serve() -> Result<()> {
             // Its writer ends; nobody reads what is left.
             drop(shared.lock().detach(conn));
         });
+        // Never a panic here, on the main thread, which would end the
+        // server: Linux starts no thread while another `exec`s (an
+        // upgrade), and a client whose connection closes asks again.
+        if let Err(e) = serving {
+            eprintln!("paddock server: cannot serve a connection: {e}");
+        }
     }
     Ok(())
 }
@@ -131,8 +337,7 @@ pub fn serve() -> Result<()> {
 /// one in four billion chance. Never 0, which a client's hello sends.
 fn new_instance() -> u32 {
     loop {
-        // SAFETY: arc4random has no preconditions.
-        let id = unsafe { libc::arc4random() };
+        let id = super::proc::random();
         if id != 0 {
             return id;
         }
@@ -220,10 +425,22 @@ fn close(shared: &Shared, state: &mut State) {
     }
 }
 
-/// Write the layout to `layout.json` now, if it changed, and no more.
-fn flush_layout(shared: &Shared, state: &State) {
-    let layout = saved::snapshot(state).read_dirs();
+/// Write each terminal's scrollback, then the layout to `layout.json`
+/// now, if it changed, and no more. The saver is held throughout, so no
+/// layout written meanwhile removes scrollback just saved. Unlike the
+/// layout offered while the server runs, both are written with the state
+/// locked: the server is ending (see [`scrollback`]). The layout has the
+/// sessions seen up to now, before the shells are hung up; an agent
+/// ended from outside just before (a reboot signals it too) is saved as
+/// not over ([`Seen::close`]).
+fn flush_layout(shared: &Shared, state: &mut State) {
+    let mut seen = shared.seen();
+    seen.close(now_ms());
+    seen.read_new();
+    let layout = saved::snapshot(state).read_dirs(&mut seen);
+    drop(seen);
     let mut saver = shared.saver.lock().unwrap_or_else(|e| e.into_inner());
+    scrollback::save_all(saver.dir(), state);
     if let Err(e) = saver.flush(layout) {
         eprintln!("paddock server: {e:#}");
     }
@@ -231,12 +448,14 @@ fn flush_layout(shared: &Shared, state: &State) {
 
 /// Offer the layout to `layout.json` every [`SAVE_POLL`], until the
 /// server is ending. A terminal's directory is read here too, as no
-/// notice says it changed: with the state let go, as is the file. (A
+/// notice says it changed, and the hook log for the sessions seen: with
+/// the state let go, as is the file. (A
 /// layout taken before the server began to end is never written after
 /// its last: the saver is flushed then, and takes no more.)
 fn save_layout(shared: &Shared) {
     loop {
         std::thread::sleep(SAVE_POLL);
+        shared.seen().read_new();
         let snapshot = {
             let state = shared.lock();
             if state.closing {
@@ -244,7 +463,7 @@ fn save_layout(shared: &Shared) {
             }
             saved::snapshot(&state)
         };
-        let layout = snapshot.read_dirs();
+        let layout = snapshot.read_dirs(&mut shared.seen());
         let mut saver = shared.saver.lock().unwrap_or_else(|e| e.into_inner());
         if let Err(e) = saver.offer(layout, Instant::now()) {
             eprintln!("paddock server: {e:#}");
@@ -252,9 +471,58 @@ fn save_layout(shared: &Shared) {
     }
 }
 
+/// Type each resume command into its restored terminal once the shell
+/// there has written something (its rc files have run, so it reads the
+/// line, not something they ask), or after [`RESUME_WAIT`] if it stays
+/// silent, followed by the keys typed there meanwhile, which were held
+/// behind it ([`Input::hold_behind`]); drop one whose terminal has closed.
+fn type_resumes(shared: &Shared, mut pending: Vec<TerminalId>) {
+    let started = Instant::now();
+    while !pending.is_empty() {
+        std::thread::sleep(RESUME_POLL);
+        let waited = started.elapsed();
+        let state = shared.lock();
+        pending.retain(|id| {
+            let mut terminals = state.terminals().map(|(_, t)| t);
+            let Some(t) = terminals.find(|t| t.id == *id) else {
+                return false;
+            };
+            if !ready_to_type(t.spoke, waited, shared.resume_wait) {
+                return true;
+            }
+            t.input.release();
+            false
+        });
+    }
+}
+
+/// Type the resume commands of terminals `pending` ([`type_resumes`]),
+/// on a thread of their own; nothing if there are none.
+fn start_typing_resumes(shared: &Arc<Shared>, pending: Vec<TerminalId>) {
+    if pending.is_empty() {
+        return;
+    }
+    let typing = Arc::clone(shared);
+    std::thread::spawn(move || type_resumes(&typing, pending));
+}
+
+/// Whether a resume command is typed now into a restored shell that has
+/// (`spoke`) or has not written anything, `waited` after it started, if
+/// a silent one gets `limit`.
+fn ready_to_type(spoke: bool, waited: Duration, limit: Duration) -> bool {
+    spoke || waited >= limit
+}
+
 fn serve_connection(shared: &Arc<Shared>, conn: u64, mut stream: UnixStream) -> Result<()> {
     let instance = shared.lock().instance();
-    protocol::hello(&mut stream, false, instance)?;
+    protocol::send_hello(&mut stream, instance)?;
+    // An upgrade comes in place of the client's hello, whatever version
+    // it speaks.
+    let first = protocol::read(&mut stream, protocol::FROM_CLIENT)?;
+    if let Some(Frame::Upgrade(Upgrade::Ask { exe })) = first {
+        return upgrade(shared, &mut stream, &exe);
+    }
+    protocol::check_hello(first, false)?;
     let mut attached = false;
     // An input whose last parts have not come yet. Left so when the
     // connection ends, it is discarded whole.
@@ -273,6 +541,7 @@ fn serve_connection(shared: &Arc<Shared>, conn: u64, mut stream: UnixStream) -> 
             Frame::Message(Message::Request(request)) => request,
             // Output is the server's to send.
             Frame::Bytes { .. } => bail!("unexpected bytes frame"),
+            Frame::Upgrade(_) => bail!("an upgrade frame after the hello"),
             Frame::Message(other) => bail!("unexpected {other:?}"),
         };
         let answer = match request {
@@ -340,6 +609,101 @@ fn reply(answer: Result<Answer>) -> Frame {
         None => Refusal::Failed(format!("{e:#}")),
     });
     Frame::Message(Message::Reply(answer))
+}
+
+/// Hand every terminal to the binary `exe`, which this process becomes
+/// (ADR 0009); it answers on `stream`. Returns only if it did not: the
+/// server, unchanged, says why on `stream` (after `Probed`, if its
+/// `exec` failed).
+fn upgrade(shared: &Shared, stream: &mut UnixStream, exe: &Path) -> Result<()> {
+    let Err(e) = hand_over(shared, stream, exe);
+    let why = format!("{e:#}");
+    eprintln!(
+        "paddock server: not handing over to {}: {why}",
+        exe.display()
+    );
+    protocol::write(stream, &Frame::Upgrade(Upgrade::Refused(why)))
+}
+
+/// Have `exe` check a record of what the server holds, then freeze the
+/// server, write what it holds, save the layout, and become `exe`. Every
+/// error leaves the server as it was. One upgrade at a time.
+fn hand_over(shared: &Shared, stream: &mut UnixStream, exe: &Path) -> Result<Infallible> {
+    static UPGRADING: Mutex<()> = Mutex::new(());
+    let _one = UPGRADING.lock().unwrap_or_else(|e| e.into_inner());
+    // The probe runs from `/`, and `exec` from the server's directory.
+    if !exe.is_absolute() {
+        bail!("{} is not an absolute path", exe.display());
+    }
+    // The probe reads the record as it is now, with the state let go:
+    // the server serves on while it runs (up to 10 s).
+    let mut probed = {
+        let mut state = shared.lock();
+        if state.closing {
+            return Err(Ending.into());
+        }
+        let (record, snapshots) = handover::record(&mut state, shared.held);
+        drop(state);
+        handover::write(&shared.state_dir, &record, &snapshots)?
+    };
+    handover::probe(exe, &mut probed)?;
+    drop(probed);
+    let mut state = freeze(shared)?;
+    // `layout.json` is never left half written, and holds the layout as
+    // it is now, with the sessions seen: a new server that fails leaves
+    // it for the next.
+    let mut seen = shared.seen();
+    seen.read_new();
+    let mut saver = shared.saver.lock().unwrap_or_else(|e| e.into_inner());
+    let (record, snapshots) = handover::record(&mut state, shared.held);
+    let file = handover::write(&shared.state_dir, &record, &snapshots)?;
+    let layout = saved::snapshot(&state).read_dirs(&mut seen);
+    saver
+        .write_now(layout)
+        .context("cannot save the layout before handing over")?;
+    let_go_for_upgrade(&mut state);
+    protocol::write(stream, &Frame::Upgrade(Upgrade::Probed))?;
+    eprintln!("paddock server: handing over to {}", exe.display());
+    let fds = record.descriptors();
+    Err(handover::exec(exe, &file, stream.as_raw_fd(), &fds))
+}
+
+/// Tell every attached client the server is upgrading, and let each go
+/// once it has read that (or after [`LAST_WORDS`]): it attaches again to
+/// the new binary, or to this server if the `exec` fails. Their writers
+/// never need the state, so they are waited for with it locked.
+fn let_go_for_upgrade(state: &mut State) {
+    state.notify_all(&Notice::Upgrading);
+    for s in std::mem::take(&mut state.attached) {
+        state.let_go(s, LAST_WORDS);
+    }
+    for thread in state.take_leaving() {
+        let _ = thread.join();
+    }
+}
+
+/// The state, locked once every program has taken its input, so none is
+/// lost with the process; an error if the server is ending, or some input
+/// still waits after [`INPUT_WAIT`]. With it locked no reader holds output
+/// it has not fed, and no waiter has reaped a program it has not marked.
+fn freeze(shared: &Shared) -> Result<MutexGuard<'_, State>> {
+    let start = Instant::now();
+    loop {
+        let state = shared.lock();
+        if state.closing {
+            return Err(Ending.into());
+        }
+        let busy = state.terminals().find(|(_, t)| !t.input.idle());
+        let Some((_, term)) = busy else {
+            return Ok(state);
+        };
+        if start.elapsed() > INPUT_WAIT {
+            let program = term.command().unwrap_or_else(|| "a program".into());
+            bail!("input still waits for {program} in {}", term.id);
+        }
+        drop(state);
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 /// An input whose parts still come on a connection: collected, to be
@@ -641,7 +1005,8 @@ fn start_terminal(
     let ready = (|| {
         let input = Input::start(&id, pty.master.try_clone()?);
         let reader = pty.master.try_clone()?;
-        let term = HostedTerminal::new(id.clone(), &pty, input, size)?;
+        let name = ScrollbackName::new(state.instance(), &id);
+        let term = HostedTerminal::new(id.clone(), name, &pty, input, size)?;
         anyhow::Ok((reader, term))
     })();
     let (reader, term) = match ready {
@@ -653,31 +1018,44 @@ fn start_terminal(
             return Err(e);
         }
     };
+    // Reaped by its waiter, by pid: a server that took over (ADR 0009)
+    // has no `Child` for it.
+    watch(shared, space, id, reader, Some(term.pid));
+    Ok(term)
+}
+
+/// Start terminal `id`'s reader on `reader`, its PTY, and its waiter for
+/// program `pid` (`None` once reaped).
+fn watch(shared: &Arc<Shared>, space: &SpaceId, id: TerminalId, reader: File, pid: Option<u32>) {
     let (drained, done) = mpsc::channel::<()>();
     let (s, sp, t) = (Arc::clone(shared), space.clone(), id.clone());
     std::thread::spawn(move || read_output(&s, &sp, &t, reader, drained));
     let (s, sp) = (Arc::clone(shared), space.clone());
-    let child = pty.child;
-    std::thread::spawn(move || wait_for_exit(&s, &sp, &id, child, &done));
-    Ok(term)
+    std::thread::spawn(move || wait_for_exit(&s, &sp, &id, pid, &done));
 }
 
 /// Feed terminal `id`'s output to its emulator and the attached client,
-/// until its PTY closes; then drop `_drained`.
+/// until its PTY closes; then drop `_drained`. It waits for output with
+/// the state let go, but reads it only with the state locked, so whoever
+/// holds the lock knows no output is half taken.
 fn read_output(
     shared: &Shared,
     space: &SpaceId,
     id: &TerminalId,
-    mut master: std::fs::File,
+    mut master: File,
     _drained: mpsc::Sender<()>,
 ) {
     let mut buf = vec![0; READ_CHUNK];
     loop {
+        if !readable(&master) {
+            return;
+        }
+        let mut state = shared.lock();
+        // It has output, or has closed: this read does not wait.
         let n = match master.read(&mut buf) {
             Ok(0) | Err(_) => return,
             Ok(n) => n,
         };
-        let mut state = shared.lock();
         let found = state
             .spaces
             .iter_mut()
@@ -693,19 +1071,41 @@ fn read_output(
     }
 }
 
-/// When terminal `id`'s shell exits, and its last output is read (or after
-/// [`DRAIN`], as a program left in the background may hold the PTY open),
-/// forget the terminal, and its space with its last terminal; end the
-/// server with the last one.
+/// Whether `master` has output to read, or has closed, once it does
+/// (waiting as long as it takes); false if it cannot be waited on.
+fn readable(master: &File) -> bool {
+    let mut poll = libc::pollfd {
+        fd: master.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    loop {
+        // SAFETY: poll reads and writes the one pollfd it is given.
+        if unsafe { libc::poll(&mut poll, 1, -1) } >= 0 {
+            return poll.revents & libc::POLLNVAL == 0;
+        }
+        if std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+            return false;
+        }
+    }
+}
+
+/// When terminal `id`'s program `pid` exits (at once if `None`: it has
+/// been reaped), and its last output is read (or after [`DRAIN`], as a
+/// program left in the background may hold the PTY open), forget the
+/// terminal, and its space with its last terminal; end the server with
+/// the last one.
 fn wait_for_exit(
     shared: &Shared,
     space: &SpaceId,
     id: &TerminalId,
-    mut child: Child,
+    pid: Option<u32>,
     drained: &mpsc::Receiver<()>,
 ) {
-    let _ = child.wait();
-    reaped(shared, space, id);
+    if let Some(pid) = pid.and_then(|p| i32::try_from(p).ok()) {
+        exits(pid);
+        reaped(shared, space, id, pid);
+    }
     // The reader only drops its end.
     let _ = drained.recv_timeout(DRAIN);
     let mut state = shared.lock();
@@ -726,11 +1126,33 @@ fn wait_for_exit(
     }
 }
 
-/// Note that terminal `id`'s program has been reaped: never signal its
-/// pid again, and close a float it ran at once, so its key takes a new
-/// one while its last output is still read.
-fn reaped(shared: &Shared, space: &SpaceId, id: &TerminalId) {
+/// Wait until child `pid` has exited, leaving it unreaped (`WNOWAIT`), so
+/// it is reaped and marked under the state lock ([`reaped`]). Returns at
+/// once if it is no child (any more).
+fn exits(pid: i32) {
+    loop {
+        // SAFETY: an all-zero siginfo_t is a valid value for waitid to fill.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        let options = libc::WEXITED | libc::WNOWAIT;
+        // SAFETY: waitid writes one siginfo_t to the pointer.
+        let id = libc::id_t::try_from(pid).unwrap_or_default();
+        if unsafe { libc::waitid(libc::P_PID, id, &mut info, options) } == 0 {
+            return;
+        }
+        if std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+            return;
+        }
+    }
+}
+
+/// Reap terminal `id`'s program `pid`, which has exited, and note it with
+/// the state locked, so none is reaped and not noted when the server
+/// hands over: never signal its pid again, and close a float it ran at
+/// once, so its key takes a new one while its last output is still read.
+fn reaped(shared: &Shared, space: &SpaceId, id: &TerminalId, pid: i32) {
     let mut state = shared.lock();
+    // SAFETY: waitpid writes nothing through a null status pointer.
+    unsafe { libc::waitpid(pid, std::ptr::null_mut(), libc::WNOHANG) };
     let Ok(s) = state.space_mut(space) else {
         return;
     };
@@ -797,4 +1219,39 @@ fn close_terminal(shared: &Shared, terminal: &TerminalId) -> Result<Answer> {
 /// Where the server writes what goes wrong, under `state_dir`.
 pub fn log_path(state_dir: &Path) -> PathBuf {
     state_dir.join(LOG)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[allow(clippy::zombie_processes)] // Reaped by pid, below.
+    fn an_exit_is_seen_without_reaping_the_program() {
+        let child = std::process::Command::new("/bin/sh")
+            .args(["-c", "exit 3"])
+            .spawn()
+            .unwrap();
+        let pid = i32::try_from(child.id()).unwrap();
+        exits(pid);
+        // Still there to reap, with its status: only `reaped` reaps it.
+        let mut status = 0;
+        // SAFETY: waitpid writes one int to the pointer.
+        assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
+        assert_eq!(libc::WEXITSTATUS(status), 3);
+        // No child any more: it returns at once.
+        exits(pid);
+    }
+
+    #[test]
+    fn a_resume_is_typed_once_the_shell_spoke_or_after_the_wait() {
+        assert!(!ready_to_type(false, Duration::ZERO, RESUME_WAIT));
+        assert!(!ready_to_type(
+            false,
+            RESUME_WAIT - RESUME_POLL,
+            RESUME_WAIT
+        ));
+        assert!(ready_to_type(true, Duration::ZERO, RESUME_WAIT));
+        assert!(ready_to_type(false, RESUME_WAIT, RESUME_WAIT));
+    }
 }

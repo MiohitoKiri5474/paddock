@@ -36,12 +36,20 @@ _Avoid_: tmux session
 paddock's own background process (`paddock server`) that holds every terminal and the layout while the app is closed: the default backend. The app is its client.
 _Avoid_: daemon (in user-facing text), hidden server (that is tmux's)
 
+**Upgrade**:
+Moving the running server onto a new paddock binary with its programs still running (`paddock server upgrade`, or yes when a new paddock finds a server of another protocol version): the server hands over its terminals and becomes the new binary, keeping its pid. Unlike a restart, which ends every program and brings back only the layout.
+_Avoid_: update, reload, migration (that is tmux's terminals not moving to the server)
+
+**Handover**:
+What the server gives the new binary in an upgrade: every space, tab, float and terminal with its PTY, program and screen, as a record with its own format version, apart from the protocol's.
+_Avoid_: snapshot (that is one terminal's screen), transfer
+
 **Backend**:
 What hosts the terminals (`[backend] kind`): paddock's own server (the native backend, the default), or the hidden tmux server (the legacy tmux backend, until v0.2). Terminals never move from one to the other: an older paddock's tmux server keeps its own until closed.
 _Avoid_: engine, runtime
 
 **Sidebar**:
-The panel on the left, which can be shown or hidden: SPACES, two lines per space with a dot for the most urgent state of its agents, then its directory and branch, that branch's git status (`+200 −10 ↑2↓1`: uncommitted lines, commits ahead and behind) and its PR mark (`#123 ✓`) where each fits (the PR mark dropped first), then AGENTS, two lines per main agent in any space with its state, space and tab, and its agent kind's tag where it fits, in space and tab order (a state change never moves one), external sessions last.
+The panel on the left, which can be shown or hidden: SPACES, two lines per space: a dot for the most urgent state of its agents, its name and, at the end, its branch's git status (`+200 −10 ↑2↓1`: uncommitted lines, commits ahead and behind) where it fits whole (the name cut first), then its directory, branch and PR mark (`#123 ✓`) where it fits (the path cut first), then AGENTS, one line per main agent in any space with its label, state and space (labels, at most 12 cells, and states in columns; the space left out first when short of room), in space and tab order (a state change never moves one), external sessions last.
 
 **Agent**:
 A main agent in the sidebar's AGENTS section. Subagents show only in the dashboard.
@@ -75,12 +83,12 @@ A coding agent's conversation (Claude Code, Gemini CLI or Antigravity CLI) runni
 _Avoid_: agent (too broad), terminal, tmux session
 
 **Agent kind**:
-Which coding agent a session belongs to: `claude` (Claude Code), `gemini` (Gemini CLI) or `agy` (Antigravity CLI). Its rows show it as a short tag, and a tab named after its session takes it. Fork, subagents and the `claude agents --json` snapshot are Claude's alone.
+Which coding agent a session belongs to: `claude` (Claude Code), `gemini` (Gemini CLI) or `agy` (Antigravity CLI). Its dashboard rows show it as a short tag (the sidebar leaves it out), and a tab named after its session takes it. Fork, subagents and the `claude agents --json` snapshot are Claude's alone.
 _Avoid_: agent type, provider, model
 
 **Status report**:
 An agent's report of its state (working, waiting on you, done, failed, idle) that it writes to its terminal's output (OSC 7501), read by paddock from that output. Only Antigravity CLI's count, and only in paddock's terminals; they are how its waits show.
-_Avoid_: status line, notification (that is macOS's)
+_Avoid_: status line, notification (that is the desktop's)
 
 **Ended**:
 A session whose terminal was closed or whose agent quit (agy: its terminal is back at the shell). It leaves the dashboard and the sidebar; a new agent in the same terminal is a new session. `/clear` (Claude's or Gemini's) does not end it.
@@ -98,7 +106,7 @@ One purpose of work, identified by its git branch: one purpose, one branch.
 _Avoid_: job, ticket, worktree
 
 **External session**:
-A session running outside paddock's terminals (another terminal app, an IDE). paddock shows it dimmed in an External group at the bottom of the dashboard and of AGENTS, with its state and branch, but not its screen. It can only be dismissed: never shown, closed, forked or typed into; and `C-a a` skips it. It leaves when it ends, or after a quiet timeout.
+A session running outside paddock's terminals (another terminal app, an IDE). paddock shows it dimmed in an External group at the bottom of the dashboard (with its state and branch) and of AGENTS (with its state), but not its screen. It can only be dismissed: never shown, closed, forked or typed into; and `C-a a` skips it. It leaves when it ends, or after a quiet timeout.
 
 ### States
 

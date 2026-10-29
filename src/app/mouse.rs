@@ -15,11 +15,9 @@ use crate::input::{route_mouse, MouseAction};
 use crate::terminal::emulator::Emulator;
 use crate::ui::sidebar;
 use crate::ui::tab_bar::{self, Part};
-use anyhow::{Context, Result};
+use anyhow::Result;
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Position, Rect};
-use std::io::Write;
-use std::process::{Command, Stdio};
 
 /// Where a held button went when it was pressed. Its drags and its release
 /// go the same way, even outside that pane.
@@ -250,7 +248,7 @@ impl App {
             self.input(&pane, &bytes)?;
         }
         if let Some(text) = copied {
-            self.report(|_| copy(&text));
+            self.copy_to_clipboard(&text);
         }
         if released {
             self.press = None;
@@ -381,28 +379,6 @@ fn select_held(
     let text = dragged.then(|| emu.selected_text()).flatten();
     emu.clear_selection();
     text
-}
-
-/// Put `text` on the clipboard with `pbcopy`, or with the program named by
-/// `PADDOCK_COPY_COMMAND` (tests use it to keep off the real clipboard).
-pub(super) fn copy(text: &str) -> Result<()> {
-    let program = std::env::var_os("PADDOCK_COPY_COMMAND").unwrap_or_else(|| "pbcopy".into());
-    let name = program.to_string_lossy().into_owned();
-    let mut child = Command::new(&program)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .with_context(|| format!("cannot copy: cannot run {name}"))?;
-    let written = child
-        .stdin
-        .take()
-        .context("cannot copy: no stdin")?
-        .write_all(text.as_bytes());
-    let status = child.wait()?;
-    written.with_context(|| format!("cannot copy: writing to {name} failed"))?;
-    anyhow::ensure!(status.success(), "cannot copy: {name} failed");
-    Ok(())
 }
 
 #[cfg(test)]

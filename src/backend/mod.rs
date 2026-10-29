@@ -17,7 +17,7 @@ mod tmux;
 
 pub use border::Border;
 pub use ids::{FloatId, SpaceId, TabId, TerminalId};
-pub use native::{serve, OtherVersion};
+pub use native::{check_handover, serve, take_over, NoHandover, OtherVersion, Upgraded};
 pub use old_tmux::OldTmuxServer;
 pub use structure::{Float, Split, Structure, Tab};
 
@@ -28,6 +28,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
+use std::time::Duration;
 
 /// What a space's connection reports, in order.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,6 +48,10 @@ pub enum Event {
     /// server let this paddock go (it stopped reading), or failed. (A
     /// server that ends on purpose sends [`Event::Ended`] first.)
     Lost,
+    /// The native server hands its terminals to a new binary (ADR 0009):
+    /// the connection ends next ([`Event::Lost`]), and the same spaces can
+    /// be attached again once the new binary serves.
+    Upgrading,
     /// Input to `terminal` was refused, and `why` (native only): once,
     /// until its program has taken all that waited.
     InputRefused { terminal: TerminalId, why: String },
@@ -86,6 +91,22 @@ pub struct TerminalDetails {
     /// The variables that tell a process (an agent's hook) it runs in this
     /// terminal: what [`hook_terminal`] reads.
     pub hook_env: Vec<(String, String)>,
+}
+
+/// What the host rebuilt from its saved layout when it started (ADR
+/// 0008).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Restored {
+    /// Spaces that came back.
+    pub spaces: usize,
+    /// Agent sessions resumed in their terminals.
+    pub sessions: usize,
+    /// The kind of each session not over that came back as a plain
+    /// shell as its id is not one to type (see
+    /// [`crate::sessions::AgentKind::resume_command`]). Left out when
+    /// none, and read as none from a server that never sends it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cannot_resume: Vec<crate::sessions::AgentKind>,
 }
 
 /// What a terminal held when its space was attached: the bytes that,
@@ -180,7 +201,7 @@ impl Backend {
 
     /// Get ready to start the host, if it does not run yet; an error if
     /// one runs that this paddock cannot talk to ([`OtherVersion`] on
-    /// native, see [`Self::restart`]).
+    /// native, see [`Self::upgrade_other`] and [`Self::restart`]).
     pub fn prepare(&self) -> Result<()> {
         match self {
             Self::Tmux(t) => t.write_config(),
@@ -209,9 +230,35 @@ impl Backend {
         }
     }
 
-    /// How many spaces the host rebuilt from its saved layout when it
-    /// started, once: `None` after the first ask, and on tmux.
-    pub fn restored(&self) -> Option<usize> {
+    /// Hand the running native server's terminals to the paddock binary
+    /// `exe` (an absolute path; this paddock's own is
+    /// [`std::env::current_exe`]), which then runs as it, whatever
+    /// protocol version it speaks (ADR 0009): its pid. An error says why
+    /// not. Most leave the server running unchanged, [`NoHandover`]
+    /// among them (it cannot hand over at all, so [`Self::restart`] is
+    /// left); but an error once `exe` ran, a refusal that says the new
+    /// server could not take over, or an answer that never came, means
+    /// the server has ended with every program in it. An error on tmux.
+    pub fn upgrade(&self, exe: &Path) -> Result<u32> {
+        match self {
+            Self::Tmux(_) => anyhow::bail!("the tmux backend has no paddock server to upgrade"),
+            Self::Native(n) => n.upgrade(exe),
+        }
+    }
+
+    /// [`Self::upgrade`] the running native server `other`, which this
+    /// paddock cannot talk to, to `exe`, and tell how it went from what
+    /// runs after it ([`Upgraded`]). An error on tmux.
+    pub fn upgrade_other(&self, other: &OtherVersion, exe: &Path) -> Result<Upgraded> {
+        match self {
+            Self::Tmux(_) => anyhow::bail!("the tmux backend has no paddock server to upgrade"),
+            Self::Native(n) => n.upgrade_other(other, exe),
+        }
+    }
+
+    /// What the host rebuilt from its saved layout when it started,
+    /// once: `None` after the first ask, and on tmux.
+    pub fn restored(&self) -> Option<Restored> {
         match self {
             Self::Tmux(_) => None,
             Self::Native(n) => n.take_restored().ok().flatten(),
@@ -298,6 +345,17 @@ impl Backend {
             // Here and below: none when it cannot say, as with tmux. A
             // server this paddock cannot talk to is `check`'s error.
             Self::Native(n) => n.spaces().unwrap_or_default(),
+        }
+    }
+
+    /// The spaces a server that has just taken over runs (ADR 0009),
+    /// asked within `timeout`: none if no server runs, and an error, not
+    /// none, if the connection closes unanswered, as the old binary's do
+    /// until its `exec`, or gives no answer in time.
+    pub fn upgraded_spaces(&self, timeout: Duration) -> Result<Vec<ListedSpace>> {
+        match self {
+            Self::Tmux(t) => Ok(t.sessions()),
+            Self::Native(n) => n.upgraded_spaces(timeout),
         }
     }
 
@@ -573,6 +631,14 @@ pub enum Connection {
 }
 
 impl Connection {
+    /// Close the connection both ways: its reader sees it end.
+    pub fn close(&self) {
+        match self {
+            Self::Tmux(_) => {}
+            Self::Native(a) => a.close(),
+        }
+    }
+
     /// Write raw bytes to `terminal`, as typed.
     pub fn input(&mut self, terminal: &TerminalId, bytes: &[u8]) -> Result<()> {
         match self {

@@ -2,6 +2,7 @@
 //! agents, the current space's tabs, and where the current tab's panes go.
 
 use super::rows::{most_urgent, Row};
+use super::space::Space;
 use super::state::{App, CloseTarget, Mode};
 use super::worktrees::SpaceEntry;
 use crate::backend::{self, TerminalId};
@@ -60,20 +61,17 @@ impl App {
     }
 
     /// Each agent (every row: a main agent session that has not ended, in
-    /// any space): its label, state, its space and tab, and whether it is in
-    /// the focused terminal. An external session's place is its branch,
-    /// else its directory.
+    /// any space): its label, state, its space (none for an external
+    /// session), and whether it is in the focused terminal.
     pub(super) fn sidebar_agents(&self, rows: &[Row]) -> Vec<AgentLine> {
-        let home = HomePaths::new();
         rows.iter()
             .map(|r| AgentLine {
                 label: r.label.clone(),
                 state: r.state,
-                kind: r.kind,
-                place: if r.external {
-                    self.external_place(r, &home)
+                space: if r.external {
+                    None
                 } else {
-                    self.place_of(r, " · ").unwrap_or_default()
+                    self.row_space(r).map(|s| s.name().to_string())
                 },
                 current: self.is_current_row(&r.pane),
                 external: r.external,
@@ -81,24 +79,16 @@ impl App {
             .collect()
     }
 
-    /// Where external row `r` works: its branch, else its directory.
-    fn external_place(&self, r: &Row, home: &HomePaths) -> String {
-        let dir = || {
-            self.session_in(&r.pane)
-                .and_then(|s| s.cwd.as_deref())
-                .map(|c| home.show(c))
-        };
-        r.main_branch()
-            .map(str::to_string)
-            .or_else(dir)
-            .unwrap_or_default()
+    /// The space row `r` runs in.
+    fn row_space(&self, r: &Row) -> Option<&Space> {
+        self.spaces.iter().find(|i| i.id == r.space)
     }
 
-    /// Where row `r` runs: its space and tab, `sep` between them.
-    pub(super) fn place_of(&self, r: &Row, sep: &str) -> Option<String> {
-        let space = self.spaces.iter().find(|i| i.id == r.space)?;
+    /// Where row `r` runs: its space and tab, as `space › tab`.
+    pub(super) fn place_of(&self, r: &Row) -> Option<String> {
+        let space = self.row_space(r)?;
         let tab = space.tabs().iter().find(|t| t.id == r.tab)?;
-        Some(format!("{}{sep}{}", space.name(), self.tab_name(tab)))
+        Some(format!("{} › {}", space.name(), self.tab_name(tab)))
     }
 
     /// A tab's name as shown: the backend's, except that a tab the backend

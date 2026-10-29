@@ -1,35 +1,35 @@
 //! The sidebar, with a border on its right edge: a SPACES section with one
-//! line per space (tmux session, ADR 0006), then an AGENTS section with two
-//! lines per main agent session, across every space:
+//! line per space (tmux session, ADR 0006), then an AGENTS section with one
+//! line per main agent session, across every space:
 //!
 //! ```text
 //!  SPACES
 //!  ● api-server
 //!    ~/project/api  main
-//!    paddock
-//!    ~/p/paddock  feat/x  +200 −10 ↑2↓1  #42 ✓
+//!    paddock                 +200 −10 ↑2↓1
+//!    ~/p/paddock  feat/x  #42 ✓
 //!
 //!  AGENTS
-//!  ● api-server  waiting
-//!    api-server · claude
-//!
+//!  ● PR-1434     waiting  core
+//!  ● api-server  running  api
 //!  EXTERNAL
-//!  ● web  idle
-//!    feat/login
+//!  ● web         idle
 //! ```
 //!
 //! A space's dot shows the most urgent state of the agents in it (none
-//! without agents); its second line, dim, shows its directory and the git
-//! branch checked out there. After both, uncut, come the branch's status
-//! (as the dashboard writes it: its line changes `+200` in green and `−10`
-//! in red, then commits ahead of and behind upstream `↑2↓1`, dim; parts at
-//! zero left out, nothing for a detached HEAD or outside a repository; no
-//! colour on the selected, reversed, line), then, two cells or more on, at
-//! the end, the branch's pull request: its number in its state's colour
-//! and its checks mark (`✓`, `✗`, `•`). Each shows only where it fits
-//! whole; short of room for both, the PR mark goes first, so the status
-//! stays (the mark still shows alone when only it fits). The status is
-//! read on the git thread with the directory and branch, never per frame.
+//! without agents); at the end of its name's line comes the status of the
+//! branch checked out in it (as the dashboard writes it: its line changes
+//! `+200` in green and `−10` in red, then commits ahead of and behind
+//! upstream `↑2↓1`, dim; parts at zero left out, nothing for a detached
+//! HEAD or outside a repository; no colour on the selected, reversed,
+//! line), two cells or more after the name. Short of room the name is cut
+//! with `…` down to its first eight cells; past that the status is left
+//! out whole, never cut. Its second line, dim, shows its directory and that
+//! branch, then, two cells or more on, at the end, the branch's pull request:
+//! its number in its state's colour and its checks mark (`✓`, `✗`, `•`).
+//! Short of room the path gives way first (`…` from its start), then the PR
+//! mark goes, then the branch loses its end. The status is read on the git
+//! thread with the directory and branch, never per frame.
 //! A space in a linked worktree is
 //! listed one cell further in, under its repository's main-checkout space,
 //! or under a dim header with the repository's name when no space is in
@@ -46,18 +46,22 @@
 //! ```
 //!
 //! The current space has its own background over both lines. An agent's
-//! second line is dim and names its space and tab; the current agent (the
-//! one in the focused terminal) has the current space's background too.
-//! While the sidebar has the keyboard, the selected space or agent is drawn
-//! reversed. Agents stay in space, tab and split order: a state change never
-//! moves one. External sessions (agents outside paddock's terminals) close
-//! AGENTS under their own header, dim, in label order, their second line
-//! naming their branch (else their directory).
+//! line is its dot, label and state, then its space, dim; labels and states
+//! line up in columns across the section, the labels' at most 12 cells
+//! (longer labels cut with `…`). Short of room the space goes first (left
+//! out whole), then the state column is cut, then left out under 4 cells,
+//! then the label column is cut; the dot always shows. The agent's kind is left to the dashboard.
+//! The current agent (the one in the focused terminal) has the current
+//! space's background too. While the sidebar has the keyboard, the selected
+//! space or agent is drawn reversed. Agents stay in space, tab and split
+//! order: a state change never moves one. External sessions (agents outside
+//! paddock's terminals) close AGENTS under their own header, dim, in label
+//! order, in the same form without a space.
 
 use super::{pr_style, StatusText, STATE_DOT, STATUS_SEP};
 use crate::git::Status;
 use crate::github::Pr;
-use crate::sessions::{AgentKind, State};
+use crate::sessions::State;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -108,11 +112,9 @@ pub enum Entry {
 pub struct AgentLine {
     pub label: String,
     pub state: State,
-    /// Its kind, tagged at the end of its second line.
-    pub kind: AgentKind,
-    /// Where it runs: `space · tab`; an external session's branch, else
-    /// its directory.
-    pub place: String,
+    /// The space it runs in, dim at the end of its line; `None` for an
+    /// external session.
+    pub space: Option<String>,
     /// Its pane is the focused terminal of the page shown now.
     pub current: bool,
     /// It runs outside paddock's terminals: drawn dim, in the external
@@ -130,10 +132,8 @@ pub enum Line {
     SpacePlace(usize),
     /// A repository's header over its worktree spaces.
     RepoHeader(usize),
-    /// An agent's first line: dot, label and state.
+    /// An agent's line: dot, label, state and space.
     Agent(usize),
-    /// An agent's second line: its space and tab, and its kind.
-    AgentPlace(usize),
     Blank,
 }
 
@@ -142,7 +142,7 @@ pub enum Line {
 pub fn pick(line: Line, spaces: usize) -> Option<usize> {
     match line {
         Line::Space(i) | Line::SpacePlace(i) => Some(i),
-        Line::Agent(i) | Line::AgentPlace(i) => Some(spaces + i),
+        Line::Agent(i) => Some(spaces + i),
         Line::Header(_) | Line::RepoHeader(_) | Line::Blank => None,
     }
 }
@@ -170,11 +170,9 @@ pub fn lines(entries: &[Entry], agents: usize, external: usize) -> Vec<Line> {
     let first_external = agents.saturating_sub(external);
     for i in 0..agents {
         if i == first_external {
-            out.extend([Line::Blank, Line::Header(EXTERNAL)]);
-        } else if i > 0 {
-            out.push(Line::Blank);
+            out.push(Line::Header(EXTERNAL));
         }
-        out.extend([Line::Agent(i), Line::AgentPlace(i)]);
+        out.push(Line::Agent(i));
     }
     out
 }
@@ -236,6 +234,8 @@ pub fn render(
             })
             .collect(),
         agents,
+        // The cells after the indent, less the border and the last cell.
+        columns: Columns::of(agents, usize::from(area.width.saturating_sub(2 + INDENT))),
         selected,
         current_bg,
     };
@@ -254,6 +254,8 @@ struct Sidebar<'a> {
     /// The repository headers, in order.
     repos: Vec<&'a str>,
     agents: &'a [AgentLine],
+    /// Where the parts of the agents' lines go.
+    columns: Columns,
     selected: Option<usize>,
     current_bg: Color,
 }
@@ -265,7 +267,7 @@ impl Sidebar<'_> {
         let mut base = Style::default();
         let current = match line {
             Line::Space(i) | Line::SpacePlace(i) => self.spaces[i].current,
-            Line::Agent(i) | Line::AgentPlace(i) => self.agents[i].current,
+            Line::Agent(i) => self.agents[i].current,
             Line::Header(_) | Line::RepoHeader(_) | Line::Blank => false,
         };
         if current {
@@ -302,20 +304,54 @@ impl Sidebar<'_> {
                 if let Some(state) = s.state {
                     put(indent(dot_x, s.linked), STATE_DOT, dot(state));
                 }
-                put(indent(name_x, s.linked), &s.name, Style::default());
+                let x = indent(name_x, s.linked);
+                // The branch's status at the end, where it fits whole two
+                // cells or more after the name, cut to make room down to
+                // its first `NAME_LEAST` cells. On the selected (reversed)
+                // line it keeps no colour, which would turn into a
+                // background there.
+                let coloured = !base.add_modifier.contains(Modifier::REVERSED);
+                let parts = s
+                    .status
+                    .as_ref()
+                    .map(|st| status_parts(st, coloured))
+                    .unwrap_or_default();
+                let at = end.saturating_sub(cells(parts_width(&parts)));
+                // The name's room: the cells before the status, less the
+                // gap, which stays whatever the name (even an empty one).
+                let room = usize::from(at.saturating_sub(x))
+                    .checked_sub(STATUS_GAP)
+                    .filter(|&r| !parts.is_empty() && r >= s.name.width().min(NAME_LEAST + 1));
+                let Some(room) = room else {
+                    put(x, &s.name, Style::default());
+                    return;
+                };
+                put(x, &head(&s.name, room), Style::default());
+                parts
+                    .iter()
+                    .fold(at, |at, (text, style)| put(at, text, *style));
             }
             Line::Agent(i) => {
                 let a = &self.agents[i];
                 // An external session is dim all along: dot, label, state.
                 let faded = |style: Style| if a.external { style.patch(dim) } else { style };
                 put(dot_x, STATE_DOT, faded(dot(a.state)));
-                let state = a.state.label();
-                let width = u16::try_from(state.chars().count()).unwrap_or(0);
-                let state_x = end.saturating_sub(width).max(name_x);
-                let room = usize::from(state_x.saturating_sub(name_x + 1));
-                let label: String = a.label.chars().take(room).collect();
-                put(name_x, &label, faded(Style::default()));
-                put(state_x, state, faded(highlight(a.state)));
+                let Columns {
+                    label,
+                    state,
+                    space,
+                } = self.columns;
+                put(name_x, &cut(&a.label, label), faded(Style::default()));
+                let state_x = name_x.saturating_add(cells(label + AGENT_GAP));
+                put(
+                    state_x,
+                    &cut(a.state.label(), state),
+                    faded(highlight(a.state)),
+                );
+                // The space only whole, never cut.
+                if let Some(name) = a.space.as_deref().filter(|n| n.width() <= space) {
+                    put(state_x.saturating_add(cells(state + AGENT_GAP)), name, dim);
+                }
             }
             Line::SpacePlace(i) => {
                 let s = &self.spaces[i];
@@ -325,64 +361,38 @@ impl Sidebar<'_> {
                     return;
                 };
                 let branch = s.branch.as_deref();
-                put(x, &place(path, branch, room), dim);
-                // After the whole place (the directory and branch are never
-                // cut for them): the branch's status, where it fits whole,
-                // then the PR's mark at the end, where it fits after that.
-                // Short of room for both, the mark goes first. On the
-                // selected (reversed) line the status keeps no colour, which
-                // would turn into a background there.
-                let mut used = place_width(path, branch);
-                let coloured = !base.add_modifier.contains(Modifier::REVERSED);
-                let parts = s
-                    .status
-                    .as_ref()
-                    .map(|st| status_parts(st, coloured))
-                    .unwrap_or_default();
-                let width: usize = parts.iter().map(|(t, _)| t.width()).sum();
-                if !parts.is_empty() && used + PART_GAP.width() + width <= room {
-                    let mut at = x.saturating_add(cells(used));
-                    at = put(at, PART_GAP, dim);
-                    for (text, style) in &parts {
-                        at = put(at, text, *style);
-                    }
-                    // The mark keeps two cells from the status too, as
-                    // `end_x` keeps one or more.
-                    used += PART_GAP.width() + width + 1;
-                }
-                let Some(pr) = &s.pr else {
+                // The PR's mark at the end, two cells or more after the
+                // place: short of room the path gives way first, down to
+                // `…`, then the mark goes, then the branch is cut.
+                let parts = s.pr.as_ref().map(mark_parts).unwrap_or_default();
+                let width = parts_width(&parts);
+                let place_room = room
+                    .checked_sub(width + MARK_GAP)
+                    .filter(|&r| !parts.is_empty() && r >= place_least(path, branch));
+                let Some(place_room) = place_room else {
+                    put(x, &place(path, branch, room), dim);
                     return;
                 };
-                let number = format!("#{}", pr.number);
-                let checks = pr.checks.map(|c| format!(" {}", c.mark()));
-                let mark = number.width() + checks.as_deref().map_or(0, str::width);
-                if let Some(at) = end_x(x, used, mark, end) {
-                    let at = put(at, &number, pr_style(pr.state));
-                    if let Some(checks) = &checks {
-                        put(at, checks, dim);
-                    }
-                }
-            }
-            Line::AgentPlace(i) => {
-                // The kind's tag under the state, only where it fits after
-                // the whole place: the place is never cut for it.
-                let a = &self.agents[i];
-                put(name_x, &a.place, dim);
-                let tag = a.kind.tag();
-                if let Some(at) = end_x(name_x, a.place.width(), tag.width(), end) {
-                    put(at, tag, dim);
-                }
+                put(x, &place(path, branch, place_room), dim);
+                let at = end.saturating_sub(cells(width));
+                parts
+                    .iter()
+                    .fold(at, |at, (text, style)| put(at, text, *style));
             }
             Line::Blank => {}
         }
     }
 }
 
-/// What goes between a space's branch and its status, and between its
-/// status and the PR mark.
-const PART_GAP: &str = "  ";
+/// The fewest cells between a space's name and its status.
+const STATUS_GAP: usize = 2;
+/// The fewest cells between a space's place and its PR mark.
+const MARK_GAP: usize = 2;
+/// The fewest cells of its own a space's name keeps, before `…`, when cut
+/// to make room for its status.
+const NAME_LEAST: usize = 8;
 
-/// A space's branch status as drawn after its branch, piece by piece: its
+/// A space's branch status as drawn after its name, piece by piece: its
 /// line changes added (green) and removed (red), then its commits ahead of
 /// and behind upstream (dim), as the dashboard writes them (see
 /// [`StatusText`]); without colour unless `coloured`. Empty when there is
@@ -412,23 +422,86 @@ fn status_parts(status: &Status, coloured: bool) -> Vec<(String, Style)> {
     parts
 }
 
+/// A pull request's mark as drawn at the end of its space's second line:
+/// its number in its state's colour, then its checks mark (dim), if any.
+fn mark_parts(pr: &Pr) -> Vec<(String, Style)> {
+    let dim = Style::default().add_modifier(Modifier::DIM);
+    let checks = pr.checks.map(|c| (format!(" {}", c.mark()), dim));
+    std::iter::once((format!("#{}", pr.number), pr_style(pr.state)))
+        .chain(checks)
+        .collect()
+}
+
+/// The cells `parts` take, side by side.
+fn parts_width(parts: &[(String, Style)]) -> usize {
+    parts.iter().map(|(t, _)| t.width()).sum()
+}
+
+/// The fewest cells [`place`] takes with the path cut down to `…` and the
+/// branch whole.
+fn place_least(path: &str, branch: Option<&str>) -> usize {
+    path.width().min(1) + branch.map_or(0, |b| b.width() + 2)
+}
+
 /// `w` cells as a screen offset, saturating.
 fn cells(w: usize) -> u16 {
     u16::try_from(w).unwrap_or(u16::MAX)
 }
 
-/// Where something `width` cells wide (a kind tag, a PR mark) starts so
-/// that it ends at `end`, if it fits after `text` cells of text drawn from
-/// `x`, a cell or more apart.
-/// The text is never cut for it.
-fn end_x(x: u16, text: usize, width: usize, end: u16) -> Option<u16> {
-    let at = end.saturating_sub(cells(width));
-    (at > x.saturating_add(cells(text))).then_some(at)
+/// The fewest cells between an agent's label, state and space columns.
+const AGENT_GAP: usize = 2;
+/// The label column's width at most, as the dashboard's columns: longer
+/// labels are cut so that one long label leaves the states their room.
+const LABEL_MOST: usize = 12;
+/// The fewest cells the state column keeps when cut; under that it is left
+/// out, rather than show `…` alone.
+const STATE_LEAST: usize = 4;
+
+/// The columns of the agents' lines, in cells, the same for every agent so
+/// that labels and states line up: each as wide as its widest entry, where
+/// it fits, the label column at most [`LABEL_MOST`]. Short of room the
+/// space goes first, then the state column is cut (left out under
+/// [`STATE_LEAST`]), then the label column.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Columns {
+    label: usize,
+    state: usize,
+    /// The room left for a space after the state column whole; none once
+    /// the state column is cut.
+    space: usize,
 }
 
-/// The cells `path  branch` takes uncut (see [`place`]).
-fn place_width(path: &str, branch: Option<&str>) -> usize {
-    path.width() + branch.map_or(0, |b| b.width() + 2)
+impl Columns {
+    /// The columns for `agents` in `room` cells after the dot.
+    fn of(agents: &[AgentLine], room: usize) -> Self {
+        let widest = |w: fn(&AgentLine) -> usize| agents.iter().map(w).max().unwrap_or(0);
+        let label = widest(|a| a.label.width()).min(LABEL_MOST).min(room);
+        let full_state = widest(|a| a.state.label().width());
+        let state = full_state.min(room.saturating_sub(label + AGENT_GAP));
+        let state = if state < full_state.min(STATE_LEAST) {
+            0
+        } else {
+            state
+        };
+        let space = if state == full_state {
+            room.saturating_sub(label + state + 2 * AGENT_GAP)
+        } else {
+            0
+        };
+        Columns {
+            label,
+            state,
+            space,
+        }
+    }
+}
+
+/// `t` in at most `n` cells, as [`head`] cuts it; nothing in none.
+fn cut(t: &str, n: usize) -> String {
+    if n == 0 {
+        return String::new();
+    }
+    head(t, n)
 }
 
 /// The longest start of `t` at most `n` cells wide.
@@ -440,6 +513,14 @@ fn first_cells(t: &str, n: usize) -> String {
             used <= n
         })
         .collect()
+}
+
+/// `t` in at most `n` cells: whole, else its start then `…`.
+fn head(t: &str, n: usize) -> String {
+    if t.width() <= n {
+        return t.to_string();
+    }
+    format!("{}…", first_cells(t, n.saturating_sub(1)))
 }
 
 /// The longest end of `t` at most `n` cells wide.
@@ -466,12 +547,6 @@ pub fn place(path: &str, branch: Option<&str>, width: usize) -> String {
             return t.to_string();
         }
         format!("…{}", last_cells(t, n.saturating_sub(1)))
-    };
-    let head = |t: &str, n: usize| -> String {
-        if t.width() <= n {
-            return t.to_string();
-        }
-        format!("{}…", first_cells(t, n.saturating_sub(1)))
     };
     let Some(branch) = branch else {
         return if width == 0 {
@@ -532,14 +607,21 @@ mod tests {
         spaces.iter().cloned().map(Entry::Space).collect()
     }
 
-    fn agent(label: &str, state: State, place: &str) -> AgentLine {
+    fn agent(label: &str, state: State, space: &str) -> AgentLine {
         AgentLine {
             external: false,
             label: label.into(),
             state,
-            kind: AgentKind::Claude,
-            place: place.into(),
+            space: Some(space.into()),
             current: false,
+        }
+    }
+
+    fn external(label: &str, state: State) -> AgentLine {
+        AgentLine {
+            external: true,
+            space: None,
+            ..agent(label, state, "")
         }
     }
 
@@ -556,7 +638,16 @@ mod tests {
     }
 
     fn draw_entries(entries: &[Entry], agents: &[AgentLine], selected: Option<usize>) -> Buffer {
-        let area = Rect::new(0, 0, 24, 12);
+        draw_sized(entries, agents, selected, 24)
+    }
+
+    fn draw_sized(
+        entries: &[Entry],
+        agents: &[AgentLine],
+        selected: Option<usize>,
+        width: u16,
+    ) -> Buffer {
+        let area = Rect::new(0, 0, width, 12);
         let mut buf = Buffer::empty(area);
         render(entries, agents, selected, GREY, area, &mut buf);
         buf
@@ -573,8 +664,8 @@ mod tests {
             space("paddock", None, false),
         ];
         let agents = [
-            agent("api", State::Waiting, "api-server · server"),
-            agent("a-very-long-label", State::Running, "api-server · x"),
+            agent("api", State::Waiting, "core"),
+            agent("web", State::Running, "api-server"),
         ];
         let buf = draw(&spaces, &agents, None);
         let want = [
@@ -585,17 +676,19 @@ mod tests {
             "   ~/p/paddock         │",
             "                       │",
             " AGENTS                │",
-            " ● api         waiting │",
-            "   api-server · server │",
+            " ● api  waiting  core  │",
+            " ● web  running        │",
             "                       │",
-            " ● a-very-long running │",
-            "   api-server · x      │",
         ];
         for (y, line) in want.iter().enumerate() {
             assert_eq!(text(&buf, y as u16), *line, "row {y}");
         }
         assert!(buf[(3, 2)].modifier.contains(Modifier::DIM), "path is dim");
-        assert!(buf[(3, 8)].modifier.contains(Modifier::DIM), "place is dim");
+        assert!(
+            buf[(17, 7)].modifier.contains(Modifier::DIM),
+            "space is dim"
+        );
+        assert!(!buf[(3, 7)].modifier.contains(Modifier::DIM), "label");
     }
 
     #[test]
@@ -604,7 +697,7 @@ mod tests {
             space("cur", Some(State::Idle), true),
             space("other", Some(State::Done), false),
         ];
-        let agents = [agent("w", State::Waiting, "cur · a")];
+        let agents = [agent("w", State::Waiting, "cur")];
         let buf = draw(&spaces, &agents, None);
         for (x, y) in [(0, 1), (22, 1), (0, 2), (22, 2)] {
             assert_eq!(buf[(x, y)].bg, GREY, "({x}, {y}): both lines");
@@ -613,28 +706,28 @@ mod tests {
         assert_eq!(buf[(5, 3)].bg, Color::Reset);
         assert_eq!(buf[(1, 1)].fg, Color::Green, "idle dot");
         assert!(buf[(1, 3)].modifier.contains(Modifier::BOLD), "done dot");
-        let waiting = &buf[(16, 7)];
+        let waiting = &buf[(6, 7)];
         assert_eq!((waiting.fg, waiting.bg), (Color::Black, Color::Yellow));
         assert_eq!(buf[(1, 7)].fg, Color::Yellow);
     }
 
     #[test]
-    fn the_current_agent_has_the_current_background_over_both_its_lines() {
+    fn the_current_agent_has_the_current_background_over_its_line() {
         let spaces = [space("a", None, false)];
         let agents = [
-            agent("x", State::Idle, "a · x"),
+            agent("x", State::Idle, "a"),
             AgentLine {
                 current: true,
-                ..agent("y", State::Running, "a · y")
+                ..agent("y", State::Running, "a")
             },
         ];
         let buf = draw(&spaces, &agents, None);
-        // 0 SPACES, 1-2 a, 3 blank, 4 AGENTS, 5-6 x, 7 blank, 8-9 y.
-        for (x, y) in [(0, 8), (22, 8), (0, 9), (22, 9)] {
-            assert_eq!(buf[(x, y)].bg, GREY, "({x}, {y}): both lines");
+        // 0 SPACES, 1-2 a, 3 blank, 4 AGENTS, 5 x, 6 y.
+        for (x, y) in [(0, 6), (22, 6)] {
+            assert_eq!(buf[(x, y)].bg, GREY, "({x}, {y}): its line");
         }
-        assert_eq!(buf[(23, 8)].bg, Color::Reset, "not the border");
-        assert_eq!(buf[(5, 7)].bg, Color::Reset, "not the blank above");
+        assert_eq!(buf[(23, 6)].bg, Color::Reset, "not the border");
+        assert_eq!(buf[(5, 7)].bg, Color::Reset, "not the line below");
         assert_eq!(buf[(5, 5)].bg, Color::Reset, "not another agent");
         assert_eq!(buf[(5, 1)].bg, Color::Reset, "no current space");
     }
@@ -642,14 +735,15 @@ mod tests {
     #[test]
     fn the_selected_space_or_agent_is_reversed() {
         let spaces = [space("a", None, false), space("b", None, false)];
-        let agents = [agent("x", State::Idle, "a · x")];
+        let agents = [agent("x", State::Idle, "a"), agent("y", State::Idle, "b")];
         let reversed = |buf: &Buffer, y| buf[(5, y)].modifier.contains(Modifier::REVERSED);
         let buf = draw(&spaces, &agents, Some(1));
         assert!(reversed(&buf, 3) && reversed(&buf, 4));
         assert!(!reversed(&buf, 1) && !reversed(&buf, 2));
-        let buf = draw(&spaces, &agents, Some(2));
-        assert!(reversed(&buf, 7) && reversed(&buf, 8));
-        assert!(!reversed(&buf, 3));
+        // 5 blank, 6 AGENTS, 7 x, 8 y.
+        let buf = draw(&spaces, &agents, Some(3));
+        assert!(reversed(&buf, 8));
+        assert!(!reversed(&buf, 7) && !reversed(&buf, 9) && !reversed(&buf, 3));
     }
 
     #[test]
@@ -689,7 +783,7 @@ mod tests {
             Entry::RepoHeader("paddock".into()),
             Entry::Space(linked("paddock/feat/y", "feat/y")),
         ];
-        let agents = [agent("x", State::Waiting, "api/feat/x · claude")];
+        let agents = [agent("x", State::Waiting, "api/feat/x")];
         let buf = draw_entries(&entries, &agents, Some(2));
         let want = [
             " SPACES                │",
@@ -702,8 +796,7 @@ mod tests {
             "    ~/w/feat/y  feat/y │",
             "                       │",
             " AGENTS                │",
-            " ● x           waiting │",
-            "   api/feat/x · claude │",
+            " ● x  waiting          │",
         ];
         for (y, line) in want.iter().enumerate() {
             assert_eq!(text(&buf, y as u16), *line, "row {y}");
@@ -732,25 +825,23 @@ mod tests {
     fn clicks_find_what_is_drawn_under_them() {
         let area = Rect::new(0, 3, 24, 14);
         // 3 SPACES, 4-5 space 0, 6-7 space 1, 8 blank, 9 AGENTS,
-        // 10-11 agent 0, 12 blank, 13-14 agent 1.
+        // 10 agent 0, 11 agent 1.
         let two = entries(&[space("a", None, false), space("b", None, false)]);
         let at = |y| pick_at(&two, (2, 0), area, y);
         assert_eq!(at(3), None, "header");
         assert_eq!((at(4), at(5)), (Some(0), Some(0)));
         assert_eq!((at(6), at(7)), (Some(1), Some(1)));
         assert_eq!((at(8), at(9)), (None, None));
-        assert_eq!((at(10), at(11)), (Some(2), Some(2)));
-        assert_eq!(at(12), None);
-        assert_eq!(at(14), Some(3));
-        assert_eq!(at(15), None, "below the last line");
+        assert_eq!((at(10), at(11)), (Some(2), Some(3)));
+        assert_eq!(at(12), None, "below the last line");
         assert_eq!(at(20), None, "below the sidebar");
     }
 
     #[test]
-    fn lines_put_a_blank_between_agents_only() {
+    fn lines_give_each_agent_one_line_with_no_blank_between() {
         use Line::*;
         assert_eq!(
-            lines(&entries(&[space("a", None, false)]), 2, 0),
+            lines(&entries(&[space("a", None, false)]), 3, 0),
             [
                 Header(SPACES),
                 Space(0),
@@ -758,10 +849,8 @@ mod tests {
                 Blank,
                 Header(AGENTS),
                 Agent(0),
-                AgentPlace(0),
-                Blank,
                 Agent(1),
-                AgentPlace(1)
+                Agent(2),
             ]
         );
     }
@@ -772,79 +861,156 @@ mod tests {
         let ent = entries(&[space("a", None, false)]);
         assert_eq!(
             lines(&ent, 2, 1)[3..],
-            [
-                Blank,
-                Header(AGENTS),
-                Agent(0),
-                AgentPlace(0),
-                Blank,
-                Header(EXTERNAL),
-                Agent(1),
-                AgentPlace(1)
-            ]
+            [Blank, Header(AGENTS), Agent(0), Header(EXTERNAL), Agent(1)]
         );
         assert_eq!(
             lines(&ent, 1, 1)[3..],
-            [
-                Blank,
-                Header(AGENTS),
-                Blank,
-                Header(EXTERNAL),
-                Agent(0),
-                AgentPlace(0)
-            ]
+            [Blank, Header(AGENTS), Header(EXTERNAL), Agent(0)]
         );
         let area = Rect::new(0, 0, 24, 20);
-        // The external header picks nothing; its agent is pick 2.
-        assert_eq!(pick_at(&ent, (2, 1), area, 8), None);
-        assert_eq!(pick_at(&ent, (2, 1), area, 9), Some(2));
+        // 4 AGENTS, 5 api, 6 EXTERNAL, 7 web: the external header picks
+        // nothing; its agent is pick 2.
+        assert_eq!(pick_at(&ent, (2, 1), area, 6), None);
+        assert_eq!(pick_at(&ent, (2, 1), area, 7), Some(2));
         let agents = [
-            agent("api", State::Running, "a · claude"),
-            AgentLine {
-                external: true,
-                ..agent("web", State::Waiting, "feat/x")
-            },
+            agent("api", State::Running, "a"),
+            external("web", State::Waiting),
         ];
         let buf = draw(&[space("a", Some(State::Running), false)], &agents, None);
-        assert_eq!(text(&buf, 8).trim_end_matches([' ', '│']), " EXTERNAL");
-        assert!(text(&buf, 9).starts_with(" ● web"), "{}", text(&buf, 9));
+        let trimmed = |y| text(&buf, y).trim_end_matches([' ', '│']).to_string();
+        assert_eq!(trimmed(5), " ● api  running  a");
+        assert_eq!(trimmed(6), " EXTERNAL");
+        assert_eq!(trimmed(7), " ● web  waiting", "no space");
         // The whole line is dim: dot, label and state word.
-        for x in [1, 3, 16] {
-            assert!(buf[(x, 9)].modifier.contains(Modifier::DIM), "dim at {x}");
+        for x in [1, 3, 8] {
+            assert!(buf[(x, 7)].modifier.contains(Modifier::DIM), "dim at {x}");
             assert!(!buf[(x, 5)].modifier.contains(Modifier::DIM), "{x}");
         }
-        assert_eq!(
-            text(&buf, 10).trim_end_matches([' ', '│']),
-            "   feat/x       claude"
-        );
-        assert!(buf[(3, 10)].modifier.contains(Modifier::DIM));
+    }
+
+    /// The AGENTS and EXTERNAL lines of `agents` drawn `width` wide, without
+    /// trailing blanks or the border.
+    fn agent_rows(agents: &[AgentLine], width: u16) -> Vec<String> {
+        let buf = draw_sized(&[], agents, None, width);
+        (3..buf.area.height)
+            .map(|y| text(&buf, y).trim_end_matches([' ', '│']).to_string())
+            .take(agents.len() + 1)
+            .collect()
+    }
+
+    /// The ticket's agents: three in spaces, one external.
+    fn four_agents() -> [AgentLine; 4] {
+        [
+            agent("PR-1434", State::Waiting, "core"),
+            agent("api-server", State::Running, "api"),
+            agent("paddock", State::Idle, "paddock"),
+            external("web", State::Idle),
+        ]
     }
 
     #[test]
-    fn an_agents_kind_is_tagged_under_its_state_only_where_its_place_fits() {
-        let agents = [
-            agent("api", State::Waiting, "api · x"),
-            agent("web", State::Idle, "a-long-space-name · tab"),
-        ];
-        let buf = draw(&[], &agents, None);
-        let top = (0..buf.area.height)
-            .find(|&y| text(&buf, y).starts_with(" AGENTS"))
-            .expect("an AGENTS header");
-        let want = [
-            " AGENTS                │",
-            " ● api         waiting │",
-            "   api · x      claude │",
-            "                       │",
-            " ● web            idle │",
-            "   a-long-space-name · │",
-        ];
-        for (y, line) in want.iter().enumerate() {
-            assert_eq!(text(&buf, top + y as u16), *line, "row {y}");
-        }
-        assert!(
-            buf[(17, top + 2)].modifier.contains(Modifier::DIM),
-            "dim tag"
+    fn labels_and_states_line_up_in_columns_with_the_space_after() {
+        assert_eq!(
+            agent_rows(&four_agents(), 33),
+            [
+                " ● PR-1434     waiting  core",
+                " ● api-server  running  api",
+                " ● paddock     idle     paddock",
+                " EXTERNAL",
+                " ● web         idle",
+            ]
         );
+    }
+
+    #[test]
+    fn short_of_room_the_space_goes_then_the_state_then_the_label() {
+        let rows = |width| agent_rows(&four_agents(), width);
+        // The space goes whole, line by line: `paddock` first.
+        assert_eq!(
+            rows(32)[..3],
+            [
+                " ● PR-1434     waiting  core",
+                " ● api-server  running  api",
+                " ● paddock     idle",
+            ]
+        );
+        assert_eq!(
+            rows(26)[..3],
+            [
+                " ● PR-1434     waiting",
+                " ● api-server  running",
+                " ● paddock     idle",
+            ]
+        );
+        // Then the state column is cut, down to 4 cells, then gone: never
+        // `…` alone.
+        assert_eq!(
+            rows(22)[..3],
+            [
+                " ● PR-1434     wait…",
+                " ● api-server  runn…",
+                " ● paddock     idle",
+            ]
+        );
+        assert_eq!(
+            rows(21)[..3],
+            [
+                " ● PR-1434     wai…",
+                " ● api-server  run…",
+                " ● paddock     idle",
+            ]
+        );
+        assert_eq!(rows(20)[..3], [" ● PR-1434", " ● api-server", " ● paddock"]);
+        assert_eq!(rows(15)[..3], [" ● PR-1434", " ● api-server", " ● paddock"]);
+        // Then the label; the dot always shows.
+        assert_eq!(
+            rows(10),
+            [" ● PR-1…", " ● api-…", " ● padd…", " EXTERNAL", " ● web"]
+        );
+        assert_eq!(rows(5)[..3], [" ●", " ●", " ●"]);
+    }
+
+    #[test]
+    fn one_long_label_is_cut_at_twelve_cells_so_the_states_stay() {
+        let agents = [
+            agent("api", State::Waiting, "core"),
+            agent("a-very-long-agent-label", State::Running, "api"),
+        ];
+        assert_eq!(
+            agent_rows(&agents, 32)[..2],
+            [
+                " ● api           waiting  core",
+                " ● a-very-long…  running  api",
+            ]
+        );
+        // Past the cap, the ticket's order: the space, then the state.
+        assert_eq!(
+            agent_rows(&agents, 26)[..2],
+            [" ● api           waiting", " ● a-very-long…  running"]
+        );
+        assert_eq!(agent_rows(&agents, 17)[..2], [" ● api", " ● a-very-long…"]);
+    }
+
+    #[test]
+    fn wide_labels_line_up_by_their_cells() {
+        let agents = [
+            agent("修正登入", State::Waiting, "core"),
+            agent("api", State::Running, "api"),
+            agent("很長很長的標籤名稱", State::Idle, "x"),
+        ];
+        let buf = draw_sized(&[], &agents, None, 33);
+        // The state column starts 12 + 2 cells after the label's start:
+        // the widest label (18 cells) is cut to 12, `…` included.
+        for y in 3..6 {
+            let state = buf[(17, y)].symbol();
+            assert!(["w", "r", "i"].contains(&state), "row {y}: {state:?}");
+            assert_eq!(buf[(16, y)].symbol(), " ", "row {y}: the gap");
+        }
+        assert_eq!(buf[(3, 3)].symbol(), "修");
+        assert_eq!(buf[(3, 5)].symbol(), "很");
+        // Five wide characters (10 cells; a sixth would split) and `…`.
+        assert_eq!(buf[(13, 5)].symbol(), "…");
+        assert_eq!(buf[(5, 3)].symbol(), "正");
     }
 
     /// A space in `path` on `branch`, with `pr`.
@@ -862,16 +1028,15 @@ mod tests {
         let open = Some(Pr::sample(123, PrState::Open, Some(Checks::Passing), None));
         let spaces = [
             on("~/r", "feat/x", open.clone()),
-            // The whole place fills the line: no mark, nothing cut.
+            // The whole place fills the line: the path gives way.
             on("~/project/api", "main", open.clone()),
-            // Too long already: cut as before, never for the mark.
             on("~/a/very/long/path", "feat/y", open),
             on("~/r", "main", None),
         ];
         let buf = draw(&spaces, &[], None);
         assert_eq!(text(&buf, 2), "   ~/r  feat/x  #123 ✓ │");
-        assert_eq!(text(&buf, 4), "   ~/project/api  main │");
-        assert_eq!(text(&buf, 6), "   …/long/path  feat/y │");
+        assert_eq!(text(&buf, 4), "   …/api  main  #123 ✓ │");
+        assert_eq!(text(&buf, 6), "   …th  feat/y  #123 ✓ │");
         assert_eq!(text(&buf, 8), "   ~/r  main           │", "no PR: nothing");
         // The number in its state's colour, the checks mark dim.
         assert_eq!(buf[(16, 2)].fg, Color::Green);
@@ -879,74 +1044,123 @@ mod tests {
         assert!(buf[(21, 2)].modifier.contains(Modifier::DIM));
     }
 
-    /// The second line of one space `s`, drawn `width` cells wide (border
-    /// included), its end trimmed, and the buffer.
-    fn second_line(s: SpaceLine, width: u16) -> (String, Buffer) {
+    /// The lines of one space `s` at row `y` (1 its name, 2 its place),
+    /// drawn `width` cells wide (border included), selected if `selected`,
+    /// their end trimmed, and the buffer.
+    fn space_lines(s: SpaceLine, width: u16, selected: bool) -> ([String; 2], Buffer) {
         let area = Rect::new(0, 0, width, 3);
         let mut buf = Buffer::empty(area);
-        render(&entries(&[s]), &[], None, GREY, area, &mut buf);
-        let line = text(&buf, 2).trim_end_matches([' ', '│']).to_string();
-        (line, buf)
+        let selected = selected.then_some(0);
+        render(&entries(&[s]), &[], selected, GREY, area, &mut buf);
+        let line = |y| text(&buf, y).trim_end_matches([' ', '│']).to_string();
+        ([line(1), line(2)], buf)
+    }
+
+    /// The second line of one space `s`, drawn `width` cells wide.
+    fn second_line(s: SpaceLine, width: u16) -> String {
+        let [_, place] = space_lines(s, width, false).0;
+        place
+    }
+
+    /// The first line of one space `s`, drawn `width` cells wide, and the
+    /// buffer.
+    fn first_line(s: SpaceLine, width: u16) -> (String, Buffer) {
+        let ([name, _], buf) = space_lines(s, width, false);
+        (name, buf)
+    }
+
+    /// A space named `name` with `changes` and `ahead_behind`, in `~/r` on
+    /// `main`.
+    fn with_status(
+        name: &str,
+        changes: Option<(u32, u32)>,
+        ahead_behind: Option<(u32, u32)>,
+    ) -> SpaceLine {
+        SpaceLine {
+            name: name.into(),
+            status: Some(Status {
+                ahead_behind,
+                changes,
+            }),
+            ..on("~/r", "main", None)
+        }
     }
 
     #[test]
-    fn a_spaces_status_follows_its_branch_and_the_pr_mark_drops_first() {
-        let status = Status {
-            ahead_behind: Some((2, 1)),
-            changes: Some((200, 10)),
+    fn a_spaces_status_ends_its_first_line_at_the_default_width() {
+        let width = crate::config::DEFAULT_SIDEBAR_WIDTH;
+        let arx = SpaceLine {
+            name: "arx-platform-core".into(),
+            status: Some(Status {
+                ahead_behind: Some((0, 15)),
+                changes: None,
+            }),
+            ..on("~/project/arx-platform-core", "develop", None)
         };
-        let pr = Some(Pr::sample(42, PrState::Open, Some(Checks::Passing), None));
-        let s = SpaceLine {
-            status: Some(status),
-            ..on("~/p/paddock", "feat/x", pr)
-        };
-        let line = |width| second_line(s.clone(), width).0;
-        let place = "   ~/p/paddock  feat/x";
-        let status = "  +200 −10 ↑2↓1";
-        // Room for all: the status after the branch, the mark at the end,
-        // two cells or more after it.
-        assert_eq!(line(46), format!("{place}{status}  #42 ✓"));
-        assert_eq!(line(50), format!("{place}{status}{}#42 ✓", " ".repeat(6)));
-        // A cell short for the mark: the mark goes, the status stays.
-        assert_eq!(line(45), format!("{place}{status}"));
-        assert_eq!(line(39), format!("{place}{status}"));
-        // Short of room for the status whole: it goes, the mark fits alone.
-        assert_eq!(line(38), format!("{place}{}#42 ✓", " ".repeat(9)));
-        assert_eq!(line(30), format!("{place} #42 ✓"));
-        // Neither: the place alone, uncut.
-        assert_eq!(line(29), place);
-        let (_, buf) = second_line(s.clone(), 45);
+        let ([name, place], _) = space_lines(arx.clone(), width, false);
+        assert_eq!(name, format!("   arx-platform-core{}↓15", " ".repeat(7)));
+        // The second line keeps the place alone.
+        assert_eq!(place, "   …arx-platform-core  develop");
+        let paddock = with_status("paddock", Some((200, 10)), Some((2, 1)));
+        let (name, buf) = first_line(paddock.clone(), width);
+        assert_eq!(name, format!("   paddock{}+200 −10 ↑2↓1", " ".repeat(7)));
         // `+200` green, `−10` red, the arrows dim, on the line's style.
-        let at = |x: u16| &buf[(x, 2)];
-        assert_eq!((at(24).symbol(), at(24).fg), ("+", Color::Green));
-        assert_eq!((at(29).symbol(), at(29).fg), ("−", Color::Red));
-        assert_eq!(at(33).symbol(), "↑");
-        assert!(at(33).modifier.contains(Modifier::DIM));
-        assert!(!at(24).modifier.contains(Modifier::DIM));
+        let at = |x: u16| &buf[(x, 1)];
+        assert_eq!((at(17).symbol(), at(17).fg), ("+", Color::Green));
+        assert_eq!((at(22).symbol(), at(22).fg), ("−", Color::Red));
+        assert_eq!(at(26).symbol(), "↑");
+        assert!(at(26).modifier.contains(Modifier::DIM));
+        assert!(!at(17).modifier.contains(Modifier::DIM));
         let current = SpaceLine {
             current: true,
-            ..s.clone()
+            ..paddock
         };
-        let (_, buf) = second_line(current, 45);
-        assert_eq!(buf[(24, 2)].bg, GREY, "the current background stays");
+        let (_, buf) = first_line(current, width);
+        assert_eq!(buf[(17, 1)].bg, GREY, "the current background stays");
+        // A worktree space, a cell further in, ends at the same edge.
+        let linked = SpaceLine {
+            linked: true,
+            ..arx
+        };
+        let (name, _) = first_line(linked, width);
+        assert_eq!(name, format!("    arx-platform-core{}↓15", " ".repeat(6)));
+    }
+
+    #[test]
+    fn a_long_name_is_cut_for_the_status_down_to_its_first_eight_cells() {
+        let s = with_status("a-very-long-space-name", Some((200, 10)), Some((2, 1)));
+        let line = |width| first_line(s.clone(), width).0;
+        let status = "  +200 −10 ↑2↓1";
+        assert_eq!(line(42), format!("   a-very-long-space-name{status}"));
+        assert_eq!(line(41), format!("   a-very-long-space-na…{status}"));
+        assert_eq!(line(32), format!("   a-very-long…{status}"));
+        assert_eq!(line(29), format!("   a-very-l…{status}"));
+        // Shorter still: the status goes whole, never cut; the name stays.
+        assert_eq!(line(28), "   a-very-long-space-name");
+        // A short name is never cut: the status needs its whole width.
+        let short = with_status("api", Some((200, 10)), Some((2, 1)));
+        let line = |width| first_line(short.clone(), width).0;
+        assert_eq!(line(23), format!("   api{status}"));
+        assert_eq!(line(22), "   api");
+        // An empty name keeps the gap all the same.
+        let empty = with_status("", Some((200, 10)), Some((2, 1)));
+        let line = |width| first_line(empty.clone(), width).0;
+        assert_eq!(line(20), format!("     {}", status.trim_start()));
+        assert_eq!(line(19), "");
+        for width in 0..45 {
+            let got = line(width);
+            assert!(!got.contains('+') || got.contains(status), "{width}: {got}");
+        }
     }
 
     #[test]
     fn a_selected_spaces_status_has_no_colour_to_turn_into_a_background() {
-        let s = SpaceLine {
-            status: Some(Status {
-                ahead_behind: None,
-                changes: Some((3, 1)),
-            }),
-            ..on("~/r", "main", None)
-        };
-        let area = Rect::new(0, 0, 30, 3);
-        let mut buf = Buffer::empty(area);
-        render(&entries(&[s]), &[], Some(0), GREY, area, &mut buf);
-        let line = text(&buf, 2);
-        assert_eq!(line.trim_end_matches([' ', '│']), "   ~/r  main  +3 −1");
-        for x in [14, 17] {
-            let cell = &buf[(x, 2)];
+        let s = with_status("r", Some((3, 1)), None);
+        let ([name, place], buf) = space_lines(s, 30, true);
+        assert_eq!(name, format!("   r{}+3 −1", " ".repeat(19)));
+        assert_eq!(place, "   ~/r  main", "the status is on the first line");
+        for x in [23, 26] {
+            let cell = &buf[(x, 1)];
             assert!(cell.modifier.contains(Modifier::REVERSED), "selected");
             assert_eq!((cell.fg, cell.bg), (Color::Reset, Color::Reset), "{x}");
         }
@@ -954,20 +1168,31 @@ mod tests {
 
     #[test]
     fn a_spaces_status_shows_only_what_is_not_zero() {
-        let with = |ahead_behind, changes| SpaceLine {
-            status: Some(Status {
-                ahead_behind,
-                changes,
-            }),
-            ..on("~/r", "main", None)
+        let line = |s| {
+            let (name, _) = first_line(s, 30);
+            name.split_whitespace().collect::<Vec<_>>().join(" ")
         };
-        let line = |s| second_line(s, 30).0;
-        assert_eq!(line(with(Some((0, 3)), None)), "   ~/r  main  ↓3");
-        assert_eq!(line(with(None, Some((5, 0)))), "   ~/r  main  +5 −0");
+        assert_eq!(line(with_status("s", None, Some((0, 3)))), "s ↓3");
+        assert_eq!(line(with_status("s", Some((5, 0)), None)), "s +5 −0");
         // Clean and even with upstream, or a detached HEAD (nothing read):
-        // nothing after the branch.
-        assert_eq!(line(with(Some((0, 0)), Some((0, 0)))), "   ~/r  main");
-        assert_eq!(line(with(None, None)), "   ~/r  main");
+        // nothing after the name.
+        assert_eq!(line(with_status("s", Some((0, 0)), Some((0, 0)))), "s");
+        assert_eq!(line(with_status("s", None, None)), "s");
+    }
+
+    #[test]
+    fn the_path_gives_way_to_the_pr_mark_then_the_mark_to_the_branch() {
+        let pr = Some(Pr::sample(42, PrState::Open, Some(Checks::Passing), None));
+        let s = on("~/p/paddock", "feat/x", pr);
+        let line = |width| second_line(s.clone(), width);
+        assert_eq!(line(31), "   ~/p/paddock  feat/x  #42 ✓");
+        assert_eq!(line(30), "   …p/paddock  feat/x  #42 ✓");
+        assert_eq!(line(21), "   …  feat/x  #42 ✓");
+        // Short of room for the mark: it goes, the path back as long as it
+        // fits, then the branch loses its end.
+        assert_eq!(line(20), "   …addock  feat/x");
+        assert_eq!(line(14), "   …  feat/x");
+        assert_eq!(line(13), "   …  feat…");
     }
 
     #[test]
@@ -1045,11 +1270,8 @@ mod tests {
     }
 
     #[test]
-    fn a_tag_or_mark_goes_at_the_end_only_a_cell_or_more_after_the_text() {
-        assert_eq!(end_x(3, 5, 6, 22), Some(16));
-        assert_eq!(end_x(3, 12, 6, 22), Some(16), "one cell apart");
-        assert_eq!(end_x(3, 13, 6, 22), None, "touching");
-        assert_eq!(end_x(3, 0, 30, 22), None, "wider than the line");
-        assert_eq!(place_width("~/專案", Some("x")), 9);
+    fn a_place_keeps_at_least_a_cell_of_path_and_its_branch_whole() {
+        assert_eq!(place_least("~/專案", Some("x")), 4);
+        assert_eq!(place_least("", None), 0);
     }
 }

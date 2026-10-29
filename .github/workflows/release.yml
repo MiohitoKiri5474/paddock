@@ -1,60 +1,152 @@
 name: Release
 
+# A tag push builds every target and creates the draft release. A manual run
+# (workflow_dispatch) is a dry run: it builds, tests and packages every target
+# and uploads the archives as workflow artifacts, but creates no release.
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
 
 permissions: {}
 
+defaults:
+  run:
+    # Like `shell: bash` (-eo pipefail), plus -u for unset variables.
+    shell: bash --noprofile --norc -euo pipefail {0}
+
 jobs:
-  release:
-    # ponytail: Apple Silicon only; macos-latest is arm64. Add an x86_64 job if anyone asks.
-    runs-on: macos-latest
+  # The tag must name the version in Cargo.toml, so every binary reports what
+  # the release says. Off a tag (a dry run) the version comes from Cargo.toml.
+  version:
+    runs-on: ubuntu-latest
     permissions:
-      contents: write
-    env:
-      TAG: ${{ github.ref_name }}
-      TARGET: aarch64-apple-darwin
-    defaults:
-      run:
-        # Like `shell: bash` (-eo pipefail), plus -u for unset variables.
-        shell: bash --noprofile --norc -euo pipefail {0}
+      contents: read
+    outputs:
+      tag: ${{ steps.check.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
-      # rustup is preinstalled on the runner; no third-party action runs with write access.
-      - name: Install Rust
-        run: |
-          rustup toolchain install stable --profile minimal --target "$TARGET"
-          rustup default stable
-      # ponytail: no rust-cache; releases are rare and a clean build is what we want to ship.
-      # The tag must name the version in Cargo.toml, so the binary reports what the release says.
-      - name: Check tag matches Cargo.toml
+      - id: check
+        name: Check tag matches Cargo.toml
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
           version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version') || {
             echo "::error::could not read the version from Cargo.toml (cargo metadata failed)"
             exit 1
           }
-          if [ "$TAG" != "v$version" ]; then
-            echo "::error::tag $TAG does not match Cargo.toml version $version"
+          if [ "$REF_TYPE" = tag ] && [ "$REF_NAME" != "v$version" ]; then
+            echo "::error::tag $REF_NAME does not match Cargo.toml version $version"
             exit 1
           fi
-      # Some unit tests drive a real tmux server.
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+
+  # One job per target, each on its own architecture, so each binary is run
+  # (tests and --version) where it will be used. Linux builds on Ubuntu 22.04:
+  # a binary links against the build host's glibc, and 22.04's (2.35) keeps
+  # the floor at glibc 2.34, where 24.04's ties aarch64 to 2.39.
+  build:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04-arm
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    env:
+      TAG: ${{ needs.version.outputs.tag }}
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v4
+      # rustup is preinstalled on the runners; no third-party action runs in a release.
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal --target "$TARGET"
+          rustup default stable
+      # ponytail: no rust-cache; releases are rare and a clean build is what we want to ship.
+      # Some unit tests drive a real tmux server; on Linux, zsh is their shell (as in ci.yml).
       - name: Install tmux
+        if: runner.os == 'macOS'
         run: brew install tmux
+      - name: Install zsh and tmux
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y zsh tmux
       - name: Unit tests
         run: cargo test --bin paddock --locked
       - name: Build release binary
         run: cargo build --release --locked --target "$TARGET"
+      # The built binary runs on this runner's architecture and names the tag's version.
+      - name: Check paddock --version
+        run: |
+          bin="target/$TARGET/release/paddock"
+          # Evidence in the log: the runner's architecture and the binary's.
+          uname -m
+          file "$bin"
+          out=$("$bin" --version)
+          echo "$out"
+          if [ "$out" != "paddock ${TAG#v}" ]; then
+            echo "::error::$bin --version says '$out', expected 'paddock ${TAG#v}'"
+            exit 1
+          fi
+      # The oldest glibc the binary runs on: the newest GLIBC_ version it needs
+      # (a WEAK one, which std looks up at run time, is not needed). The README
+      # promises 2.34.
+      - name: Check glibc floor
+        if: runner.os == 'Linux'
+        run: |
+          floor=$(readelf -V "target/$TARGET/release/paddock" |
+            awk '$2 == "Name:" && $3 ~ /^GLIBC_[0-9]/ && $5 != "WEAK" {print $3}' | sort -uV | tail -1)
+          echo "needs $floor"
+          if [ -z "$floor" ]; then
+            echo "::error::found no GLIBC_ version in the binary (readelf -V)"
+            exit 1
+          fi
+          if [ "$(printf '%s\n' "$floor" GLIBC_2.34 | sort -V | tail -1)" != GLIBC_2.34 ]; then
+            echo "::error::the binary needs $floor, newer than the GLIBC_2.34 the README promises"
+            exit 1
+          fi
       - name: Package
         run: |
           archive="paddock-$TAG-$TARGET.tar.gz"
           # ponytail: files sit at the archive root, so `tar xzf` drops `paddock` right there.
-          tar -czf "$archive" -C "target/$TARGET/release" paddock -C "$PWD" LICENSE README.md
+          # docs/ and CONTEXT.md ride along so the README's relative links work offline.
+          tar -czf "$archive" -C "target/$TARGET/release" paddock -C "$PWD" LICENSE README.md CONTEXT.md docs
           shasum -a 256 "$archive" > "$archive.sha256"
-      # A draft pre-release: check the notes and the tarball, then publish by hand.
+          cat "$archive.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: paddock-${{ matrix.target }}
+          path: |
+            paddock-${{ env.TAG }}-${{ matrix.target }}.tar.gz
+            paddock-${{ env.TAG }}-${{ matrix.target }}.tar.gz.sha256
+          if-no-files-found: error
+
+  # A draft pre-release with every archive: check the notes and the tarballs, then publish by hand.
+  release:
+    needs: [version, build]
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ needs.version.outputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: paddock-*
+          path: dist
+          merge-multiple: true
       - name: Create draft release
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           # A rerun replaces its own earlier draft; a published release is never touched.
           if is_draft=$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null); then
@@ -64,6 +156,5 @@ jobs:
             fi
             gh release delete "$TAG" --yes
           fi
-          archive="paddock-$TAG-$TARGET.tar.gz"
-          gh release create "$TAG" --draft --prerelease --generate-notes --title "$TAG" \
-            "$archive" "$archive.sha256"
+          ls -l dist
+          gh release create "$TAG" --draft --prerelease --generate-notes --title "$TAG" dist/*
