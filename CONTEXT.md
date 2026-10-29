@@ -83,7 +83,7 @@ A coding agent's conversation (Claude Code, Gemini CLI or Antigravity CLI) runni
 _Avoid_: agent (too broad), terminal, tmux session
 
 **Agent kind**:
-Which coding agent a session belongs to: `claude` (Claude Code), `gemini` (Gemini CLI) or `agy` (Antigravity CLI). Its dashboard rows show it as a short tag (the sidebar leaves it out), and a tab named after its session takes it. Fork, subagents and the `claude agents --json` snapshot are Claude's alone.
+Which coding agent a session belongs to: `claude` (Claude Code), `gemini` (Gemini CLI) or `agy` (Antigravity CLI). Its dashboard rows show it as a short tag, as does its agent's second line in the sidebar's AGENTS, and a tab named after its session takes it. Fork, subagents and the `claude agents --json` snapshot are Claude's alone.
 _Avoid_: agent type, provider, model
 
 **Status report**:

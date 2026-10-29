@@ -119,18 +119,13 @@ fn rows_are_tagged_with_their_agents_kind() {
     let mut paddock = ready(&sandbox);
     claude(&sandbox, "space-1:0", "Stop", "s1", "/w/repo");
     wait_anywhere(&paddock, "idle");
-    // The sidebar leaves the agent's kind out: one line, its space last.
-    paddock.wait_for("the sidebar's line", |_| {
-        paddock
-            .sidebar()
-            .iter()
-            .any(|l| l == " ● repo  idle  space-1")
+    // The sidebar shows it too, under the label, after the space.
+    paddock.wait_for("the sidebar's lines", |_| {
+        let lines = paddock.sidebar();
+        lines
+            .windows(2)
+            .any(|l| l == [" ● repo  idle", "   space-1  claude"])
     });
-    assert!(
-        !paddock.sidebar().iter().any(|l| l.contains("claude")),
-        "{}",
-        paddock.sidebar().join("\n")
-    );
     open(&mut paddock);
     paddock.wait_for_text("AGENT");
     paddock.wait_for("the dashboard's tag", |s| {

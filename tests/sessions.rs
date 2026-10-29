@@ -76,13 +76,18 @@ fn at_home() -> String {
     "   ~".into()
 }
 
-/// AGENTS' lines for these `(label, state)` agents, all in space-1: one
-/// line each, labels and states in columns, then the space.
+/// AGENTS' lines for these `(label, state)` Claude agents, all in
+/// space-1: two lines each, labels and states in columns, then the space
+/// and kind under the label.
 fn agents(list: &[(&str, &str)]) -> Vec<String> {
     let label = list.iter().map(|(l, _)| l.len()).max().unwrap_or(0);
-    let state = list.iter().map(|(_, s)| s.len()).max().unwrap_or(0);
     list.iter()
-        .map(|(l, s)| format!(" ● {l:<label$}  {s:<state$}  space-1"))
+        .flat_map(|(l, s)| {
+            [
+                format!(" ● {l:<label$}  {s}"),
+                "   space-1  claude".to_string(),
+            ]
+        })
         .collect()
 }
 
@@ -383,17 +388,18 @@ fn the_focused_agent_has_the_current_background() {
     let sandbox = Sandbox::new();
     let paddock = focused_agent_second(&sandbox);
 
-    // Rows: 1-2 space-1, 4 AGENTS, 5 first, 6 here.
+    // Rows: 1-2 space-1, 4 AGENTS, 5-6 first, 7-8 here.
     paddock.wait_for("here highlighted", |_| {
-        paddock.colors(6, 5).1 == CURRENT_ITEM
+        paddock.colors(7, 5).1 == CURRENT_ITEM
     });
-    assert_eq!(paddock.colors(6, 20).1, CURRENT_ITEM, "across its line");
+    assert_eq!(paddock.colors(7, 20).1, CURRENT_ITEM, "across its line");
+    assert_eq!(paddock.colors(8, 20).1, CURRENT_ITEM, "and its second");
     assert_eq!(
-        paddock.colors(7, 5).1,
+        paddock.colors(9, 5).1,
         vt100::Color::Default,
         "not the line below"
     );
-    assert_eq!(paddock.colors(5, 5).1, vt100::Color::Default, "not first");
+    assert_eq!(paddock.colors(6, 5).1, vt100::Color::Default, "not first");
 }
 
 #[test]
@@ -402,8 +408,11 @@ fn c_a_s_starts_on_the_focused_agent_even_with_the_sidebar_hidden() {
     let mut paddock = focused_agent_second(&sandbox);
 
     paddock.command(b"s");
-    paddock.wait_for("here selected", |_| paddock.reversed(6, 5));
+    paddock.wait_for("here selected", |_| {
+        paddock.reversed(7, 5) && paddock.reversed(8, 5)
+    });
     assert!(!paddock.reversed(5, 5), "not the first agent");
+    assert!(!paddock.reversed(6, 5), "nor its second line");
     assert!(!paddock.reversed(1, 5), "not the top item");
 
     // Prefix commands work in the sidebar: hiding it gives the keyboard back.
@@ -411,9 +420,9 @@ fn c_a_s_starts_on_the_focused_agent_even_with_the_sidebar_hidden() {
     paddock.wait_for("sidebar hidden", |_| paddock.sidebar().is_empty());
     paddock.command(b"s");
     paddock.wait_for("shown, here selected", |_| {
-        !paddock.sidebar().is_empty() && paddock.reversed(6, 5)
+        !paddock.sidebar().is_empty() && paddock.reversed(7, 5) && paddock.reversed(8, 5)
     });
-    assert!(!paddock.reversed(5, 5) && !paddock.reversed(1, 5));
+    assert!(!paddock.reversed(5, 5) && !paddock.reversed(6, 5) && !paddock.reversed(1, 5));
 }
 
 #[test]
@@ -421,8 +430,9 @@ fn clicking_an_agent_row_jumps_to_its_pane() {
     let sandbox = Sandbox::new();
     let mut paddock = agent_in_another_space(&sandbox);
 
-    // Rows: 0 SPACES, 1-4 two spaces, 5 blank, 6 AGENTS, 7 the agent.
-    paddock.click_screen(5, 7);
+    // Rows: 0 SPACES, 1-4 two spaces, 5 blank, 6 AGENTS, 7-8 the agent:
+    // a click on its second line picks it too.
+    paddock.click_screen(5, 8);
 
     paddock.wait_for_current_tab("2:● claude");
     paddock.type_line("echo typed-after-the-click");
