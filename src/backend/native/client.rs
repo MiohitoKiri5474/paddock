@@ -412,6 +412,17 @@ impl Client {
         Ok(spaces.unwrap_or_default())
     }
 
+    /// Every space, as [`Self::spaces`], but a connection that closes
+    /// unanswered is an error, not none (see `Backend::upgraded_spaces`).
+    pub fn upgraded_spaces(&self) -> Result<Vec<ListedSpace>> {
+        match self.request(Request::Spaces) {
+            Ok(Answer::Spaces(spaces)) => Ok(spaces),
+            Ok(other) => Err(unexpected(&other)),
+            Err(e) if e.downcast_ref::<NotRunning>().is_some() => Ok(Vec::new()),
+            Err(e) => Err(e),
+        }
+    }
+
     pub fn new_space(&self, name: &str, cwd: &Path, size: (u16, u16)) -> Result<SpaceId> {
         let request = Request::NewSpace {
             name: name.into(),

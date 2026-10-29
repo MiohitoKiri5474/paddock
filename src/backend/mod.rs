@@ -347,6 +347,16 @@ impl Backend {
         }
     }
 
+    /// The spaces a server that has just taken over runs (ADR 0009): none
+    /// if no server runs, and an error, not none, if the connection
+    /// closes unanswered, as the old binary's do until its `exec`.
+    pub fn upgraded_spaces(&self) -> Result<Vec<ListedSpace>> {
+        match self {
+            Self::Tmux(t) => Ok(t.sessions()),
+            Self::Native(n) => n.upgraded_spaces(),
+        }
+    }
+
     /// Start a space named `name` with one shell in `cwd`, which is also
     /// its root, starting the host if needed.
     pub fn new_space(&self, name: &str, cwd: &Path, size: (u16, u16)) -> Result<SpaceId> {

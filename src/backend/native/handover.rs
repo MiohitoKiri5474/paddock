@@ -527,6 +527,29 @@ pub fn close_on_exec(fd: RawFd, on: bool) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Close every descriptor this process holds but the standard three and
+/// `keep`. Run by the new image before it starts a thread: on macOS,
+/// `accept` and `openpty` set close-on-exec only once they return, so a
+/// descriptor the old image opened as it `exec`ed passes over unnamed. One
+/// such is a client's connection, accepted but never served: left open,
+/// that client would wait for a hello forever, where a closed one makes
+/// it ask again.
+pub fn close_strays(keep: &[RawFd]) -> Result<()> {
+    // Read whole first: the listing's own descriptor is closed once read.
+    let open: Vec<RawFd> = std::fs::read_dir("/dev/fd")
+        .context("cannot list this process's descriptors")?
+        .filter_map(|entry| entry.ok()?.file_name().to_str()?.parse().ok())
+        .collect();
+    for fd in open.into_iter().filter(|fd| *fd > 2 && !keep.contains(fd)) {
+        if is_open(fd) {
+            // SAFETY: nothing in this process owns `fd`: it is none of
+            // those it was handed (`keep`), and no thread has started yet.
+            unsafe { libc::close(fd) };
+        }
+    }
+    Ok(())
+}
+
 /// Whether `fd` is an open descriptor.
 pub fn is_open(fd: RawFd) -> bool {
     // SAFETY: fcntl with F_GETFD only reads the descriptor's flags.

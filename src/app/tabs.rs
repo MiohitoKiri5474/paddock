@@ -80,21 +80,27 @@ impl App {
             }
         }
         // The old binary, until its `exec`, still takes connections, and
-        // closes them unanswered: ask until the new one answers.
+        // closes them unanswered: ask until the new one answers, its hello
+        // and then its spaces (a closed connection is no answer).
         let start = Instant::now();
-        while let Err(e) = self.backend.prepare() {
-            if e.downcast_ref::<OtherVersion>().is_some() || start.elapsed() > REATTACH_WAIT {
-                return Err(e);
+        let running = loop {
+            let asked = self
+                .backend
+                .prepare()
+                .and_then(|()| self.backend.upgraded_spaces());
+            match asked {
+                Ok(running) => break running,
+                Err(e) if e.downcast_ref::<OtherVersion>().is_some() => return Err(e),
+                Err(e) if start.elapsed() > REATTACH_WAIT => return Err(e),
+                Err(_) => std::thread::sleep(Duration::from_millis(50)),
             }
-            std::thread::sleep(Duration::from_millis(50));
-        }
+        };
         let current = self.spaces.get(self.current).map(|s| s.id.clone());
         let ids: Vec<SpaceId> = self.spaces.iter().map(|s| s.id.clone()).collect();
         self.spaces.clear();
         self.terminals.clear();
         // A server that ends with its last space is gone: the new binary
         // failed to take over, and its programs ended with it.
-        let running = self.backend.spaces();
         if running.is_empty() {
             bail!(
                 "the new paddock server did not take over and has ended, with every program \
