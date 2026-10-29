@@ -283,7 +283,7 @@ impl HostedTerminal {
     /// the server's lock): the pids it reads it from, taken now.
     pub fn dir_reader(&self) -> DirReader {
         DirReader {
-            foreground: self.foreground(),
+            foreground: pty::foreground(&self.master),
             shell: i32::try_from(self.pid).ok(),
         }
     }
@@ -321,17 +321,28 @@ fn is_shell(command: &str) -> bool {
     matches!(kind, "" | "ba" | "z" | "fi" | "da" | "k" | "tc" | "c")
 }
 
-/// A terminal's directory to read (see [`HostedTerminal::dir_reader`]).
+/// A terminal's directory to read (see [`HostedTerminal::dir_reader`]),
+/// and what runs in its foreground.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DirReader {
-    foreground: i32,
+    /// The foreground process group, if it could be read.
+    foreground: Option<i32>,
     shell: Option<i32>,
 }
 
 impl DirReader {
     /// The foreground program's directory, else the shell's.
     pub fn read(self) -> Option<String> {
-        proc::cwd(self.foreground).or_else(|| proc::cwd(self.shell?))
+        let foreground = self.foreground.and_then(proc::cwd);
+        foreground.or_else(|| proc::cwd(self.shell?))
+    }
+
+    /// The foreground process group and its program's name; `None` when
+    /// either cannot be read (not the shell's, unlike
+    /// [`HostedTerminal::command`]).
+    pub fn program(self) -> Option<(i32, String)> {
+        let group = self.foreground?;
+        Some((group, proc::name(group)?))
     }
 }
 

@@ -22,11 +22,12 @@
 
 use super::layout::SavedTree;
 use super::scrollback;
-use super::seen::Seen;
+use super::seen::{Foreground, Seen};
 use super::space::Space;
 use super::state::State;
 use super::terminal::{DirReader, HostedTerminal};
 use crate::backend::TerminalId;
+use crate::hooks::now_ms;
 use crate::sessions::AgentKind;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -175,6 +176,15 @@ impl Snapshot {
             terminals: hosted,
         } = self;
         let (ids, readers): (Vec<_>, Vec<_>) = hosted.into_iter().unzip();
+        let programs = ids.iter().zip(&readers);
+        let programs = programs.map(|(id, r)| {
+            let program = r.and_then(DirReader::program);
+            (
+                id.clone(),
+                program.map(|(group, name)| Foreground { group, name }),
+            )
+        });
+        seen.foregrounds(&programs.collect::<Vec<_>>(), now_ms());
         let agents = seen.agents(&ids);
         // Spaces, tabs and each tree's terminals walk in the order
         // `saved_space` pushed the readers in.
