@@ -6,10 +6,11 @@ mod harness;
 
 use harness::backend::{alive, server_pid, NATIVE};
 use harness::native_skip::NATIVE_NEEDS;
+use harness::older_server::fake_older_server;
 use harness::stall::{finished, wait_with_progress, SEND_TIMEOUT};
 use harness::{Paddock, Sandbox, PROMPT};
 use std::io::{Read, Write};
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -309,36 +310,10 @@ fn a_launch_right_after_the_last_shell_exits_gets_a_new_server() {
     last.wait_for_text("still-fine\n");
 }
 
-/// Listen as an older server would: it sends its hello, version 999
-/// and pid 4242, and closes at an upgrade it does not know.
-fn fake_older_server(sandbox: &Sandbox) {
-    std::fs::create_dir_all(sandbox.state_dir()).unwrap();
-    let listener = UnixListener::bind(sandbox.state_dir().join("server.sock")).unwrap();
-    std::thread::spawn(move || {
-        for stream in listener.incoming() {
-            let Ok(mut stream) = stream else { return };
-            // Its hello first, as every server sends it; then it reads one
-            // frame and closes, as a server from before upgrades does at an
-            // upgrade frame it does not know.
-            let hello = br#"{"Hello":{"version":999,"pid":4242}}"#;
-            let len = u32::try_from(hello.len() + 1).unwrap().to_be_bytes();
-            let _ = stream.write_all(&len);
-            let _ = stream.write_all(&[0]);
-            let _ = stream.write_all(hello);
-            let mut len = [0; 4];
-            if stream.read_exact(&mut len).is_err() {
-                continue;
-            }
-            let mut body = vec![0; u32::from_be_bytes(len) as usize];
-            let _ = stream.read_exact(&mut body);
-        }
-    });
-}
-
 #[test]
 fn a_server_speaking_another_protocol_version_is_a_clear_error() {
     let sandbox = native();
-    fake_older_server(&sandbox);
+    fake_older_server(&sandbox, 4242);
 
     let mut paddock = sandbox.launch();
 
@@ -360,7 +335,7 @@ fn a_server_speaking_another_protocol_version_is_a_clear_error() {
 #[test]
 fn paddock_worktree_stops_at_a_server_it_cannot_talk_to() {
     let sandbox = native();
-    fake_older_server(&sandbox);
+    fake_older_server(&sandbox, 4242);
 
     let out = sandbox.run(&["worktree", "list"], &[], "");
 
@@ -372,7 +347,7 @@ fn paddock_worktree_stops_at_a_server_it_cannot_talk_to() {
 #[test]
 fn debug_state_fails_at_a_server_it_cannot_talk_to() {
     let sandbox = native();
-    fake_older_server(&sandbox);
+    fake_older_server(&sandbox, 4242);
 
     let out = sandbox.run(&["debug", "state", "--json"], &[], "");
 

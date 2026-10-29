@@ -79,7 +79,10 @@ The harness tests hand over to the same binary and to a copy of it: the copy sho
 
 - one speaking protocol version 999;
 - one from before this ADR;
+- one that refuses before the switch (`Refused` with no `Probed`), which paddock's prompt (ticket 51) answers with the restart prompt;
 - one that ends after `Probed`.
+
+For the prompt, a proxy stands between paddock and a real server: it moves the server's socket aside, listens in its place, and passes every byte both ways, but rewrites the server's hello to say version 999 until the server answers `Done`. So paddock finds a server of "another version", and the upgrade it asks for is real: the probe, the freeze, the `exec` of this build's binary, and the programs running on. The proxy can also drop `Done`, to test that the same server answering afterwards means done, and then give another pid, to test that another server means the old one ended.
 
 A real handover between two protocol versions, or two record formats, needs two releases built from different sources. That cannot be tested until a second paddock with this ADR exists. Until then, the frozen frame is pinned byte for byte by a unit test, and a record of another format is refused by number.
 
@@ -96,7 +99,8 @@ A real handover between two protocol versions, or two record formats, needs two 
 
 - `paddock server upgrade [<binary>]` hands the running server to the binary it is run as, or to `<binary>`.
 - A new paddock that finds a server of another protocol version offers the same upgrade, to its own binary ("Upgrade it? Its programs keep running. [Y/n]"; ticket 51, `Backend::upgrade_other`), and then opens on it. It tells how the upgrade went by what answers afterwards, not by the answer alone, because a `Refused` after `Probed` can come from a failed `exec` (the old server serves on) or from the new image (it has ended):
-  - The server answers at this paddock's version: the upgrade is done, even if `Done` was lost.
+  - The same server (the same pid) answers at this paddock's version: the upgrade is done, even if `Done` was lost. Another pid means the old server ended and another started since, from `layout.json`: as below, its programs have ended.
+  - No hello within 5 s: paddock cannot tell, and stops saying so.
   - The server still answers at the other version: it did not hand over (from before this ADR, a refusal, or no answer). paddock says why and offers the restart of [ADR 0007](0007-native-backend-with-a-server.md) as before.
   - Nothing answers: it failed after the switch, and its programs have ended. paddock says so and offers no restart, as nothing runs to restart. It waits for the lock to go and starts a new server, which rebuilds `layout.json` as after a restart.
   - Saying no to either prompt stops paddock, as before.

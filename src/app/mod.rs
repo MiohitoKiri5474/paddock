@@ -211,7 +211,7 @@ fn upgrade(backend: &Backend, other: &OtherVersion) -> Result<Option<String>> {
             Ok(None)
         }
         backend::Upgraded::Ended(why) => {
-            eprintln!(
+            println!(
                 "paddock: the upgrade failed after the server switched to this paddock, so \
                  its programs have ended; its layout comes back: {why:#}"
             );

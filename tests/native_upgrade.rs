@@ -6,8 +6,9 @@
 mod harness;
 
 use harness::backend::{alive, server_pid, NATIVE};
+use harness::older_server::{read_frame, send_frame};
 use harness::{Paddock, Sandbox, PROMPT};
-use std::io::{Read, Write};
+use std::io::Write;
 use std::net::Shutdown;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -27,24 +28,6 @@ fn ready(sandbox: &Sandbox) -> Paddock {
     let paddock = sandbox.launch();
     paddock.wait_for_text(PROMPT);
     paddock
-}
-
-/// Write one frame of `kind` holding `json`, as the protocol does.
-fn send_frame(stream: &mut UnixStream, kind: u8, json: &str) {
-    let len = u32::try_from(json.len() + 1).unwrap().to_be_bytes();
-    stream.write_all(&len).unwrap();
-    stream.write_all(&[kind]).unwrap();
-    stream.write_all(json.as_bytes()).unwrap();
-}
-
-/// The next frame's body, its kind first; `None` once the server closed
-/// the connection.
-fn read_frame(stream: &mut UnixStream) -> Option<Vec<u8>> {
-    let mut len = [0; 4];
-    stream.read_exact(&mut len).ok()?;
-    let mut body = vec![0; u32::from_be_bytes(len) as usize];
-    stream.read_exact(&mut body).ok()?;
-    Some(body)
 }
 
 #[test]
@@ -163,7 +146,7 @@ fn ask_upgrade(sandbox: &Sandbox, exe: &Path) -> Vec<String> {
         .unwrap();
     assert!(read_frame(&mut stream).is_some(), "the server's hello");
     let ask = format!(r#"{{"Ask":{{"exe":"{}"}}}}"#, exe.display());
-    send_frame(&mut stream, 3, &ask);
+    send_frame(&mut stream, 3, &ask).unwrap();
     let mut answers = Vec::new();
     while let Some(reply) = read_frame(&mut stream) {
         assert_eq!(reply[0], 3, "an upgrade frame");
@@ -233,12 +216,13 @@ fn fake_server(sandbox: &Sandbox, answer: Option<&'static str>) {
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { return };
-            send_frame(&mut stream, 0, r#"{"Hello":{"version":999,"pid":4242}}"#);
+            let _ = send_frame(&mut stream, 0, r#"{"Hello":{"version":999,"pid":4242}}"#);
             if read_frame(&mut stream).is_none() {
                 continue;
             }
+            // A client that only checked the hello may be gone already.
             if let Some(answer) = answer {
-                send_frame(&mut stream, 3, answer);
+                let _ = send_frame(&mut stream, 3, answer);
             }
         }
     });
@@ -336,14 +320,26 @@ fn a_paddock_with_a_busy_space_attaches_again_once_and_stays() {
 // Ticket 51: a paddock that finds a server of another protocol version
 // offers to upgrade it in place, and restarting it is the fallback.
 
+/// What the proxy of [`disguise_as_another_version`] changes, besides the
+/// version in the server's hello before the upgrade.
+#[derive(Clone, Copy, Default)]
+struct Disguise {
+    /// Close the asking connection in place of passing `Done` on, as if
+    /// the answer were lost.
+    lose_done: bool,
+    /// After the upgrade, the pid the server's hello says, as if another
+    /// server had started meanwhile.
+    pid_after: Option<u32>,
+}
+
 /// Stand between paddock and the sandbox's real server as if it spoke
 /// another protocol version: move its socket aside, listen in its place,
 /// and pass every byte on both ways, except that the server's hello says
-/// version 999 until the server answers an upgrade with `Done`. Only
-/// that number is faked: the server, its programs and the handover to
-/// this build's binary are real. (One build speaks one version, so two
-/// real versions cannot meet here.)
-fn disguise_as_another_version(sandbox: &Sandbox) {
+/// version 999 until the server answers an upgrade with `Done`, and what
+/// `disguise` says. Only that is faked: the server, its programs and the
+/// handover to this build's binary are real. (One build speaks one
+/// version, so two real versions cannot meet here.)
+fn disguise_as_another_version(sandbox: &Sandbox, disguise: Disguise) {
     let socket = sandbox.state_dir().join("server.sock");
     let real = sandbox.state_dir().join("real.sock");
     // The server's listener keeps its socket, whatever it is named.
@@ -363,22 +359,30 @@ fn disguise_as_another_version(sandbox: &Sandbox) {
                 let _ = to_server.shutdown(Shutdown::Write);
             });
             let upgraded = Arc::clone(&upgraded);
-            std::thread::spawn(move || pass_on(server, client, &upgraded));
+            std::thread::spawn(move || pass_on(server, client, &upgraded, disguise));
         }
     });
 }
 
-/// Pass the server's frames on to the client, its hello saying version
-/// 999 until `upgraded`, which a `Done` answer sets.
-fn pass_on(mut server: UnixStream, mut client: UnixStream, upgraded: &AtomicBool) {
+/// Pass the server's frames on to the client, its hello changed as
+/// [`disguise_as_another_version`] says, `upgraded` set by a `Done`.
+fn pass_on(
+    mut server: UnixStream,
+    mut client: UnixStream,
+    upgraded: &AtomicBool,
+    disguise: Disguise,
+) {
     let mut first = true;
     while let Some(mut body) = read_frame(&mut server) {
-        if first && !upgraded.load(Ordering::SeqCst) {
-            body = with_version_999(&body);
+        if first {
+            body = disguised_hello(&body, upgraded.load(Ordering::SeqCst), disguise);
         }
         first = false;
         if body[0] == 3 && body[1..].starts_with(br#"{"Done""#) {
             upgraded.store(true, Ordering::SeqCst);
+            if disguise.lose_done {
+                break;
+            }
         }
         let len = u32::try_from(body.len()).unwrap().to_be_bytes();
         if client
@@ -392,20 +396,26 @@ fn pass_on(mut server: UnixStream, mut client: UnixStream, upgraded: &AtomicBool
     let _ = client.shutdown(Shutdown::Both);
 }
 
-/// A hello frame's body (kind 0), its version made 999.
-fn with_version_999(body: &[u8]) -> Vec<u8> {
+/// A hello frame's body (kind 0): version 999 before the upgrade, and
+/// after it the pid `disguise` says, if any.
+fn disguised_hello(body: &[u8], upgraded: bool, disguise: Disguise) -> Vec<u8> {
     assert_eq!(body[0], 0, "a hello first");
     let mut hello: serde_json::Value = serde_json::from_slice(&body[1..]).unwrap();
-    hello["Hello"]["version"] = 999.into();
+    match (upgraded, disguise.pid_after) {
+        (false, _) => hello["Hello"]["version"] = 999.into(),
+        (true, Some(pid)) => hello["Hello"]["pid"] = pid.into(),
+        (true, None) => return body.to_vec(),
+    }
     let mut out = vec![0];
     out.extend(serde_json::to_vec(&hello).unwrap());
     out
 }
 
-#[test]
-fn a_server_of_another_version_is_upgraded_and_its_programs_keep_running() {
-    let sandbox = native();
-    let mut first = ready(&sandbox);
+/// A paddock running `cat`, which has read a line, detached from its
+/// server, which then seems to speak another protocol version as
+/// `disguise` says: the server's pid and shells.
+fn cat_behind_another_version(sandbox: &Sandbox, disguise: Disguise) -> (i32, Vec<String>) {
+    let mut first = ready(sandbox);
     // Typed once the shell runs the line, not while it still reads it.
     first.type_line("echo CAT''-READY; cat");
     first.wait_for_text("CAT-READY\n");
@@ -415,15 +425,13 @@ fn a_server_of_another_version_is_upgraded_and_its_programs_keep_running() {
     let shells = sandbox.shells();
     first.detach_keys();
     assert!(first.wait_exit(), "detached");
-    disguise_as_another_version(&sandbox);
+    disguise_as_another_version(sandbox, disguise);
+    (server, shells)
+}
 
-    let mut paddock = sandbox.launch();
-    paddock.wait_for_text("speaks protocol version 999");
-    paddock.wait_for_text("Upgrade it? Its programs keep running. [Y/n]");
-    // Yes is the default.
-    paddock.type_line("");
-
-    paddock.wait_for_text("programs kept running");
+/// The upgraded server's programs run on: the same pid, shells and
+/// `cat`, which still reads, on the screen it had.
+fn assert_programs_kept(sandbox: &Sandbox, paddock: &mut Paddock, server: i32, shells: &[String]) {
     paddock.wait_for_text("typed-before\ntyped-before\n");
     paddock.type_line("typed-after");
     paddock.wait_for_text("typed-after\ntyped-after\n");
@@ -434,6 +442,60 @@ fn a_server_of_another_version_is_upgraded_and_its_programs_keep_running() {
     assert_eq!(sandbox.shells(), shells, "the same shells");
     let terminal = sandbox.terminal("space-1");
     assert_eq!(terminal.command.as_deref(), Some("cat"));
+}
+
+#[test]
+fn a_server_of_another_version_is_upgraded_and_its_programs_keep_running() {
+    let sandbox = native();
+    let (server, shells) = cat_behind_another_version(&sandbox, Disguise::default());
+
+    let mut paddock = sandbox.launch();
+    paddock.wait_for_text("speaks protocol version 999");
+    paddock.wait_for_text("Upgrade it? Its programs keep running. [Y/n]");
+    // Yes is the default.
+    paddock.type_line("");
+
+    paddock.wait_for_text("programs kept running");
+    assert_programs_kept(&sandbox, &mut paddock, server, &shells);
+}
+
+/// The switch happened, but paddock never read `Done`: the server, at
+/// this version with the same pid, tells it.
+#[test]
+fn an_upgrade_whose_done_is_lost_is_done_if_the_same_server_answers() {
+    let sandbox = native();
+    let lost = Disguise {
+        lose_done: true,
+        ..Disguise::default()
+    };
+    let (server, shells) = cat_behind_another_version(&sandbox, lost);
+
+    let mut paddock = sandbox.launch();
+    paddock.wait_for_text("Upgrade it?");
+    paddock.type_line("y");
+
+    paddock.wait_for_text("programs kept running");
+    assert!(!paddock.full_screen().contains("Restart it?"));
+    assert_programs_kept(&sandbox, &mut paddock, server, &shells);
+}
+
+/// The answer lost, and another server answers (one started from
+/// `layout.json` meanwhile): the old one ended, its programs with it.
+#[test]
+fn an_upgrade_whose_done_is_lost_has_ended_if_another_server_answers() {
+    let sandbox = native();
+    let elsewhere = Disguise {
+        lose_done: true,
+        pid_after: Some(4243),
+    };
+    cat_behind_another_version(&sandbox, elsewhere);
+
+    let mut paddock = sandbox.launch();
+    paddock.wait_for_text("Upgrade it?");
+    paddock.type_line("y");
+
+    paddock.wait_for_text("its programs ended");
+    assert!(!paddock.full_screen().contains("Restart it?"));
 }
 
 #[test]
@@ -464,41 +526,4 @@ fn a_server_refusing_before_the_switch_falls_back_to_the_restart_prompt() {
     paddock.wait_for_text("Restart it?");
     paddock.type_line("n");
     assert!(!paddock.wait_exit(), "declining fails");
-}
-
-/// Listen as a server of protocol version 999 would that switches to
-/// the new binary at an upgrade and ends there: it answers `Probed`,
-/// then stops listening, its socket gone.
-fn fake_server_ending_at_upgrade(sandbox: &Sandbox) {
-    std::fs::create_dir_all(sandbox.state_dir()).unwrap();
-    let socket = sandbox.state_dir().join("server.sock");
-    let listener = UnixListener::bind(&socket).unwrap();
-    std::thread::spawn(move || {
-        for stream in listener.incoming() {
-            let Ok(mut stream) = stream else { return };
-            send_frame(&mut stream, 0, r#"{"Hello":{"version":999,"pid":4242}}"#);
-            if read_frame(&mut stream).is_some_and(|frame| frame[0] == 3) {
-                send_frame(&mut stream, 3, r#""Probed""#);
-                let _ = std::fs::remove_file(&socket);
-                return;
-            }
-        }
-    });
-}
-
-#[test]
-fn an_upgrade_failing_after_the_switch_says_the_programs_ended() {
-    let sandbox = native();
-    fake_server_ending_at_upgrade(&sandbox);
-
-    let mut paddock = sandbox.launch();
-    paddock.wait_for_text("Upgrade it?");
-    paddock.type_line("y");
-
-    // No restart is offered: nothing is left running to restart.
-    paddock.wait_for_text("its programs ended");
-    assert!(!paddock.full_screen().contains("Restart it?"));
-    paddock.wait_for_text(PROMPT);
-    paddock.type_line("echo after-failed-upgrade");
-    paddock.wait_for_text("after-failed-upgrade\n");
 }

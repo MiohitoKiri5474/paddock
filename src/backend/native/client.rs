@@ -153,6 +153,16 @@ impl Client {
         Ok((stream, server))
     }
 
+    /// The running server, as its hello tells, read within `timeout`
+    /// (an error past it); an error, as [`Self::connect`], if none runs
+    /// or it speaks another protocol version.
+    fn hello_within(&self, timeout: Duration) -> Result<Peer> {
+        let socket = socket_path(&self.paths)?;
+        let mut stream = UnixStream::connect(&socket).context(NotRunning)?;
+        stream.set_read_timeout(Some(timeout))?;
+        protocol::hello(&mut stream, true, 0)
+    }
+
     fn request(&self, request: Request) -> Result<Answer> {
         let (mut stream, _) = self.connect()?;
         protocol::write(&mut stream, &Frame::Message(Message::Request(request)))?;
@@ -255,17 +265,23 @@ impl Client {
     /// protocol version, to `exe`, and tell from what runs after a
     /// failure whether the server ran on unchanged (it could not hand
     /// over, from too old to know how to a refusal) or ended after the
-    /// switch, every program with it. Once ended, its lock is let go, so
-    /// a new server can start. An error only if what runs cannot be told.
+    /// switch, every program with it: the same server (`other`'s pid) at
+    /// this version means done, another server means it ended and a new
+    /// one started. Once ended with none running, its lock is let go, so
+    /// a new server can start. An error only if what runs cannot be told,
+    /// as when the server gives no hello within [`START_TIMEOUT`].
     pub fn upgrade_other(&self, other: &OtherVersion, exe: &Path) -> Result<Upgraded> {
         let why = match self.upgrade(exe) {
             Ok(_) => return Ok(Upgraded::Done),
             Err(why) => why,
         };
-        match self.connect() {
+        match self.hello_within(START_TIMEOUT) {
             Err(e) if e.downcast_ref::<OtherVersion>().is_some() => Ok(Upgraded::Unchanged(why)),
             // The switch happened, though its answer was lost.
-            Ok(_) => Ok(Upgraded::Done),
+            Ok(server) if server.pid == other.pid => Ok(Upgraded::Done),
+            // Another server, started (from `layout.json`) since the old
+            // one ended.
+            Ok(_) => Ok(Upgraded::Ended(why)),
             Err(e) if no_server(&e) => {
                 self.wait_ended(other.pid)?;
                 Ok(Upgraded::Ended(why))

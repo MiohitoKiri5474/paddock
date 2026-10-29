@@ -19,6 +19,7 @@
 pub mod alerts;
 pub mod backend;
 pub mod native_skip;
+pub mod older_server;
 mod paddock;
 mod panes;
 pub mod stall;

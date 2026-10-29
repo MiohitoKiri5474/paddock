@@ -6,9 +6,9 @@
 mod harness;
 
 use harness::backend::{alive, server_pid, stop_server, NATIVE};
+use harness::older_server::{fake_older_server, fake_server_ending_at_upgrade};
 use harness::{Paddock, Sandbox, PROMPT};
-use std::io::{Read, Write};
-use std::os::unix::net::UnixListener;
+use std::io::Write;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -146,32 +146,6 @@ fn a_server_ended_with_its_last_shell_leaves_nothing_to_restore() {
     assert_eq!(sandbox.space_names(), ["space-1"]);
 }
 
-/// Listen as an older server would: it sends its hello, version 999 and
-/// pid `pid`, and closes at an upgrade it does not know, so paddock
-/// falls back to restarting it.
-fn fake_older_server(sandbox: &Sandbox, pid: u32) {
-    let listener = UnixListener::bind(sandbox.state_dir().join("server.sock")).unwrap();
-    std::thread::spawn(move || {
-        for stream in listener.incoming() {
-            let Ok(mut stream) = stream else { return };
-            // Its hello first, as every server sends it; then it reads one
-            // frame and closes, as a server from before upgrades does at an
-            // upgrade frame it does not know.
-            let hello = format!(r#"{{"Hello":{{"version":999,"pid":{pid}}}}}"#);
-            let len = u32::try_from(hello.len() + 1).unwrap().to_be_bytes();
-            let _ = stream.write_all(&len);
-            let _ = stream.write_all(&[0]);
-            let _ = stream.write_all(hello.as_bytes());
-            let mut len = [0; 4];
-            if stream.read_exact(&mut len).is_err() {
-                continue;
-            }
-            let mut body = vec![0; u32::from_be_bytes(len) as usize];
-            let _ = stream.read_exact(&mut body);
-        }
-    });
-}
-
 /// A process holding the server lock, as an older server would: a
 /// `sleep` whose pid the lock names, the lock let go once it ends.
 fn lock_holder(sandbox: &Sandbox) -> u32 {
@@ -230,6 +204,31 @@ fn restarting_a_server_of_another_version_restores_its_layout() {
     again.type_line("y");
 
     again.wait_for_text("restored 1 space");
+    assert_eq!(shape(&sandbox, "", ""), before);
+    assert_eq!(
+        sandbox.terminal("space-1:0.1").dir.as_deref(),
+        Some(real(&dir).as_str())
+    );
+    assert!(server_pid(&sandbox.state_dir()).is_some_and(alive));
+}
+
+/// An upgrade that fails once the server switched (ticket 51): its
+/// programs ended with it, so no restart is offered, and the next server
+/// restores the layout it saved.
+#[test]
+fn an_upgrade_failing_after_the_switch_restores_the_layout() {
+    let sandbox = native();
+    let dir = sandbox.path("home/proj");
+    let before = left_by_an_older_server(&sandbox, &dir);
+    fake_server_ending_at_upgrade(&sandbox);
+
+    let mut again = sandbox.launch();
+    again.wait_for_text("Upgrade it?");
+    again.type_line("y");
+
+    again.wait_for_text("its programs ended");
+    again.wait_for_text("restored 1 space");
+    assert!(!again.full_screen().contains("Restart it?"));
     assert_eq!(shape(&sandbox, "", ""), before);
     assert_eq!(
         sandbox.terminal("space-1:0.1").dir.as_deref(),
