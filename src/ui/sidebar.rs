@@ -27,7 +27,7 @@
 //! line), two cells or more after the name. Short of room the name is cut
 //! with `…` down to its first eight cells; past that the status is left
 //! out whole, never cut. Its second line, dim, shows its directory and that
-//! branch, then, a cell or more on, at the end, the branch's pull request:
+//! branch, then, two cells or more on, at the end, the branch's pull request:
 //! its number in its state's colour and its checks mark (`✓`, `✗`, `•`).
 //! Short of room the path gives way first (`…` from its start), then the PR
 //! mark goes, then the branch loses its end. The status is read on the git
@@ -316,19 +316,20 @@ impl Sidebar<'_> {
                     .as_ref()
                     .map(|st| status_parts(st, coloured))
                     .unwrap_or_default();
-                let width: usize = parts.iter().map(|(t, _)| t.width()).sum();
-                let at = end.saturating_sub(cells(width));
-                let room = usize::from(at.saturating_sub(x)).saturating_sub(STATUS_GAP);
-                let least = s.name.width().min(NAME_LEAST + 1);
-                if parts.is_empty() || room < least {
+                let at = end.saturating_sub(cells(parts_width(&parts)));
+                // The name's room: the cells before the status, less the
+                // gap, which stays whatever the name (even an empty one).
+                let room = usize::from(at.saturating_sub(x))
+                    .checked_sub(STATUS_GAP)
+                    .filter(|&r| !parts.is_empty() && r >= s.name.width().min(NAME_LEAST + 1));
+                let Some(room) = room else {
                     put(x, &s.name, Style::default());
                     return;
-                }
+                };
                 put(x, &head(&s.name, room), Style::default());
-                let mut at = at;
-                for (text, style) in &parts {
-                    at = put(at, text, *style);
-                }
+                parts
+                    .iter()
+                    .fold(at, |at, (text, style)| put(at, text, *style));
             }
             Line::Agent(i) => {
                 let a = &self.agents[i];
@@ -351,31 +352,23 @@ impl Sidebar<'_> {
                     return;
                 };
                 let branch = s.branch.as_deref();
-                // The PR's mark at the end, a cell or more after the
+                // The PR's mark at the end, two cells or more after the
                 // place: short of room the path gives way first, down to
                 // `…`, then the mark goes, then the branch is cut.
-                let mark = s.pr.as_ref().map(|pr| {
-                    let number = format!("#{}", pr.number);
-                    let checks = pr.checks.map(|c| format!(" {}", c.mark()));
-                    (number, checks, pr.state)
-                });
-                let mark_width = mark.as_ref().map_or(0, |(number, checks, _)| {
-                    number.width() + checks.as_deref().map_or(0, str::width)
-                });
-                let with_mark = room
-                    .checked_sub(mark_width + 1)
-                    .filter(|&r| mark.is_some() && r >= place_least(path, branch));
-                let shown = place(path, branch, with_mark.unwrap_or(room));
-                put(x, &shown, dim);
-                let (Some((number, checks, state)), Some(_)) = (&mark, with_mark) else {
+                let parts = s.pr.as_ref().map(mark_parts).unwrap_or_default();
+                let width = parts_width(&parts);
+                let place_room = room
+                    .checked_sub(width + MARK_GAP)
+                    .filter(|&r| !parts.is_empty() && r >= place_least(path, branch));
+                let Some(place_room) = place_room else {
+                    put(x, &place(path, branch, room), dim);
                     return;
                 };
-                if let Some(at) = end_x(x, shown.width(), mark_width, end) {
-                    let at = put(at, number, pr_style(*state));
-                    if let Some(checks) = checks {
-                        put(at, checks, dim);
-                    }
-                }
+                put(x, &place(path, branch, place_room), dim);
+                let at = end.saturating_sub(cells(width));
+                parts
+                    .iter()
+                    .fold(at, |at, (text, style)| put(at, text, *style));
             }
             Line::AgentPlace(i) => {
                 // The kind's tag under the state, only where it fits after
@@ -394,6 +387,8 @@ impl Sidebar<'_> {
 
 /// The fewest cells between a space's name and its status.
 const STATUS_GAP: usize = 2;
+/// The fewest cells between a space's place and its PR mark.
+const MARK_GAP: usize = 2;
 /// The fewest cells of its own a space's name keeps, before `…`, when cut
 /// to make room for its status.
 const NAME_LEAST: usize = 8;
@@ -426,6 +421,21 @@ fn status_parts(status: &Status, coloured: bool) -> Vec<(String, Style)> {
         parts.push((text.arrows, dim));
     }
     parts
+}
+
+/// A pull request's mark as drawn at the end of its space's second line:
+/// its number in its state's colour, then its checks mark (dim), if any.
+fn mark_parts(pr: &Pr) -> Vec<(String, Style)> {
+    let dim = Style::default().add_modifier(Modifier::DIM);
+    let checks = pr.checks.map(|c| (format!(" {}", c.mark()), dim));
+    std::iter::once((format!("#{}", pr.number), pr_style(pr.state)))
+        .chain(checks)
+        .collect()
+}
+
+/// The cells `parts` take, side by side.
+fn parts_width(parts: &[(String, Style)]) -> usize {
+    parts.iter().map(|(t, _)| t.width()).sum()
 }
 
 /// The fewest cells [`place`] takes with the path cut down to `…` and the
@@ -888,8 +898,8 @@ mod tests {
         ];
         let buf = draw(&spaces, &[], None);
         assert_eq!(text(&buf, 2), "   ~/r  feat/x  #123 ✓ │");
-        assert_eq!(text(&buf, 4), "   …t/api  main #123 ✓ │");
-        assert_eq!(text(&buf, 6), "   …ath  feat/y #123 ✓ │");
+        assert_eq!(text(&buf, 4), "   …/api  main  #123 ✓ │");
+        assert_eq!(text(&buf, 6), "   …th  feat/y  #123 ✓ │");
         assert_eq!(text(&buf, 8), "   ~/r  main           │", "no PR: nothing");
         // The number in its state's colour, the checks mark dim.
         assert_eq!(buf[(16, 2)].fg, Color::Green);
@@ -995,6 +1005,11 @@ mod tests {
         let line = |width| first_line(short.clone(), width).0;
         assert_eq!(line(23), format!("   api{status}"));
         assert_eq!(line(22), "   api");
+        // An empty name keeps the gap all the same.
+        let empty = with_status("", Some((200, 10)), Some((2, 1)));
+        let line = |width| first_line(empty.clone(), width).0;
+        assert_eq!(line(20), format!("     {}", status.trim_start()));
+        assert_eq!(line(19), "");
         for width in 0..45 {
             let got = line(width);
             assert!(!got.contains('+') || got.contains(status), "{width}: {got}");
@@ -1033,12 +1048,12 @@ mod tests {
         let pr = Some(Pr::sample(42, PrState::Open, Some(Checks::Passing), None));
         let s = on("~/p/paddock", "feat/x", pr);
         let line = |width| second_line(s.clone(), width);
-        assert_eq!(line(30), "   ~/p/paddock  feat/x #42 ✓");
-        assert_eq!(line(29), "   …p/paddock  feat/x #42 ✓");
-        assert_eq!(line(20), "   …  feat/x #42 ✓");
+        assert_eq!(line(31), "   ~/p/paddock  feat/x  #42 ✓");
+        assert_eq!(line(30), "   …p/paddock  feat/x  #42 ✓");
+        assert_eq!(line(21), "   …  feat/x  #42 ✓");
         // Short of room for the mark: it goes, the path back as long as it
         // fits, then the branch loses its end.
-        assert_eq!(line(19), "   …ddock  feat/x");
+        assert_eq!(line(20), "   …addock  feat/x");
         assert_eq!(line(14), "   …  feat/x");
         assert_eq!(line(13), "   …  feat…");
     }
