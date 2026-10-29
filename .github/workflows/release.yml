@@ -44,7 +44,9 @@ jobs:
           echo "tag=v$version" >> "$GITHUB_OUTPUT"
 
   # One job per target, each on its own architecture, so each binary is run
-  # (tests and --version) where it will be used.
+  # (tests and --version) where it will be used. Linux builds on Ubuntu 22.04:
+  # a binary links against the build host's glibc, and 22.04's (2.35) keeps
+  # the floor at glibc 2.34, where 24.04's ties aarch64 to 2.39.
   build:
     needs: version
     strategy:
@@ -54,9 +56,9 @@ jobs:
           - target: aarch64-apple-darwin
             os: macos-latest
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: ubuntu-22.04
           - target: aarch64-unknown-linux-gnu
-            os: ubuntu-24.04-arm
+            os: ubuntu-22.04-arm
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read
@@ -94,10 +96,19 @@ jobs:
             echo "::error::$bin --version says '$out', expected 'paddock ${TAG#v}'"
             exit 1
           fi
-      # The oldest glibc the binary runs on: the newest GLIBC_ symbol version it needs.
-      - name: Show glibc floor
+      # The oldest glibc the binary runs on: the newest GLIBC_ version it needs
+      # (a WEAK one, which std looks up at run time, is not needed). The README
+      # promises 2.34.
+      - name: Check glibc floor
         if: runner.os == 'Linux'
-        run: objdump -T "target/$TARGET/release/paddock" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1
+        run: |
+          floor=$(readelf -V "target/$TARGET/release/paddock" |
+            awk '$2 == "Name:" && $3 ~ /^GLIBC_/ && $5 != "WEAK" {print $3}' | sort -uV | tail -1)
+          echo "needs $floor"
+          if [ "$(printf '%s\n' "$floor" GLIBC_2.34 | sort -V | tail -1)" != GLIBC_2.34 ]; then
+            echo "::error::the binary needs $floor, newer than the GLIBC_2.34 the README promises"
+            exit 1
+          fi
       - name: TEMPORARY glibc symbol detail
         if: runner.os == 'Linux'
         run: |
