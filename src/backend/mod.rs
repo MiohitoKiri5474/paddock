@@ -88,6 +88,16 @@ pub struct TerminalDetails {
     pub hook_env: Vec<(String, String)>,
 }
 
+/// What the host rebuilt from its saved layout when it started (ADR
+/// 0008).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Restored {
+    /// Spaces that came back.
+    pub spaces: usize,
+    /// Agent sessions resumed in their terminals.
+    pub sessions: usize,
+}
+
 /// What a terminal held when its space was attached: the bytes that,
 /// fed to a fresh emulator of `size`, rebuild its screen, scrollback,
 /// cursor and modes. Output after them continues the same stream.
@@ -209,9 +219,9 @@ impl Backend {
         }
     }
 
-    /// How many spaces the host rebuilt from its saved layout when it
-    /// started, once: `None` after the first ask, and on tmux.
-    pub fn restored(&self) -> Option<usize> {
+    /// What the host rebuilt from its saved layout when it started,
+    /// once: `None` after the first ask, and on tmux.
+    pub fn restored(&self) -> Option<Restored> {
         match self {
             Self::Tmux(_) => None,
             Self::Native(n) => n.take_restored().ok().flatten(),

@@ -127,6 +127,8 @@ pub struct HostedTerminal {
     /// Its program has exited and been reaped: its pid may be another
     /// process's now, so it is never signalled again.
     pub exited: bool,
+    /// Its program has written something: a shell has started.
+    pub spoke: bool,
     /// The name its scrollback is saved under: its own, or the one it
     /// was restored from.
     pub saved_as: ScrollbackName,
@@ -153,6 +155,7 @@ impl HostedTerminal {
             input,
             size,
             exited: false,
+            spoke: false,
             emulator: Emulator::answering(size.0, size.1, SCROLLBACK),
             keys: KeyModeScanner::default(),
             scanner: Scanner::default(),
@@ -179,6 +182,7 @@ impl HostedTerminal {
     /// Feed what the program wrote, and send it the answers to the
     /// queries in it.
     pub fn output(&mut self, bytes: &[u8]) {
+        self.spoke = true;
         self.keys.feed(bytes);
         self.emulator.feed(bytes);
         let mut replies = self.emulator.take_replies();

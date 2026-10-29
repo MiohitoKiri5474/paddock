@@ -12,7 +12,8 @@ use super::space::Space;
 use super::tab::Tab;
 use super::terminal::HostedTerminal;
 use crate::backend::{
-    FloatId, ListedSpace, SpaceId, SpaceTerminal, Structure, TabId, TerminalDetails, TerminalId,
+    FloatId, ListedSpace, Restored, SpaceId, SpaceTerminal, Structure, TabId, TerminalDetails,
+    TerminalId,
 };
 use anyhow::{anyhow, bail, Result};
 use std::os::unix::net::UnixStream;
@@ -123,9 +124,9 @@ pub struct State {
     pub closing: bool,
     /// The space paddock shows, as it last said.
     pub current: Option<SpaceId>,
-    /// How many spaces the server rebuilt from `layout.json` when it
-    /// started, until a client takes the number to say so.
-    pub restored: Option<usize>,
+    /// What the server rebuilt from `layout.json` when it started (spaces,
+    /// and sessions resumed), until a client takes it to say so.
+    pub restored: Option<Restored>,
     /// The threads letting clients go (see [`Self::let_go`]).
     leaving: Vec<JoinHandle<()>>,
 }
