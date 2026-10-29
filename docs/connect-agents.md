@@ -1,4 +1,4 @@
-# Agents
+# Connect agents
 
 How to connect Claude Code, Gemini CLI and Antigravity CLI to paddock, and what each gets. Back to the [README](../README.md).
 
