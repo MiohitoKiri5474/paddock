@@ -289,3 +289,43 @@ fn upgrading_with_no_server_running_says_so() {
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("not running"), "{err}");
 }
+
+#[test]
+fn a_paddock_with_a_busy_space_attaches_again_once_and_stays() {
+    let sandbox = native();
+    let mut paddock = ready(&sandbox);
+    // Bounded, and stopped below: nothing is left running.
+    paddock.type_line("for i in $(seq 1 6000); do echo tick-$i; sleep 0.005; done");
+    paddock.wait_for_text("tick-5\n");
+    paddock.command(b"C\r");
+    paddock.wait_for_text(PROMPT);
+    paddock.type_line("echo in-quiet-space");
+    paddock.wait_for_text("in-quiet-space\n");
+
+    let out = sandbox.run(&["server", "upgrade"], &[], "");
+
+    assert!(out.status.success(), "{out:?}");
+    paddock.wait_for_text("programs kept running");
+    paddock.type_line("echo after-upgrade");
+    paddock.wait_for_text("after-upgrade\n");
+    // The busy space, attached again, still streams.
+    paddock.command(b"\t");
+    let ticks = |screen: &str| {
+        screen
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix("tick-")?.parse::<u32>().ok())
+            .max()
+            .unwrap_or(0)
+    };
+    let seen = ticks(&paddock.screen());
+    paddock.wait_for("more ticks", |s| ticks(s) > seen + 20);
+    paddock.send(b"\x03");
+    paddock.type_line("echo loop''-stopped");
+    paddock.wait_for_text("loop-stopped\n");
+    // Still attached, and only once: a second attach, or a lost
+    // connection, would have ended it.
+    paddock.type_line("echo still-here");
+    paddock.wait_for_text("still-here\n");
+    let shells = sandbox.shells();
+    assert_eq!(shells.len(), 2, "{shells:?}");
+}

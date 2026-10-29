@@ -296,10 +296,17 @@ pub struct App {
     /// The current space as last told to a backend that keeps it (see
     /// [`Backend::keeps_current`]).
     pub(super) told_current: Option<SpaceId>,
-    /// The spaces whose server said it is upgrading (ADR 0009), and
-    /// whether each one's connection has ended since: once all have, they
-    /// are attached again ([`App::reattach`]).
-    pub(super) upgrading: HashMap<SpaceId, bool>,
+    /// The server said it is upgrading (ADR 0009), on some space's
+    /// connection: a connection that ends now is part of the upgrade.
+    pub(super) upgrading: bool,
+    /// The spaces whose connection ended in the upgrade: once every space
+    /// has, they are attached again ([`App::reattach`]).
+    pub(super) upgrade_lost: HashSet<SpaceId>,
+    /// The number the next connection gets (see [`Event::Backend`]).
+    pub(super) next_connection: u64,
+    /// The connections replaced by attaching again: what they still
+    /// report is left out.
+    pub(super) replaced: HashSet<u64>,
 }
 
 /// The part of a screen of `(cols, rows)` that shows the current tab's
@@ -404,7 +411,10 @@ impl App {
             external: config.external,
             new_tab_dir: config.new_tab_dir,
             told_current: None,
-            upgrading: HashMap::new(),
+            upgrading: false,
+            upgrade_lost: HashSet::new(),
+            next_connection: 0,
+            replaced: HashSet::new(),
         };
         app.load_dismissed();
         app.open_spaces()?;
@@ -556,16 +566,20 @@ impl App {
     pub(super) fn attach(&mut self, id: &SpaceId) -> Result<()> {
         let events = self.events.clone();
         let space = id.clone();
+        self.next_connection += 1;
+        let connection = self.next_connection;
         let deliver = move |event| {
             events
                 .send(Event::Backend {
                     space: space.clone(),
+                    connection,
                     event,
                 })
                 .is_ok()
         };
         let size = (self.area().width, self.area().height);
         let (mut space, terminals) = Space::attach(&self.backend, id, size, deliver)?;
+        space.connection_id = connection;
         self.close_orphan_floats(&mut space.structure);
         self.remember_float_panes(&space.structure);
         // Not the panes of floats just closed.

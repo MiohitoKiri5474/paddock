@@ -687,6 +687,12 @@ pub struct Attached {
 }
 
 impl Attached {
+    /// Shut the connection down both ways, so its reader (which holds
+    /// a clone of it) sees it end.
+    pub fn close(&self) {
+        let _ = self.stream.shutdown(std::net::Shutdown::Both);
+    }
+
     /// Send `bytes` to `terminal`'s program as one input, in parts of at
     /// most [`INPUT_FRAME`] bytes (a paste of any size fits the server's
     /// frame limit); the server queues or refuses all of it.

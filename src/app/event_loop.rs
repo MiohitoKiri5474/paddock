@@ -202,7 +202,12 @@ fn handle(
     effects: &mut EventEffects,
 ) -> Result<(Flow, bool)> {
     match event {
-        Event::Backend { space, event } => {
+        // A connection replaced by attaching again (ADR 0009): what it
+        // still reports belongs to no screen shown.
+        Event::Backend { connection, .. } if app.replaced.contains(&connection) => {
+            Ok((Flow::Continue, false))
+        }
+        Event::Backend { space, event, .. } => {
             let done = handle_backend(app, &space, event);
             effects.rows_may_move = done.terminals_changed;
             Ok((done.flow, done.changed))
@@ -323,18 +328,20 @@ fn handle_backend(app: &mut App, space: &SpaceId, event: backend::Event) -> Back
             }
         }
         backend::Event::Upgrading => {
-            app.upgrading.insert(space.clone(), false);
+            app.upgrading = true;
             BackendHandled {
                 flow: Flow::Continue,
                 changed: false,
                 terminals_changed: false,
             }
         }
-        // The server upgrades: once every space it told has lost its
-        // connection, attach them again to the new binary.
-        backend::Event::Lost if app.upgrading.contains_key(space) => {
-            app.upgrading.insert(space.clone(), true);
-            if !app.upgrading.values().all(|&lost| lost) {
+        // The server upgrades: once every space has lost its connection
+        // (one more than 1 s behind is let go before it reads that it
+        // upgrades), attach them all again to the new binary.
+        backend::Event::Lost if app.upgrading => {
+            app.upgrade_lost.insert(space.clone());
+            let all = app.spaces.iter().all(|s| app.upgrade_lost.contains(&s.id));
+            if !all {
                 return BackendHandled {
                     flow: Flow::Continue,
                     changed: false,

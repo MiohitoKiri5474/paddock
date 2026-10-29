@@ -68,7 +68,14 @@ impl App {
     /// tab and focus). An error if the new server cannot be talked to (it
     /// speaks another protocol version, or failed).
     pub(super) fn reattach(&mut self) -> Result<()> {
-        self.upgrading.clear();
+        self.upgrading = false;
+        self.upgrade_lost.clear();
+        // What the old connections still report is left out: their
+        // spaces are attached again below.
+        for space in &self.spaces {
+            space.close();
+            self.replaced.insert(space.connection_id);
+        }
         // The old binary, until its `exec`, still takes connections, and
         // closes them unanswered: ask until the new one answers.
         let start = Instant::now();
@@ -82,9 +89,14 @@ impl App {
         let ids: Vec<SpaceId> = self.spaces.iter().map(|s| s.id.clone()).collect();
         self.spaces.clear();
         self.terminals.clear();
+        // A server that ends with its last space is gone: the new binary
+        // failed to take over, and its programs ended with it.
         let running = self.backend.spaces();
         if running.is_empty() {
-            bail!("the upgraded paddock server holds no space");
+            bail!(
+                "the new paddock server did not take over and has ended, with every program \
+                 in it (see server.log in paddock's state directory)"
+            );
         }
         for id in ids.iter().filter(|id| running.iter().any(|s| s.id == **id)) {
             self.attach(id)?;

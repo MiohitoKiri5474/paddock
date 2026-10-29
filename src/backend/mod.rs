@@ -603,6 +603,14 @@ pub enum Connection {
 }
 
 impl Connection {
+    /// Close the connection both ways: its reader sees it end.
+    pub fn close(&self) {
+        match self {
+            Self::Tmux(_) => {}
+            Self::Native(a) => a.close(),
+        }
+    }
+
     /// Write raw bytes to `terminal`, as typed.
     pub fn input(&mut self, terminal: &TerminalId, bytes: &[u8]) -> Result<()> {
         match self {
