@@ -431,8 +431,23 @@ fn the_sidebar_marks_a_spaces_pr_with_the_dashboard_closed() {
     wait_for_place(&paddock, "no mark", |l| l == "~/r feat/none");
 }
 
+/// The sidebar row of the first space's first line.
+const FIRST_SPACE: usize = 1;
+
+/// The first space's first line, spaces collapsed.
+fn space_name(paddock: &Paddock) -> String {
+    let rows = paddock.sidebar();
+    let line = rows.get(FIRST_SPACE).map_or("", String::as_str);
+    line.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Wait until the first space's first line passes `pred`.
+fn wait_for_name(paddock: &Paddock, what: &str, pred: impl Fn(&str) -> bool) {
+    paddock.wait_for(what, |_| pred(&space_name(paddock)));
+}
+
 #[test]
-fn the_sidebar_shows_a_spaces_uncommitted_changes_after_its_branch() {
+fn the_sidebar_shows_a_spaces_uncommitted_changes_after_its_name() {
     let sandbox = Sandbox::new();
     sandbox.set_gh("[]");
     let dir = home_repo(&sandbox);
@@ -441,20 +456,44 @@ fn the_sidebar_shows_a_spaces_uncommitted_changes_after_its_branch() {
     std::fs::write(dir.join("one"), "a\nb\n").unwrap();
     std::fs::write(dir.join("new"), "1\n2\n3\n").unwrap();
     let paddock = in_home_repo(&sandbox);
-    wait_for_place(&paddock, "the changes", |l| l == "~/r feat/x +5 −1");
-    let rows = paddock.sidebar();
-    let (y, line) = rows
-        .iter()
-        .enumerate()
-        .find(|(_, l)| l.contains("+5"))
-        .expect("drawn");
+    wait_for_name(&paddock, "the changes", |l| l.ends_with(" +5 −1"));
+    // The second line keeps the place alone.
+    assert_eq!(space_place(&paddock), "~/r feat/x");
+    let line = paddock.sidebar()[FIRST_SPACE].clone();
     let at = |c: char| line.chars().position(|x| x == c).unwrap() as u16;
-    assert_eq!(paddock.colors(y as u16, at('+')).0, vt100::Color::Idx(2));
-    assert_eq!(paddock.colors(y as u16, at('−')).0, vt100::Color::Idx(1));
-    // Committed, the working tree is clean: nothing after the branch.
+    let y = FIRST_SPACE as u16;
+    assert_eq!(paddock.colors(y, at('+')).0, vt100::Color::Idx(2));
+    assert_eq!(paddock.colors(y, at('−')).0, vt100::Color::Idx(1));
+    // Right-aligned: it ends a cell before the sidebar's border.
+    assert_eq!(line.chars().count(), usize::from(harness::SIDEBAR) - 2);
+    // Committed, the working tree is clean: nothing after the name.
     git(&dir, &["add", "."]);
     git(&dir, &["commit", "-q", "-m", "edit"]);
-    wait_for_place(&paddock, "clean", |l| l == "~/r feat/x");
+    wait_for_name(&paddock, "clean", |l| !l.contains('+'));
+}
+
+#[test]
+fn a_space_under_a_long_path_shows_its_status_at_the_default_width() {
+    let sandbox = Sandbox::new();
+    sandbox.set_gh("[]");
+    let dir = sandbox.path("home/project/arx-platform-core");
+    std::fs::create_dir_all(&dir).unwrap();
+    git(&dir, &["init", "-q", "-b", "main"]);
+    commit(&dir, "one");
+    git(&dir, &["switch", "-q", "-c", "develop"]);
+    std::fs::write(dir.join("one"), "a\nb\n").unwrap();
+    let mut paddock = sandbox.launch();
+    paddock.wait_for_text(PROMPT);
+    paddock.type_line("cd ~/project/arx-platform-core");
+    // `~/project/arx-platform-core  develop` is wider than the default
+    // sidebar: the path is cut, the status shows whole on the first line.
+    wait_for_name(&paddock, "the status", |l| l.ends_with(" +2 −1"));
+    let rows = paddock.sidebar();
+    let place = rows[2].split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        place.starts_with('…') && place.ends_with(" develop"),
+        "{rows:?}"
+    );
 }
 
 #[test]
@@ -470,8 +509,9 @@ fn a_detached_space_shows_its_commit_without_line_changes() {
     wait_for_place(&paddock, "the detached commit", |l| {
         l.split(' ').count() == 2 && !l.contains("feat/x")
     });
-    let line = space_place(&paddock);
-    assert!(!line.contains('+') && !line.contains('−'), "{line}");
+    for line in [space_place(&paddock), space_name(&paddock)] {
+        assert!(!line.contains('+') && !line.contains('−'), "{line}");
+    }
 }
 
 #[test]
