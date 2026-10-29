@@ -55,7 +55,7 @@ fn write_to(sandbox: &Sandbox, terminal: &str, bytes: &[u8]) {
 /// paddock, as macOS kills a copy of its own `sleep`, and a link would be
 /// named after its target.
 fn stub_agy(sandbox: &Sandbox) {
-    std::fs::copy(env!("CARGO_BIN_EXE_paddock"), sandbox.path("bin/agy")).unwrap();
+    sandbox.copy_paddock("bin/agy");
 }
 
 /// Start the stand-in `agy` in the focused terminal, `terminal`, and wait

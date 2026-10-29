@@ -339,6 +339,9 @@ fn a_live_session_survives_a_server_upgrade_and_is_still_resumed_after_a_restart
     });
     let mut again = restart(&sandbox, paddock);
     again.wait_for_text("resumed 1 session");
+    // The server types the resume once the shell has drawn its prompt,
+    // after the notice: a line typed before it runs would be mixed into it.
+    sandbox.claude_calls();
     mark(&mut again);
     assert_eq!(sandbox.claude_calls(), [format!("{real} --resume {LIVE}")]);
 }
