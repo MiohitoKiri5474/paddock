@@ -205,10 +205,7 @@ pub fn matches_any_conversation(r: &HookRecord) -> bool {
 /// Antigravity sends no such event: its session ends when its terminal
 /// closes or goes back to the shell (see [`Sessions::end_exited`]).
 pub fn ends_conversation(r: &HookRecord) -> bool {
-    match r.kind {
-        AgentKind::Claude | AgentKind::Gemini => r.event == "SessionEnd",
-        AgentKind::Agy => false,
-    }
+    r.kind.reports_end() && r.event == "SessionEnd"
 }
 
 /// The event of a program status report (OSC 7501) Antigravity wrote in a

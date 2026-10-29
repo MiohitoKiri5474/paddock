@@ -94,12 +94,18 @@ pub struct TerminalDetails {
 
 /// What the host rebuilt from its saved layout when it started (ADR
 /// 0008).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Restored {
     /// Spaces that came back.
     pub spaces: usize,
     /// Agent sessions resumed in their terminals.
     pub sessions: usize,
+    /// The kind of each session not over that came back as a plain
+    /// shell as its id is not one to type (see
+    /// [`crate::sessions::AgentKind::resume_command`]). Left out when
+    /// none, and read as none from a server that never sends it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cannot_resume: Vec<crate::sessions::AgentKind>,
 }
 
 /// What a terminal held when its space was attached: the bytes that,
