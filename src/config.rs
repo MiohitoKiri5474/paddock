@@ -75,7 +75,7 @@ const DEFAULT_PREFIX: &str = "C-a";
 /// `repeat-time` does for `bind -r`.
 const DEFAULT_REPEAT_MS: u64 = 500;
 /// Columns the sidebar takes, border included, until resized.
-const DEFAULT_SIDEBAR_WIDTH: u16 = 32;
+pub(crate) const DEFAULT_SIDEBAR_WIDTH: u16 = 32;
 /// A dark grey, a little darker than most dark themes' background.
 const DEFAULT_CURRENT_SPACE: Color = Color::Indexed(236);
 /// Where new worktrees go unless `[worktrees] directory` says otherwise.
