@@ -12,7 +12,8 @@ use super::space::Space;
 use super::tab::Tab;
 use super::terminal::HostedTerminal;
 use crate::backend::{
-    FloatId, ListedSpace, SpaceId, SpaceTerminal, Structure, TabId, TerminalDetails, TerminalId,
+    FloatId, ListedSpace, Restored, SpaceId, SpaceTerminal, Structure, TabId, TerminalDetails,
+    TerminalId,
 };
 use anyhow::{anyhow, bail, Result};
 use std::os::unix::net::UnixStream;
@@ -104,7 +105,7 @@ impl Subscriber {
 fn size(frame: &Frame) -> usize {
     match frame {
         Frame::Bytes { data, .. } | Frame::Part { data, .. } => data.len(),
-        Frame::Message(_) => 64,
+        Frame::Message(_) | Frame::Upgrade(_) => 64,
     }
 }
 
@@ -123,9 +124,9 @@ pub struct State {
     pub closing: bool,
     /// The space paddock shows, as it last said.
     pub current: Option<SpaceId>,
-    /// How many spaces the server rebuilt from `layout.json` when it
-    /// started, until a client takes the number to say so.
-    pub restored: Option<usize>,
+    /// What the server rebuilt from `layout.json` when it started (spaces,
+    /// and sessions resumed), until a client takes it to say so.
+    pub restored: Option<Restored>,
     /// The threads letting clients go (see [`Self::let_go`]).
     leaving: Vec<JoinHandle<()>>,
 }
@@ -146,6 +147,21 @@ impl State {
             restored: None,
             leaving: Vec::new(),
         }
+    }
+
+    /// The state of a server that took over from another (ADR 0009), as
+    /// [`Self::new`], its new ids going on after `last_id`, the last the
+    /// other gave.
+    pub fn handed(socket: PathBuf, instance: u32, last_id: u64) -> Self {
+        Self {
+            next_id: last_id,
+            ..Self::new(socket, instance)
+        }
+    }
+
+    /// The last number [`Self::next`] gave.
+    pub fn last_id(&self) -> u64 {
+        self.next_id
     }
 
     /// The server's socket.

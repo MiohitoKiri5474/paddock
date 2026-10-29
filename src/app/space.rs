@@ -14,6 +14,8 @@ pub struct Space {
     pub id: SpaceId,
     pub structure: Structure,
     connection: Connection,
+    /// The number paddock gave its connection (see `Event::Backend`).
+    pub connection_id: u64,
     /// The size the connection last asked for.
     size: (u16, u16),
 }
@@ -47,9 +49,16 @@ impl Space {
             id: id.clone(),
             structure,
             connection,
+            connection_id: 0,
             size,
         };
         Ok((space, terminals))
+    }
+
+    /// Close its connection, so the thread reading it ends; what it still
+    /// reports is the caller's to leave out.
+    pub fn close(&self) {
+        self.connection.close();
     }
 
     /// The space's name, shown as its title.

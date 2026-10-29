@@ -84,6 +84,19 @@ impl Space {
         }
     }
 
+    /// The tabs current before the current one, the latest last.
+    pub fn previous(&self) -> &[TabId] {
+        &self.previous
+    }
+
+    /// The space with `previous` as the tabs current before (as
+    /// [`Self::previous`] gave them), those it still has.
+    pub fn with_previous(mut self, mut previous: Vec<TabId>) -> Self {
+        previous.retain(|t| self.tab(t).is_some());
+        self.previous = previous;
+        self
+    }
+
     /// Tab `i` as the backend's interface shows it.
     pub fn tab_view(&self, i: usize) -> crate::backend::Tab {
         let tab = &self.tabs[i];
@@ -279,6 +292,7 @@ impl Space {
 #[cfg(test)]
 mod tests {
     use super::super::pty::{self, Program, Pty};
+    use super::super::scrollback::ScrollbackName;
     use super::super::terminal::Input;
     use super::*;
 
@@ -298,7 +312,11 @@ mod tests {
         .unwrap();
         let id = TerminalId::new(id);
         let input = Input::start(&id, pty.master.try_clone().unwrap());
-        (HostedTerminal::new(id, &pty, input, size).unwrap(), pty)
+        (
+            HostedTerminal::new(id.clone(), ScrollbackName::new(1, &id), &pty, input, size)
+                .unwrap(),
+            pty,
+        )
     }
 
     /// A space of one tab holding `%1`, at 80x24, with a float on `G`

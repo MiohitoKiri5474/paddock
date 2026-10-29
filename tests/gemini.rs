@@ -61,13 +61,8 @@ fn a_gemini_session_goes_working_waiting_idle_then_ends() {
     paddock.wait_for_text(PROMPT);
 
     gemini(&sandbox, "space-1:0", &["SessionStart"]);
-    wait_row(&paddock, "idle at start", &["● repo", "idle"]);
-    // The tab named after the session, and the sidebar, take Gemini's tag.
-    wait_row(
-        &paddock,
-        "the sidebar's tag",
-        &["space-1 · gemini", "gemini │"],
-    );
+    // The sidebar names the agent's space; its kind is the dashboard's.
+    wait_row(&paddock, "idle at start", &["● repo", "idle", "space-1"]);
 
     gemini(&sandbox, "space-1:0", &["BeforeAgent"]);
     wait_row(&paddock, "working", &["● repo", "running"]);
@@ -126,7 +121,7 @@ fn gemini_clear_keeps_the_terminals_session() {
 #[test]
 fn an_external_gemini_session_lands_in_the_external_group() {
     let sandbox = Sandbox::new();
-    let paddock = ready(&sandbox);
+    let mut paddock = ready(&sandbox);
     for name in ["BeforeAgent", "Notification-ToolPermission"] {
         let (event, text) = payload(name);
         // No tmux at all: Gemini running outside paddock.
@@ -134,14 +129,17 @@ fn an_external_gemini_session_lands_in_the_external_group() {
         assert!(out.status.success(), "{out:?}");
         assert!(out.stdout.is_empty() && out.stderr.is_empty(), "{out:?}");
     }
+    // One line under the header: dot, label and state, no space.
     paddock.wait_for("the external group", |_| {
-        let rows = paddock.full_rows();
-        let header = rows.iter().position(|l| l.contains(" EXTERNAL"));
-        header.is_some_and(|h| {
-            rows[h + 1].contains("● repo")
-                && rows[h + 1].contains("waiting")
-                && rows[h + 2].contains("gemini")
-        })
+        let lines = paddock.sidebar();
+        let header = lines.iter().position(|l| l == " EXTERNAL");
+        header.is_some_and(|h| lines.get(h + 1).map(String::as_str) == Some(" ● repo  waiting"))
+    });
+    // Its kind is the dashboard's.
+    paddock.command(b"o");
+    paddock.wait_for("the dashboard's row", |s| {
+        s.lines()
+            .any(|l| l.contains(" repo ") && l.trim_end().ends_with(" gemini"))
     });
     let state = sandbox.path("state/paddock/events/external.jsonl");
     let log = std::fs::read_to_string(state).unwrap();

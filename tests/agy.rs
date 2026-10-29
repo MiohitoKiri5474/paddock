@@ -55,7 +55,7 @@ fn write_to(sandbox: &Sandbox, terminal: &str, bytes: &[u8]) {
 /// paddock, as macOS kills a copy of its own `sleep`, and a link would be
 /// named after its target.
 fn stub_agy(sandbox: &Sandbox) {
-    std::fs::copy(env!("CARGO_BIN_EXE_paddock"), sandbox.path("bin/agy")).unwrap();
+    sandbox.copy_paddock("bin/agy");
 }
 
 /// Start the stand-in `agy` in the focused terminal, `terminal`, and wait
@@ -119,8 +119,8 @@ fn an_agy_session_goes_idle_working_waiting_done_then_ends_at_the_shell() {
     paddock.wait_for_text(PROMPT);
 
     agy(&sandbox, "space-1:0", &["SessionStart"]);
-    wait_row(&paddock, "idle at start", &["● repo", "idle"]);
-    wait_row(&paddock, "the sidebar's tag", &["space-1 · agy"]);
+    // The sidebar names the agent's space; its kind is the dashboard's.
+    wait_row(&paddock, "idle at start", &["● repo", "idle", "space-1"]);
 
     agy(&sandbox, "space-1:0", &["PreInvocation"]);
     wait_row(&paddock, "working", &["● repo", "running"]);
@@ -392,7 +392,7 @@ fn paddocks_terminals_ask_agy_for_its_status_reports() {
 #[test]
 fn an_external_agy_session_lands_in_the_external_group() {
     let sandbox = Sandbox::new();
-    let paddock = ready(&sandbox);
+    let mut paddock = ready(&sandbox);
     for name in ["SessionStart", "PreInvocation"] {
         let text = std::fs::read_to_string(format!("{FIXTURES}/{name}.json")).unwrap();
         // No tmux at all: agy running outside paddock.
@@ -401,14 +401,17 @@ fn an_external_agy_session_lands_in_the_external_group() {
         assert_eq!(out.stdout, b"{}", "{out:?}");
         assert!(out.stderr.is_empty(), "{out:?}");
     }
+    // One line under the header: dot, label and state, no space.
     paddock.wait_for("the external group", |_| {
-        let rows = paddock.full_rows();
-        let header = rows.iter().position(|l| l.contains(" EXTERNAL"));
-        header.is_some_and(|h| {
-            rows[h + 1].contains("● repo")
-                && rows[h + 1].contains("running")
-                && rows[h + 2].contains("agy")
-        })
+        let lines = paddock.sidebar();
+        let header = lines.iter().position(|l| l == " EXTERNAL");
+        header.is_some_and(|h| lines.get(h + 1).map(String::as_str) == Some(" ● repo  running"))
+    });
+    // Its kind is the dashboard's.
+    paddock.command(b"o");
+    paddock.wait_for("the dashboard's row", |s| {
+        s.lines()
+            .any(|l| l.contains(" repo ") && l.trim_end().ends_with(" agy"))
     });
     let log = std::fs::read_to_string(sandbox.path("state/paddock/events/external.jsonl")).unwrap();
     assert_eq!(log.lines().count(), 2);

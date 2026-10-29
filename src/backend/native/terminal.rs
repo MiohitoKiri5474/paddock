@@ -3,8 +3,10 @@
 //! program's terminal queries (DA and `CSI ? u` through alacritty,
 //! XTVERSION here), and makes the snapshot a client attaches with.
 
+use super::proc;
 use super::pty::{self, Pty};
 use super::queue::Queue;
+use super::scrollback::ScrollbackName;
 use crate::backend::TerminalId;
 use crate::terminal::emulator::Emulator;
 use crate::terminal::key_modes::KeyModeScanner;
@@ -13,6 +15,7 @@ use anyhow::Result;
 use std::fs::File;
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 
 /// How the server names itself to XTVERSION.
 const NAME: &str = concat!("paddock ", env!("CARGO_PKG_VERSION"));
@@ -29,6 +32,22 @@ pub struct Input {
     /// Input is being refused: from the first refusal until the program
     /// has taken all that waited (an episode).
     refusing: AtomicBool,
+    /// Bytes due before any input, and the input held behind them until
+    /// they go ([`Self::hold_behind`]); `None` when nothing is held.
+    hold: Mutex<Option<Hold>>,
+}
+
+/// Input held behind bytes that must reach the program first: a restored
+/// terminal's resume command (ticket 59).
+struct Hold {
+    first: Vec<u8>,
+    held: Vec<u8>,
+}
+
+impl Hold {
+    fn len(&self) -> usize {
+        self.first.len() + self.held.len()
+    }
 }
 
 /// What became of an input.
@@ -58,16 +77,62 @@ impl Input {
         Self {
             queue,
             refusing: AtomicBool::new(false),
+            hold: Mutex::new(None),
         }
     }
 
+    /// Hold every input from now on until [`Self::release`], which sends
+    /// `first`, then `held` (input held before, by the server this one
+    /// took over from), then what is held here, in order. Replies to the
+    /// program's queries are never held.
+    pub fn hold_behind(&self, first: Vec<u8>, held: Vec<u8>) {
+        *self.lock_hold() = Some(Hold { first, held });
+    }
+
+    /// The bytes due first and the input held behind them, if holding:
+    /// what a handover passes on.
+    pub fn held(&self) -> Option<(Vec<u8>, Vec<u8>)> {
+        let hold = self.lock_hold();
+        hold.as_ref().map(|h| (h.first.clone(), h.held.clone()))
+    }
+
+    /// Queue the bytes held behind ([`Self::hold_behind`]), and stop
+    /// holding; nothing if nothing is held.
+    pub fn release(&self) {
+        let mut hold = self.lock_hold();
+        let Some(Hold { mut first, held }) = hold.take() else {
+            return;
+        };
+        first.extend_from_slice(&held);
+        // Still locked: an input sent meanwhile waits, and goes after.
+        let _ = self.queue.push(first);
+    }
+
+    /// Whether input is held ([`Self::hold_behind`]).
+    pub fn holding(&self) -> bool {
+        self.lock_hold().is_some()
+    }
+
+    fn lock_hold(&self) -> std::sync::MutexGuard<'_, Option<Hold>> {
+        self.hold.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// Queue one whole input (a key, a paste), unless it would take what
-    /// waits for the program past [`INPUT_MAX`].
+    /// waits for the program past [`INPUT_MAX`]; held instead while
+    /// [`Self::hold_behind`] holds, under the same cap.
     pub fn send(&self, bytes: Vec<u8>) -> Sent {
         if self.queue.ended() {
             return Sent::Ended;
         }
-        if self.fits(bytes.len()) {
+        let mut hold = self.lock_hold();
+        if let Some(h) = hold.as_mut() {
+            if !self.fits(h.len(), bytes.len()) {
+                return self.refused();
+            }
+            h.held.extend_from_slice(&bytes);
+            return Sent::Queued;
+        }
+        if self.fits(0, bytes.len()) {
             if self.queue.push(bytes).is_some() {
                 return Sent::Queued;
             }
@@ -76,12 +141,20 @@ impl Input {
         self.refused()
     }
 
+    /// Whether the program has taken all its queued input (or its writer
+    /// has ended): nothing queued for it would be lost. Held input is not
+    /// queued: a handover passes it on ([`Self::held`]).
+    pub fn idle(&self) -> bool {
+        self.queue.waiting() == 0 || self.queue.ended()
+    }
+
     /// Refuse an input too big to ever queue, as [`Self::send`] would.
     pub fn refuse(&self) -> Sent {
         if self.queue.ended() {
             return Sent::Ended;
         }
-        let _ = self.fits(0);
+        let held = self.lock_hold().as_ref().map_or(0, Hold::len);
+        let _ = self.fits(held, 0);
         self.refused()
     }
 
@@ -95,10 +168,11 @@ impl Input {
         }
     }
 
-    /// Whether `len` more bytes fit under [`INPUT_MAX`]. Nothing waiting
-    /// means the program has taken all that waited: the episode ends.
-    fn fits(&self, len: usize) -> bool {
-        let waiting = self.queue.waiting();
+    /// Whether `len` more bytes fit under [`INPUT_MAX`], with `held`
+    /// bytes held. Nothing waiting or held means the program has taken
+    /// all that waited: the episode ends.
+    fn fits(&self, held: usize, len: usize) -> bool {
+        let waiting = self.queue.waiting() + held;
         if waiting == 0 {
             self.refusing.store(false, Ordering::Relaxed);
         }
@@ -125,25 +199,67 @@ pub struct HostedTerminal {
     /// Its program has exited and been reaped: its pid may be another
     /// process's now, so it is never signalled again.
     pub exited: bool,
+    /// Its program has written something: a shell has started.
+    pub spoke: bool,
+    /// The name its scrollback is saved under: its own, or the one it
+    /// was restored from.
+    pub saved_as: ScrollbackName,
     emulator: Emulator,
     keys: KeyModeScanner,
     scanner: Scanner,
 }
 
 impl HostedTerminal {
-    pub fn new(id: TerminalId, pty: &Pty, input: Input, size: (u16, u16)) -> Result<Self> {
-        Ok(Self {
+    /// Terminal `id` on `pty`, its scrollback saved as `saved_as`.
+    pub fn new(
+        id: TerminalId,
+        saved_as: ScrollbackName,
+        pty: &Pty,
+        input: Input,
+        size: (u16, u16),
+    ) -> Result<Self> {
+        let master = pty.master.try_clone()?;
+        let (pid, tty) = (pty.child.id(), pty.tty.clone());
+        Ok(Self::hosting(id, saved_as, pid, tty, master, input, size))
+    }
+
+    /// Terminal `id` with a fresh emulator, its scrollback saved as
+    /// `saved_as`, its program `pid` on the PTY `master` (`tty`): one
+    /// just started, or one another server handed over (ADR 0009), whose
+    /// screen [`Self::replay`] then rebuilds.
+    pub fn hosting(
+        id: TerminalId,
+        saved_as: ScrollbackName,
+        pid: u32,
+        tty: String,
+        master: File,
+        input: Input,
+        size: (u16, u16),
+    ) -> Self {
+        Self {
             id,
-            pid: pty.child.id(),
-            tty: pty.tty.clone(),
-            master: pty.master.try_clone()?,
+            saved_as,
+            pid,
+            tty,
+            master,
             input,
             size,
             exited: false,
+            spoke: false,
             emulator: Emulator::answering(size.0, size.1, SCROLLBACK),
             keys: KeyModeScanner::default(),
             scanner: Scanner::default(),
-        })
+        }
+    }
+
+    /// Rebuild its fresh emulator from `snapshot` ([`Self::snapshot`]'s,
+    /// from the server that handed it over). What the snapshot makes the
+    /// emulator answer is dropped: the program asked nothing.
+    pub fn replay(&mut self, snapshot: &[u8]) {
+        self.keys.feed(snapshot);
+        self.emulator.feed(snapshot);
+        let _ = self.emulator.take_replies();
+        self.scanner.feed(snapshot, self.size.1);
     }
 
     /// Hang up its program and its process group, as closing its
@@ -166,6 +282,7 @@ impl HostedTerminal {
     /// Feed what the program wrote, and send it the answers to the
     /// queries in it.
     pub fn output(&mut self, bytes: &[u8]) {
+        self.spoke = true;
         self.keys.feed(bytes);
         self.emulator.feed(bytes);
         let mut replies = self.emulator.take_replies();
@@ -200,6 +317,19 @@ impl HostedTerminal {
         bytes
     }
 
+    /// Draw `bytes` (a restored terminal's saved scrollback, made safe)
+    /// before anything its program writes; the program is told nothing.
+    pub fn seed(&mut self, bytes: &[u8]) {
+        self.emulator.feed(bytes);
+        let _ = self.emulator.take_replies();
+    }
+
+    /// Its normal screen's text, scrollback first, as it is saved (see
+    /// [`Emulator::history_text`]).
+    pub fn history_text(&mut self) -> Vec<u8> {
+        self.emulator.history_text()
+    }
+
     /// Lines of scrollback above the screen.
     pub fn scrollback(&self) -> usize {
         self.emulator.history_len()
@@ -219,14 +349,14 @@ impl HostedTerminal {
     /// the server's lock): the pids it reads it from, taken now.
     pub fn dir_reader(&self) -> DirReader {
         DirReader {
-            foreground: self.foreground(),
+            foreground: pty::foreground(&self.master),
             shell: i32::try_from(self.pid).ok(),
         }
     }
 
     /// The foreground program's name, as tmux's `pane_current_command`.
     pub fn command(&self) -> Option<String> {
-        pty::name(self.foreground())
+        proc::name(self.foreground())
     }
 
     /// The name of a tab that follows what runs in this terminal, as
@@ -235,7 +365,7 @@ impl HostedTerminal {
     /// say (the shell not started yet).
     pub fn auto_name(&self) -> Option<String> {
         let foreground = self.foreground();
-        let command = pty::name(foreground)?;
+        let command = proc::name(foreground)?;
         // Forked from the server, not yet the shell.
         if command == "paddock" && u32::try_from(foreground).is_ok_and(|p| p == self.pid) {
             return None;
@@ -243,7 +373,7 @@ impl HostedTerminal {
         if !is_shell(&command) {
             return Some(command);
         }
-        pty::cwd(foreground).map(|dir| dir_name(&dir))
+        proc::cwd(foreground).map(|dir| dir_name(&dir))
     }
 }
 
@@ -257,17 +387,28 @@ fn is_shell(command: &str) -> bool {
     matches!(kind, "" | "ba" | "z" | "fi" | "da" | "k" | "tc" | "c")
 }
 
-/// A terminal's directory to read (see [`HostedTerminal::dir_reader`]).
+/// A terminal's directory to read (see [`HostedTerminal::dir_reader`]),
+/// and what runs in its foreground.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DirReader {
-    foreground: i32,
+    /// The foreground process group, if it could be read.
+    foreground: Option<i32>,
     shell: Option<i32>,
 }
 
 impl DirReader {
     /// The foreground program's directory, else the shell's.
     pub fn read(self) -> Option<String> {
-        pty::cwd(self.foreground).or_else(|| pty::cwd(self.shell?))
+        let foreground = self.foreground.and_then(proc::cwd);
+        foreground.or_else(|| proc::cwd(self.shell?))
+    }
+
+    /// The foreground process group and its program's name; `None` when
+    /// either cannot be read (not the shell's, unlike
+    /// [`HostedTerminal::command`]).
+    pub fn program(self) -> Option<(i32, String)> {
+        let group = self.foreground?;
+        Some((group, proc::name(group)?))
     }
 }
 
@@ -413,6 +554,51 @@ mod tests {
             input.send(vec![b'k'; 1 << 20]),
             Sent::Refused { first: true }
         );
+    }
+
+    #[test]
+    fn input_held_behind_a_command_comes_after_it_and_replies_are_not_held() {
+        use std::io::Read;
+        let (input, read) = unread_input();
+        let mut read = File::from(read);
+        input.hold_behind(b"claude --resume x\r".to_vec(), Vec::new());
+        assert_eq!(input.send(b"e".to_vec()), Sent::Queued);
+        assert_eq!(input.send(b"cho hi".to_vec()), Sent::Queued);
+        assert_eq!(
+            input.held(),
+            Some((b"claude --resume x\r".to_vec(), b"echo hi".to_vec()))
+        );
+        input.reply(b"R".to_vec());
+        let mut reply = [0; 1];
+        read.read_exact(&mut reply).unwrap();
+        assert_eq!(&reply, b"R", "the reply goes at once, alone");
+
+        input.release();
+
+        let want = b"claude --resume x\recho hi";
+        let mut got = vec![0; want.len()];
+        read.read_exact(&mut got).unwrap();
+        assert_eq!(got, want);
+        // Released once: input goes straight on after.
+        input.release();
+        assert_eq!(input.send(b"!".to_vec()), Sent::Queued);
+        let mut next = [0; 1];
+        read.read_exact(&mut next).unwrap();
+        assert_eq!(&next, b"!");
+    }
+
+    #[test]
+    fn held_input_is_refused_past_the_cap() {
+        let (input, _read) = unread_input();
+        input.hold_behind(b"cmd\r".to_vec(), b"ab".to_vec());
+        assert_eq!(input.send(vec![b'x'; INPUT_MAX - 10]), Sent::Queued);
+        assert_eq!(input.send(vec![b'k'; 20]), Sent::Refused { first: true });
+        // Nothing was taken: still the same episode.
+        assert_eq!(input.send(vec![b'k'; 20]), Sent::Refused { first: false });
+        assert_eq!(input.refuse(), Sent::Refused { first: false });
+        let (first, held) = input.held().unwrap();
+        assert_eq!(first, b"cmd\r");
+        assert_eq!(held.len(), 2 + INPUT_MAX - 10);
     }
 
     #[test]

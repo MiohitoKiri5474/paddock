@@ -4,21 +4,28 @@
 
 use super::rows::{EXTERNAL_CLOSE, EXTERNAL_FORK, EXTERNAL_OPEN};
 use super::space::clamp;
-use super::state::{is_session_id, next_name, App, CloseTarget, Mode, NameTarget, Renamed};
+use super::state::{next_name, App, CloseTarget, Mode, NameTarget, Renamed};
 use super::watch;
-use crate::backend::{SpaceId, TerminalId};
+use crate::backend::{OtherVersion, SpaceId, TerminalId};
 use crate::paths::HomePaths;
-use crate::sessions::{AgentKind, State};
+use crate::sessions::{is_session_id, AgentKind, State};
 use crate::shell::quote;
 use crate::terminal::Terminal;
 use anyhow::{bail, Result};
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 /// New spaces are named `space-N` until the user renames them.
 const SPACE_STEM: &str = "space-";
 
 /// What acting on a row says when its terminal closed meanwhile.
 const TERMINAL_CLOSED: &str = "that terminal is closed";
+
+/// How long paddock waits for an upgraded server to answer (ADR 0009).
+const REATTACH_WAIT: Duration = Duration::from_secs(10);
+/// How long one ask of an upgraded server waits for its answer, before
+/// paddock asks again on a new connection.
+const REATTACH_ASK: Duration = Duration::from_secs(2);
 
 impl App {
     /// The name a new space gets unless the user picks one: the first free
@@ -54,6 +61,62 @@ impl App {
             return Err(e);
         }
         self.current = self.spaces.len() - 1;
+        Ok(())
+    }
+
+    /// Attach every space again once the server has handed its terminals
+    /// to a new binary (ADR 0009): the same spaces in the same order, the
+    /// same one current, each with a fresh connection and screens rebuilt
+    /// from the new server's snapshots (which keeps each space's current
+    /// tab and focus). An error if the new server cannot be talked to (it
+    /// speaks another protocol version, or failed).
+    pub(super) fn reattach(&mut self) -> Result<()> {
+        self.upgrading = None;
+        // What the old connections still report is left out, until their
+        // end: their spaces are attached again below. One that ended in
+        // the upgrade reports nothing more.
+        let lost = std::mem::take(&mut self.upgrade_lost);
+        for space in &self.spaces {
+            space.close();
+            if !lost.contains(&space.connection_id) {
+                self.replaced.insert(space.connection_id);
+            }
+        }
+        // The old binary, until its `exec`, still takes connections, and
+        // closes them unanswered: ask until the new one answers, its hello
+        // and then its spaces (a closed connection is no answer). Every
+        // read is bounded, so the wait is too: no answer within
+        // [`REATTACH_WAIT`] in all is an error.
+        let start = Instant::now();
+        let running = loop {
+            let left = REATTACH_WAIT.saturating_sub(start.elapsed());
+            // Never a zero timeout, which would mean none.
+            let ask = left.clamp(Duration::from_millis(1), REATTACH_ASK);
+            match self.backend.upgraded_spaces(ask) {
+                Ok(running) => break running,
+                Err(e) if e.downcast_ref::<OtherVersion>().is_some() => return Err(e),
+                Err(e) if start.elapsed() >= REATTACH_WAIT => return Err(e),
+                Err(_) => std::thread::sleep(Duration::from_millis(50)),
+            }
+        };
+        let current = self.spaces.get(self.current).map(|s| s.id.clone());
+        let ids: Vec<SpaceId> = self.spaces.iter().map(|s| s.id.clone()).collect();
+        self.spaces.clear();
+        self.terminals.clear();
+        // A server that ends with its last space is gone: the new binary
+        // failed to take over, and its programs ended with it.
+        if running.is_empty() {
+            bail!(
+                "the new paddock server did not take over and has ended, with every program \
+                 in it (see server.log in paddock's state directory)"
+            );
+        }
+        for id in ids.iter().filter(|id| running.iter().any(|s| s.id == **id)) {
+            self.attach(id)?;
+        }
+        self.attach_new_spaces();
+        let found = current.and_then(|c| self.spaces.iter().position(|s| s.id == c));
+        self.current = found.unwrap_or(0);
         Ok(())
     }
 

@@ -6,10 +6,11 @@ mod harness;
 
 use harness::backend::{alive, server_pid, NATIVE};
 use harness::native_skip::NATIVE_NEEDS;
+use harness::older_server::fake_older_server;
 use harness::stall::{finished, wait_with_progress, SEND_TIMEOUT};
 use harness::{Paddock, Sandbox, PROMPT};
 use std::io::{Read, Write};
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -68,7 +69,7 @@ fn the_server_hosts_the_shell_in_the_sandbox_and_answers_debug_state() {
     assert!(terminal
         .tty
         .as_deref()
-        .is_some_and(|t| t.starts_with("/dev/ttys")));
+        .is_some_and(|t| t.starts_with("/dev/ttys") || t.starts_with("/dev/pts/")));
     assert_eq!(terminal.command.as_deref(), Some("zsh"));
     let mode = std::fs::metadata(sandbox.state_dir().join("server.sock")).unwrap();
     use std::os::unix::fs::PermissionsExt;
@@ -205,11 +206,13 @@ fn reattaching_while_output_streams_loses_and_doubles_nothing() {
     again.wait_for_text(&format!("n{LINES}\n"));
 
     // Read every line from the top of the scrollback down, a screen at a
-    // time (screens overlap), and check they run on one by one.
+    // time (screens overlap), and check they run on one by one. A line's
+    // first word only: the top row also holds the `[N/N]` label, and on
+    // Linux `clear` empties the scrollback, so `n1` is that row.
     let numbers = |p: &Paddock| -> Vec<u32> {
         let rows = p.rows();
         rows.iter()
-            .filter_map(|r| r.strip_prefix('n')?.parse().ok())
+            .filter_map(|r| r.split_whitespace().next()?.strip_prefix('n')?.parse().ok())
             .collect()
     };
     // Past the top: the view stops at the first line, `[N/N]`.
@@ -307,34 +310,10 @@ fn a_launch_right_after_the_last_shell_exits_gets_a_new_server() {
     last.wait_for_text("still-fine\n");
 }
 
-/// Listen as an older server would: it reads paddock's hello and
-/// answers with its own, version 999 and pid 4242.
-fn fake_older_server(sandbox: &Sandbox) {
-    std::fs::create_dir_all(sandbox.state_dir()).unwrap();
-    let listener = UnixListener::bind(sandbox.state_dir().join("server.sock")).unwrap();
-    // An older server: it reads paddock's hello and answers with its own.
-    std::thread::spawn(move || {
-        for stream in listener.incoming() {
-            let Ok(mut stream) = stream else { return };
-            let mut len = [0; 4];
-            if stream.read_exact(&mut len).is_err() {
-                continue;
-            }
-            let mut body = vec![0; u32::from_be_bytes(len) as usize];
-            let _ = stream.read_exact(&mut body);
-            let hello = br#"{"Hello":{"version":999,"pid":4242}}"#;
-            let len = u32::try_from(hello.len() + 1).unwrap().to_be_bytes();
-            let _ = stream.write_all(&len);
-            let _ = stream.write_all(&[0]);
-            let _ = stream.write_all(hello);
-        }
-    });
-}
-
 #[test]
 fn a_server_speaking_another_protocol_version_is_a_clear_error() {
     let sandbox = native();
-    fake_older_server(&sandbox);
+    fake_older_server(&sandbox, 4242);
 
     let mut paddock = sandbox.launch();
 
@@ -344,7 +323,7 @@ fn a_server_speaking_another_protocol_version_is_a_clear_error() {
         "{}",
         paddock.screen()
     );
-    paddock.wait_for_text("Restart it?");
+    paddock.wait_for_text("Upgrade it? Its programs keep running. [Y/n]");
     paddock.type_line("n");
     assert!(!paddock.wait_exit(), "declining fails");
     assert!(
@@ -356,7 +335,7 @@ fn a_server_speaking_another_protocol_version_is_a_clear_error() {
 #[test]
 fn paddock_worktree_stops_at_a_server_it_cannot_talk_to() {
     let sandbox = native();
-    fake_older_server(&sandbox);
+    fake_older_server(&sandbox, 4242);
 
     let out = sandbox.run(&["worktree", "list"], &[], "");
 
@@ -368,7 +347,7 @@ fn paddock_worktree_stops_at_a_server_it_cannot_talk_to() {
 #[test]
 fn debug_state_fails_at_a_server_it_cannot_talk_to() {
     let sandbox = native();
-    fake_older_server(&sandbox);
+    fake_older_server(&sandbox, 4242);
 
     let out = sandbox.run(&["debug", "state", "--json"], &[], "");
 
@@ -474,7 +453,7 @@ fn cat_after(sandbox: &Sandbox, paddock: &mut Paddock, wait: u32) -> (UnixStream
 fn connect(sandbox: &Sandbox) -> (UnixStream, String) {
     let terminal = sandbox.terminal("space-1").id;
     let mut stream = UnixStream::connect(sandbox.state_dir().join("server.sock")).unwrap();
-    send_message(&mut stream, r#"{"Hello":{"version":1,"pid":1}}"#);
+    send_message(&mut stream, r#"{"Hello":{"version":2,"pid":1}}"#);
     assert!(read_frame(&mut stream).is_some(), "the server's hello");
     (stream, terminal)
 }
@@ -713,7 +692,7 @@ fn a_request_after_attaching_closes_the_connection_unanswered() {
     stream
         .set_read_timeout(Some(harness::TIMEOUT))
         .expect("a read timeout");
-    send_message(&mut stream, r#"{"Hello":{"version":1,"pid":1}}"#);
+    send_message(&mut stream, r#"{"Hello":{"version":2,"pid":1}}"#);
     assert!(read_frame(&mut stream).is_some(), "the server's hello");
     let attach = format!(r#"{{"Request":{{"Attach":{{"space":"{space}","size":[80,24]}}}}}}"#);
     send_message(&mut stream, &attach);

@@ -372,8 +372,9 @@ fn question_mark_shows_key_help_and_any_key_closes_it() {
 
     paddock.command(b"?");
 
-    paddock.wait_for("help", |_| paddock.full_screen().contains("paddock keys"));
-    for line in [
+    // The whole help, not only its title: a frame may be read in parts.
+    let lines = [
+        "paddock keys",
         "new tab in this space",
         "new space",
         "next tab",
@@ -381,13 +382,11 @@ fn question_mark_shows_key_help_and_any_key_closes_it() {
         "rename tab",
         "rename space",
         "C-a again sends C-a to the terminal",
-    ] {
-        assert!(
-            paddock.full_screen().contains(line),
-            "help lacks {line:?}:\n{}",
-            paddock.full_screen()
-        );
-    }
+    ];
+    paddock.wait_for("the help with every line", |_| {
+        let screen = paddock.full_screen();
+        lines.iter().all(|line| screen.contains(line))
+    });
     paddock.send(b"q");
     paddock.wait_for("help closed", |_| {
         !paddock.full_screen().contains("paddock keys")
