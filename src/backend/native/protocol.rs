@@ -31,7 +31,7 @@
 
 use super::axis::Axis;
 use super::layout::BorderHit;
-use crate::backend::{FloatId, TerminalId};
+use crate::backend::{FloatId, Restored, TerminalId};
 use crate::backend::{ListedSpace, SpaceId, SpaceTerminal, Structure, TabId, TerminalDetails};
 use crate::input::Direction;
 use anyhow::{bail, Context, Result};
@@ -255,9 +255,9 @@ pub enum Answer {
     Commands(HashMap<TerminalId, String>),
     Pids(HashMap<u32, TerminalId>),
     Details(Vec<TerminalDetails>),
-    /// How many spaces the server rebuilt when it started; `None` if it
-    /// rebuilt none, or another client was told.
-    Restored(Option<usize>),
+    /// What the server rebuilt when it started: spaces, and sessions it
+    /// resumed; `None` if it rebuilt none, or another client was told.
+    Restored(Option<Restored>),
     /// The space is attached: one snapshot frame follows for each
     /// terminal, in this order, at this size; then its output.
     Attached {

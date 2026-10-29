@@ -109,7 +109,7 @@ fn the_servers_event_log_is_apart_from_tmuxs() {
 }
 
 /// Listen as a server whose hello gives no instance id would: it answers
-/// every hello with its own, version 1, pid 4242 and no `instance`.
+/// every hello with its own, version 2, pid 4242 and no `instance`.
 fn server_without_an_instance(sandbox: &Sandbox) {
     std::fs::create_dir_all(sandbox.state_dir()).unwrap();
     let socket = sandbox.state_dir().join("server.sock");

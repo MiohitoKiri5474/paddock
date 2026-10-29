@@ -20,7 +20,7 @@ use super::space::Space;
 use super::watch::Place;
 use super::worktrees::{DeleteQuestion, WorktreeList};
 use super::Event;
-use crate::backend::{Backend, SpaceId, Tab, TerminalId};
+use crate::backend::{Backend, Restored, SpaceId, Tab, TerminalId};
 use crate::config::{Config, External, Floats, NewTabDir, Worktrees};
 use crate::git::WorkingTree;
 use crate::hooks::now_ms;
@@ -325,6 +325,18 @@ fn set_aside(dir: &std::path::Path, name: &str, e: &anyhow::Error) -> String {
     }
 }
 
+/// The one-line notice of what the backend rebuilt: "restored 2 spaces",
+/// with ", resumed 1 session" after it if it resumed any.
+fn restored_notice(restored: Restored) -> String {
+    let plural = |n: usize| if n == 1 { "" } else { "s" };
+    let spaces = restored.spaces;
+    let notice = format!("restored {spaces} space{}", plural(spaces));
+    match restored.sessions {
+        0 => notice,
+        n => format!("{notice}, resumed {n} session{}", plural(n)),
+    }
+}
+
 /// The first `<stem>N` not already taken.
 pub fn next_name<'a>(stem: &str, taken: impl IntoIterator<Item = &'a str> + Clone) -> String {
     (1..)
@@ -451,13 +463,13 @@ impl App {
         Ok(())
     }
 
-    /// Say how many spaces the backend rebuilt from its saved layout, if
-    /// it just did (ADR 0008).
+    /// Say how many spaces the backend rebuilt from its saved layout, and
+    /// how many agent sessions it resumed, if it just did (ADR 0008).
     fn note_restored(&mut self) {
-        let Some(n) = self.backend.restored() else {
+        let Some(restored) = self.backend.restored() else {
             return;
         };
-        let restored = format!("restored {n} space{}", if n == 1 { "" } else { "s" });
+        let restored = restored_notice(restored);
         self.notice = Some(match self.notice.take() {
             Some(other) => format!("{restored}; {other}"),
             None => restored,
@@ -721,27 +733,17 @@ mod tests {
     }
 
     #[test]
+    fn the_restored_notice_names_resumed_sessions_only_if_any() {
+        let notice = |spaces, sessions| restored_notice(Restored { spaces, sessions });
+        assert_eq!(notice(1, 0), "restored 1 space");
+        assert_eq!(notice(2, 1), "restored 2 spaces, resumed 1 session");
+        assert_eq!(notice(1, 3), "restored 1 space, resumed 3 sessions");
+    }
+
+    #[test]
     fn new_names_fill_the_first_gap() {
         assert_eq!(next_name("w-", Vec::<&str>::new()), "w-1");
         assert_eq!(next_name("w-", vec!["w-1", "w-3"]), "w-2");
         assert_eq!(next_name("w-", vec!["w-2", "logs"]), "w-1");
-    }
-}
-
-/// Whether `id` looks like a Claude session id (a UUID: hex digits and `-`).
-pub(super) fn is_session_id(id: &str) -> bool {
-    !id.is_empty() && id.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
-}
-
-#[cfg(test)]
-mod session_id_tests {
-    use super::is_session_id;
-
-    #[test]
-    fn only_uuid_shaped_session_ids_are_typed_into_a_shell() {
-        assert!(is_session_id("7f3c2a10-1b2c-4d5e-8f90-0123456789ab"));
-        for bad in ["", "x\r; rm -rf ~", "a b", "abc$(id)", "abc\u{1b}"] {
-            assert!(!is_session_id(bad), "{bad:?}");
-        }
     }
 }

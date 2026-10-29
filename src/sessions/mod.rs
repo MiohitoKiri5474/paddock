@@ -19,7 +19,7 @@ mod program_state;
 
 pub use dismissed::Dismissal;
 pub use external::{external_key, is_external};
-pub use kind::AgentKind;
+pub use kind::{is_session_id, AgentKind};
 pub use program_state::ProgramState;
 
 use crate::backend::TerminalId;
@@ -204,7 +204,7 @@ pub fn matches_any_conversation(r: &HookRecord) -> bool {
 /// for Claude and Gemini alike), whether or not the session goes on.
 /// Antigravity sends no such event: its session ends when its terminal
 /// closes or goes back to the shell (see [`Sessions::end_exited`]).
-fn ends_conversation(r: &HookRecord) -> bool {
+pub fn ends_conversation(r: &HookRecord) -> bool {
     match r.kind {
         AgentKind::Claude | AgentKind::Gemini => r.event == "SessionEnd",
         AgentKind::Agy => false,

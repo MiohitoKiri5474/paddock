@@ -20,7 +20,7 @@ use super::space::{HostedFloat, Space};
 use super::state::State;
 use super::tab::Tab;
 use super::terminal::HostedTerminal;
-use crate::backend::{FloatId, SpaceId, TabId, TerminalId};
+use crate::backend::{FloatId, Restored, SpaceId, TabId, TerminalId};
 use anyhow::{bail, ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -59,7 +59,7 @@ pub struct Record {
     pub last_id: u64,
     pub started: bool,
     pub current: Option<SpaceId>,
-    pub restored: Option<usize>,
+    pub restored: Option<Restored>,
     /// The descriptor holding `server.lock`.
     pub lock: RawFd,
     /// The descriptor listening on `server.sock`.
@@ -601,7 +601,10 @@ mod tests {
             last_id: 7,
             started: true,
             current: Some(SpaceId::new("$1")),
-            restored: None,
+            restored: Some(Restored {
+                spaces: 1,
+                sessions: 1,
+            }),
             lock: 3,
             listener: 4,
             spaces: vec![space],

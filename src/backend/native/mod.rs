@@ -33,6 +33,7 @@ mod queue;
 mod restore;
 mod saved;
 mod scrollback;
+mod seen;
 mod server;
 mod space;
 mod state;

@@ -2,10 +2,12 @@
 //! in order, each with its name, root, size and current tab, its tabs
 //! with their names (and whether each is automatic), focus, zoom and tree
 //! of splits with their shares, each terminal by its directory (and the
-//! name of its saved scrollback, see [`super::scrollback`]), and the
-//! space paddock showed last. No terminal id is kept: a restored terminal
-//! is a new one, so it inherits no agent session. Floats are left out:
-//! their keys make them again when wanted.
+//! name of its saved scrollback, see [`super::scrollback`]) and the
+//! agent session last seen in it (if any, and whether it is over), and
+//! the space paddock showed last. No terminal id is kept: a restored
+//! terminal is a new one, which resumes its saved session if that is not
+//! over (ticket 48). Floats are left out: their keys make them again when
+//! wanted.
 //!
 //! The server writes it whenever it changes ([`Saver`]), at most once
 //! every [`GAP`], by an atomic replace; a server with no space left
@@ -20,9 +22,12 @@
 
 use super::layout::SavedTree;
 use super::scrollback;
+use super::seen::Seen;
 use super::space::Space;
 use super::state::State;
 use super::terminal::{DirReader, HostedTerminal};
+use crate::backend::TerminalId;
+use crate::sessions::AgentKind;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -78,6 +83,22 @@ pub struct SavedTerminal {
     /// [`scrollback::ScrollbackName`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scrollback: Option<String>,
+    /// The agent session last seen running in it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<SavedAgent>,
+}
+
+/// An agent session seen in a terminal, from the server's hook log.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SavedAgent {
+    pub kind: AgentKind,
+    /// Its session id, which resumes it.
+    pub session: String,
+    /// Its conversation is over: the agent reported its end (it quit, or
+    /// `/clear` began another conversation), so it is not resumed. Not
+    /// the dashboard's *ended* (CONTEXT.md), which `/clear` is not.
+    #[serde(default)]
+    pub over: bool,
 }
 
 impl SavedLayout {
@@ -117,61 +138,73 @@ impl SavedSpace {
     }
 }
 
-/// What `layout.json` keeps of `state`, but its terminals' directories,
-/// which [`Snapshot::read_dirs`] reads once the state is let go.
+/// What `layout.json` keeps of `state`, but its terminals' directories
+/// and sessions, which [`Snapshot::read_dirs`] reads once the state is
+/// let go.
 pub struct Snapshot {
     layout: SavedLayout,
-    /// Where to read each terminal's directory, in the layout's order
-    /// (`None` for a terminal not hosted, which keeps its placeholder).
-    dirs: Vec<Option<DirReader>>,
+    /// Each terminal's id, and where to read its directory, in the
+    /// layout's order (`None` for a terminal not hosted, which keeps its
+    /// placeholder).
+    terminals: Vec<(TerminalId, Option<DirReader>)>,
 }
 
 /// Take what `layout.json` keeps of `state`, with it locked: no read of
 /// a directory, nor of the file.
 pub fn snapshot(state: &State) -> Snapshot {
     let current = state.current.as_ref();
-    let mut dirs = Vec::new();
-    let spaces = state.spaces.iter().map(|s| saved_space(s, &mut dirs));
+    let mut terminals = Vec::new();
+    let spaces = state.spaces.iter().map(|s| saved_space(s, &mut terminals));
     let layout = SavedLayout {
         version: VERSION,
         current: current.and_then(|c| state.spaces.iter().position(|s| s.id == *c)),
         spaces: spaces.collect(),
     };
-    Snapshot { layout, dirs }
+    Snapshot { layout, terminals }
 }
 
 impl Snapshot {
     /// The layout, each terminal's directory read: its foreground
     /// program's, else its shell's, else (a shell not started yet, or
-    /// gone) the placeholder [`saved_space`] left, its space's root.
-    pub fn read_dirs(self) -> SavedLayout {
-        let Self { mut layout, dirs } = self;
+    /// gone) the placeholder [`saved_space`] left, its space's root; and
+    /// the session `seen` last in it ([`Seen::agents`], which forgets
+    /// the terminals not in the layout).
+    pub fn read_dirs(self, seen: &mut Seen) -> SavedLayout {
+        let Self {
+            mut layout,
+            terminals: hosted,
+        } = self;
+        let (ids, readers): (Vec<_>, Vec<_>) = hosted.into_iter().unzip();
+        let agents = seen.agents(&ids);
         // Spaces, tabs and each tree's terminals walk in the order
         // `saved_space` pushed the readers in.
         let terminals = layout.spaces.iter_mut().flat_map(|s| &mut s.tabs);
         let terminals = terminals.flat_map(|t| t.splits.terminals_mut());
-        for (terminal, reader) in terminals.zip(dirs) {
+        for (terminal, (reader, agent)) in terminals.zip(readers.into_iter().zip(agents)) {
             if let Some(dir) = reader.and_then(DirReader::read) {
                 terminal.dir = dir;
             }
+            terminal.agent = agent;
         }
         layout
     }
 }
 
 /// `space` as `layout.json` keeps it, each terminal's directory its
-/// root for now: what reads the real one is pushed on `dirs`, one per
-/// terminal in the tree's order, which [`Snapshot::read_dirs`] follows.
-fn saved_space(space: &Space, dirs: &mut Vec<Option<DirReader>>) -> SavedSpace {
+/// root for now: each terminal's id, and what reads its real directory,
+/// is pushed on `hosted`, in the tree's order, which
+/// [`Snapshot::read_dirs`] follows.
+fn saved_space(space: &Space, hosted: &mut Vec<(TerminalId, Option<DirReader>)>) -> SavedSpace {
     let tabs = space.tabs.iter().map(|tab| {
         let terminals = tab.terminals();
         let focus = terminals.iter().position(|t| t == tab.active());
         let splits = tab.layout().save(&mut |id| {
-            let hosted = space.hosted(id);
-            dirs.push(hosted.map(HostedTerminal::dir_reader));
+            let terminal = space.hosted(id);
+            hosted.push((id.clone(), terminal.map(HostedTerminal::dir_reader)));
             SavedTerminal {
                 dir: space.root.clone(),
-                scrollback: hosted.map(|t| t.saved_as.as_str().to_string()),
+                scrollback: terminal.map(|t| t.saved_as.as_str().to_string()),
+                agent: None,
             }
         });
         SavedTab {
@@ -408,6 +441,30 @@ mod tests {
         assert_eq!(load(dir.path()), Some(layout("api")));
         let names: Vec<_> = std::fs::read_dir(dir.path()).unwrap().collect();
         assert_eq!(names.len(), 1, "no file left beside it");
+    }
+
+    #[test]
+    fn a_terminals_agent_reads_back_and_a_terminal_without_one_writes_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut saved = layout("api");
+        let agent = SavedAgent {
+            kind: AgentKind::Claude,
+            session: "7f3c2a10-1b2c-4d5e-8f90-0123456789ab".into(),
+            over: false,
+        };
+        let SavedTree::Split { cells, .. } = &mut saved.spaces[0].tabs[0].splits else {
+            unreachable!("split in two");
+        };
+        cells[1].node = SavedTree::Terminal(SavedTerminal {
+            dir: "/w/api/src".into(),
+            agent: Some(agent),
+            ..SavedTerminal::default()
+        });
+        write(dir.path(), &saved).unwrap();
+        assert_eq!(load(dir.path()), Some(saved));
+        let text = std::fs::read_to_string(dir.path().join(FILE)).unwrap();
+        assert_eq!(text.matches("\"agent\"").count(), 1, "{text}");
+        assert!(text.contains("\"kind\": \"claude\""), "{text}");
     }
 
     #[test]
