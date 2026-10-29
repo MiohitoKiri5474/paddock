@@ -226,3 +226,35 @@ fn a_copy_tool_that_fails_says_why_on_each_copy() {
     still_runs(&mut p, 2);
     assert_eq!(sandbox.clipboard(), None);
 }
+
+#[test]
+fn hiding_a_tool_from_path_keeps_the_rest_of_its_directory() {
+    let sandbox = Sandbox::new();
+    // `sed` and `tr` share a directory on macOS and Linux alike.
+    let path = sandbox.hide_from_path(&["sed"]);
+    let found = |tool: &str| {
+        std::process::Command::new("/bin/sh")
+            .args(["-c", &format!("command -v {tool}")])
+            .env_clear()
+            .env("PATH", &path)
+            .output()
+            .unwrap()
+    };
+
+    for tool in ["sh", "tr", "cat"] {
+        assert!(found(tool).status.success(), "{tool} not found in {path}");
+    }
+    assert!(!found("sed").status.success(), "sed still found in {path}");
+    // The directory `sed` was in is shadowed, `tr` kept in it.
+    let shadows = std::fs::read_dir(sandbox.path("shadow")).unwrap().flatten();
+    let shadowed: Vec<_> = shadows.map(|d| d.path()).collect();
+    assert!(!shadowed.is_empty(), "nothing shadowed in {path}");
+    assert!(
+        shadowed.iter().all(|d| !d.join("sed").exists()),
+        "{shadowed:?}"
+    );
+    assert!(
+        shadowed.iter().any(|d| d.join("tr").exists()),
+        "{shadowed:?}"
+    );
+}

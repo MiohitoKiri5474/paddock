@@ -442,24 +442,42 @@ impl Sandbox {
             .collect()
     }
 
-    /// Take the stubs `names` out of the sandbox's `bin`, and leave out of
-    /// `PATH` every other directory holding one of them, so paddock finds
-    /// none, never a real one.
+    /// Take the stubs `names` out of the sandbox's `bin` and hide the real
+    /// ones (see [`Sandbox::hide_from_path`]), so paddock finds none.
     pub fn remove_tools(&self, names: &[&str]) {
         for name in names {
             std::fs::remove_file(self.path("bin").join(name)).expect("remove stub");
         }
+        self.hide_from_path(names);
+    }
+
+    /// Set paddock's `PATH` to the sandbox's `bin`, then the real `PATH`
+    /// with each directory holding one of `names` shadowed: replaced by a
+    /// sandbox directory of links to all it holds but those, so the rest
+    /// (`cat`, `zsh`, ...) still resolves. Returns the new `PATH`.
+    pub fn hide_from_path(&self, names: &[&str]) -> String {
         let real = std::env::var("PATH").unwrap_or_default();
-        let kept = real.split(':').filter(|dir| {
-            !names
-                .iter()
-                .any(|n| std::path::Path::new(dir).join(n).exists())
-        });
-        let path = std::iter::once(self.path("bin").to_string_lossy().into_owned())
-            .chain(kept.map(str::to_string))
-            .collect::<Vec<_>>()
-            .join(":");
+        let mut path = vec![self.path("bin").to_string_lossy().into_owned()];
+        for (i, dir) in real.split(':').filter(|d| !d.is_empty()).enumerate() {
+            let dir = std::path::Path::new(dir);
+            if !names.iter().any(|n| dir.join(n).exists()) {
+                path.push(dir.to_string_lossy().into_owned());
+                continue;
+            }
+            let shadow = self.path(&format!("shadow/{i}"));
+            std::fs::create_dir_all(&shadow).expect("mkdir shadow");
+            for entry in std::fs::read_dir(dir).expect("read PATH dir").flatten() {
+                let name = entry.file_name();
+                if !names.iter().any(|n| name == *n) {
+                    std::os::unix::fs::symlink(entry.path(), shadow.join(&name))
+                        .expect("link into shadow");
+                }
+            }
+            path.push(shadow.to_string_lossy().into_owned());
+        }
+        let path = path.join(":");
         self.set_env("PATH", Some(&path));
+        path
     }
 
     /// Messages of the notifications shown so far, oldest first.

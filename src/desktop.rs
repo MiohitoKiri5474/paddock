@@ -41,10 +41,9 @@ pub enum CopyFailure {
 }
 
 /// Put `text` on the clipboard with the program `PADDOCK_COPY_COMMAND`
-/// names, else the platform's copy tool, trying the next one while one
-/// cannot be run.
+/// names, else the platform's copy tools (see [`copy_with`]).
 pub fn copy(text: &str) -> Result<(), CopyFailure> {
-    let commands: Vec<Command> = match program_from(COPY_VAR) {
+    let commands = match program_from(COPY_VAR) {
         Some(program) => vec![Command::new(program)],
         None => copiers()
             .iter()
@@ -55,16 +54,27 @@ pub fn copy(text: &str) -> Result<(), CopyFailure> {
             })
             .collect(),
     };
+    copy_with(commands, text)
+}
+
+/// Put `text` on the clipboard with the first of `commands` that works.
+/// If one ran, the first that ran and failed says why; else none could be
+/// run, most likely missing.
+fn copy_with(commands: Vec<Command>, text: &str) -> Result<(), CopyFailure> {
     let mut not_run = Vec::new();
+    let mut failed = None;
     for command in commands {
         let name = command.get_program().to_string_lossy().into_owned();
         match run_copier(command, text) {
+            Ok(()) => return Ok(()),
             Err(Run::NotRun(e)) => not_run.push((name, e)),
             Err(Run::Failed(why)) => {
-                return Err(CopyFailure::Failed(format!("cannot copy: {name} {why}")))
+                failed.get_or_insert_with(|| format!("cannot copy: {name} {why}"));
             }
-            Ok(()) => return Ok(()),
         }
+    }
+    if let Some(notice) = failed {
+        return Err(CopyFailure::Failed(notice));
     }
     let names: Vec<&str> = not_run.iter().map(|(n, _)| n.as_str()).collect();
     let error = not_run
@@ -76,6 +86,10 @@ pub fn copy(text: &str) -> Result<(), CopyFailure> {
         names.join(" or ")
     )))
 }
+
+/// How much of a failed copy tool's stderr is read: its first line is all
+/// the notice shows.
+const STDERR_CAP: u64 = 4096;
 
 /// How one copy tool's run went wrong.
 enum Run {
@@ -107,11 +121,12 @@ fn run_copier(mut command: Command, text: &str) -> Result<(), Run> {
     if status.success() {
         return written.map_err(|e| failed("failed: writing to it", e));
     }
-    let mut said = String::new();
+    let mut said = Vec::new();
     // Best effort: without its words the status still says it failed.
     let _ = stderr
         .rewind()
-        .and_then(|()| stderr.read_to_string(&mut said));
+        .and_then(|()| (&mut stderr).take(STDERR_CAP).read_to_end(&mut said));
+    let said = String::from_utf8_lossy(&said);
     let first = said.lines().map(str::trim).find(|l| !l.is_empty());
     Err(Run::Failed(match first {
         Some(line) => format!("failed: {line}"),
@@ -254,6 +269,63 @@ mod tests {
             Err(Run::Failed(why)) => assert_eq!(why, "failed: Error: no display"),
             _ => panic!("expected a failure"),
         }
+    }
+
+    fn sh(script: &str) -> Command {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", script]);
+        command
+    }
+
+    #[test]
+    fn a_copier_that_fails_lets_the_next_one_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("out");
+        let fails = sh("cat >/dev/null; echo 'wl: no compositor' >&2; exit 1");
+        let mut works = sh("cat > \"$0\"");
+        works.arg(&out);
+        assert_eq!(copy_with(vec![fails, works], "hi"), Ok(()));
+        assert_eq!(std::fs::read_to_string(out).unwrap(), "hi");
+    }
+
+    #[test]
+    fn when_every_copier_fails_the_first_says_why() {
+        let first = sh("cat >/dev/null; echo 'wl: no compositor' >&2; exit 1");
+        let missing = Command::new("/nonexistent/paddock-copier");
+        let second = sh("cat >/dev/null; echo 'x: no display' >&2; exit 1");
+        let Err(CopyFailure::Failed(notice)) = copy_with(vec![first, missing, second], "hi") else {
+            panic!("expected a failure");
+        };
+        assert!(notice.ends_with("failed: wl: no compositor"), "{notice}");
+    }
+
+    #[test]
+    fn when_no_copier_runs_each_is_named() {
+        let a = Command::new("/nonexistent/a");
+        let b = Command::new("/nonexistent/b");
+        let Err(CopyFailure::NotRun(notice)) = copy_with(vec![a, b], "hi") else {
+            panic!("expected none to run");
+        };
+        assert!(
+            notice.starts_with("cannot copy: cannot run /nonexistent/a or /nonexistent/b: "),
+            "{notice}"
+        );
+    }
+
+    #[test]
+    fn a_copiers_stderr_is_read_up_to_its_cap() {
+        // One long line, longer than the cap, then invalid UTF-8.
+        let script = format!(
+            "cat >/dev/null; printf '%0{}d\\377\\n' 0 >&2; exit 1",
+            STDERR_CAP * 2
+        );
+        let Err(Run::Failed(why)) = run_copier(sh(&script), "") else {
+            panic!("expected a failure");
+        };
+        assert_eq!(
+            why.len(),
+            "failed: ".len() + usize::try_from(STDERR_CAP).unwrap()
+        );
     }
 
     #[test]
