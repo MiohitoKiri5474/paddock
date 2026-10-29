@@ -87,6 +87,7 @@ jobs:
       - name: Check paddock --version
         run: |
           bin="target/$TARGET/release/paddock"
+          # Evidence in the log: the runner's architecture and the binary's.
           uname -m
           file "$bin"
           out=$("$bin" --version)
@@ -102,8 +103,12 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           floor=$(readelf -V "target/$TARGET/release/paddock" |
-            awk '$2 == "Name:" && $3 ~ /^GLIBC_/ && $5 != "WEAK" {print $3}' | sort -uV | tail -1)
+            awk '$2 == "Name:" && $3 ~ /^GLIBC_[0-9]/ && $5 != "WEAK" {print $3}' | sort -uV | tail -1)
           echo "needs $floor"
+          if [ -z "$floor" ]; then
+            echo "::error::found no GLIBC_ version in the binary (readelf -V)"
+            exit 1
+          fi
           if [ "$(printf '%s\n' "$floor" GLIBC_2.34 | sort -V | tail -1)" != GLIBC_2.34 ]; then
             echo "::error::the binary needs $floor, newer than the GLIBC_2.34 the README promises"
             exit 1
@@ -114,11 +119,7 @@ jobs:
           # ponytail: files sit at the archive root, so `tar xzf` drops `paddock` right there.
           # docs/ and CONTEXT.md ride along so the README's relative links work offline.
           tar -czf "$archive" -C "target/$TARGET/release" paddock -C "$PWD" LICENSE README.md CONTEXT.md docs
-          if [ "$RUNNER_OS" = macOS ]; then
-            shasum -a 256 "$archive" > "$archive.sha256"
-          else
-            sha256sum "$archive" > "$archive.sha256"
-          fi
+          shasum -a 256 "$archive" > "$archive.sha256"
           cat "$archive.sha256"
       - uses: actions/upload-artifact@v4
         with:
