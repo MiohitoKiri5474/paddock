@@ -2,7 +2,10 @@
 //! and a random number: the native server's platform seam. macOS asks
 //! `libproc`, Linux reads `/proc`.
 
-/// Process `pid`'s name (its command, as `ps -c` shows it).
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+compile_error!("paddock's native server runs on macOS and Linux only");
+
+/// Process `pid`'s name: its executable's, as macOS's `ps -c` shows it.
 #[cfg(target_os = "macos")]
 pub fn name(pid: i32) -> Option<String> {
     let mut buf = [0u8; 256];
@@ -45,8 +48,8 @@ pub fn random() -> u32 {
     unsafe { libc::arc4random() }
 }
 
-/// Process `pid`'s name: its executable's, as `ps -c` shows it, cut to
-/// 15 bytes by the kernel.
+/// Process `pid`'s name: its executable's (`comm`, as `ps -o comm`
+/// shows it), cut to 15 bytes by the kernel.
 #[cfg(target_os = "linux")]
 pub fn name(pid: i32) -> Option<String> {
     let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).ok()?;

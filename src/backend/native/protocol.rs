@@ -406,14 +406,24 @@ pub struct Peer {
 
 /// Send our hello, with our `instance` id (0 from a client), and read
 /// theirs; an error if it speaks another version. `server` names the
-/// other side in that error.
+/// other side in that error. A side gone before our hello reaches it
+/// (the pipe broken or reset) is [`Closed`], as one that closes unanswered.
 pub fn hello(stream: &mut (impl Read + Write), server: bool, instance: u32) -> Result<Peer> {
     let ours = Message::Hello {
         version: VERSION,
         pid: std::process::id(),
         instance,
     };
-    write(stream, &Frame::Message(ours))?;
+    if let Err(e) = write(stream, &Frame::Message(ours)) {
+        let gone = e.downcast_ref::<std::io::Error>().is_some_and(|e| {
+            matches!(e.kind(), ErrorKind::BrokenPipe | ErrorKind::ConnectionReset)
+        });
+        return Err(if gone {
+            anyhow::Error::new(Closed).context("no hello from the other side")
+        } else {
+            e
+        });
+    }
     match read(stream, FROM_CLIENT)? {
         Some(Frame::Message(Message::Hello {
             version,
@@ -451,6 +461,35 @@ mod tests {
         fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
             Err(ErrorKind::ConnectionReset.into())
         }
+    }
+
+    /// A connection whose other side went away before our first write.
+    struct Gone(ErrorKind);
+
+    impl Read for Gone {
+        fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+            Ok(0)
+        }
+    }
+
+    impl Write for Gone {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            Err(self.0.into())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_hello_to_a_side_already_gone_is_closed() {
+        for kind in [ErrorKind::BrokenPipe, ErrorKind::ConnectionReset] {
+            let e = hello(&mut Gone(kind), true, 0).unwrap_err();
+            assert!(e.downcast_ref::<Closed>().is_some(), "{kind:?}: {e:#}");
+        }
+        let e = hello(&mut Gone(ErrorKind::PermissionDenied), true, 0).unwrap_err();
+        assert!(e.downcast_ref::<Closed>().is_none(), "{e:#}");
     }
 
     #[test]

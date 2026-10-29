@@ -153,10 +153,9 @@ pub fn foreground(master: &File) -> Option<i32> {
     (group > 0).then_some(group)
 }
 
-pub use super::proc::{cwd, name};
-
 #[cfg(test)]
 mod tests {
+    use super::super::proc;
     use super::*;
     use std::io::Read;
 
@@ -186,9 +185,9 @@ mod tests {
             assert!(start.elapsed().as_secs() < 5, "never in the foreground");
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        assert_eq!(name(pid).as_deref(), Some("sh"));
+        assert_eq!(proc::name(pid).as_deref(), Some("sh"));
         let real = std::fs::canonicalize(dir.path()).unwrap();
-        assert_eq!(cwd(pid), Some(real.to_string_lossy().into_owned()));
+        assert_eq!(proc::cwd(pid), Some(real.to_string_lossy().into_owned()));
         resize(&pty.master, (50, 12)).unwrap();
         use std::io::Write;
         pty.master
