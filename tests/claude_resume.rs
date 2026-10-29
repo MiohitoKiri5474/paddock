@@ -352,17 +352,14 @@ fn a_live_session_survives_a_server_upgrade_and_is_still_resumed_after_a_restart
     assert_eq!(sandbox.claude_calls(), [format!("{real} --resume {LIVE}")]);
 }
 
-/// Ticket 59: keys typed into a restored terminal before its resume
-/// command is typed are held and come after it, so the command runs
-/// whole and the keys are kept. The restored shells wait in their rc,
-/// silent, until a gate file goes, so the keys surely come first.
-#[test]
-fn keys_typed_before_the_resume_come_after_it_and_are_kept() {
-    let sandbox = native();
-    let dir = sandbox.path("home/proj");
-    std::fs::create_dir_all(&dir).unwrap();
-    let mut paddock = ready(&sandbox);
-    two_sessions(&mut paddock, &sandbox, &dir);
+/// Restart into a layout whose second split resumes session [`LIVE`]
+/// in `dir`, its shell silent in its rc until the gate file returned
+/// goes, and the server waiting for it to speak for as long as it takes
+/// (`PADDOCK_RESUME_WAIT_MS`): its resume, and any keys typed there, are
+/// held until the gate goes. Returns with the resumed split focused.
+fn restart_held(sandbox: &Sandbox, dir: &Path) -> (Paddock, std::path::PathBuf) {
+    let mut paddock = ready(sandbox);
+    two_sessions(&mut paddock, sandbox, dir);
     let gate = sandbox.path("gate");
     std::fs::write(&gate, "").unwrap();
     let rc = sandbox.path("home/.zshrc");
@@ -372,32 +369,76 @@ fn keys_typed_before_the_resume_come_after_it_and_are_kept() {
         gate.display()
     ));
     std::fs::write(&rc, text).unwrap();
+    sandbox.set_env("PADDOCK_RESUME_WAIT_MS", Some("600000"));
 
-    let mut again = restart(&sandbox, paddock);
+    let again = restart(sandbox, paddock);
 
     again.wait_for_text("resumed 1 session");
     again.wait_for("the focus on the resumed split", |_| {
         sandbox.terminal("space-1:0.1").focused
     });
-    // Half a line, no Enter, as the ticket saw (`eclaude --resume …`).
-    again.send(b"echo EARLY''-KEYS");
-    // paddock sends the keys before it asks to move the focus: once the
-    // focus has moved, the keys are on their way to the server (and the
-    // gated shell takes more than a poll to speak after the gate goes).
-    again.command(b"h");
-    again.wait_for("the focus on the first split", |_| {
+    (again, gate)
+}
+
+/// Type half a line (no Enter, as the ticket saw: `eclaude --resume …`)
+/// into the focused split, then focus the first split. paddock sends
+/// the keys before it asks to move the focus, and the gated shell takes
+/// more than a poll to speak once the gate goes: the server has the keys
+/// before it may type the resume.
+fn type_early(paddock: &mut Paddock, sandbox: &Sandbox) {
+    paddock.send(b"echo EARLY''-KEYS");
+    paddock.command(b"h");
+    paddock.wait_for("the focus on the first split", |_| {
         sandbox.terminal("space-1:0.0").focused
     });
-    std::fs::remove_file(&gate).unwrap();
+}
 
+/// The resume ran whole, and the held keys after it: Enter in the
+/// resumed split runs them.
+fn resumed_then_typed(paddock: &mut Paddock, sandbox: &Sandbox, dir: &Path) {
     assert_eq!(
         sandbox.claude_calls(),
-        [format!("{} --resume {LIVE}", real(&dir))]
+        [format!("{} --resume {LIVE}", real(dir))]
     );
-    again.command(b"l");
-    again.wait_for("the focus back on the resumed split", |_| {
+    paddock.command(b"l");
+    paddock.wait_for("the focus back on the resumed split", |_| {
         sandbox.terminal("space-1:0.1").focused
     });
-    again.send(b"\r");
-    again.wait_for_text("EARLY-KEYS");
+    paddock.send(b"\r");
+    paddock.wait_for_text("EARLY-KEYS");
+}
+
+/// Ticket 59: keys typed into a restored terminal before its resume
+/// command is typed are held and come after it, so the command runs
+/// whole and the keys are kept.
+#[test]
+fn keys_typed_before_the_resume_come_after_it_and_are_kept() {
+    let sandbox = native();
+    let dir = sandbox.path("home/proj");
+    std::fs::create_dir_all(&dir).unwrap();
+    let (mut again, gate) = restart_held(&sandbox, &dir);
+    type_early(&mut again, &sandbox);
+
+    std::fs::remove_file(&gate).unwrap();
+
+    resumed_then_typed(&mut again, &sandbox, &dir);
+}
+
+/// A resume not typed yet, and the keys held behind it, pass an upgrade:
+/// the new server types them once the shell speaks.
+#[test]
+fn a_resume_not_typed_yet_and_its_held_keys_pass_an_upgrade() {
+    let sandbox = native();
+    let dir = sandbox.path("home/proj");
+    std::fs::create_dir_all(&dir).unwrap();
+    let (mut again, gate) = restart_held(&sandbox, &dir);
+    type_early(&mut again, &sandbox);
+
+    let out = sandbox.run(&["server", "upgrade"], &[], "");
+    assert!(out.status.success(), "{out:?}");
+    again.wait_for_text("programs kept running");
+    assert_eq!(claude_log(&sandbox), "", "not typed before the shell spoke");
+    std::fs::remove_file(&gate).unwrap();
+
+    resumed_then_typed(&mut again, &sandbox, &dir);
 }

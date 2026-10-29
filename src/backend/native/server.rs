@@ -16,7 +16,6 @@ use super::axis::Axis;
 use super::handover::{self, HandedTerminal, Held};
 use super::protocol::{self, Answer, Ending, Frame, Message, Notice, Refusal, Request, Upgrade};
 use super::pty::Program::{self, LoginShell};
-use super::restore::Resume;
 use super::saved::{self, Saver};
 use super::scrollback::{self, ScrollbackName};
 use super::seen::Seen;
@@ -66,6 +65,9 @@ const RESUME_POLL: Duration = Duration::from_millis(20);
 /// How long a restored shell may stay silent before its resume command
 /// is typed anyway.
 const RESUME_WAIT: Duration = Duration::from_secs(3);
+/// Milliseconds to wait in place of [`RESUME_WAIT`]: for tests, which
+/// keep a shell silent on purpose. Not passed on to the shells.
+pub const RESUME_WAIT_VAR: &str = "PADDOCK_RESUME_WAIT_MS";
 
 struct Shared {
     state: Mutex<State>,
@@ -73,6 +75,9 @@ struct Shared {
     home: PathBuf,
     /// The shells' environment.
     env: Vec<(String, String)>,
+    /// How long a silent restored shell gets before its resume command
+    /// is typed ([`RESUME_WAIT`], or [`RESUME_WAIT_VAR`]'s).
+    resume_wait: Duration,
     connections: AtomicU64,
     /// Writes `layout.json`; locked after `state`, if both are.
     saver: Mutex<Saver>,
@@ -92,6 +97,7 @@ impl Shared {
     fn new(state: State, paths: &Paths, held: Held) -> Self {
         let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
         let mut env = clean_env(std::env::vars());
+        env.retain(|(k, _)| k != RESUME_WAIT_VAR);
         env.push(("COLORTERM".into(), "truecolor".into()));
         env.push((AGY_STATUS_VAR.into(), "on".into()));
         // A server that took over (ADR 0009) reads its hook log again from
@@ -103,6 +109,9 @@ impl Shared {
             shell: var("SHELL").unwrap_or_else(|| "/bin/sh".into()),
             home: var("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from),
             env,
+            resume_wait: var(RESUME_WAIT_VAR)
+                .and_then(|ms| ms.parse().ok())
+                .map_or(RESUME_WAIT, Duration::from_millis),
             connections: AtomicU64::new(0),
             saver: Mutex::new(Saver::new(paths.state_dir.clone())),
             state_dir: paths.state_dir.clone(),
@@ -154,14 +163,13 @@ pub fn serve() -> Result<()> {
         // typed come after it, not inside it (ticket 59).
         for (_, t) in state.terminals() {
             if let Some(r) = resumed.iter().find(|r| r.terminal == t.id) {
-                t.input.hold_behind(format!("{}\r", r.command).into_bytes());
+                let command = format!("{}\r", r.command).into_bytes();
+                t.input.hold_behind(command, Vec::new());
             }
         }
     }
-    if !resumed.is_empty() {
-        let typing = Arc::clone(&shared);
-        std::thread::spawn(move || type_resumes(&typing, resumed));
-    }
+    let pending = resumed.into_iter().map(|r| r.terminal).collect();
+    start_typing_resumes(&shared, pending);
     run(&shared, &listener, lock)
 }
 
@@ -226,14 +234,18 @@ fn adopt(record: File, conn: RawFd) -> Result<(Arc<Shared>, UnixListener, File)>
     let state = State::handed(socket, record.instance, record.last_id);
     let held = Held::of(&lock, &listener);
     let shared = Arc::new(Shared::new(state, &paths, held));
-    {
+    let pending = {
         let mut state = shared.lock();
         let instance = record.instance;
         let mut adopt = |space: &SpaceId, handed: HandedTerminal, snapshot: &[u8]| {
             adopt_terminal(&shared, instance, space, handed, snapshot)
         };
         handover::rebuild(&mut state, record, snapshots, &mut adopt)?;
-    }
+        // The resumes the server before had not typed yet (ticket 59).
+        let pending = state.terminals().filter(|(_, t)| t.input.holding());
+        pending.map(|(_, t)| t.id.clone()).collect()
+    };
+    start_typing_resumes(&shared, pending);
     Ok((shared, listener, lock))
 }
 
@@ -268,12 +280,18 @@ fn adopt_terminal(
         size,
         exited,
         scrollback,
+        hold,
         ..
     } = handed;
+    let spoke = hold.as_ref().is_some_and(|h| h.spoke);
+    if let Some(hold) = hold {
+        input.hold_behind(hold.first, hold.bytes);
+    }
     let saved_as = scrollback.as_deref().and_then(ScrollbackName::parse);
     let saved_as = saved_as.unwrap_or_else(|| ScrollbackName::new(instance, &id));
     let mut term = HostedTerminal::hosting(id.clone(), saved_as, pid, tty, master, input, size);
     term.exited = exited;
+    term.spoke = spoke;
     term.replay(snapshot);
     watch(shared, space, id, reader, (!exited).then_some(pid));
     Ok(term)
@@ -458,18 +476,18 @@ fn save_layout(shared: &Shared) {
 /// line, not something they ask), or after [`RESUME_WAIT`] if it stays
 /// silent, followed by the keys typed there meanwhile, which were held
 /// behind it ([`Input::hold_behind`]); drop one whose terminal has closed.
-fn type_resumes(shared: &Shared, mut pending: Vec<Resume>) {
+fn type_resumes(shared: &Shared, mut pending: Vec<TerminalId>) {
     let started = Instant::now();
     while !pending.is_empty() {
         std::thread::sleep(RESUME_POLL);
         let waited = started.elapsed();
         let state = shared.lock();
-        pending.retain(|r| {
+        pending.retain(|id| {
             let mut terminals = state.terminals().map(|(_, t)| t);
-            let Some(t) = terminals.find(|t| t.id == r.terminal) else {
+            let Some(t) = terminals.find(|t| t.id == *id) else {
                 return false;
             };
-            if !ready_to_type(t.spoke, waited) {
+            if !ready_to_type(t.spoke, waited, shared.resume_wait) {
                 return true;
             }
             t.input.release();
@@ -478,10 +496,21 @@ fn type_resumes(shared: &Shared, mut pending: Vec<Resume>) {
     }
 }
 
+/// Type the resume commands of terminals `pending` ([`type_resumes`]),
+/// on a thread of their own; nothing if there are none.
+fn start_typing_resumes(shared: &Arc<Shared>, pending: Vec<TerminalId>) {
+    if pending.is_empty() {
+        return;
+    }
+    let typing = Arc::clone(shared);
+    std::thread::spawn(move || type_resumes(&typing, pending));
+}
+
 /// Whether a resume command is typed now into a restored shell that has
-/// (`spoke`) or has not written anything, `waited` after it started.
-fn ready_to_type(spoke: bool, waited: Duration) -> bool {
-    spoke || waited >= RESUME_WAIT
+/// (`spoke`) or has not written anything, `waited` after it started, if
+/// a silent one gets `limit`.
+fn ready_to_type(spoke: bool, waited: Duration, limit: Duration) -> bool {
+    spoke || waited >= limit
 }
 
 fn serve_connection(shared: &Arc<Shared>, conn: u64, mut stream: UnixStream) -> Result<()> {
@@ -663,11 +692,6 @@ fn freeze(shared: &Shared) -> Result<MutexGuard<'_, State>> {
         let state = shared.lock();
         if state.closing {
             return Err(Ending.into());
-        }
-        // A resume not typed yet would go with this process, and the keys
-        // held behind it: typed now, early (ticket 59).
-        for (_, t) in state.terminals() {
-            t.input.release();
         }
         let busy = state.terminals().find(|(_, t)| !t.input.idle());
         let Some((_, term)) = busy else {
@@ -1221,9 +1245,13 @@ mod tests {
 
     #[test]
     fn a_resume_is_typed_once_the_shell_spoke_or_after_the_wait() {
-        assert!(!ready_to_type(false, Duration::ZERO));
-        assert!(!ready_to_type(false, RESUME_WAIT - RESUME_POLL));
-        assert!(ready_to_type(true, Duration::ZERO));
-        assert!(ready_to_type(false, RESUME_WAIT));
+        assert!(!ready_to_type(false, Duration::ZERO, RESUME_WAIT));
+        assert!(!ready_to_type(
+            false,
+            RESUME_WAIT - RESUME_POLL,
+            RESUME_WAIT
+        ));
+        assert!(ready_to_type(true, Duration::ZERO, RESUME_WAIT));
+        assert!(ready_to_type(false, RESUME_WAIT, RESUME_WAIT));
     }
 }
