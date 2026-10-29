@@ -17,7 +17,7 @@ mod tmux;
 
 pub use border::Border;
 pub use ids::{FloatId, SpaceId, TabId, TerminalId};
-pub use native::{serve, OtherVersion};
+pub use native::{check_handover, serve, take_over, NoHandover, OtherVersion};
 pub use old_tmux::OldTmuxServer;
 pub use structure::{Float, Split, Structure, Tab};
 
@@ -47,6 +47,10 @@ pub enum Event {
     /// server let this paddock go (it stopped reading), or failed. (A
     /// server that ends on purpose sends [`Event::Ended`] first.)
     Lost,
+    /// The native server hands its terminals to a new binary (ADR 0009):
+    /// the connection ends next ([`Event::Lost`]), and the same spaces can
+    /// be attached again once the new binary serves.
+    Upgrading,
     /// Input to `terminal` was refused, and `why` (native only): once,
     /// until its program has taken all that waited.
     InputRefused { terminal: TerminalId, why: String },
@@ -216,6 +220,22 @@ impl Backend {
         match self {
             Self::Tmux(_) => Ok(()),
             Self::Native(n) => n.restart(other),
+        }
+    }
+
+    /// Hand the running native server's terminals to the paddock binary
+    /// `exe` (an absolute path; this paddock's own is
+    /// [`std::env::current_exe`]), which then runs as it, whatever
+    /// protocol version it speaks (ADR 0009): its pid. An error says why
+    /// not. Most leave the server running unchanged, [`NoHandover`]
+    /// among them (it cannot hand over at all, so [`Self::restart`] is
+    /// left); but an error once `exe` ran, a refusal that says the new
+    /// server could not take over, or an answer that never came, means
+    /// the server has ended with every program in it. An error on tmux.
+    pub fn upgrade(&self, exe: &Path) -> Result<u32> {
+        match self {
+            Self::Tmux(_) => anyhow::bail!("the tmux backend has no paddock server to upgrade"),
+            Self::Native(n) => n.upgrade(exe),
         }
     }
 
@@ -583,6 +603,14 @@ pub enum Connection {
 }
 
 impl Connection {
+    /// Close the connection both ways: its reader sees it end.
+    pub fn close(&self) {
+        match self {
+            Self::Tmux(_) => {}
+            Self::Native(a) => a.close(),
+        }
+    }
+
     /// Write raw bytes to `terminal`, as typed.
     pub fn input(&mut self, terminal: &TerminalId, bytes: &[u8]) -> Result<()> {
         match self {

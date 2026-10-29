@@ -31,6 +31,9 @@ commands:
     [--agent <kind>]...       only for these agents (claude, gemini)
   worktree new|open|list|rm   manage worktrees as spaces, without the UI
                               (paddock worktree --help)
+  server upgrade [<binary>]   hand the running paddock server's terminals
+                              to this paddock (or <binary>), programs
+                              running on
 ";
 
 /// `paddock <version>` for `version`, `-V` or `--version` alone, else
@@ -64,8 +67,40 @@ fn main() -> anyhow::Result<()> {
         ["debug", "state", "--json"] => debug::print_state(),
         // Hidden from the usage: paddock starts it (ADR 0007).
         ["server"] => backend::serve(),
+        ["server", "upgrade"] => upgrade_server(None),
+        ["server", "upgrade", binary] => upgrade_server(Some(binary)),
+        // Hidden from the usage: what a server runs as it hands over
+        // (ADR 0009).
+        ["server", "--check-handover"] => backend::check_handover(),
+        ["server", "--take-over", record, conn] => backend::take_over(record, conn),
         _ => anyhow::bail!("{}", USAGE.trim_end()),
     }
+}
+
+/// `paddock server upgrade [<binary>]`: hand the running native server's
+/// terminals to `binary`, this one by default, whatever protocol version
+/// it speaks (ADR 0009).
+fn upgrade_server(binary: Option<&str>) -> anyhow::Result<()> {
+    use anyhow::Context;
+    let exe = match binary {
+        Some(b) => std::path::absolute(b).with_context(|| format!("no path {b}"))?,
+        None => std::env::current_exe().context("cannot find paddock's own binary")?,
+    };
+    let paths = paths::Paths::from_env()?;
+    let backend = backend::Backend::new(paths, config::BackendKind::Native);
+    let pid = match backend.upgrade(&exe) {
+        Ok(pid) => pid,
+        Err(e) if e.downcast_ref::<backend::NoHandover>().is_some() => anyhow::bail!(
+            "{e:#}; to restart it instead, start paddock and answer yes \
+             (its programs end, and its layout comes back)"
+        ),
+        Err(e) => return Err(e),
+    };
+    println!(
+        "the paddock server (pid {pid}) now runs {}, its programs running on",
+        exe.display()
+    );
+    Ok(())
 }
 
 #[cfg(test)]

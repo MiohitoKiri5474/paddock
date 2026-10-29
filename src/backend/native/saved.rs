@@ -370,11 +370,16 @@ impl Saver {
     /// Write `layout` at once unless it is the one last written, and
     /// write nothing after: the server ends.
     pub fn flush(&mut self, layout: SavedLayout) -> Result<()> {
-        if self.sealed {
-            return Ok(());
-        }
+        let written = self.write_now(layout);
         self.sealed = true;
-        if self.last.as_ref().is_some_and(|(last, _)| *last == layout) {
+        written
+    }
+
+    /// Write `layout` at once unless it is the one last written (or the
+    /// saver was flushed), whatever the gap: before a server hands over
+    /// (ADR 0009), so a new one that fails finds it.
+    pub fn write_now(&mut self, layout: SavedLayout) -> Result<()> {
+        if self.sealed || self.last.as_ref().is_some_and(|(last, _)| *last == layout) {
             return Ok(());
         }
         self.write(layout, Instant::now())
