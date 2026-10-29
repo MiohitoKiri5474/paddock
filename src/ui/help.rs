@@ -246,7 +246,7 @@ mod tests {
             .any(|x| x.contains("-       split top and bottom [C--]")));
         assert!(l
             .iter()
-            .any(|x| x.contains("x      close pane (asks if busy)")));
+            .any(|x| x.contains("x      close split (asks if busy)")));
         assert!(l.iter().any(|x| x.contains("1...9   go to tab")));
         assert!(l.iter().any(|x| x.contains("R       set space root here")));
         assert!(l
