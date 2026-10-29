@@ -285,11 +285,13 @@ const PROMPT_SUBMIT: &str = concat!(
     "/spikes/02-subagent-worktree/fixtures/UserPromptSubmit.json"
 );
 
-/// How many agents the sidebar lists (each with its kind beside its
-/// place).
+/// How many agents the sidebar lists: the lines with a dot under AGENTS.
 fn agents_shown(paddock: &Paddock) -> usize {
     let sidebar = paddock.sidebar();
-    sidebar.iter().filter(|l| l.ends_with("claude")).count()
+    let Some(top) = sidebar.iter().position(|l| l.contains("AGENTS")) else {
+        return 0;
+    };
+    sidebar[top..].iter().filter(|l| l.contains("●")).count()
 }
 
 /// A server killed outright saves nothing as it ends: the next one

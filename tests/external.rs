@@ -97,10 +97,10 @@ fn wait_for_sidebar(paddock: &Paddock, what: &str, pred: impl Fn(&[String]) -> b
     paddock.wait_for(what, |_| pred(&sidebar(paddock)));
 }
 
-/// An agent's first line in the sidebar: dot, label, and its state at the right.
+/// The line of an external agent alone in the sidebar: dot, label and
+/// state, without a space.
 fn agent(label: &str, state: &str) -> String {
-    let width = 30 - 3 - state.len();
-    format!(" ● {label:<width$}{state}")
+    format!(" ● {label}  {state}")
 }
 
 /// The screen row (0-based) of the first full row starting with `text`.
@@ -126,21 +126,16 @@ fn an_external_session_shows_dim_and_last_with_its_state_and_branch() {
     outside(&sandbox, "UserPromptSubmit", "e1", web);
     outside(&sandbox, "PermissionRequest", "e1", web);
 
-    // Last in AGENTS, under its own header, with its branch; even waiting,
-    // it comes after the running agent in paddock.
-    let want = [
-        agent("mine", "running"),
-        "   space-1 · claude     claude".to_string(),
-        " EXTERNAL".to_string(),
-        agent("web", "waiting"),
-        "   feat/login           claude".to_string(),
-    ];
+    // Last in AGENTS, under its own header, in the same columns without a
+    // space; even waiting, it comes after the running agent in paddock.
+    let (mine, web) = (" ● mine  running  space-1", " ● web   waiting");
+    let want = [mine.to_string(), " EXTERNAL".to_string(), web.to_string()];
     wait_for_sidebar(&paddock, "the external agent", |lines| {
         lines.ends_with(&want)
     });
-    let y = row_of(&paddock, &agent("web", "waiting"));
+    let y = row_of(&paddock, web);
     assert!(paddock.dim(y, 3), "the external label is dim");
-    let mine = row_of(&paddock, &agent("mine", "running"));
+    let mine = row_of(&paddock, mine);
     assert!(!paddock.dim(mine, 3));
     // It counts for notifications.
     let said = sandbox.wait_for_notifications(1);
@@ -286,7 +281,7 @@ fn external_false_hides_the_group_and_its_notifications() {
     // Something later to wait for: a session in paddock's own terminal.
     inside(&sandbox, "UserPromptSubmit", "p1", "/w/mine");
     wait_for_sidebar(&paddock, "the agent in paddock", |l| {
-        l.contains(&agent("mine", "running"))
+        l.iter().any(|l| l.starts_with(&agent("mine", "running")))
     });
     std::thread::sleep(std::time::Duration::from_millis(300));
     assert!(!paddock.full_screen().contains("EXTERNAL"));
