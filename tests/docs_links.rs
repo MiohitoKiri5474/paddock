@@ -1,7 +1,8 @@
 //! Ticket 56: the README is a front page and the details live in docs/.
 //! Every relative link between README.md, CONTEXT.md and the pages under
 //! docs/ resolves, and every `#anchor` names a heading of its target, by
-//! GitHub's slug rules. The README links every user page.
+//! GitHub's slug rules. docs/README.md lists every user page, and the
+//! README repeats that list.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -25,16 +26,22 @@ fn markdown_files() -> Vec<PathBuf> {
     files
 }
 
-/// The lines outside fenced code blocks.
+/// The lines outside fenced code blocks (``` or ~~~; a block ends at a
+/// fence of the kind that opened it).
 fn prose(text: &str) -> Vec<&str> {
-    let mut fenced = false;
+    let mut open: Option<&str> = None;
     text.lines()
         .filter(|line| {
-            if line.trim_start().starts_with("```") {
-                fenced = !fenced;
-                return false;
+            let line = line.trim_start();
+            let Some(fence) = ["```", "~~~"].into_iter().find(|f| line.starts_with(f)) else {
+                return open.is_none();
+            };
+            match open {
+                None => open = Some(fence),
+                Some(o) if o == fence => open = None,
+                Some(_) => {}
             }
-            !fenced
+            false
         })
         .collect()
 }
@@ -134,6 +141,8 @@ fn slugs_follow_github() {
     let a = anchors("# A\n## Notes\n```\n# not a heading\n```\n## Notes\n");
     assert!(a.contains("notes") && a.contains("notes-1"), "{a:?}");
     assert!(!a.contains("not-a-heading"), "{a:?}");
+    let t = anchors("~~~\n```\n# in tildes\n~~~\n# Out\n");
+    assert!(!t.contains("in-tildes") && t.contains("out"), "{t:?}");
 }
 
 #[test]
@@ -160,7 +169,12 @@ fn every_relative_link_and_anchor_resolves() {
                 continue;
             }
             let Some(anchor) = anchor else { continue };
-            if resolved.is_dir() || !anchors(&read(&resolved)).contains(anchor) {
+            // Only a Markdown page's anchors are headings; `LICENSE#L10`
+            // and the like are not checked.
+            if resolved.extension().is_none_or(|x| x != "md") {
+                continue;
+            }
+            if !anchors(&read(&resolved)).contains(anchor) {
                 broken.push(format!("{}: {target}: no such heading", file.display()));
             }
         }
@@ -168,22 +182,37 @@ fn every_relative_link_and_anchor_resolves() {
     assert!(broken.is_empty(), "broken links:\n{}", broken.join("\n"));
 }
 
+/// The `- ` list items of `text`'s section under `heading`.
+fn list_under<'a>(text: &'a str, heading: &str) -> Vec<&'a str> {
+    text.lines()
+        .skip_while(|l| *l != heading)
+        .skip(1)
+        .take_while(|l| !l.starts_with('#'))
+        .filter(|l| l.starts_with("- "))
+        .collect()
+}
+
 #[test]
-fn the_readme_links_every_user_page() {
-    let readme = read(&Path::new(ROOT).join("README.md"));
-    let targets: HashSet<String> = links(&readme).into_iter().collect();
+fn the_docs_index_lists_every_user_page_and_the_readme_repeats_it() {
     let index = read(&Path::new(ROOT).join("docs/README.md"));
-    let listed: HashSet<String> = links(&index).into_iter().collect();
+    let pages = list_under(&index, "## Using paddock");
+    let listed: HashSet<String> = pages.iter().flat_map(|l| links(l)).collect();
     for entry in std::fs::read_dir(Path::new(ROOT).join("docs")).unwrap() {
         let name = entry.unwrap().file_name().into_string().unwrap();
         if !name.ends_with(".md") || name == "README.md" || name == "design.md" {
             continue;
         }
-        let link = format!("docs/{name}");
-        assert!(targets.contains(&link), "README.md does not link {link}");
         assert!(
             listed.contains(&name),
             "docs/README.md does not list {name}"
         );
     }
+    // The README's list is the index's, with links from the root.
+    let readme = read(&Path::new(ROOT).join("README.md"));
+    let want: Vec<String> = pages.iter().map(|l| l.replace("](", "](docs/")).collect();
+    assert_eq!(
+        list_under(&readme, "## Docs"),
+        want,
+        "README's ## Docs list"
+    );
 }
