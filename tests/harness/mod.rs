@@ -96,6 +96,10 @@ impl Sandbox {
             root.path().display()
         );
         std::fs::write(root.path().join("home/.zshrc"), rc).expect("zshrc");
+        // Debian and Ubuntu's /etc/zsh/zshrc runs compinit, which asks
+        // about the sandbox's directories before the first prompt.
+        std::fs::write(root.path().join("home/.zshenv"), "skip_global_compinit=1\n")
+            .expect("zshenv");
         write_claude_stub(root.path());
         write_copy_stub(root.path());
         write_osascript_stub(root.path());
