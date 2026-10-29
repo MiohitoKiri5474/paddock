@@ -3,6 +3,7 @@
 //! program's terminal queries (DA and `CSI ? u` through alacritty,
 //! XTVERSION here), and makes the snapshot a client attaches with.
 
+use super::proc;
 use super::pty::{self, Pty};
 use super::queue::Queue;
 use super::scrollback::ScrollbackName;
@@ -289,7 +290,7 @@ impl HostedTerminal {
 
     /// The foreground program's name, as tmux's `pane_current_command`.
     pub fn command(&self) -> Option<String> {
-        pty::name(self.foreground())
+        proc::name(self.foreground())
     }
 
     /// The name of a tab that follows what runs in this terminal, as
@@ -298,7 +299,7 @@ impl HostedTerminal {
     /// say (the shell not started yet).
     pub fn auto_name(&self) -> Option<String> {
         let foreground = self.foreground();
-        let command = pty::name(foreground)?;
+        let command = proc::name(foreground)?;
         // Forked from the server, not yet the shell.
         if command == "paddock" && u32::try_from(foreground).is_ok_and(|p| p == self.pid) {
             return None;
@@ -306,7 +307,7 @@ impl HostedTerminal {
         if !is_shell(&command) {
             return Some(command);
         }
-        pty::cwd(foreground).map(|dir| dir_name(&dir))
+        proc::cwd(foreground).map(|dir| dir_name(&dir))
     }
 }
 
@@ -330,7 +331,7 @@ pub struct DirReader {
 impl DirReader {
     /// The foreground program's directory, else the shell's.
     pub fn read(self) -> Option<String> {
-        pty::cwd(self.foreground).or_else(|| pty::cwd(self.shell?))
+        proc::cwd(self.foreground).or_else(|| proc::cwd(self.shell?))
     }
 }
 
