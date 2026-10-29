@@ -1,7 +1,7 @@
 //! Key bindings: every paddock action by name, its default keys, and the
 //! keys `[keys.commands]`, `[keys.direct]`, `[keys.sidebar]`,
 //! `[keys.dashboard]` and `[keys.copy]` in `config.toml` give it instead. Dispatch, the key
-//! help, `paddock keys` and the README's key tables all come from the
+//! help, `paddock keys` and the key tables in docs/keys.md all come from the
 //! tables here.
 
 mod key;
@@ -274,7 +274,7 @@ impl<A: Copy> Keys<A> {
         out
     }
 
-    /// A Markdown table of the keys, as the README shows them.
+    /// A Markdown table of the keys, as docs/keys.md shows them.
     #[cfg(test)]
     pub fn markdown(&self) -> String {
         let mut out = String::from("| Key | Action | Name |\n|---|---|---|\n");

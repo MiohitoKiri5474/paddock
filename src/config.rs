@@ -805,9 +805,8 @@ mod tests {
     }
 
     #[test]
-    fn the_readme_example_config_is_valid() {
-        let readme = include_str!("../README.md");
-        let configure = &readme[readme.find("## Configure").unwrap()..];
+    fn the_docs_example_config_is_valid() {
+        let configure = include_str!("../docs/config.md");
         let start = configure.find("```toml\n").unwrap() + "```toml\n".len();
         let example = &configure[start..start + configure[start..].find("```").unwrap()];
         let c = Config::parse(example).unwrap();
