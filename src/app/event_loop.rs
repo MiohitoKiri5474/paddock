@@ -11,6 +11,7 @@ use anyhow::Result;
 use crossterm::event::{self as ct, KeyEventKind};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect};
+use std::collections::HashSet;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
@@ -204,11 +205,21 @@ fn handle(
     match event {
         // A connection replaced by attaching again (ADR 0009): what it
         // still reports belongs to no screen shown.
-        Event::Backend { connection, .. } if app.replaced.contains(&connection) => {
+        Event::Backend {
+            connection, event, ..
+        } if app.replaced.contains(&connection) => {
+            // Its end is the last it reports.
+            if matches!(event, backend::Event::Lost | backend::Event::Ended) {
+                app.replaced.remove(&connection);
+            }
             Ok((Flow::Continue, false))
         }
-        Event::Backend { space, event, .. } => {
-            let done = handle_backend(app, &space, event);
+        Event::Backend {
+            space,
+            connection,
+            event,
+        } => {
+            let done = handle_backend(app, &space, connection, event);
             effects.rows_may_move = done.terminals_changed;
             Ok((done.flow, done.changed))
         }
@@ -268,6 +279,21 @@ fn handle(
     }
 }
 
+/// Whether every space's connection made by the time the server said it
+/// upgrades (numbered at most `cutoff`) has ended (`lost`), so the spaces
+/// are to be attached again (ADR 0009). One made after is to the new
+/// server already, and never ends with the upgrade.
+fn upgrade_done(
+    connections: impl IntoIterator<Item = u64>,
+    lost: &HashSet<u64>,
+    cutoff: u64,
+) -> bool {
+    connections
+        .into_iter()
+        .filter(|&c| c <= cutoff)
+        .all(|c| lost.contains(&c))
+}
+
 /// What handling a backend event did.
 struct BackendHandled {
     /// Whether to go on.
@@ -290,7 +316,12 @@ impl BackendHandled {
 }
 
 /// An event from space `space`'s connection.
-fn handle_backend(app: &mut App, space: &SpaceId, event: backend::Event) -> BackendHandled {
+fn handle_backend(
+    app: &mut App,
+    space: &SpaceId,
+    connection: u64,
+    event: backend::Event,
+) -> BackendHandled {
     match event {
         backend::Event::Output { terminal, data } => {
             let unseen = !app.terminals.contains_key(&terminal);
@@ -328,7 +359,7 @@ fn handle_backend(app: &mut App, space: &SpaceId, event: backend::Event) -> Back
             }
         }
         backend::Event::Upgrading => {
-            app.upgrading = true;
+            app.upgrading.get_or_insert(app.next_connection);
             BackendHandled {
                 flow: Flow::Continue,
                 changed: false,
@@ -336,12 +367,13 @@ fn handle_backend(app: &mut App, space: &SpaceId, event: backend::Event) -> Back
             }
         }
         // The server upgrades: once every space has lost its connection
-        // (one more than 1 s behind is let go before it reads that it
-        // upgrades), attach them all again to the new binary.
-        backend::Event::Lost if app.upgrading => {
-            app.upgrade_lost.insert(space.clone());
-            let all = app.spaces.iter().all(|s| app.upgrade_lost.contains(&s.id));
-            if !all {
+        // made before (one more than 1 s behind is let go before it reads
+        // that it upgrades), attach them all again to the new binary.
+        backend::Event::Lost if app.upgrading.is_some() => {
+            app.upgrade_lost.insert(connection);
+            let made = app.spaces.iter().map(|s| s.connection_id);
+            let cutoff = app.upgrading.unwrap_or_default();
+            if !upgrade_done(made, &app.upgrade_lost, cutoff) {
                 return BackendHandled {
                     flow: Flow::Continue,
                     changed: false,
@@ -530,4 +562,22 @@ fn draw_dashboard(app: &App, area: Rect, buf: &mut Buffer) -> Option<Position> {
         selection: app.current_space_bg,
     };
     dashboard::render(&view, area, buf)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_upgrade_waits_for_every_connection_made_before_it_and_no_later_one() {
+        let lost = |c: &[u64]| c.iter().copied().collect::<HashSet<u64>>();
+        // Spaces on connections 1 and 2 when the server said it upgrades.
+        assert!(!upgrade_done([1, 2], &lost(&[1]), 2), "2 still open");
+        assert!(upgrade_done([1, 2], &lost(&[1, 2]), 2));
+        // A space made meanwhile, to the new server, never ends with it.
+        assert!(upgrade_done([1, 2, 3], &lost(&[1, 2]), 2));
+        assert!(!upgrade_done([1, 2, 3], &lost(&[2]), 2));
+        // A space closed meanwhile is no longer waited for.
+        assert!(upgrade_done([2], &lost(&[2]), 2));
+    }
 }

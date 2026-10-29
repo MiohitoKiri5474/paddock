@@ -68,13 +68,16 @@ impl App {
     /// tab and focus). An error if the new server cannot be talked to (it
     /// speaks another protocol version, or failed).
     pub(super) fn reattach(&mut self) -> Result<()> {
-        self.upgrading = false;
-        self.upgrade_lost.clear();
-        // What the old connections still report is left out: their
-        // spaces are attached again below.
+        self.upgrading = None;
+        // What the old connections still report is left out, until their
+        // end: their spaces are attached again below. One that ended in
+        // the upgrade reports nothing more.
+        let lost = std::mem::take(&mut self.upgrade_lost);
         for space in &self.spaces {
             space.close();
-            self.replaced.insert(space.connection_id);
+            if !lost.contains(&space.connection_id) {
+                self.replaced.insert(space.connection_id);
+            }
         }
         // The old binary, until its `exec`, still takes connections, and
         // closes them unanswered: ask until the new one answers.

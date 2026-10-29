@@ -297,15 +297,17 @@ pub struct App {
     /// [`Backend::keeps_current`]).
     pub(super) told_current: Option<SpaceId>,
     /// The server said it is upgrading (ADR 0009), on some space's
-    /// connection: a connection that ends now is part of the upgrade.
-    pub(super) upgrading: bool,
-    /// The spaces whose connection ended in the upgrade: once every space
-    /// has, they are attached again ([`App::reattach`]).
-    pub(super) upgrade_lost: HashSet<SpaceId>,
+    /// connection, when the last connection made was this one: a
+    /// connection that ends now is part of the upgrade. One made after it
+    /// is to the new server.
+    pub(super) upgrading: Option<u64>,
+    /// The connections that ended in the upgrade: once every one made
+    /// before it has, the spaces are attached again ([`App::reattach`]).
+    pub(super) upgrade_lost: HashSet<u64>,
     /// The number the next connection gets (see [`Event::Backend`]).
     pub(super) next_connection: u64,
-    /// The connections replaced by attaching again: what they still
-    /// report is left out.
+    /// The connections replaced by attaching again, until they end: what
+    /// they still report is left out.
     pub(super) replaced: HashSet<u64>,
 }
 
@@ -411,7 +413,7 @@ impl App {
             external: config.external,
             new_tab_dir: config.new_tab_dir,
             told_current: None,
-            upgrading: false,
+            upgrading: None,
             upgrade_lost: HashSet::new(),
             next_connection: 0,
             replaced: HashSet::new(),
