@@ -6,7 +6,7 @@ Design: [docs/design.md](docs/design.md). Glossary: [CONTEXT.md](CONTEXT.md). De
 
 ## Requirements
 
-- macOS, or Linux on the native backend (the release binary is for Apple Silicon only; build from source on Linux)
+- macOS, or Linux on the native backend (the release tarballs are for Apple Silicon Macs and for x86_64 or aarch64 Linux; build from source elsewhere)
 - On Linux, for notifications and copying: `notify-send` (libnotify, e.g. `apt install libnotify-bin`), and `wl-copy` (`wl-clipboard`) on Wayland or `xclip` on X11 (on Wayland, when `wl-copy` is missing or fails, paddock tries `xclip`, which works under XWayland). macOS has its own (`osascript`, `pbcopy`). Without one, paddock says so once in the tab bar and goes on; `PADDOCK_COPY_COMMAND` names another copy program (it reads the text on stdin)
 - tmux (tested with 3.8), only for the legacy tmux backend (`[backend] kind = "tmux"`, kept until v0.2): `brew install tmux` (Homebrew installs it with paddock)
 - Claude Code, Gemini CLI and/or Antigravity CLI (for session tracking; Gemini CLI tested with 0.64, Antigravity CLI with 1.4.3)
@@ -34,6 +34,16 @@ xattr -d com.apple.quarantine paddock   # unsigned binary: lets Gatekeeper run i
 sudo mkdir -p /usr/local/bin             # missing on a fresh Apple Silicon Mac
 sudo mv paddock /usr/local/bin/         # or anywhere on your PATH
 ```
+
+**Release tarball** (Linux, x86_64 or aarch64; glibc 2.34 or newer: Ubuntu 22.04, Debian 12, Fedora 35, RHEL 9 or later). Download `paddock-v0.1.0-rc.1-x86_64-unknown-linux-gnu.tar.gz` (or `paddock-v0.1.0-rc.1-aarch64-unknown-linux-gnu.tar.gz` on aarch64; `uname -m` says which) and its `.sha256` from [Releases](https://github.com/MiohitoKiri5474/paddock/releases), then:
+
+```sh
+sha256sum -c paddock-v0.1.0-rc.1-x86_64-unknown-linux-gnu.tar.gz.sha256
+tar xzf paddock-v0.1.0-rc.1-x86_64-unknown-linux-gnu.tar.gz
+mkdir -p ~/.local/bin && mv paddock ~/.local/bin/   # or anywhere on your PATH
+```
+
+zsh is not needed, nor tmux unless you use the legacy tmux backend. For notifications and copying, install `notify-send` and `wl-copy` or `xclip` (optional; see [Requirements](#requirements)).
 
 **Cargo**, from a tag:
 
