@@ -15,8 +15,8 @@ use super::{held, saved, socket_path, LOCK};
 use crate::backend::border::{Anchor, Border};
 use crate::backend::env::clean_env;
 use crate::backend::{
-    Event, FloatId, ListedSpace, Replay, SpaceId, SpaceTerminal, Structure, TabId, TerminalDetails,
-    TerminalId,
+    Event, FloatId, ListedSpace, Replay, Restored, SpaceId, SpaceTerminal, Structure, TabId,
+    TerminalDetails, TerminalId,
 };
 use crate::input::Direction;
 use crate::paths::Paths;
@@ -192,9 +192,9 @@ impl Client {
         Ok(())
     }
 
-    /// How many spaces the server rebuilt from `layout.json` when it
-    /// started; `None` if none, or paddock was told already.
-    pub fn take_restored(&self) -> Result<Option<usize>> {
+    /// What the server rebuilt from `layout.json` when it started; `None`
+    /// if nothing, or paddock was told already.
+    pub fn take_restored(&self) -> Result<Option<Restored>> {
         let restored = self.query(Request::TakeRestored, pick!(Answer::Restored))?;
         Ok(restored.flatten())
     }

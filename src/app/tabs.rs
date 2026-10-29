@@ -4,11 +4,11 @@
 
 use super::rows::{EXTERNAL_CLOSE, EXTERNAL_FORK, EXTERNAL_OPEN};
 use super::space::clamp;
-use super::state::{is_session_id, next_name, App, CloseTarget, Mode, NameTarget, Renamed};
+use super::state::{next_name, App, CloseTarget, Mode, NameTarget, Renamed};
 use super::watch;
 use crate::backend::{SpaceId, TerminalId};
 use crate::paths::HomePaths;
-use crate::sessions::{AgentKind, State};
+use crate::sessions::{is_session_id, AgentKind, State};
 use crate::shell::quote;
 use crate::terminal::Terminal;
 use anyhow::{bail, Result};

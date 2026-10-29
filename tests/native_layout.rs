@@ -284,18 +284,21 @@ fn agents_shown(paddock: &Paddock) -> usize {
 }
 
 /// A server killed outright saves nothing as it ends: the next one
-/// rebuilds what it last wrote, and the agent that ran is not listed.
+/// rebuilds what it last wrote, with the agent that ran resumed in its
+/// terminal (ticket 48), and the old server's events are not listed.
 #[test]
-fn a_killed_server_restores_from_its_last_save_and_its_agents_end() {
+fn a_killed_server_restores_from_its_last_save_and_resumes_its_agent() {
     let sandbox = native();
     let dir = sandbox.path("home/proj");
     std::fs::create_dir_all(&dir).unwrap();
     let mut paddock = ready(&sandbox);
     split_in(&mut paddock, &sandbox, &dir);
     let payload = std::fs::read_to_string(PROMPT_SUBMIT).unwrap();
+    let session = "11111111-2222-4333-8444-555555555555";
     sandbox.hook("space-1:0.1", "UserPromptSubmit", &payload);
     paddock.wait_for("the agent", |_| agents_shown(&paddock) == 1);
     wait_for_saved(&sandbox, 1, "/proj\"");
+    wait_for_saved(&sandbox, 1, session);
     let before = shape(&sandbox, "", "");
     let pid = server_pid(&sandbox.state_dir()).expect("a server");
 
@@ -310,11 +313,12 @@ fn a_killed_server_restores_from_its_last_save_and_its_agents_end() {
     drop(paddock);
     let again = sandbox.launch();
 
-    again.wait_for_text("restored 1 space");
+    again.wait_for_text("restored 1 space, resumed 1 session");
     assert_eq!(shape(&sandbox, "", ""), before);
+    let resumed = format!("{} --resume {session}", real(&dir));
+    assert_eq!(sandbox.claude_calls(), [resumed]);
     // A new session's event shows once the new server's log is read:
     // the old one's would have shown by then, but is not in it.
-    let session = "11111111-2222-4333-8444-555555555555";
     let new = payload.replace(session, "22222222-2222-4333-8444-555555555555");
     sandbox.hook("space-1:0.0", "UserPromptSubmit", &new);
     again.wait_for("the new agent", |_| agents_shown(&again) > 0);

@@ -12,8 +12,10 @@
 use super::axis::Axis;
 use super::protocol::{self, Answer, Ending, Frame, Message, Notice, Refusal, Request};
 use super::pty::Program::{self, LoginShell};
+use super::restore::Resume;
 use super::saved::{self, Saver};
 use super::scrollback::{self, ScrollbackName};
+use super::seen::Seen;
 use super::space::{HostedFloat, Space};
 use super::state::{State, Subscriber};
 use super::tab::Tab;
@@ -21,6 +23,7 @@ use super::terminal::{dir_name, HostedTerminal, Input, Sent, INPUT_MAX};
 use super::{lock, pty, restore, socket_path, LOG};
 use crate::backend::env::{clean_env, AGY_STATUS_VAR};
 use crate::backend::{FloatId, SpaceId, TabId, TerminalId};
+use crate::hooks::now_ms;
 use crate::paths::Paths;
 use anyhow::{bail, Context, Result};
 use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
@@ -49,6 +52,12 @@ const TAB_NAME_POLL: Duration = Duration::from_millis(300);
 /// How often the layout is offered to `layout.json` (written only when
 /// it changed, at most once every [`saved::GAP`]).
 const SAVE_POLL: Duration = Duration::from_millis(100);
+/// How often a restored terminal is looked at for its shell's first
+/// output, before its resume command is typed.
+const RESUME_POLL: Duration = Duration::from_millis(20);
+/// How long a restored shell may stay silent before its resume command
+/// is typed anyway.
+const RESUME_WAIT: Duration = Duration::from_secs(3);
 
 struct Shared {
     state: Mutex<State>,
@@ -59,11 +68,19 @@ struct Shared {
     connections: AtomicU64,
     /// Writes `layout.json`; locked after `state`, if both are.
     saver: Mutex<Saver>,
+    /// The agent session last seen in each terminal, from the server's
+    /// hook log, for `layout.json`; locked after `state`, if both are,
+    /// and before `saver`.
+    seen: Mutex<Seen>,
 }
 
 impl Shared {
     fn lock(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn seen(&self) -> MutexGuard<'_, Seen> {
+        self.seen.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 
@@ -83,22 +100,35 @@ pub fn serve() -> Result<()> {
     let mut env = clean_env(std::env::vars());
     env.push(("COLORTERM".into(), "truecolor".into()));
     env.push((AGY_STATUS_VAR.into(), "on".into()));
+    let instance = new_instance();
     let shared = Arc::new(Shared {
-        state: Mutex::new(State::new(socket, new_instance())),
+        state: Mutex::new(State::new(socket, instance)),
         shell: var("SHELL").unwrap_or_else(|| "/bin/sh".into()),
         home: var("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from),
         env,
         connections: AtomicU64::new(0),
         saver: Mutex::new(Saver::new(paths.state_dir.clone())),
+        seen: Mutex::new(Seen::new(&paths.state_dir, instance)),
     });
     // Before any signal is handled: one that ends the server mid-way
     // would save half the layout.
+    let mut resumed = Vec::new();
     {
         let mut state = shared.lock();
         let mut start = |state: &State, space: &SpaceId, id, cwd: &Path, size: (u16, u16)| {
             start_terminal(&shared, state, space, id, LoginShell, cwd, size)
         };
-        restore::from_file(&paths.state_dir, &mut state, &mut start);
+        restore::from_file(&paths.state_dir, &mut state, &mut start, &mut resumed);
+        // Saved as running until the resumed agents' hooks say otherwise,
+        // so a restart before they report keeps them.
+        let mut seen = shared.seen();
+        for r in &resumed {
+            seen.seed(r.terminal.clone(), r.agent.clone());
+        }
+    }
+    if !resumed.is_empty() {
+        let typing = Arc::clone(&shared);
+        std::thread::spawn(move || type_resumes(&typing, resumed));
     }
     watch_signals(&shared)?;
     let names = Arc::clone(&shared);
@@ -225,9 +255,16 @@ fn close(shared: &Shared, state: &mut State) {
 /// now, if it changed, and no more. The saver is held throughout, so no
 /// layout written meanwhile removes scrollback just saved. Unlike the
 /// layout offered while the server runs, both are written with the state
-/// locked: the server is ending (see [`scrollback`]).
+/// locked: the server is ending (see [`scrollback`]). The layout has the
+/// sessions seen up to now, before the shells are hung up; an agent
+/// ended from outside just before (a reboot signals it too) is saved as
+/// not over ([`Seen::close`]).
 fn flush_layout(shared: &Shared, state: &mut State) {
-    let layout = saved::snapshot(state).read_dirs();
+    let mut seen = shared.seen();
+    seen.close(now_ms());
+    seen.read_new();
+    let layout = saved::snapshot(state).read_dirs(&mut seen);
+    drop(seen);
     let mut saver = shared.saver.lock().unwrap_or_else(|e| e.into_inner());
     scrollback::save_all(saver.dir(), state);
     if let Err(e) = saver.flush(layout) {
@@ -237,12 +274,14 @@ fn flush_layout(shared: &Shared, state: &mut State) {
 
 /// Offer the layout to `layout.json` every [`SAVE_POLL`], until the
 /// server is ending. A terminal's directory is read here too, as no
-/// notice says it changed: with the state let go, as is the file. (A
+/// notice says it changed, and the hook log for the sessions seen: with
+/// the state let go, as is the file. (A
 /// layout taken before the server began to end is never written after
 /// its last: the saver is flushed then, and takes no more.)
 fn save_layout(shared: &Shared) {
     loop {
         std::thread::sleep(SAVE_POLL);
+        shared.seen().read_new();
         let snapshot = {
             let state = shared.lock();
             if state.closing {
@@ -250,12 +289,42 @@ fn save_layout(shared: &Shared) {
             }
             saved::snapshot(&state)
         };
-        let layout = snapshot.read_dirs();
+        let layout = snapshot.read_dirs(&mut shared.seen());
         let mut saver = shared.saver.lock().unwrap_or_else(|e| e.into_inner());
         if let Err(e) = saver.offer(layout, Instant::now()) {
             eprintln!("paddock server: {e:#}");
         }
     }
+}
+
+/// Type each resume command into its restored terminal once the shell
+/// there has written something (its rc files have run, so it reads the
+/// line, not something they ask), or after [`RESUME_WAIT`] if it stays
+/// silent; drop one whose terminal has closed.
+fn type_resumes(shared: &Shared, mut pending: Vec<Resume>) {
+    let started = Instant::now();
+    while !pending.is_empty() {
+        std::thread::sleep(RESUME_POLL);
+        let waited = started.elapsed();
+        let state = shared.lock();
+        pending.retain(|r| {
+            let mut terminals = state.terminals().map(|(_, t)| t);
+            let Some(t) = terminals.find(|t| t.id == r.terminal) else {
+                return false;
+            };
+            if !ready_to_type(t.spoke, waited) {
+                return true;
+            }
+            t.input.send(format!("{}\r", r.command).into_bytes());
+            false
+        });
+    }
+}
+
+/// Whether a resume command is typed now into a restored shell that has
+/// (`spoke`) or has not written anything, `waited` after it started.
+fn ready_to_type(spoke: bool, waited: Duration) -> bool {
+    spoke || waited >= RESUME_WAIT
 }
 
 fn serve_connection(shared: &Arc<Shared>, conn: u64, mut stream: UnixStream) -> Result<()> {
@@ -804,4 +873,17 @@ fn close_terminal(shared: &Shared, terminal: &TerminalId) -> Result<Answer> {
 /// Where the server writes what goes wrong, under `state_dir`.
 pub fn log_path(state_dir: &Path) -> PathBuf {
     state_dir.join(LOG)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_resume_is_typed_once_the_shell_spoke_or_after_the_wait() {
+        assert!(!ready_to_type(false, Duration::ZERO));
+        assert!(!ready_to_type(false, RESUME_WAIT - RESUME_POLL));
+        assert!(ready_to_type(true, Duration::ZERO));
+        assert!(ready_to_type(false, RESUME_WAIT));
+    }
 }
