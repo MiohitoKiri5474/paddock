@@ -14,3 +14,7 @@ When a server starts and finds that file, it rebuilds the layout without asking.
 - `layout.json` replaces the layout tmux held and the current space kept in `layout.toml`; only the sidebar width stays there.
 - Programs other than shells are not restarted, so an editor or a server left running in a terminal has to be started again.
 - Servers from before this file wrote none, so the first upgrade to a paddock that reads it restores nothing.
+
+## Scrollback (ticket 47)
+
+The scrollback half of the option above is no longer planned: it is done. As the server ends, it saves each terminal's scrollback beside this file, one file per terminal in `scrollback/`, named by a scrollback name that `layout.json` keeps with the terminal. Each file holds the terminal's text with its colours, at most its newest 1 MiB. A restored terminal shows it above its fresh shell, under a dim line saying when it was saved. A server killed outright saves none, so its terminals show what the last clean end saved. Files no terminal of the layout names are removed whenever the layout is written.

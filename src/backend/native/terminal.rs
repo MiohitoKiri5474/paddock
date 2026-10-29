@@ -5,6 +5,7 @@
 
 use super::pty::{self, Pty};
 use super::queue::Queue;
+use super::scrollback::ScrollbackName;
 use crate::backend::TerminalId;
 use crate::terminal::emulator::Emulator;
 use crate::terminal::key_modes::KeyModeScanner;
@@ -125,15 +126,26 @@ pub struct HostedTerminal {
     /// Its program has exited and been reaped: its pid may be another
     /// process's now, so it is never signalled again.
     pub exited: bool,
+    /// The name its scrollback is saved under: its own, or the one it
+    /// was restored from.
+    pub saved_as: ScrollbackName,
     emulator: Emulator,
     keys: KeyModeScanner,
     scanner: Scanner,
 }
 
 impl HostedTerminal {
-    pub fn new(id: TerminalId, pty: &Pty, input: Input, size: (u16, u16)) -> Result<Self> {
+    /// Terminal `id` on `pty`, its scrollback saved as `saved_as`.
+    pub fn new(
+        id: TerminalId,
+        saved_as: ScrollbackName,
+        pty: &Pty,
+        input: Input,
+        size: (u16, u16),
+    ) -> Result<Self> {
         Ok(Self {
             id,
+            saved_as,
             pid: pty.child.id(),
             tty: pty.tty.clone(),
             master: pty.master.try_clone()?,
@@ -198,6 +210,19 @@ impl HostedTerminal {
             bytes.extend_from_slice(format!("\x1b[>4;{level}m").as_bytes());
         }
         bytes
+    }
+
+    /// Draw `bytes` (a restored terminal's saved scrollback, made safe)
+    /// before anything its program writes; the program is told nothing.
+    pub fn seed(&mut self, bytes: &[u8]) {
+        self.emulator.feed(bytes);
+        let _ = self.emulator.take_replies();
+    }
+
+    /// Its normal screen's text, scrollback first, as it is saved (see
+    /// [`Emulator::history_text`]).
+    pub fn history_text(&mut self) -> Vec<u8> {
+        self.emulator.history_text()
     }
 
     /// Lines of scrollback above the screen.

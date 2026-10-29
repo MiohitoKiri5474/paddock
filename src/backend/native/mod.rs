@@ -12,6 +12,8 @@
 //!   tab's focus and zoom, and its tree of splits.
 //! - [`saved`] and [`restore`]: `layout.json`, written as the layout
 //!   changes, and the layout rebuilt from it.
+//! - [`scrollback`]: each terminal's scrollback, saved as the server
+//!   ends and drawn again above its restored shell.
 //! - [`terminal`] and [`pty`]: one terminal, its shell and its emulator.
 //! - [`hook`]: the variables that tell a process which terminal it runs in.
 //! - [`queue`]: the queues to the threads that write to a client or a
@@ -27,6 +29,7 @@ mod pty;
 mod queue;
 mod restore;
 mod saved;
+mod scrollback;
 mod server;
 mod space;
 mod state;
