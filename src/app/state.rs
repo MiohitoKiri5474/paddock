@@ -27,7 +27,7 @@ use crate::hooks::now_ms;
 use crate::input::keymap::Keymap;
 use crate::input::line::LineEdit;
 use crate::input::PrefixKeys;
-use crate::sessions::{dismissed, Session, Sessions, State};
+use crate::sessions::{dismissed, AgentKind, Session, Sessions, State};
 use crate::terminal::Terminal;
 use crate::ui::tab_bar::TabColors;
 use crate::worktree::{space_root, Risks, WorktreeSpace};
@@ -322,15 +322,31 @@ fn set_aside(dir: &std::path::Path, name: &str, e: &anyhow::Error) -> String {
 }
 
 /// The one-line notice of what the backend rebuilt: "restored 2 spaces",
-/// with ", resumed 1 session" after it if it resumed any.
-fn restored_notice(restored: Restored) -> String {
+/// with ", resumed 1 session" after it if it resumed any, and ", could
+/// not resume 1 gemini session" for the sessions it left as plain shells
+/// whose ids it could not type, by kind.
+fn restored_notice(restored: &Restored) -> String {
     let plural = |n: usize| if n == 1 { "" } else { "s" };
     let spaces = restored.spaces;
-    let notice = format!("restored {spaces} space{}", plural(spaces));
-    match restored.sessions {
-        0 => notice,
-        n => format!("{notice}, resumed {n} session{}", plural(n)),
+    let mut notice = format!("restored {spaces} space{}", plural(spaces));
+    if let n @ 1.. = restored.sessions {
+        notice.push_str(&format!(", resumed {n} session{}", plural(n)));
     }
+    let cannot: Vec<String> = AgentKind::ALL
+        .into_iter()
+        .map(|k| {
+            (
+                k,
+                restored.cannot_resume.iter().filter(|c| **c == k).count(),
+            )
+        })
+        .filter(|(_, n)| *n > 0)
+        .map(|(k, n)| format!("{n} {} session{}", k.tag(), plural(n)))
+        .collect();
+    if !cannot.is_empty() {
+        notice.push_str(&format!(", could not resume {}", cannot.join(" and ")));
+    }
+    notice
 }
 
 /// The first `<stem>N` not already taken.
@@ -464,7 +480,7 @@ impl App {
         let Some(restored) = self.backend.restored() else {
             return;
         };
-        let restored = restored_notice(restored);
+        let restored = restored_notice(&restored);
         self.notice = Some(match self.notice.take() {
             Some(other) => format!("{restored}; {other}"),
             None => restored,
@@ -729,10 +745,36 @@ mod tests {
 
     #[test]
     fn the_restored_notice_names_resumed_sessions_only_if_any() {
-        let notice = |spaces, sessions| restored_notice(Restored { spaces, sessions });
+        let notice = |spaces, sessions| {
+            restored_notice(&Restored {
+                spaces,
+                sessions,
+                cannot_resume: Vec::new(),
+            })
+        };
         assert_eq!(notice(1, 0), "restored 1 space");
         assert_eq!(notice(2, 1), "restored 2 spaces, resumed 1 session");
         assert_eq!(notice(1, 3), "restored 1 space, resumed 3 sessions");
+    }
+
+    #[test]
+    fn the_restored_notice_names_each_kind_whose_sessions_it_could_not_resume() {
+        use crate::sessions::AgentKind::{Agy, Gemini};
+        let notice = |sessions, cannot_resume| {
+            restored_notice(&Restored {
+                spaces: 1,
+                sessions,
+                cannot_resume,
+            })
+        };
+        assert_eq!(
+            notice(1, vec![Gemini]),
+            "restored 1 space, resumed 1 session, could not resume 1 gemini session"
+        );
+        assert_eq!(
+            notice(0, vec![Agy, Gemini, Agy]),
+            "restored 1 space, could not resume 1 gemini session and 2 agy sessions"
+        );
     }
 
     #[test]

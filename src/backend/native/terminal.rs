@@ -248,7 +248,7 @@ impl HostedTerminal {
     /// the server's lock): the pids it reads it from, taken now.
     pub fn dir_reader(&self) -> DirReader {
         DirReader {
-            foreground: self.foreground(),
+            foreground: pty::foreground(&self.master),
             shell: i32::try_from(self.pid).ok(),
         }
     }
@@ -286,17 +286,27 @@ fn is_shell(command: &str) -> bool {
     matches!(kind, "" | "ba" | "z" | "fi" | "da" | "k" | "tc" | "c")
 }
 
-/// A terminal's directory to read (see [`HostedTerminal::dir_reader`]).
+/// A terminal's directory to read (see [`HostedTerminal::dir_reader`]),
+/// and whether it is back at its shell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DirReader {
-    foreground: i32,
+    /// The foreground process group, if it could be read.
+    foreground: Option<i32>,
     shell: Option<i32>,
 }
 
 impl DirReader {
     /// The foreground program's directory, else the shell's.
     pub fn read(self) -> Option<String> {
-        pty::cwd(self.foreground).or_else(|| pty::cwd(self.shell?))
+        let foreground = self.foreground.and_then(pty::cwd);
+        foreground.or_else(|| pty::cwd(self.shell?))
+    }
+
+    /// Whether the foreground program is a shell (as the sessions tell
+    /// one, [`crate::sessions::is_shell`]); not when it cannot be read.
+    pub fn at_shell(self) -> bool {
+        let name = self.foreground.and_then(pty::name);
+        name.is_some_and(|n| crate::sessions::is_shell(&n))
     }
 }
 

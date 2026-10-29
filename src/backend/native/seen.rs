@@ -3,11 +3,14 @@
 //! that restores the layout can resume it (ticket 48). The server reads
 //! the log itself: the app may be closed while agents run.
 //!
-//! A session is saved as over once its agent reported its end. One
-//! exception covers a reboot, when every process is signalled at once:
-//! an agent ended from outside (`SessionEnd` with reason
-//! [`OUTSIDE`]) within [`CLOSE_WINDOW`] before the server began to
-//! close, or after, is saved as not over, so the next server resumes it.
+//! A session is saved as over once its agent reported its end. Antigravity
+//! reports none: its session is over once its terminal is seen back at
+//! its shell ([`Seen::at_shell`], ticket 49). One exception covers a
+//! reboot, when every process is signalled at once: an agent ended from
+//! outside (a `SessionEnd` with its kind's [`outside`] reason, or agy's
+//! terminal back at the shell) within [`CLOSE_WINDOW`] before the server
+//! began to close, or after, is saved as not over, so the next server
+//! resumes it.
 
 use super::saved::SavedAgent;
 use crate::backend::{Instance, TerminalId};
@@ -16,9 +19,17 @@ use crate::sessions::{ends_conversation, log, AgentKind, HookRecord};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-/// The `SessionEnd` reason of an agent not ended by its user: Claude's
-/// catch-all, which a signal (a hang-up, a reboot) gives.
-const OUTSIDE: &str = "other";
+/// The `SessionEnd` reason a signal (a hang-up, a reboot) gives an agent
+/// of `kind`: Claude's catch-all `other`; Gemini's `exit`, which its user
+/// quitting gives too, so a Gemini quit just before the server closes is
+/// resumed. Antigravity sends no `SessionEnd`.
+fn outside(kind: AgentKind) -> Option<&'static str> {
+    match kind {
+        AgentKind::Claude => Some("other"),
+        AgentKind::Gemini => Some("exit"),
+        AgentKind::Agy => None,
+    }
+}
 /// How long before the server's close an end from outside may come and
 /// still be taken for the same shutdown (ms): a reboot signals the
 /// agents and the server at about the same time.
@@ -38,6 +49,9 @@ struct Entry {
     kind: AgentKind,
     session: String,
     end: Option<End>,
+    /// A record of the session came in: its agent ran in this terminal,
+    /// not only a restore seeded it there.
+    heard: bool,
 }
 
 /// An agent's report of its end.
@@ -45,7 +59,7 @@ struct Entry {
 struct End {
     /// When it was logged (ms since the Unix epoch).
     ts: u64,
-    /// Ended from outside (reason [`OUTSIDE`]), not by its user.
+    /// Ended from outside (see [`outside`]), not by its user.
     outside: bool,
 }
 
@@ -71,8 +85,28 @@ impl Seen {
             kind: agent.kind,
             session: agent.session,
             end,
+            heard: false,
         };
         self.terminals.insert(terminal, entry);
+    }
+
+    /// Terminals `terminals` were seen back at their shell at `at` (ms
+    /// since the Unix epoch): an Antigravity session in one, which sends
+    /// no end of its own, is over, if its agent has reported in there (a
+    /// seeded one waits for its resume to start). Taken as ended from
+    /// outside, as a reboot may stop agy before the server.
+    pub fn at_shell(&mut self, terminals: &[TerminalId], at: u64) {
+        for id in terminals {
+            let Some(seen) = self.terminals.get_mut(id) else {
+                continue;
+            };
+            if seen.kind == AgentKind::Agy && seen.heard && seen.end.is_none() {
+                seen.end = Some(End {
+                    ts: at,
+                    outside: true,
+                });
+            }
+        }
     }
 
     /// The server began to close at `at` (ms since the Unix epoch): an
@@ -119,11 +153,12 @@ impl Seen {
         let start = r.event == "SessionStart";
         let end = ends_conversation(r).then_some(End {
             ts: r.ts,
-            outside: r.reason.as_deref() == Some(OUTSIDE),
+            outside: outside(r.kind).is_some_and(|o| r.reason.as_deref() == Some(o)),
         });
         let terminal = TerminalId::new(r.pane.clone());
         match self.terminals.get_mut(&terminal) {
             Some(seen) if seen.kind == r.kind && seen.session == session => {
+                seen.heard = true;
                 if end.is_some() {
                     seen.end = end;
                 } else if start {
@@ -136,6 +171,7 @@ impl Seen {
                     kind: r.kind,
                     session: session.to_string(),
                     end,
+                    heard: true,
                 };
                 self.terminals.insert(terminal, entry);
             }
@@ -286,10 +322,10 @@ mod tests {
     fn an_end_from_outside_close_to_the_close_is_not_over() {
         let close = 100_000;
         let mut seen = seen(&[
-            end("%1", "a", OUTSIDE, close - CLOSE_WINDOW / 2),
-            end("%2", "b", OUTSIDE, close - CLOSE_WINDOW * 2),
+            end("%1", "a", "other", close - CLOSE_WINDOW / 2),
+            end("%2", "b", "other", close - CLOSE_WINDOW * 2),
             end("%3", "c", "prompt_input_exit", close - 10),
-            end("%4", "d", OUTSIDE, close + 10),
+            end("%4", "d", "other", close + 10),
         ]);
         assert_eq!(at(&mut seen, "%1"), agent("a", true), "before the close");
         seen.close(close);
@@ -297,6 +333,88 @@ mod tests {
         assert_eq!(at(&mut seen, "%2"), agent("b", true), "long before");
         assert_eq!(at(&mut seen, "%3"), agent("c", true), "the user quit");
         assert_eq!(at(&mut seen, "%4"), agent("d", false), "after it");
+    }
+
+    fn kind_agent(kind: AgentKind, session: &str, over: bool) -> Option<SavedAgent> {
+        Some(SavedAgent {
+            kind,
+            session: session.into(),
+            over,
+        })
+    }
+
+    fn of(kind: AgentKind, r: HookRecord) -> HookRecord {
+        HookRecord { kind, ..r }
+    }
+
+    /// Gemini says `exit` for a signal as for its user quitting: one close
+    /// to the close is not over; `/clear` always is.
+    #[test]
+    fn a_gemini_exit_close_to_the_close_is_not_over() {
+        let gemini = AgentKind::Gemini;
+        let close = 100_000;
+        let mut seen = seen(&[
+            of(gemini, end("%1", "a", "exit", close - 10)),
+            of(gemini, end("%2", "b", "exit", close - CLOSE_WINDOW * 2)),
+            of(gemini, end("%3", "c", "clear", close - 10)),
+            end("%4", "d", "exit", close - 10),
+        ]);
+        seen.close(close);
+        assert_eq!(at(&mut seen, "%1"), kind_agent(gemini, "a", false));
+        assert_eq!(at(&mut seen, "%2"), kind_agent(gemini, "b", true));
+        assert_eq!(at(&mut seen, "%3"), kind_agent(gemini, "c", true));
+        assert_eq!(at(&mut seen, "%4"), agent("d", true), "Claude's own");
+    }
+
+    /// agy reports no end: its session is over once its terminal is back
+    /// at the shell, but only one it reported in, not one a restore
+    /// seeded before the resumed agy runs.
+    #[test]
+    fn an_agy_session_is_over_once_its_terminal_is_back_at_the_shell() {
+        let agy = AgentKind::Agy;
+        let dir = tempfile::tempdir().unwrap();
+        let log = log_path(dir.path(), INSTANCE);
+        let mut seen = Seen::new(dir.path(), INSTANCE);
+        let add = |seen: &mut Seen, r: HookRecord| {
+            log::append(&log, &r).unwrap();
+            seen.read_new();
+        };
+        add(&mut seen, of(agy, record("SessionStart", "%1", "a")));
+        add(&mut seen, record("SessionStart", "%2", "b"));
+        let shells = ["%1", "%2", "%3"].map(TerminalId::new);
+        assert_eq!(at(&mut seen, "%1"), kind_agent(agy, "a", false));
+        seen.seed(TerminalId::new("%3"), kind_agent(agy, "c", false).unwrap());
+        seen.at_shell(&shells, 1);
+        assert_eq!(at(&mut seen, "%1"), kind_agent(agy, "a", true));
+        assert_eq!(at(&mut seen, "%2"), agent("b", false), "Claude ends itself");
+        assert_eq!(at(&mut seen, "%3"), kind_agent(agy, "c", false), "seeded");
+        // The resumed agy reports in: back at the shell, it is over.
+        add(&mut seen, of(agy, record("SessionStart", "%3", "c")));
+        assert_eq!(at(&mut seen, "%3"), kind_agent(agy, "c", false));
+        seen.at_shell(&shells, 2);
+        assert_eq!(at(&mut seen, "%3"), kind_agent(agy, "c", true));
+        // Its own start again (a resume in the same terminal) takes it back.
+        add(&mut seen, of(agy, record("SessionStart", "%3", "c")));
+        assert_eq!(at(&mut seen, "%3"), kind_agent(agy, "c", false));
+    }
+
+    /// A reboot signals agy as it does the server: back at the shell just
+    /// before the close is not over; long before, it is.
+    #[test]
+    fn agy_back_at_the_shell_close_to_the_close_is_not_over() {
+        let agy = AgentKind::Agy;
+        let close = 100_000;
+        let mut seen = seen(&[
+            of(agy, record("SessionStart", "%1", "a")),
+            of(agy, record("SessionStart", "%2", "b")),
+        ]);
+        seen.at_shell(&[TerminalId::new("%1")], close - CLOSE_WINDOW * 2);
+        seen.at_shell(&[TerminalId::new("%2")], close - 10);
+        // Seen at the shell again later keeps when it was first.
+        seen.at_shell(&[TerminalId::new("%1")], close - 10);
+        seen.close(close);
+        assert_eq!(at(&mut seen, "%1"), kind_agent(agy, "a", true));
+        assert_eq!(at(&mut seen, "%2"), kind_agent(agy, "b", false));
     }
 
     #[test]

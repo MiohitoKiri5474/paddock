@@ -60,17 +60,23 @@ impl AgentKind {
     }
 
     /// The shell command that continues session `id` of this kind where
-    /// it was left, typed into a terminal paddock restored; `None` for a
-    /// kind paddock does not resume, or an id not safe to type into a
-    /// shell (see [`is_session_id`]).
+    /// it was left, typed into a terminal paddock restored in the
+    /// session's directory; `None` for an id not safe to type into a
+    /// shell (see [`is_session_id`]). Every kind's hooks name a session
+    /// by a UUID: Claude's `session_id`; Gemini CLI's, a `randomUUID()`
+    /// that `gemini --resume <id>` takes (its sessions are kept per
+    /// project directory); Antigravity's `conversationId`, which `agy
+    /// --conversation <id>` takes.
     pub fn resume_command(self, id: &str) -> Option<String> {
         if !is_session_id(id) {
             return None;
         }
-        match self {
-            AgentKind::Claude => Some(format!("claude --resume {}", quote(id))),
-            AgentKind::Gemini | AgentKind::Agy => None,
-        }
+        let command = match self {
+            AgentKind::Claude => "claude --resume",
+            AgentKind::Gemini => "gemini --resume",
+            AgentKind::Agy => "agy --conversation",
+        };
+        Some(format!("{command} {}", quote(id)))
     }
 }
 
@@ -130,16 +136,32 @@ mod tests {
     }
 
     #[test]
-    fn only_claude_resumes_and_only_a_uuid_shaped_id() {
+    fn each_kind_resumes_only_a_uuid_shaped_id() {
         let id = "7f3c2a10-1b2c-4d5e-8f90-0123456789ab";
         assert_eq!(
             AgentKind::Claude.resume_command(id).as_deref(),
             Some("claude --resume '7f3c2a10-1b2c-4d5e-8f90-0123456789ab'")
         );
-        assert_eq!(AgentKind::Gemini.resume_command(id), None);
-        assert_eq!(AgentKind::Agy.resume_command(id), None);
-        for bad in ["", "x\r; rm -rf ~", "a b", "abc$(id)", "abc\u{1b}"] {
-            assert_eq!(AgentKind::Claude.resume_command(bad), None, "{bad:?}");
+        assert_eq!(
+            AgentKind::Gemini.resume_command(id).as_deref(),
+            Some("gemini --resume '7f3c2a10-1b2c-4d5e-8f90-0123456789ab'")
+        );
+        assert_eq!(
+            AgentKind::Agy.resume_command(id).as_deref(),
+            Some("agy --conversation '7f3c2a10-1b2c-4d5e-8f90-0123456789ab'")
+        );
+        for kind in AgentKind::ALL {
+            for bad in [
+                "",
+                "x\r; rm -rf ~",
+                "a b",
+                "abc$(id)",
+                "abc\u{1b}",
+                "latest",
+                "1",
+            ] {
+                assert_eq!(kind.resume_command(bad), None, "{kind:?} {bad:?}");
+            }
         }
     }
 

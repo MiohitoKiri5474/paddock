@@ -4,10 +4,12 @@
 //! `$HOME` if that is gone, as [`super::pty::spawn`] does). A terminal
 //! whose saved agent session is not over, and whose directory is still
 //! there, is to get that session's resume command (`claude --resume
-//! <id>`, [`AgentKind::resume_command`]) typed into its shell once the
-//! shell has started (the server types it, see [`Resume`]), so quitting
-//! the agent leaves a prompt (ticket 48); any other agent is not
-//! restarted. Each terminal's saved scrollback is drawn above its new
+//! <id>`, `gemini --resume <id>` or `agy --conversation <id>`,
+//! [`AgentKind::resume_command`]) typed into its shell once the shell
+//! has started (the server types it, see [`Resume`]), so quitting the
+//! agent leaves a prompt (tickets 48 and 49); one whose id cannot be
+//! typed gets a plain shell, and its kind is named in the notice
+//! ([`Restored::cannot_resume`]). Each terminal's saved scrollback is drawn above its new
 //! shell (see [`super::scrollback`]); scrollback missing or unreadable
 //! is left out, and never stops the restore. A file any space of which
 //! cannot be rebuilt is set aside before anything is written over it.
@@ -22,6 +24,7 @@ use super::state::State;
 use super::tab::Tab;
 use super::terminal::HostedTerminal;
 use crate::backend::{Restored, SpaceId, TabId, TerminalId};
+use crate::sessions::AgentKind;
 use anyhow::{anyhow, Context, Result};
 use std::path::Path;
 
@@ -76,10 +79,11 @@ fn rebuild_layout(
     resumed: &mut Vec<Resume>,
 ) -> usize {
     let mut restored = 0;
+    let mut cannot = Vec::new();
     for (i, space) in saved.spaces.into_iter().enumerate() {
         let name = space.name.clone();
-        let before = resumed.len();
-        match rebuild_space(dir, state, space, start, resumed) {
+        let before = (resumed.len(), cannot.len());
+        match rebuild_space(dir, state, space, start, resumed, &mut cannot) {
             Ok(made) => {
                 if saved.current == Some(i) {
                     state.current = Some(made.id.clone());
@@ -89,7 +93,8 @@ fn rebuild_layout(
             }
             Err(e) => {
                 // Its terminals are hung up: nothing to resume in them.
-                resumed.truncate(before);
+                resumed.truncate(before.0);
+                cannot.truncate(before.1);
                 eprintln!("paddock server: cannot restore space {name}: {e:#}");
             }
         }
@@ -99,27 +104,30 @@ fn rebuild_layout(
         state.restored = Some(Restored {
             spaces: restored,
             sessions: resumed.len(),
+            cannot_resume: cannot,
         });
     }
     restored
 }
 
-/// Space `saved` with new ids, its shells started, and the sessions to
-/// resume in them added to `resumed`; on an error, the shells already
-/// started are hung up.
+/// Space `saved` with new ids, its shells started, the sessions to
+/// resume in them added to `resumed`, and the kind of each it cannot to
+/// `cannot`; on an error, the shells already started are hung up.
 fn rebuild_space(
     dir: &Path,
     state: &mut State,
     saved: SavedSpace,
     start: &mut Start<'_>,
     resumed: &mut Vec<Resume>,
+    cannot: &mut Vec<AgentKind>,
 ) -> Result<Space> {
     let id = SpaceId::new(format!("${}", state.next()));
     let size = (saved.size.0.max(1), saved.size.1.max(1));
     let mut terminals = Vec::new();
     let mut tabs = Vec::new();
     for tab in saved.tabs {
-        let made = rebuild_tab(dir, state, &id, tab, size, start, &mut terminals, resumed);
+        let found = (&mut *resumed, &mut *cannot);
+        let made = rebuild_tab(dir, state, &id, tab, size, start, &mut terminals, found);
         match made {
             Ok(tab) => tabs.push(tab),
             Err(e) => {
@@ -145,7 +153,8 @@ fn rebuild_space(
 
 /// Tab `saved` of space `space` with new ids, each of its shells started
 /// at `size` (laid out later), under its saved scrollback, and added to
-/// `terminals`, and the sessions to resume in them to `resumed`.
+/// `terminals`, the sessions to resume in them to `resumed`, and the
+/// kind of each it cannot to `cannot` (`found`).
 #[allow(clippy::too_many_arguments)]
 fn rebuild_tab(
     dir: &Path,
@@ -155,7 +164,7 @@ fn rebuild_tab(
     size: (u16, u16),
     start: &mut Start<'_>,
     terminals: &mut Vec<HostedTerminal>,
-    resumed: &mut Vec<Resume>,
+    (resumed, cannot): (&mut Vec<Resume>, &mut Vec<AgentKind>),
 ) -> Result<Tab> {
     let id = TabId::new(format!("@{}", state.next()));
     let tree = saved.splits.map(&mut |t| {
@@ -178,7 +187,11 @@ fn rebuild_tab(
             }
         }
         terminals.push(term);
-        resumed.extend(resume(terminal, saved));
+        match resume(terminal, saved) {
+            Some(Ok(r)) => resumed.push(r),
+            Some(Err(kind)) => cannot.push(kind),
+            None => {}
+        }
     }
     let tree = tree.map(&mut |(terminal, _)| terminal);
     let active = tree.terminals().get(saved.focus).map(|t| (*t).clone());
@@ -194,21 +207,23 @@ fn rebuild_tab(
     ))
 }
 
-/// The session of `saved` to resume in its new terminal `terminal`;
-/// nothing if it is over, its kind is not resumed, or its directory is
-/// gone (the shell started in `$HOME`, where the agent would not find
-/// the session).
-fn resume(terminal: &TerminalId, saved: &SavedTerminal) -> Option<Resume> {
+/// The session of `saved` to resume in its new terminal `terminal`, or
+/// its kind if its id is not one to type ([`AgentKind::resume_command`]);
+/// nothing if it is over or its directory is gone (the shell started in
+/// `$HOME`, where the agent would not find the session).
+fn resume(terminal: &TerminalId, saved: &SavedTerminal) -> Option<Result<Resume, AgentKind>> {
     let agent = saved.agent.as_ref().filter(|a| !a.over)?;
     if !Path::new(&saved.dir).is_dir() {
         return None;
     }
-    let command = agent.kind.resume_command(&agent.session)?;
-    Some(Resume {
+    let Some(command) = agent.kind.resume_command(&agent.session) else {
+        return Some(Err(agent.kind));
+    };
+    Some(Ok(Resume {
         terminal: terminal.clone(),
         agent: agent.clone(),
         command,
-    })
+    }))
 }
 
 #[cfg(test)]
@@ -263,8 +278,7 @@ mod tests {
     }
 
     #[test]
-    fn only_a_session_not_over_of_a_resumed_kind_in_a_directory_still_there_resumes() {
-        use crate::sessions::AgentKind;
+    fn only_a_session_not_over_in_a_directory_still_there_resumes() {
         let dir = tempfile::tempdir().unwrap();
         let id = "7f3c2a10-1b2c-4d5e-8f90-0123456789ab";
         let terminal = TerminalId::new("%3");
@@ -278,17 +292,31 @@ mod tests {
             ..SavedTerminal::default()
         };
         let live = saved(dir.path(), AgentKind::Claude, false);
-        let resumed = resume(&terminal, &live).expect("resumed");
+        let resumed = resume(&terminal, &live).expect("resumed").unwrap();
         assert_eq!(resumed.command, format!("claude --resume '{id}'"));
         assert_eq!(resumed.terminal, terminal);
         let gone = dir.path().join("gone");
         for (what, t) in [
             ("over", saved(dir.path(), AgentKind::Claude, true)),
             ("gone", saved(&gone, AgentKind::Claude, false)),
-            ("gemini", saved(dir.path(), AgentKind::Gemini, false)),
         ] {
             assert_eq!(resume(&terminal, &t), None, "{what}");
         }
+        for (kind, command) in [
+            (AgentKind::Gemini, format!("gemini --resume '{id}'")),
+            (AgentKind::Agy, format!("agy --conversation '{id}'")),
+        ] {
+            let resumed = resume(&terminal, &saved(dir.path(), kind, false));
+            assert_eq!(
+                resumed.map(|r| r.unwrap().command),
+                Some(command),
+                "{kind:?}"
+            );
+        }
+        // A session not over whose id cannot be typed is named by kind.
+        let mut odd = saved(dir.path(), AgentKind::Gemini, false);
+        odd.agent.as_mut().unwrap().session = "my-tag".into();
+        assert_eq!(resume(&terminal, &odd), Some(Err(AgentKind::Gemini)));
         let none = SavedTerminal {
             agent: None,
             ..live

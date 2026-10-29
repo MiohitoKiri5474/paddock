@@ -27,6 +27,7 @@ use super::space::Space;
 use super::state::State;
 use super::terminal::{DirReader, HostedTerminal};
 use crate::backend::TerminalId;
+use crate::hooks::now_ms;
 use crate::sessions::AgentKind;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -175,6 +176,10 @@ impl Snapshot {
             terminals: hosted,
         } = self;
         let (ids, readers): (Vec<_>, Vec<_>) = hosted.into_iter().unzip();
+        let at_shell = ids.iter().zip(&readers);
+        let at_shell = at_shell.filter(|(_, r)| r.is_some_and(DirReader::at_shell));
+        let at_shell: Vec<TerminalId> = at_shell.map(|(id, _)| id.clone()).collect();
+        seen.at_shell(&at_shell, now_ms());
         let agents = seen.agents(&ids);
         // Spaces, tabs and each tree's terminals walk in the order
         // `saved_space` pushed the readers in.
