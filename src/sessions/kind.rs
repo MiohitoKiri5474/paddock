@@ -59,6 +59,24 @@ impl AgentKind {
         *self == AgentKind::Claude
     }
 
+    /// The `SessionEnd` reason a signal (a hang-up, a reboot) gives a
+    /// session of this kind: Claude's catch-all `other`; Gemini's `exit`,
+    /// which its user quitting gives too. `None` for Antigravity, which
+    /// sends no `SessionEnd` at all (see [`Self::reports_end`]).
+    pub fn outside_end_reason(self) -> Option<&'static str> {
+        match self {
+            AgentKind::Claude => Some("other"),
+            AgentKind::Gemini => Some("exit"),
+            AgentKind::Agy => None,
+        }
+    }
+
+    /// Whether the kind reports its session's end (a `SessionEnd`); one
+    /// that does not ends when its terminal is back at the shell.
+    pub fn reports_end(self) -> bool {
+        self.outside_end_reason().is_some()
+    }
+
     /// The shell command that continues session `id` of this kind where
     /// it was left, typed into a terminal paddock restored in the
     /// session's directory; `None` for an id not safe to type into a

@@ -176,10 +176,9 @@ impl Snapshot {
             terminals: hosted,
         } = self;
         let (ids, readers): (Vec<_>, Vec<_>) = hosted.into_iter().unzip();
-        let at_shell = ids.iter().zip(&readers);
-        let at_shell = at_shell.filter(|(_, r)| r.is_some_and(DirReader::at_shell));
-        let at_shell: Vec<TerminalId> = at_shell.map(|(id, _)| id.clone()).collect();
-        seen.at_shell(&at_shell, now_ms());
+        let programs = ids.iter().zip(&readers);
+        let programs = programs.map(|(id, r)| (id.clone(), r.and_then(DirReader::program)));
+        seen.foregrounds(&programs.collect::<Vec<_>>(), now_ms());
         let agents = seen.agents(&ids);
         // Spaces, tabs and each tree's terminals walk in the order
         // `saved_space` pushed the readers in.

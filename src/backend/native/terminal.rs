@@ -288,7 +288,7 @@ fn is_shell(command: &str) -> bool {
 }
 
 /// A terminal's directory to read (see [`HostedTerminal::dir_reader`]),
-/// and whether it is back at its shell.
+/// and what runs in its foreground.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DirReader {
     /// The foreground process group, if it could be read.
@@ -303,11 +303,10 @@ impl DirReader {
         foreground.or_else(|| proc::cwd(self.shell?))
     }
 
-    /// Whether the foreground program is a shell (as the sessions tell
-    /// one, [`crate::sessions::is_shell`]); not when it cannot be read.
-    pub fn at_shell(self) -> bool {
-        let name = self.foreground.and_then(proc::name);
-        name.is_some_and(|n| crate::sessions::is_shell(&n))
+    /// The foreground program's name; `None` when it cannot be read (not
+    /// the shell's, unlike [`HostedTerminal::command`]).
+    pub fn program(self) -> Option<String> {
+        self.foreground.and_then(proc::name)
     }
 }
 

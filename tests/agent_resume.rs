@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/hooks");
 /// The session id in the Gemini fixtures.
 const GEMINI_SESSION: &str = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
-/// The conversation id in the agy fixtures.
+/// The session id (`conversationId`) in the agy fixtures.
 const AGY_SESSION: &str = "dddddddd-eeee-4fff-8aaa-bbbbbbbbbbbb";
 /// How long before the server's close a session may end and still be
 /// taken for the same shutdown (`seen::CLOSE_WINDOW`), with some margin.
@@ -181,17 +181,17 @@ fn a_restarted_server_resumes_a_live_gemini_session_in_its_directory() {
 }
 
 #[test]
-fn a_restarted_server_resumes_a_running_agy_conversation_in_its_directory() {
+fn a_restarted_server_resumes_a_running_agy_session_in_its_directory() {
     let sandbox = native();
     stand_in_agy(&sandbox);
     let home = real(&sandbox.path("home"));
     let mut paddock = ready(&sandbox);
     start_agy(&sandbox, &mut paddock);
-    wait_for_agent(&sandbox, "the conversation saved", |a| {
+    wait_for_agent(&sandbox, "the session saved", |a| {
         is(a, "agy", AGY_SESSION, false)
     });
 
-    // agy still runs as the server ends: its conversation is not over.
+    // agy still runs as the server ends: its session is not over.
     stop(&sandbox, paddock);
     let saved = wait_for_agent(&sandbox, "the last save", |a| a.is_object());
     assert!(is(&saved, "agy", AGY_SESSION, false), "{saved}");
@@ -207,19 +207,19 @@ fn a_restarted_server_resumes_a_running_agy_conversation_in_its_directory() {
 }
 
 /// agy reports no end: once its terminal is back at the shell its
-/// conversation is over, and the next server gives it a plain shell.
+/// session is over, and the next server gives it a plain shell.
 #[test]
-fn an_agy_conversation_quit_to_the_shell_is_not_resumed() {
+fn an_agy_session_quit_to_the_shell_is_not_resumed() {
     let sandbox = native();
     stand_in_agy(&sandbox);
     let mut paddock = ready(&sandbox);
     start_agy(&sandbox, &mut paddock);
-    wait_for_agent(&sandbox, "the conversation saved", |a| {
+    wait_for_agent(&sandbox, "the session saved", |a| {
         is(a, "agy", AGY_SESSION, false)
     });
 
     quit_agy(&sandbox, &paddock);
-    wait_for_agent(&sandbox, "the conversation over", |a| {
+    wait_for_agent(&sandbox, "the session over", |a| {
         is(a, "agy", AGY_SESSION, true)
     });
     // An agy back at the shell just before the server ends may have been
@@ -240,9 +240,34 @@ fn an_agy_conversation_quit_to_the_shell_is_not_resumed() {
     );
 }
 
-/// A Gemini session started under an id of the user's own
-/// (`gemini --session-id <id>`), not a UUID, is not typed into a shell:
-/// its terminal gets a plain shell, and the notice names it.
+/// A Gemini session quit by its user (`SessionEnd` reason `exit`) well
+/// before the server ends gets a plain shell. (`exit` close to the end
+/// is taken for the same shutdown: see `seen.rs`.)
+#[test]
+fn a_gemini_session_its_user_quit_is_not_resumed() {
+    let sandbox = native();
+    recording_stub(&sandbox, "gemini");
+    let paddock = ready(&sandbox);
+    hook(&sandbox, "space-1", "gemini", "SessionStart");
+    hook(&sandbox, "space-1", "gemini", "SessionEnd");
+    wait_for_agent(&sandbox, "the session over", |a| {
+        is(a, "gemini", GEMINI_SESSION, true)
+    });
+    std::thread::sleep(CLOSE_WINDOW);
+
+    stop(&sandbox, paddock);
+    let mut again = sandbox.launch();
+
+    again.wait_for_text("restored 1 space");
+    again.wait_for_text(PROMPT);
+    mark(&mut again);
+    assert!(!again.full_screen().contains("resumed"));
+    assert_eq!(calls(&sandbox, "gemini"), Vec::<String>::new(), "never run");
+}
+
+/// A session whose saved id is not a UUID (not one a hook of these
+/// agents gives, so one from elsewhere) is not typed into a shell: its
+/// terminal gets a plain shell, and the notice names it by kind.
 #[test]
 fn a_live_session_whose_id_cannot_be_typed_gets_a_shell_and_is_named() {
     let sandbox = native();
