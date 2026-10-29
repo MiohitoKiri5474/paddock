@@ -7,3 +7,7 @@ paddock has no background process of its own. The hidden tmux server keeps termi
 ## Considered options
 
 - **A paddock server with many clients, as herdr does**: several windows at once, but one more long-lived process to start, upgrade and recover, for a personal tool that needs one window.
+
+## Consequences
+
+- The one instance holds a `flock` on `paddock.pid`, which names its pid. A `flock` belongs to the open file, so a program paddock starts shares it from its fork until its `exec` or exit, and the lock can outlive paddock by a moment. A launch that finds the lock held for a pid that no longer runs therefore waits for the lock (up to 5 s) rather than offering to take over from a paddock that has ended (ticket 58). A POSIX record lock, which a child does not share, was not taken: on Linux it does not see a `flock`, so a paddock from before and one from after such a change could both run.
