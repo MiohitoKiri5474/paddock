@@ -147,8 +147,15 @@ impl Client {
     /// A connection to the running server, past the hello; an error if
     /// none runs or it speaks another protocol version.
     fn connect(&self) -> Result<(UnixStream, Peer)> {
+        self.connect_within(None)
+    }
+
+    /// [`Self::connect`], each read on the connection within `timeout`
+    /// (an error past it) if there is one.
+    fn connect_within(&self, timeout: Option<Duration>) -> Result<(UnixStream, Peer)> {
         let socket = socket_path(&self.paths)?;
         let mut stream = UnixStream::connect(&socket).context(NotRunning)?;
+        stream.set_read_timeout(timeout)?;
         let server = protocol::hello(&mut stream, true, 0)?;
         Ok((stream, server))
     }
@@ -164,7 +171,13 @@ impl Client {
     }
 
     fn request(&self, request: Request) -> Result<Answer> {
-        let (mut stream, _) = self.connect()?;
+        self.request_within(request, None)
+    }
+
+    /// [`Self::request`], the hello and the reply each read within
+    /// `timeout` if there is one.
+    fn request_within(&self, request: Request, timeout: Option<Duration>) -> Result<Answer> {
+        let (mut stream, _) = self.connect_within(timeout)?;
         protocol::write(&mut stream, &Frame::Message(Message::Request(request)))?;
         read_reply(&mut stream)
     }
@@ -412,6 +425,17 @@ impl Client {
         Ok(spaces.unwrap_or_default())
     }
 
+    /// Every space, as [`Self::spaces`], asked within `timeout`; none
+    /// only if no server runs. A connection that closes unanswered, or
+    /// gives no answer within `timeout`, is an error, not none (see
+    /// `Backend::upgraded_spaces`).
+    pub fn upgraded_spaces(&self, timeout: Duration) -> Result<Vec<ListedSpace>> {
+        match self.ask(Request::Spaces, Some(timeout), pick!(Answer::Spaces)) {
+            Err(e) if e.downcast_ref::<NotRunning>().is_some() => Ok(Vec::new()),
+            asked => asked,
+        }
+    }
+
     pub fn new_space(&self, name: &str, cwd: &Path, size: (u16, u16)) -> Result<SpaceId> {
         let request = Request::NewSpace {
             name: name.into(),
@@ -606,11 +630,23 @@ impl Client {
         request: Request,
         pick: impl FnOnce(Answer) -> Result<T, Answer>,
     ) -> Result<Option<T>> {
-        match self.request(request) {
-            Ok(answer) => pick(answer).map(Some).map_err(|a| unexpected(&a)),
+        match self.ask(request, None, pick) {
+            Ok(value) => Ok(Some(value)),
             Err(e) if no_server(&e) || e.downcast_ref::<Refused>().is_some() => Ok(None),
             Err(e) => Err(e),
         }
+    }
+
+    /// The server's answer to `request`, read within `timeout` if there is
+    /// one, and taken by `pick`; an error for any other answer.
+    fn ask<T>(
+        &self,
+        request: Request,
+        timeout: Option<Duration>,
+        pick: impl FnOnce(Answer) -> Result<T, Answer>,
+    ) -> Result<T> {
+        let answer = self.request_within(request, timeout)?;
+        pick(answer).map_err(|a| unexpected(&a))
     }
 
     pub fn root(&self, space: &SpaceId) -> Result<Option<String>> {
@@ -817,5 +853,57 @@ mod instance_tests {
             err.contains("no instance id") && err.contains("pid 7"),
             "{err}"
         );
+    }
+}
+
+#[cfg(test)]
+mod upgraded_spaces_tests {
+    use super::*;
+    use std::os::unix::net::UnixListener;
+
+    /// A client whose state directory is `dir` (short, for the socket).
+    fn client(dir: &Path) -> Client {
+        Client::new(Paths {
+            socket: "paddock-unit-none".into(),
+            state_dir: dir.to_path_buf(),
+            config_dir: dir.join("config"),
+        })
+    }
+
+    fn short_dir() -> tempfile::TempDir {
+        tempfile::Builder::new()
+            .prefix("pdk")
+            .tempdir_in("/tmp")
+            .unwrap()
+    }
+
+    /// A connection accepted and never served (the old image's, near its
+    /// `exec`) is an error within the timeout, not a wait for ever.
+    #[test]
+    fn a_server_that_never_answers_is_an_error_in_time() {
+        let dir = short_dir();
+        let listener = UnixListener::bind(dir.path().join(super::super::SOCKET)).unwrap();
+        // Accepted and held open, unanswered, until the client gives up.
+        let held = std::thread::spawn(move || listener.accept().map(|(s, _)| s));
+        let start = Instant::now();
+
+        let asked = client(dir.path()).upgraded_spaces(Duration::from_millis(200));
+
+        assert!(asked.is_err(), "{asked:?}");
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            start.elapsed()
+        );
+        drop(held.join());
+    }
+
+    #[test]
+    fn no_server_running_is_no_spaces() {
+        let dir = short_dir();
+
+        let asked = client(dir.path()).upgraded_spaces(Duration::from_millis(200));
+
+        assert!(asked.unwrap().is_empty());
     }
 }

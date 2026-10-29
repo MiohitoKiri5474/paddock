@@ -8,6 +8,11 @@ pub struct Paddock {
     /// Shared with the reader, which answers paddock's cursor queries.
     pub(super) writer: Arc<Mutex<Box<dyn Write + Send>>>,
     master: Box<dyn MasterPty + Send>,
+    /// Held while paddock runs, and closed once it is dropped: macOS
+    /// throws away what a pseudo-terminal still holds unread once its
+    /// last slave closes, so what paddock writes as it exits (an error)
+    /// would be lost to a reader slower than the exit.
+    _slave: Box<dyn SlavePty + Send>,
     screen: Arc<Mutex<vt100::Parser>>,
 }
 
@@ -28,7 +33,6 @@ impl Paddock {
         }
         cmd.cwd(sandbox.path("home"));
         let child = pair.slave.spawn_command(cmd).expect("spawn paddock");
-        drop(pair.slave);
         let writer = Arc::new(Mutex::new(pair.master.take_writer().expect("writer")));
         let screen = Arc::new(Mutex::new(vt100::Parser::new(
             nonzero(ROWS),
@@ -41,6 +45,7 @@ impl Paddock {
             child,
             writer,
             master: pair.master,
+            _slave: pair.slave,
             screen,
         }
     }

@@ -122,7 +122,7 @@ fn stop(sandbox: &Sandbox, mut paddock: Paddock) {
 /// paddock, so its process is named `agy` (`agy hook` waits on its
 /// input), as in `tests/agy.rs`.
 fn stand_in_agy(sandbox: &Sandbox) {
-    std::fs::copy(env!("CARGO_BIN_EXE_paddock"), sandbox.path("bin/agy")).unwrap();
+    sandbox.copy_paddock("bin/agy");
 }
 
 /// Start the stand-in `agy` in the only terminal and report its session.

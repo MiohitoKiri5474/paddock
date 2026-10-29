@@ -176,7 +176,7 @@ pub fn take_over(record: &str, conn: &str) -> Result<()> {
     // descriptors, named on its command line, and nothing else owns them.
     let (record, mut conn) = unsafe { (File::from_raw_fd(record), UnixStream::from_raw_fd(conn)) };
     let pid = std::process::id();
-    match adopt(record) {
+    match adopt(record, conn.as_raw_fd()) {
         Ok((shared, listener, lock)) => {
             eprintln!("paddock server: took over as pid {pid}");
             let done = Frame::Upgrade(Upgrade::Done { pid });
@@ -198,11 +198,22 @@ pub fn take_over(record: &str, conn: &str) -> Result<()> {
 }
 
 /// The server the handover record `record` describes, its terminals'
-/// threads started, its listener and its lock.
-fn adopt(record: File) -> Result<(Arc<Shared>, UnixListener, File)> {
+/// threads started, its listener and its lock. Every other descriptor
+/// passed over but the connection `conn` is closed first.
+fn adopt(record: File, conn: RawFd) -> Result<(Arc<Shared>, UnixListener, File)> {
     let paths = Paths::from_env()?;
     let socket = socket_path(&paths)?;
+    // The record's file closes once it is read, so it is not kept below.
     let (record, snapshots) = handover::read(&mut BufReader::new(record))?;
+    let mut keep = record.descriptors();
+    keep.push(conn);
+    // Best effort. The probe (`--check-handover`, which vouched for this
+    // takeover) only reads the record and never closes anything, so a
+    // failure here must not end a takeover it accepted: a stray left open
+    // only keeps one client waiting, until its read times out.
+    if let Err(e) = handover::close_strays(&keep) {
+        eprintln!("paddock server: {e:#}");
+    }
     let lock = File::from(take_fd(record.lock)?);
     let listener = UnixListener::from(take_fd(record.listener)?);
     let state = State::handed(socket, record.instance, record.last_id);
@@ -278,7 +289,7 @@ fn run(shared: &Arc<Shared>, listener: &UnixListener, _lock: File) -> Result<()>
     for stream in listener.incoming() {
         let Ok(stream) = stream else { continue };
         let shared = Arc::clone(shared);
-        std::thread::spawn(move || {
+        let serving = std::thread::Builder::new().spawn(move || {
             let conn = shared.connections.fetch_add(1, Ordering::Relaxed);
             if let Err(e) = serve_connection(&shared, conn, stream) {
                 eprintln!("paddock server: connection {conn}: {e:#}");
@@ -286,6 +297,12 @@ fn run(shared: &Arc<Shared>, listener: &UnixListener, _lock: File) -> Result<()>
             // Its writer ends; nobody reads what is left.
             drop(shared.lock().detach(conn));
         });
+        // Never a panic here, on the main thread, which would end the
+        // server: Linux starts no thread while another `exec`s (an
+        // upgrade), and a client whose connection closes asks again.
+        if let Err(e) = serving {
+            eprintln!("paddock server: cannot serve a connection: {e}");
+        }
     }
     Ok(())
 }

@@ -185,8 +185,7 @@ fn another_binary_takes_the_terminals_over() {
     let server = server_pid(&sandbox.state_dir()).expect("a server");
     let shells = sandbox.shells();
     // A copy, not a link: another binary, as an upgrade installs.
-    let copy = sandbox.path("paddock-next");
-    std::fs::copy(env!("CARGO_BIN_EXE_paddock"), &copy).unwrap();
+    let copy = sandbox.copy_paddock("paddock-next");
 
     let answers = ask_upgrade(&sandbox, &copy);
 
@@ -281,8 +280,17 @@ fn upgrading_with_no_server_running_says_so() {
 fn a_paddock_with_a_busy_space_attaches_again_once_and_stays() {
     let sandbox = native();
     let mut paddock = ready(&sandbox);
-    // Bounded, and stopped below: nothing is left running.
-    paddock.type_line("for i in $(seq 1 6000); do echo tick-$i; sleep 0.005; done");
+    // Bounded, and stopped below: nothing is left running. Stopped by a
+    // file, which a builtin checks, not by Ctrl-C: while the terminal's
+    // output waits to be read (a loaded machine), zsh now and then lets a
+    // Ctrl-C go by and runs this loop on, in a bare terminal too. Only
+    // the stop says `loop-stopped`: a loop that runs to its end does not.
+    let stop = sandbox.path("stop-ticking");
+    paddock.type_line(&format!(
+        "for i in $(seq 1 6000); do [ -e '{}' ] && {{ echo loop''-stopped; break; }}; \
+         echo tick-$i; sleep 0.005; done",
+        stop.display()
+    ));
     paddock.wait_for_text("tick-5\n");
     paddock.command(b"C\r");
     paddock.wait_for_text(PROMPT);
@@ -306,8 +314,7 @@ fn a_paddock_with_a_busy_space_attaches_again_once_and_stays() {
     };
     let seen = ticks(&paddock.screen());
     paddock.wait_for("more ticks", |s| ticks(s) > seen + 20);
-    paddock.send(b"\x03");
-    paddock.type_line("echo loop''-stopped");
+    std::fs::write(&stop, "").unwrap();
     paddock.wait_for_text("loop-stopped\n");
     // Still attached, and only once: a second attach, or a lost
     // connection, would have ended it.

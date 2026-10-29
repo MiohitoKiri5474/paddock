@@ -32,7 +32,7 @@ pub use panes::{cols, in_region, split_sizes, wait_for_split_sizes, wait_in_regi
 #[allow(unused_imports)]
 pub use state::{Space, Split, State, Tab};
 
-use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
+use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize, SlavePty};
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::Command;
@@ -119,6 +119,21 @@ impl Sandbox {
 
     pub fn path(&self, name: &str) -> PathBuf {
         self.root.path().join(name)
+    }
+
+    /// A copy of paddock's binary at `name` in the sandbox, to be run.
+    /// Copied by `cp`, not by this process: a program another test
+    /// starts meanwhile inherits whatever this process holds open until
+    /// it runs, and Linux will not run a file open for writing ("Text
+    /// file busy").
+    pub fn copy_paddock(&self, name: &str) -> PathBuf {
+        let to = self.path(name);
+        let status = Command::new("cp")
+            .arg(env!("CARGO_BIN_EXE_paddock"))
+            .arg(&to)
+            .status();
+        assert!(status.is_ok_and(|s| s.success()), "cp paddock to {name}");
+        to
     }
 
     /// paddock's state directory (`$XDG_STATE_HOME/paddock`), where the

@@ -108,6 +108,12 @@ fn mark(paddock: &mut Paddock) {
     paddock.wait_for_text("MARK-DONE");
 }
 
+/// Wait until the stub `claude` has run at least once: a resume the
+/// server types has run by then, so a line typed after it stays whole.
+fn wait_for_claude_run(sandbox: &Sandbox) {
+    sandbox.claude_calls();
+}
+
 /// What the stub `claude` was called with so far.
 fn claude_log(sandbox: &Sandbox) -> String {
     std::fs::read_to_string(sandbox.path("claude.log")).unwrap_or_default()
@@ -171,7 +177,7 @@ fn a_restarted_server_resumes_a_live_claude_session_in_its_directory_and_not_an_
     let mut again = restart(&sandbox, paddock);
 
     again.wait_for_text("restored 1 space, resumed 1 session");
-    sandbox.claude_calls();
+    wait_for_claude_run(&sandbox);
     // Every resume is typed by now: a line typed into the ended
     // session's terminal shows it ran none there.
     again.command(b"h");
@@ -202,7 +208,7 @@ fn the_resumed_session_is_listed_once_as_the_same_session() {
 
     let mut again = restart(&sandbox, paddock);
     again.wait_for_text("resumed 1 session");
-    sandbox.claude_calls();
+    wait_for_claude_run(&sandbox);
     // The resumed Claude starts in its new terminal with the same id.
     let cwd = format!("\"{}\"", real(&dir));
     let resume = payload("SessionStart", LIVE)
@@ -339,6 +345,9 @@ fn a_live_session_survives_a_server_upgrade_and_is_still_resumed_after_a_restart
     });
     let mut again = restart(&sandbox, paddock);
     again.wait_for_text("resumed 1 session");
+    // The server types the resume once the shell has drawn its prompt,
+    // after the notice: a line typed before it runs would be mixed into it.
+    wait_for_claude_run(&sandbox);
     mark(&mut again);
     assert_eq!(sandbox.claude_calls(), [format!("{real} --resume {LIVE}")]);
 }

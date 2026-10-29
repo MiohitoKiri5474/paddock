@@ -28,6 +28,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
+use std::time::Duration;
 
 /// What a space's connection reports, in order.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -344,6 +345,17 @@ impl Backend {
             // Here and below: none when it cannot say, as with tmux. A
             // server this paddock cannot talk to is `check`'s error.
             Self::Native(n) => n.spaces().unwrap_or_default(),
+        }
+    }
+
+    /// The spaces a server that has just taken over runs (ADR 0009),
+    /// asked within `timeout`: none if no server runs, and an error, not
+    /// none, if the connection closes unanswered, as the old binary's do
+    /// until its `exec`, or gives no answer in time.
+    pub fn upgraded_spaces(&self, timeout: Duration) -> Result<Vec<ListedSpace>> {
+        match self {
+            Self::Tmux(t) => Ok(t.sessions()),
+            Self::Native(n) => n.upgraded_spaces(timeout),
         }
     }
 

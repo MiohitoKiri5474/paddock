@@ -23,6 +23,9 @@ const TERMINAL_CLOSED: &str = "that terminal is closed";
 
 /// How long paddock waits for an upgraded server to answer (ADR 0009).
 const REATTACH_WAIT: Duration = Duration::from_secs(10);
+/// How long one ask of an upgraded server waits for its answer, before
+/// paddock asks again on a new connection.
+const REATTACH_ASK: Duration = Duration::from_secs(2);
 
 impl App {
     /// The name a new space gets unless the user picks one: the first free
@@ -80,21 +83,28 @@ impl App {
             }
         }
         // The old binary, until its `exec`, still takes connections, and
-        // closes them unanswered: ask until the new one answers.
+        // closes them unanswered: ask until the new one answers, its hello
+        // and then its spaces (a closed connection is no answer). Every
+        // read is bounded, so the wait is too: no answer within
+        // [`REATTACH_WAIT`] in all is an error.
         let start = Instant::now();
-        while let Err(e) = self.backend.prepare() {
-            if e.downcast_ref::<OtherVersion>().is_some() || start.elapsed() > REATTACH_WAIT {
-                return Err(e);
+        let running = loop {
+            let left = REATTACH_WAIT.saturating_sub(start.elapsed());
+            // Never a zero timeout, which would mean none.
+            let ask = left.clamp(Duration::from_millis(1), REATTACH_ASK);
+            match self.backend.upgraded_spaces(ask) {
+                Ok(running) => break running,
+                Err(e) if e.downcast_ref::<OtherVersion>().is_some() => return Err(e),
+                Err(e) if start.elapsed() >= REATTACH_WAIT => return Err(e),
+                Err(_) => std::thread::sleep(Duration::from_millis(50)),
             }
-            std::thread::sleep(Duration::from_millis(50));
-        }
+        };
         let current = self.spaces.get(self.current).map(|s| s.id.clone());
         let ids: Vec<SpaceId> = self.spaces.iter().map(|s| s.id.clone()).collect();
         self.spaces.clear();
         self.terminals.clear();
         // A server that ends with its last space is gone: the new binary
         // failed to take over, and its programs ended with it.
-        let running = self.backend.spaces();
         if running.is_empty() {
             bail!(
                 "the new paddock server did not take over and has ended, with every program \
