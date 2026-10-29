@@ -49,7 +49,7 @@ What hosts the terminals (`[backend] kind`): paddock's own server (the native ba
 _Avoid_: engine, runtime
 
 **Sidebar**:
-The panel on the left, which can be shown or hidden: SPACES, two lines per space: a dot for the most urgent state of its agents, its name and, at the end, its branch's git status (`+200 −10 ↑2↓1`: uncommitted lines, commits ahead and behind) where it fits whole (the name cut first), then its directory, branch and PR mark (`#123 ✓`) where it fits (the path cut first), then AGENTS, one line per main agent in any space with its label, state and space (labels and states in columns; the space left out first when short of room), in space and tab order (a state change never moves one), external sessions last.
+The panel on the left, which can be shown or hidden: SPACES, two lines per space: a dot for the most urgent state of its agents, its name and, at the end, its branch's git status (`+200 −10 ↑2↓1`: uncommitted lines, commits ahead and behind) where it fits whole (the name cut first), then its directory, branch and PR mark (`#123 ✓`) where it fits (the path cut first), then AGENTS, one line per main agent in any space with its label, state and space (labels, at most 12 cells, and states in columns; the space left out first when short of room), in space and tab order (a state change never moves one), external sessions last.
 
 **Agent**:
 A main agent in the sidebar's AGENTS section. Subagents show only in the dashboard.

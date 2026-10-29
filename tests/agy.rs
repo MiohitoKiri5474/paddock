@@ -392,7 +392,7 @@ fn paddocks_terminals_ask_agy_for_its_status_reports() {
 #[test]
 fn an_external_agy_session_lands_in_the_external_group() {
     let sandbox = Sandbox::new();
-    let paddock = ready(&sandbox);
+    let mut paddock = ready(&sandbox);
     for name in ["SessionStart", "PreInvocation"] {
         let text = std::fs::read_to_string(format!("{FIXTURES}/{name}.json")).unwrap();
         // No tmux at all: agy running outside paddock.
@@ -401,14 +401,17 @@ fn an_external_agy_session_lands_in_the_external_group() {
         assert_eq!(out.stdout, b"{}", "{out:?}");
         assert!(out.stderr.is_empty(), "{out:?}");
     }
+    // One line under the header: dot, label and state, no space.
     paddock.wait_for("the external group", |_| {
-        let rows = paddock.full_rows();
-        let header = rows.iter().position(|l| l.contains(" EXTERNAL"));
-        header.is_some_and(|h| {
-            rows[h + 1].contains("● repo")
-                && rows[h + 1].contains("running")
-                && !rows[h + 1].contains("space-1")
-        })
+        let lines = paddock.sidebar();
+        let header = lines.iter().position(|l| l == " EXTERNAL");
+        header.is_some_and(|h| lines.get(h + 1).map(String::as_str) == Some(" ● repo  running"))
+    });
+    // Its kind is the dashboard's.
+    paddock.command(b"o");
+    paddock.wait_for("the dashboard's row", |s| {
+        s.lines()
+            .any(|l| l.contains(" repo ") && l.trim_end().ends_with(" agy"))
     });
     let log = std::fs::read_to_string(sandbox.path("state/paddock/events/external.jsonl")).unwrap();
     assert_eq!(log.lines().count(), 2);

@@ -184,7 +184,7 @@ fn tmux_only_hooks_outside_paddock_say_nothing_and_go_to_the_external_log() {
 }
 
 #[test]
-fn agents_of_every_space_are_listed_with_their_space_and_tab() {
+fn agents_of_every_space_are_listed_with_their_space() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
     new_tab(&mut paddock, "2:home");

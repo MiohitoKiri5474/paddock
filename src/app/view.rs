@@ -2,6 +2,7 @@
 //! agents, the current space's tabs, and where the current tab's panes go.
 
 use super::rows::{most_urgent, Row};
+use super::space::Space;
 use super::state::{App, CloseTarget, Mode};
 use super::worktrees::SpaceEntry;
 use crate::backend::{self, TerminalId};
@@ -70,10 +71,7 @@ impl App {
                 space: if r.external {
                     None
                 } else {
-                    self.spaces
-                        .iter()
-                        .find(|s| s.id == r.space)
-                        .map(|s| s.name().to_string())
+                    self.row_space(r).map(|s| s.name().to_string())
                 },
                 current: self.is_current_row(&r.pane),
                 external: r.external,
@@ -81,11 +79,16 @@ impl App {
             .collect()
     }
 
-    /// Where row `r` runs: its space and tab, `sep` between them.
-    pub(super) fn place_of(&self, r: &Row, sep: &str) -> Option<String> {
-        let space = self.spaces.iter().find(|i| i.id == r.space)?;
+    /// The space row `r` runs in.
+    fn row_space(&self, r: &Row) -> Option<&Space> {
+        self.spaces.iter().find(|i| i.id == r.space)
+    }
+
+    /// Where row `r` runs: its space and tab, as `space › tab`.
+    pub(super) fn place_of(&self, r: &Row) -> Option<String> {
+        let space = self.row_space(r)?;
         let tab = space.tabs().iter().find(|t| t.id == r.tab)?;
-        Some(format!("{}{sep}{}", space.name(), self.tab_name(tab)))
+        Some(format!("{} › {}", space.name(), self.tab_name(tab)))
     }
 
     /// A tab's name as shown: the backend's, except that a tab the backend

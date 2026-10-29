@@ -47,9 +47,10 @@
 //!
 //! The current space has its own background over both lines. An agent's
 //! line is its dot, label and state, then its space, dim; labels and states
-//! line up in columns across the section. Short of room the space goes
-//! first (left out whole), then the state column is cut, then the label
-//! column; the dot always shows. The agent's kind is left to the dashboard.
+//! line up in columns across the section, the labels' at most 12 cells
+//! (longer labels cut with `…`). Short of room the space goes first (left
+//! out whole), then the state column is cut, then left out under 4 cells,
+//! then the label column is cut; the dot always shows. The agent's kind is left to the dashboard.
 //! The current agent (the one in the focused terminal) has the current
 //! space's background too. While the sidebar has the keyboard, the selected
 //! space or agent is drawn reversed. Agents stay in space, tab and split
@@ -449,11 +450,18 @@ fn cells(w: usize) -> u16 {
 
 /// The fewest cells between an agent's label, state and space columns.
 const AGENT_GAP: usize = 2;
+/// The label column's width at most, as the dashboard's columns: longer
+/// labels are cut so that one long label leaves the states their room.
+const LABEL_MOST: usize = 12;
+/// The fewest cells the state column keeps when cut; under that it is left
+/// out, rather than show `…` alone.
+const STATE_LEAST: usize = 4;
 
 /// The columns of the agents' lines, in cells, the same for every agent so
 /// that labels and states line up: each as wide as its widest entry, where
-/// it fits. Short of room the space goes first, then the state column is
-/// cut, then the label column.
+/// it fits, the label column at most [`LABEL_MOST`]. Short of room the
+/// space goes first, then the state column is cut (left out under
+/// [`STATE_LEAST`]), then the label column.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Columns {
     label: usize,
@@ -467,9 +475,14 @@ impl Columns {
     /// The columns for `agents` in `room` cells after the dot.
     fn of(agents: &[AgentLine], room: usize) -> Self {
         let widest = |w: fn(&AgentLine) -> usize| agents.iter().map(w).max().unwrap_or(0);
-        let label = widest(|a| a.label.width()).min(room);
+        let label = widest(|a| a.label.width()).min(LABEL_MOST).min(room);
         let full_state = widest(|a| a.state.label().width());
         let state = full_state.min(room.saturating_sub(label + AGENT_GAP));
+        let state = if state < full_state.min(STATE_LEAST) {
+            0
+        } else {
+            state
+        };
         let space = if state == full_state {
             room.saturating_sub(label + state + 2 * AGENT_GAP)
         } else {
@@ -929,7 +942,8 @@ mod tests {
                 " ● paddock     idle",
             ]
         );
-        // Then the state column is cut, then gone.
+        // Then the state column is cut, down to 4 cells, then gone: never
+        // `…` alone.
         assert_eq!(
             rows(22)[..3],
             [
@@ -938,6 +952,15 @@ mod tests {
                 " ● paddock     idle",
             ]
         );
+        assert_eq!(
+            rows(21)[..3],
+            [
+                " ● PR-1434     wai…",
+                " ● api-server  run…",
+                " ● paddock     idle",
+            ]
+        );
+        assert_eq!(rows(20)[..3], [" ● PR-1434", " ● api-server", " ● paddock"]);
         assert_eq!(rows(15)[..3], [" ● PR-1434", " ● api-server", " ● paddock"]);
         // Then the label; the dot always shows.
         assert_eq!(
@@ -945,6 +968,49 @@ mod tests {
             [" ● PR-1…", " ● api-…", " ● padd…", " EXTERNAL", " ● web"]
         );
         assert_eq!(rows(5)[..3], [" ●", " ●", " ●"]);
+    }
+
+    #[test]
+    fn one_long_label_is_cut_at_twelve_cells_so_the_states_stay() {
+        let agents = [
+            agent("api", State::Waiting, "core"),
+            agent("a-very-long-agent-label", State::Running, "api"),
+        ];
+        assert_eq!(
+            agent_rows(&agents, 32)[..2],
+            [
+                " ● api           waiting  core",
+                " ● a-very-long…  running  api",
+            ]
+        );
+        // Past the cap, the ticket's order: the space, then the state.
+        assert_eq!(
+            agent_rows(&agents, 26)[..2],
+            [" ● api           waiting", " ● a-very-long…  running"]
+        );
+        assert_eq!(agent_rows(&agents, 17)[..2], [" ● api", " ● a-very-long…"]);
+    }
+
+    #[test]
+    fn wide_labels_line_up_by_their_cells() {
+        let agents = [
+            agent("修正登入", State::Waiting, "core"),
+            agent("api", State::Running, "api"),
+            agent("很長很長的標籤名稱", State::Idle, "x"),
+        ];
+        let buf = draw_sized(&[], &agents, None, 33);
+        // The state column starts 12 + 2 cells after the label's start:
+        // the widest label (18 cells) is cut to 12, `…` included.
+        for y in 3..6 {
+            let state = buf[(17, y)].symbol();
+            assert!(["w", "r", "i"].contains(&state), "row {y}: {state:?}");
+            assert_eq!(buf[(16, y)].symbol(), " ", "row {y}: the gap");
+        }
+        assert_eq!(buf[(3, 3)].symbol(), "修");
+        assert_eq!(buf[(3, 5)].symbol(), "很");
+        // Five wide characters (10 cells; a sixth would split) and `…`.
+        assert_eq!(buf[(13, 5)].symbol(), "…");
+        assert_eq!(buf[(5, 3)].symbol(), "正");
     }
 
     /// A space in `path` on `branch`, with `pr`.

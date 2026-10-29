@@ -275,7 +275,7 @@ impl App {
 
     /// Agent row `r` of the sidebar as a finder row.
     fn agent_row(&self, r: &Row, home: &HomePaths) -> FinderRow {
-        let place = self.place_of(r, " › ").unwrap_or_default();
+        let place = self.place_of(r).unwrap_or_default();
         FinderRow {
             kind: Kind::Agent,
             name: r.label.clone(),
