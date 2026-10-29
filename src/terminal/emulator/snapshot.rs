@@ -74,6 +74,57 @@ impl Emulator {
     }
 }
 
+impl Emulator {
+    /// The normal screen's lines as text, its scrollback first, with
+    /// their colours and attributes, and no blank lines after the last
+    /// written: what a restored terminal shows above its new shell (ADR
+    /// 0008). Ends with the pen reset and a new line; empty if nothing
+    /// was written. `&mut self` as for [`Self::snapshot`].
+    pub fn history_text(&mut self) -> Vec<u8> {
+        let out = if self.term.mode().contains(TermMode::ALT_SCREEN) {
+            let alt = self.term.grid().clone();
+            self.term.swap_alt();
+            let out = lines_text(self.term.grid());
+            self.term.swap_alt();
+            *self.term.grid_mut() = alt;
+            out
+        } else {
+            lines_text(self.term.grid())
+        };
+        out.into_bytes()
+    }
+}
+
+/// `grid`'s scrollback and screen as [`Emulator::history_text`] writes
+/// them.
+fn lines_text(grid: &Grid<Cell>) -> String {
+    let top = -i32::try_from(grid.history_size()).unwrap_or(i32::MAX);
+    let bottom = i32::try_from(grid.screen_lines()).unwrap_or(i32::MAX);
+    let mut out = String::new();
+    // Where the last line that wrote anything ends.
+    let mut kept = 0;
+    let mut pen = Cell::default();
+    for line in top..bottom {
+        let start = out.len();
+        let wrapped = write_row(&mut out, grid, Line(line), &mut pen);
+        if out.len() > start {
+            kept = out.len();
+        }
+        if !wrapped {
+            if pen != Cell::default() {
+                out.push_str("\x1b[0m");
+                pen = Cell::default();
+            }
+            out.push_str("\r\n");
+        }
+    }
+    out.truncate(kept);
+    if !out.is_empty() {
+        out.push_str("\x1b[0m\r\n");
+    }
+    out
+}
+
 /// The scroll region and origin mode, then the cursor again: DECSTBM and
 /// DECOM move it home. Last, so the lines written before scroll the whole
 /// screen.
@@ -406,5 +457,40 @@ mod tests {
         let mut quiet = Emulator::new(10, 3, 0);
         quiet.feed(b"\x1b[c");
         assert!(quiet.take_replies().is_empty());
+    }
+
+    #[test]
+    fn history_text_is_the_normal_screens_lines_with_their_colours() {
+        let mut e = Emulator::new(5, 3, SCROLLBACK);
+        e.feed(b"one\r\n\x1b[31mred\x1b[0m\r\nabcdefg\r\n\r\n");
+        e.feed(b"\x1b[?1049h\x1b[Hfull");
+        let text = String::from_utf8(e.history_text()).unwrap();
+        assert_eq!(
+            text, "one\r\n\x1b[0;31mred\x1b[0m\r\nabcdefg\x1b[0m\r\n",
+            "no blank lines after; a wrapped line stays one"
+        );
+        assert!(e.modes().alt_screen, "left as it was");
+        assert!(Emulator::new(5, 3, SCROLLBACK).history_text().is_empty());
+    }
+
+    #[test]
+    fn history_text_leaves_both_screens_and_the_cursor_as_they_were() {
+        let mut e = Emulator::new(10, 3, SCROLLBACK);
+        e.feed(b"one\r\ntwo\r\nthree\r\nfour\x1b[2;3H");
+        let before = (e.snapshot(None), e.cursor());
+        e.history_text();
+        assert_eq!((e.snapshot(None), e.cursor()), before, "the normal screen");
+        e.feed(b"\x1b[?1049h\x1b[H\x1b[2Jfull\r\nscreen\x1b[1;4H");
+        let before = (e.snapshot(None), e.cursor());
+        let text = String::from_utf8(e.history_text()).unwrap();
+        assert_eq!((e.snapshot(None), e.cursor()), before, "the alternate one");
+        assert_eq!(text, "one\r\ntwo\r\nthree\r\nfour\x1b[0m\r\n");
+        // Leaving the alternate screen shows the normal one as it was.
+        let mut copy = rebuilt(&mut e);
+        for t in [&mut e, &mut copy] {
+            t.feed(b"\x1b[?1049l");
+        }
+        assert_same(&e, &copy);
+        assert_eq!(e.cursor(), (1, 2));
     }
 }

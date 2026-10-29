@@ -13,6 +13,7 @@ use super::axis::Axis;
 use super::protocol::{self, Answer, Ending, Frame, Message, Notice, Refusal, Request};
 use super::pty::Program::{self, LoginShell};
 use super::saved::{self, Saver};
+use super::scrollback::{self, ScrollbackName};
 use super::space::{HostedFloat, Space};
 use super::state::{State, Subscriber};
 use super::tab::Tab;
@@ -219,10 +220,15 @@ fn close(shared: &Shared, state: &mut State) {
     }
 }
 
-/// Write the layout to `layout.json` now, if it changed, and no more.
-fn flush_layout(shared: &Shared, state: &State) {
+/// Write each terminal's scrollback, then the layout to `layout.json`
+/// now, if it changed, and no more. The saver is held throughout, so no
+/// layout written meanwhile removes scrollback just saved. Unlike the
+/// layout offered while the server runs, both are written with the state
+/// locked: the server is ending (see [`scrollback`]).
+fn flush_layout(shared: &Shared, state: &mut State) {
     let layout = saved::snapshot(state).read_dirs();
     let mut saver = shared.saver.lock().unwrap_or_else(|e| e.into_inner());
+    scrollback::save_all(saver.dir(), state);
     if let Err(e) = saver.flush(layout) {
         eprintln!("paddock server: {e:#}");
     }
@@ -640,7 +646,8 @@ fn start_terminal(
     let ready = (|| {
         let input = Input::start(&id, pty.master.try_clone()?);
         let reader = pty.master.try_clone()?;
-        let term = HostedTerminal::new(id.clone(), &pty, input, size)?;
+        let name = ScrollbackName::new(state.instance(), &id);
+        let term = HostedTerminal::new(id.clone(), name, &pty, input, size)?;
         anyhow::Ok((reader, term))
     })();
     let (reader, term) = match ready {
