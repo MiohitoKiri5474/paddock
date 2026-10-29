@@ -512,9 +512,12 @@ fn a_key_typed_while_a_big_paste_waits_still_arrives() {
 
 /// Whether the server closes `stream` (it reads to its end).
 fn closed(stream: &mut UnixStream) -> bool {
-    stream
-        .set_read_timeout(Some(harness::TIMEOUT))
-        .expect("a read timeout");
+    // macOS refuses socket options (EINVAL) on a socket the other side has
+    // closed already, as the server may have by now under load; reads
+    // then end at once.
+    if let Err(e) = stream.set_read_timeout(Some(harness::TIMEOUT)) {
+        assert_eq!(e.raw_os_error(), Some(22), "a read timeout: {e}");
+    }
     while read_frame(stream).is_some() {}
     true
 }
@@ -678,6 +681,9 @@ fn a_paddock_the_server_lets_go_says_so() {
     });
     // The shell runs on: a new paddock attaches to it.
     let mut again = sandbox.launch();
+    // Ctrl-C only once paddock has the terminal (raw, before it draws):
+    // sent earlier, it is the terminal's interrupt and ends paddock.
+    again.wait_for("paddock drawn", |_| again.full_screen().contains("SPACES"));
     again.send(b"\x03");
     again.type_line("echo back");
     again.wait_for_text("back\n");
