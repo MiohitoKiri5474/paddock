@@ -24,11 +24,11 @@ brew install MiohitoKiri5474/paddock/paddock
 
 If an earlier `brew install` failed while tapping, run `brew untap miohitokiri5474/paddock` first. Upgrade with `brew upgrade paddock` (see [Upgrade](#upgrade)).
 
-**Release tarball** (Apple Silicon). Download `paddock-v0.1.1-aarch64-apple-darwin.tar.gz` and its `.sha256` from [Releases](https://github.com/MiohitoKiri5474/paddock/releases), then:
+**Release tarball** (Apple Silicon). Download `paddock-v0.1.0-rc.2-aarch64-apple-darwin.tar.gz` and its `.sha256` from [Releases](https://github.com/MiohitoKiri5474/paddock/releases), then:
 
 ```sh
-shasum -a 256 -c paddock-v0.1.1-aarch64-apple-darwin.tar.gz.sha256
-tar xzf paddock-v0.1.1-aarch64-apple-darwin.tar.gz
+shasum -a 256 -c paddock-v0.1.0-rc.2-aarch64-apple-darwin.tar.gz.sha256
+tar xzf paddock-v0.1.0-rc.2-aarch64-apple-darwin.tar.gz
 xattr -d com.apple.quarantine paddock   # unsigned binary: lets Gatekeeper run it ("No such xattr" is fine)
 sudo mkdir -p /usr/local/bin             # missing on a fresh Apple Silicon Mac
 sudo mv paddock /usr/local/bin/         # or anywhere on your PATH
@@ -37,7 +37,7 @@ sudo mv paddock /usr/local/bin/         # or anywhere on your PATH
 **Cargo**, from a tag:
 
 ```sh
-cargo install --git https://github.com/MiohitoKiri5474/paddock --tag v0.1.1 --locked
+cargo install --git https://github.com/MiohitoKiri5474/paddock --tag v0.1.0-rc.2 --locked
 ```
 
 If it fails with `failed to authenticate when downloading repository: git@github.com:…` (your git config rewrites GitHub URLs to SSH), let cargo use the `git` command: prefix the command with `CARGO_NET_GIT_FETCH_WITH_CLI=true`, or set `git-fetch-with-cli = true` under `[net]` in `~/.cargo/config.toml`.
