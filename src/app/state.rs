@@ -471,19 +471,23 @@ impl App {
             .unwrap_or_default();
         // Before attaching, so the spaces start at their final size.
         self.sidebar_wish = saved.sidebar;
-        for s in &spaces {
-            // A space that cannot be attached (it just ended) keeps paddock
-            // from opening no other.
-            self.report(|app| app.attach(&s.id));
-        }
         // A backend that keeps the current space (native, in
-        // `layout.json`) takes over `layout.toml`'s.
+        // `layout.json`) takes over `layout.toml`'s. Asked before
+        // attaching, as is what the host rebuilt: the native server writes
+        // an attached terminal's scrollback after its screens, under its
+        // lock, and the first draw would wait for an answer asked after.
         let saved_space = if self.backend.keeps_current() {
             self.backend.current_space()
         } else {
             saved.space
         };
-        self.note_restored();
+        let restored = self.backend.restored();
+        for s in &spaces {
+            // A space that cannot be attached (it just ended) keeps paddock
+            // from opening no other.
+            self.report(|app| app.attach(&s.id));
+        }
+        self.note_restored(restored);
         self.current = self
             .spaces
             .iter()
@@ -497,8 +501,8 @@ impl App {
 
     /// Say how many spaces the backend rebuilt from its saved layout, and
     /// how many agent sessions it resumed, if it just did (ADR 0008).
-    fn note_restored(&mut self) {
-        let Some(restored) = self.backend.restored() else {
+    fn note_restored(&mut self, restored: Option<Restored>) {
+        let Some(restored) = restored else {
             return;
         };
         let restored = restored_notice(&restored);

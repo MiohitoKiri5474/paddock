@@ -312,12 +312,15 @@ impl HostedTerminal {
     /// size: the emulator's snapshot with the scroll region, and
     /// modifyOtherKeys, which alacritty does not keep.
     pub fn snapshot(&mut self) -> Vec<u8> {
-        let mut bytes = self.emulator.snapshot(self.scanner.region);
-        let level = self.keys.modify_other_keys();
-        if level != 0 {
-            bytes.extend_from_slice(format!("\x1b[>4;{level}m").as_bytes());
-        }
-        bytes
+        let bytes = self.emulator.snapshot(self.scanner.region);
+        with_modify_other_keys(bytes, self.keys.modify_other_keys())
+    }
+
+    /// [`Self::snapshot`] without the normal screen's scrollback (see
+    /// [`Emulator::screens`]).
+    pub fn screens(&mut self) -> Vec<u8> {
+        let bytes = self.emulator.screens(self.scanner.region);
+        with_modify_other_keys(bytes, self.keys.modify_other_keys())
     }
 
     /// Draw `bytes` (a restored terminal's saved scrollback, made safe)
@@ -508,6 +511,15 @@ impl Scanner {
         let whole = top >= bottom || (top == 1 && bottom == rows);
         self.region = (!whole).then_some((top, bottom));
     }
+}
+
+/// `bytes` and then modifyOtherKeys at `level`, which alacritty does not
+/// keep, unless off.
+fn with_modify_other_keys(mut bytes: Vec<u8>, level: u8) -> Vec<u8> {
+    if level != 0 {
+        bytes.extend_from_slice(format!("\x1b[>4;{level}m").as_bytes());
+    }
+    bytes
 }
 
 #[cfg(test)]

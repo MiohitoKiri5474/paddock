@@ -50,6 +50,20 @@ impl Emulator {
     /// `&mut self` only to read the normal screen while the alternate one
     /// shows, and leaves it as it was.
     pub fn snapshot(&mut self, region: Option<(u16, u16)>) -> Vec<u8> {
+        self.write_snapshot(region, true)
+    }
+
+    /// [`Self::snapshot`] without the normal screen's scrollback: a fresh
+    /// emulator fed it shows the same screens, cursor and modes, with no
+    /// scrollback. Unlike the scrollback, it takes no longer to write or
+    /// to read for a long one.
+    pub fn screens(&mut self, region: Option<(u16, u16)>) -> Vec<u8> {
+        self.write_snapshot(region, false)
+    }
+
+    /// [`Self::snapshot`], the normal screen's scrollback in it if
+    /// `history`.
+    fn write_snapshot(&mut self, region: Option<(u16, u16)>, history: bool) -> Vec<u8> {
         let mut out = String::new();
         let mode = *self.term.mode();
         if mode.contains(TermMode::ALT_SCREEN) {
@@ -58,14 +72,14 @@ impl Emulator {
             // was (swapping back from the normal screen clears it).
             let alt = self.term.grid().clone();
             self.term.swap_alt();
-            write_screen(&mut out, self.term.grid(), true);
+            write_screen(&mut out, self.term.grid(), history);
             write_kitty(&mut out, *self.term.mode());
             self.term.swap_alt();
             *self.term.grid_mut() = alt;
             out.push_str("\x1b[?1049h\x1b[H");
             write_screen(&mut out, self.term.grid(), false);
         } else {
-            write_screen(&mut out, self.term.grid(), true);
+            write_screen(&mut out, self.term.grid(), history);
         }
         write_kitty(&mut out, mode);
         write_modes(&mut out, mode);
@@ -362,6 +376,22 @@ mod tests {
         let copy = rebuilt(&mut e);
         assert_same(&e, &copy);
         assert_eq!(copy.cursor(), (1, 2));
+    }
+
+    #[test]
+    fn the_screens_alone_rebuild_everything_but_the_scrollback() {
+        let mut e = Emulator::new(12, 4, SCROLLBACK);
+        for i in 0..10 {
+            e.feed(format!("\x1b[3{}mline {i}\x1b[0m\r\n", i % 8).as_bytes());
+        }
+        e.feed(b"\x1b[1mbold \x1b[?2004h\x1b[2;3H");
+        let mut copy = Emulator::new(12, 4, SCROLLBACK);
+        copy.feed(&e.screens(None));
+        assert_eq!(copy.history_len(), 0);
+        let (pictured, cursor, modes) = picture(&e);
+        let screen = pictured[pictured.len() - 4..].to_vec();
+        assert_eq!(picture(&copy), (screen, cursor, modes));
+        assert!(e.history_len() > 0, "the scrollback stays where it was");
     }
 
     #[test]
