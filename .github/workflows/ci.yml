@@ -6,61 +6,39 @@ on:
   pull_request:
 
 jobs:
-  # Unit tests; the harness runs in `harness`, once per backend.
+  # Unit tests; the harness runs in `harness`.
   test:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      # Some unit tests drive a real tmux server.
-      - name: Install tmux
-        run: brew install tmux
       - name: Unit tests
         run: cargo test --bin paddock --locked
 
-  # The app-level harness on each backend: native, the default, and the
-  # legacy tmux one (kept until v0.2). The tmux-only tests (tmux_only_*)
-  # run on tmux alone; scripts/test-native.sh skips them on native.
+  # The app-level harness, on paddock's own server.
   harness:
     runs-on: macos-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        backend: [native, tmux]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      # tmux hosts the tmux run's terminals; on native, the old-server
-      # notice's test starts a tmux server in its sandbox.
-      - name: Install tmux
-        run: brew install tmux
-      - name: Harness on the native backend
-        if: matrix.backend == 'native'
+      - name: Harness
         run: scripts/test-native.sh --locked --no-fail-fast
-      - name: Harness on the tmux backend
-        if: matrix.backend == 'tmux'
-        env:
-          PADDOCK_TEST_BACKEND: tmux
-        run: cargo test --test '*' --locked --no-fail-fast
 
-  # Linux (ticket 52): the unit tests and the harness on the native
-  # backend alone, as tmux is legacy there. The tmux-only tests are skipped
-  # by scripts/test-native.sh.
+  # Linux (ticket 52): the unit tests and the harness.
   linux:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      # zsh is the harness's shell; some unit tests and the old-server
-      # notice's test drive a real tmux server.
-      - name: Install zsh and tmux
-        run: sudo apt-get update && sudo apt-get install -y zsh tmux
+      # zsh is the harness's shell.
+      - name: Install zsh
+        run: sudo apt-get update && sudo apt-get install -y zsh
       - name: Unit tests
         run: cargo test --bin paddock --locked
-      - name: Harness on the native backend
+      - name: Harness
         run: scripts/test-native.sh --locked --no-fail-fast
 
   build:

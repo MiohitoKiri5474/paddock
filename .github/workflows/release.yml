@@ -72,13 +72,10 @@ jobs:
           rustup toolchain install stable --profile minimal --target "$TARGET"
           rustup default stable
       # ponytail: no rust-cache; releases are rare and a clean build is what we want to ship.
-      # Some unit tests drive a real tmux server; on Linux, zsh is their shell (as in ci.yml).
-      - name: Install tmux
-        if: runner.os == 'macOS'
-        run: brew install tmux
-      - name: Install zsh and tmux
+      # On Linux, zsh is the unit tests' shell (as in ci.yml).
+      - name: Install zsh
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y zsh tmux
+        run: sudo apt-get update && sudo apt-get install -y zsh
       - name: Unit tests
         run: cargo test --bin paddock --locked
       - name: Build release binary
