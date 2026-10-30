@@ -331,15 +331,46 @@ impl Paddock {
 
     /// Wait until `pred` holds for the drawn screen; panic with the screen if not.
     pub fn wait_for(&self, what: &str, pred: impl Fn(&str) -> bool) {
+        if !self.holds_within_timeout(pred) {
+            panic!(
+                "timed out waiting for {what}; screen:\n{}",
+                self.full_screen()
+            );
+        }
+    }
+
+    /// Whether `pred` comes to hold for the drawn screen within
+    /// [`TIMEOUT`]: [`Self::wait_for`] for a caller that says more than
+    /// the screen when it does not.
+    pub fn holds_within_timeout(&self, pred: impl Fn(&str) -> bool) -> bool {
         let start = Instant::now();
         while start.elapsed() < TIMEOUT {
             if pred(&self.screen()) {
-                return;
+                return true;
             }
             std::thread::sleep(Duration::from_millis(20));
         }
+        false
+    }
+
+    /// Wait for paddock to say it attached again after a server upgrade.
+    /// If it does not, the failure says whether paddock still runs (a
+    /// paddock waiting for an answer, or one that quit) and what the
+    /// server logged as it handed over, as well as the screen.
+    pub fn wait_upgraded(&mut self, sandbox: &Sandbox) {
+        if self.holds_within_timeout(|s| s.contains("programs kept running")) {
+            return;
+        }
+        let paddock = match self.child.try_wait() {
+            Ok(None) => "still running".to_string(),
+            Ok(Some(status)) => format!("exited: {status:?}"),
+            Err(e) => format!("unknown: {e}"),
+        };
+        let log = std::fs::read_to_string(sandbox.state_dir().join("server.log"))
+            .unwrap_or_else(|e| format!("(no server.log: {e})"));
         panic!(
-            "timed out waiting for {what}; screen:\n{}",
+            "timed out waiting for programs kept running; paddock {paddock}; \
+             screen:\n{}\nserver.log:\n{log}",
             self.full_screen()
         );
     }

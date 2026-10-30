@@ -393,10 +393,14 @@ fn question_mark_shows_key_help_and_any_key_closes_it() {
         "rename space",
         "C-a again sends C-a to the terminal",
     ];
-    paddock.wait_for("the help with every line", |_| {
+    let shown = paddock.holds_within_timeout(|_| {
         let screen = paddock.full_screen();
         lines.iter().all(|line| screen.contains(line))
     });
+    // Say which lines never came, beside the screen they are missing from.
+    let screen = paddock.full_screen();
+    let missing: Vec<_> = lines.iter().filter(|l| !screen.contains(*l)).collect();
+    assert!(shown, "the help lacks {missing:?}; screen:\n{screen}");
     paddock.send(b"q");
     paddock.wait_for("help closed", |_| {
         !paddock.full_screen().contains("paddock keys")
