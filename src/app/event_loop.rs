@@ -147,6 +147,13 @@ pub fn run(
             draw(screen, &app)?;
             last_draw = Instant::now();
             dirty = false;
+            // Once the current space is on screen, the others attach
+            // (`App::open_spaces`), before any event is handled.
+            if app.attach_rest() {
+                feed.update(&app, false);
+                dirty = true;
+                continue;
+            }
         }
         let event = match next_event(rx, dirty, last_draw) {
             Wait::Event(e) => e,

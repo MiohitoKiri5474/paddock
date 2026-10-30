@@ -312,6 +312,10 @@ pub struct App {
     /// The connections replaced by attaching again, until they end: what
     /// they still report is left out.
     pub(super) replaced: HashSet<u64>,
+    /// Spaces in the backend are still to attach, after the first draw
+    /// ([`App::attach_rest`]), with what the backend restored, said once
+    /// they are: a failure to attach one does not hide it.
+    pub(super) attach_later: Option<Option<Restored>>,
 }
 
 /// The part of a screen of `(cols, rows)` that shows the current tab's
@@ -437,6 +441,7 @@ impl App {
             upgrade_lost: HashSet::new(),
             next_connection: 0,
             replaced: HashSet::new(),
+            attach_later: None,
         };
         app.load_dismissed();
         app.open_spaces()?;
@@ -455,8 +460,8 @@ impl App {
         }
     }
 
-    /// Attach every space in the backend and make the saved one current,
-    /// or start the first space.
+    /// Attach the saved space, or the first, and make it current, or
+    /// start the first space; the others attach after the first draw.
     fn open_spaces(&mut self) -> Result<()> {
         let spaces = self.backend.spaces();
         if !spaces.is_empty() {
@@ -482,12 +487,29 @@ impl App {
             saved.space
         };
         let restored = self.backend.restored();
-        for s in &spaces {
+        // Only the space to show is attached now, the saved one, else the
+        // first that can be: the native server writes each attached
+        // terminal's scrollback under its lock, so every later attach
+        // waits for the earlier ones' scrollback. The rest attach after
+        // the first draw ([`Self::attach_rest`]), each in its place.
+        let saved = spaces
+            .iter()
+            .position(|s| Some(&s.id) == saved_space.as_ref());
+        let others = (0..spaces.len()).filter(|&i| Some(i) != saved);
+        for i in saved.into_iter().chain(others) {
             // A space that cannot be attached (it just ended) keeps paddock
             // from opening no other.
-            self.report(|app| app.attach(&s.id));
+            self.report(|app| app.attach(&spaces[i].id));
+            if !self.spaces.is_empty() {
+                break;
+            }
         }
-        self.note_restored(restored);
+        // With none attached, every space was tried: none is left.
+        if self.spaces.is_empty() || spaces.len() == self.spaces.len() {
+            self.note_restored(restored);
+        } else {
+            self.attach_later = Some(restored);
+        }
         self.current = self
             .spaces
             .iter()
@@ -497,6 +519,18 @@ impl App {
             self.new_space()?;
         }
         Ok(())
+    }
+
+    /// Attach the spaces [`Self::open_spaces`] left for after the first
+    /// draw, each in its place in the sidebar, the current space kept.
+    /// Whether there were any.
+    pub(super) fn attach_rest(&mut self) -> bool {
+        let Some(restored) = self.attach_later.take() else {
+            return false;
+        };
+        self.attach_missing(true);
+        self.note_restored(restored);
+        true
     }
 
     /// Say how many spaces the backend rebuilt from its saved layout, and
@@ -590,6 +624,12 @@ impl App {
 
     /// Attach space `id` at the end of the sidebar.
     pub(super) fn attach(&mut self, id: &SpaceId) -> Result<()> {
+        self.attach_at(id, self.spaces.len())
+    }
+
+    /// Attach space `id` at index `at` of the sidebar; the current space
+    /// stays current.
+    pub(super) fn attach_at(&mut self, id: &SpaceId, at: usize) -> Result<()> {
         let events = self.events.clone();
         let space = id.clone();
         self.next_connection += 1;
@@ -611,7 +651,10 @@ impl App {
         // Not the panes of floats just closed.
         let kept = terminals.into_iter().filter(|(p, _)| space.holds(p));
         self.terminals.extend(kept);
-        self.spaces.push(space);
+        if at <= self.current && self.current < self.spaces.len() {
+            self.current += 1;
+        }
+        self.spaces.insert(at, space);
         Ok(())
     }
 
