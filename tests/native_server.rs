@@ -20,6 +20,20 @@ fn native() -> Sandbox {
     sandbox
 }
 
+/// What the server's size limits are divided by in [`small_limits`].
+const DIVISOR: usize = 16;
+
+/// A native sandbox whose server has its size limits divided by
+/// [`DIVISOR`] (`PADDOCK_LIMITS_DIVISOR`): an input cap of 4 MiB, frames
+/// of 1 MiB, a client let go 1 MiB behind. What they do is the same as at
+/// full size, and a few MiB get through a PTY in seconds even on a loaded
+/// machine, where tens of MiB take minutes.
+fn small_limits() -> Sandbox {
+    let sandbox = native();
+    sandbox.set_env("PADDOCK_LIMITS_DIVISOR", Some(&DIVISOR.to_string()));
+    sandbox
+}
+
 fn ready(sandbox: &Sandbox) -> Paddock {
     let paddock = sandbox.launch();
     paddock.wait_for_text(PROMPT);
@@ -407,9 +421,9 @@ fn paste(len: usize) -> Vec<u8> {
 
 #[test]
 fn a_paste_bigger_than_any_frame_reaches_a_program_that_reads_whole() {
-    // Past the server's 16 MiB frame and 4 MiB input limits.
-    const LEN: usize = 17 << 20;
-    let sandbox = native();
+    // Past the server's largest frame (16 MiB, 1 MiB here).
+    const LEN: usize = (17 << 20) / DIVISOR;
+    let sandbox = small_limits();
     let mut paddock = ready(&sandbox);
     // Raw before the paste comes: a canonical line takes 1 KiB at most.
     paddock.type_line(&format!(
@@ -458,11 +472,12 @@ fn connect(sandbox: &Sandbox) -> (UnixStream, String) {
     (stream, terminal)
 }
 
-/// Send `data` as one input in parts of at most 8 MiB, as paddock does in
-/// 64 KiB ones.
+/// Send `data` as one input in parts of at most 512 KiB (under the
+/// smallest frame limit, [`small_limits`]'s), as paddock does in 64 KiB
+/// ones.
 fn send_input(stream: &mut UnixStream, terminal: &str, data: &[u8]) {
     let mut rest = data.len();
-    for part in data.chunks(8 << 20) {
+    for part in data.chunks(512 << 10) {
         rest -= part.len();
         send_part(stream, terminal, rest as u64, part);
     }
@@ -514,9 +529,10 @@ fn a_key_typed_while_a_big_paste_waits_still_arrives() {
 fn closed(stream: &mut UnixStream) -> bool {
     // macOS refuses socket options (EINVAL) on a socket the other side has
     // closed already, as the server may have by now under load; reads
-    // then end at once.
+    // then end at once. Anywhere else, or any other error, is a failure.
     if let Err(e) = stream.set_read_timeout(Some(harness::TIMEOUT)) {
-        assert_eq!(e.raw_os_error(), Some(22), "a read timeout: {e}");
+        let closed_on_macos = cfg!(target_os = "macos") && e.raw_os_error() == Some(libc::EINVAL);
+        assert!(closed_on_macos, "a read timeout: {e}");
     }
     while read_frame(stream).is_some() {}
     true
@@ -574,11 +590,17 @@ fn an_input_cut_by_a_takeover_is_discarded_whole() {
 
 /// End the `sleep` the shell of space-1 runs, once it runs.
 fn end_sleep(sandbox: &Sandbox) {
+    end_program(sandbox, "sleep");
+}
+
+/// End the program named `name` that the shell of space-1 runs, once it
+/// runs.
+fn end_program(sandbox: &Sandbox, name: &str) {
     let shell = sandbox.terminal("space-1").pid.expect("its shell's pid");
     let shell = shell.to_string();
-    wait_until("a sleep to end", || {
+    wait_until(&format!("{name} to end"), || {
         let pkill = std::process::Command::new("pkill")
-            .args(["-P", &shell, "-x", "sleep"])
+            .args(["-P", &shell, "-x", name])
             .status();
         pkill.is_ok_and(|s| s.success())
     });
@@ -586,8 +608,9 @@ fn end_sleep(sandbox: &Sandbox) {
 
 #[test]
 fn an_input_past_the_cap_is_refused_whole_with_one_notice() {
-    const CAP: usize = 64 << 20;
-    let sandbox = native();
+    const CAP: usize = (64 << 20) / DIVISOR;
+    const PASTE: usize = (8 << 20) / DIVISOR;
+    let sandbox = small_limits();
     let mut paddock = ready(&sandbox);
     // `cat` reads only once the test ends the `sleep`: nothing is taken
     // while the inputs come, however long sending them takes.
@@ -597,17 +620,17 @@ fn an_input_past_the_cap_is_refused_whole_with_one_notice() {
     stream
         .set_write_timeout(Some(SEND_TIMEOUT))
         .expect("a write timeout");
-    send_input(&mut stream, &terminal, &vec![b'x'; CAP - (4 << 20)]);
+    send_input(&mut stream, &terminal, &vec![b'x'; CAP - PASTE / 2]);
     // Past the cap: refused, both, with one notice.
-    let paste = [b"\x1b[200~".as_slice(), &vec![b'p'; 8 << 20], b"\x1b[201~"].concat();
+    let paste = [b"\x1b[200~".as_slice(), &vec![b'p'; PASTE], b"\x1b[201~"].concat();
     send_input(&mut stream, &terminal, &paste);
     send_input(&mut stream, &terminal, &paste);
     send_input(&mut stream, &terminal, b"Z");
 
-    paddock.wait_for_text("input refused: it would take what waits for sleep past 64 MiB");
+    paddock.wait_for_text("input refused: it would take what waits for sleep past 4 MiB");
     end_sleep(&sandbox);
     let file = sandbox.path("home/got.txt");
-    wait_for_len(&file, (CAP - (4 << 20) + 1) as u64, "what was kept");
+    wait_for_len(&file, (CAP - PASTE / 2 + 1) as u64, "what was kept");
     let got = std::fs::read(&file).unwrap();
     assert!(got.ends_with(b"xZ"), "the key after what was kept");
     assert!(!got.contains(&b'p'), "nothing of the refused pastes");
@@ -662,7 +685,9 @@ fn a_paddock_stalled_a_moment_under_heavy_output_stays_attached() {
 
 #[test]
 fn a_paddock_the_server_lets_go_says_so() {
-    let sandbox = native();
+    // Let go once 1 MiB behind for 5 s, not 16 MiB: the server's share of
+    // a loaded machine's CPU no longer decides whether it gets there.
+    let sandbox = small_limits();
     let mut paddock = ready(&sandbox);
     paddock.type_line("yes");
     paddock.wait_for_text("y\ny\ny\n");
@@ -679,12 +704,13 @@ fn a_paddock_the_server_lets_go_says_so() {
             .full_screen()
             .contains("lost the connection to the paddock server")
     });
-    // The shell runs on: a new paddock attaches to it.
+    // The shell runs on: a new paddock attaches to it. `yes` ends first:
+    // a paddock attached to it would have to keep within 1 MiB of it.
+    end_program(&sandbox, "yes");
     let mut again = sandbox.launch();
-    // Ctrl-C only once paddock has the terminal (raw, before it draws):
-    // sent earlier, it is the terminal's interrupt and ends paddock.
+    // Keys only once paddock has the terminal (raw, before it draws):
+    // sent earlier, the terminal would take them.
     again.wait_for("paddock drawn", |_| again.full_screen().contains("SPACES"));
-    again.send(b"\x03");
     again.type_line("echo back");
     again.wait_for_text("back\n");
 }

@@ -199,12 +199,9 @@ fn tabs_are_named_after_what_runs_in_them() {
     // tmux names a tab when its terminal writes: if it looked before cat
     // had the terminal (a loaded machine), it looks again only at cat's
     // echo. Each key typed is one more look, until the name is there.
-    let start = std::time::Instant::now();
-    while paddock.tabs().0 != ["1:home", "2:cat"] && start.elapsed() < harness::TIMEOUT {
-        paddock.send(b"x");
-        std::thread::sleep(std::time::Duration::from_millis(200));
-    }
-    paddock.wait_for_tabs(&["1:home", "2:cat"]);
+    paddock.wait_for_poking("the tab named after cat", b"x", |_| {
+        paddock.tabs().0 == ["1:home", "2:cat"]
+    });
     paddock.send(b"\x03");
     paddock.type_line("cd /");
     paddock.wait_for_tabs(&["1:home", "2:/"]);

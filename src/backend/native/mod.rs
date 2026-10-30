@@ -28,6 +28,7 @@ mod client;
 mod handover;
 mod hook;
 mod layout;
+mod limits;
 mod proc;
 mod protocol;
 mod pty;
