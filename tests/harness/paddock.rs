@@ -377,7 +377,7 @@ impl Paddock {
 
     /// [`Self::wait_for`], sending `poke` at each look while `pred` does
     /// not hold yet: for what only happens once the terminal writes again
-    /// (tmux names a tab only then), a key whose echo is that write.
+    /// (the server names a tab only then), a key whose echo is that write.
     pub fn wait_for_poking(&self, what: &str, poke: &[u8], pred: impl Fn(&str) -> bool) {
         self.wait_for(what, |screen| {
             if pred(screen) {

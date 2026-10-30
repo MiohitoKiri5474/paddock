@@ -237,9 +237,8 @@ struct RawConfig {
     #[serde(default)]
     github: RawGithub,
     /// Read only to check it: `kind` has one value left.
-    #[serde(default)]
-    #[allow(dead_code)]
-    backend: RawBackend,
+    #[serde(default, rename = "backend")]
+    _backend: RawBackend,
 }
 
 /// A `[github]` table as written.

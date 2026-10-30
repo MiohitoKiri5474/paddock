@@ -1,4 +1,4 @@
-//! Tickets 04 and 14: sidebar items (tmux sessions), their tabs (windows)
+//! Tickets 04 and 14: sidebar items (spaces), their tabs
 //! and prefix keys. Shell tabs are named after their directory: the test
 //! shells start in the sandbox's `home`.
 
@@ -196,7 +196,7 @@ fn tabs_are_named_after_what_runs_in_them() {
     new_tab(&mut paddock, &["1:home", "2:home"]);
 
     paddock.type_line("cat");
-    // tmux names a tab when its terminal writes: if it looked before cat
+    // The server names a tab when its terminal writes: if it looked before cat
     // had the terminal (a loaded machine), it looks again only at cat's
     // echo. Each key typed is one more look, until the name is there.
     paddock.wait_for_poking("the tab named after cat", b"x", |_| {
@@ -229,7 +229,7 @@ fn background_tabs_keep_receiving_output() {
 fn comma_renames_the_tab_and_the_name_survives_reattach() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
-    paddock.wait_for_tabs(&["1:home"]); // named by tmux by now
+    paddock.wait_for_tabs(&["1:home"]); // named by the server by now
 
     paddock.command(b",");
     paddock.wait_for_popup("Rename tab", "home");
@@ -265,9 +265,9 @@ fn dollar_renames_the_space() {
 fn a_tab_and_a_space_keep_a_hash_in_their_name() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
-    paddock.wait_for_tabs(&["1:home"]); // named by tmux by now
+    paddock.wait_for_tabs(&["1:home"]); // named by the server by now
 
-    // tmux expands formats in names: `v#S` would become `vspace-1`.
+    // tmux expanded formats in names (`v#S` became `vspace-1`); never again.
     paddock.command(b",");
     paddock.wait_for_popup("Rename tab", "home");
     paddock.send(b"\x15v#S\r");
@@ -304,7 +304,7 @@ fn renaming_a_space_to_a_taken_name_shows_an_error_and_keeps_the_old_name() {
 fn renaming_can_be_cancelled_and_does_not_reach_the_shell() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
-    paddock.wait_for_tabs(&["1:home"]); // named by tmux by now
+    paddock.wait_for_tabs(&["1:home"]); // named by the server by now
 
     paddock.command(b",");
     paddock.wait_for_popup("Rename tab", "home");

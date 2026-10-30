@@ -191,8 +191,8 @@ impl State {
         found.ok_or_else(|| anyhow!("no space {id}"))
     }
 
-    /// An error if a space is named `name` already, in tmux's words,
-    /// which paddock shows.
+    /// An error if a space is named `name` already, in the words tmux
+    /// used (`duplicate session`), which paddock shows.
     pub fn check_space_name(&self, name: &str) -> Result<()> {
         if self.spaces.iter().any(|s| s.name == name) {
             bail!("duplicate session: {name}");

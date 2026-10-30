@@ -1,4 +1,4 @@
-//! Ticket 29: `C-a z` zooms the focused split to fill its tab, through
+//! Ticket 29: `C-a z` zooms the focused split to fill its tab, like
 //! tmux's `resize-pane -Z`, and again gives the others their places back.
 //!
 //! The screen is 100x30; the sidebar takes 32 columns and the tab bar a row,

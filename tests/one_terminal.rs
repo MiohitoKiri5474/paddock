@@ -1,4 +1,4 @@
-//! Ticket 03: one terminal, drawn by paddock, on the hidden tmux server.
+//! Ticket 03: one terminal, drawn by paddock, on paddock's server.
 
 mod harness;
 

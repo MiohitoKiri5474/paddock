@@ -1,4 +1,4 @@
-//! Tickets 11 and 14: splits are tmux panes, and their layout lives in tmux.
+//! Tickets 11 and 14: splits, whose layout lives on the server.
 //!
 //! The screen is 100x30; the sidebar takes 32 columns and the tab bar a row,
 //! so panes get 68x29. Rows and mouse columns in these tests count from the
