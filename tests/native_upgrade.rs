@@ -6,7 +6,7 @@
 mod harness;
 
 use harness::backend::{alive, server_pid, NATIVE};
-use harness::older_server::{read_frame, send_frame};
+use harness::older_server::{fake_server_of_version, read_frame, send_frame};
 use harness::{Paddock, Sandbox, PROMPT};
 use std::io::Write;
 use std::net::Shutdown;
@@ -250,6 +250,26 @@ fn a_server_too_old_to_hand_over_says_to_restart_it() {
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("(pid 4242) gave no answer"), "{err}");
     assert!(err.contains("restart it"), "{err}");
+}
+
+/// Ticket 67: a server of protocol version 1 is known by its hello to be
+/// from before upgrades, so it is not asked; the command says it cannot
+/// hand over and how to restart it.
+#[test]
+fn a_server_of_version_1_is_said_to_be_unable_to_hand_over() {
+    let sandbox = native();
+    fake_server_of_version(&sandbox, 4242, 1);
+
+    let out = sandbox.run(&["server", "upgrade"], &[], "");
+
+    assert!(!out.status.success(), "{out:?}");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("(pid 4242) speaks protocol version 1, from a paddock that cannot hand"),
+        "{err}"
+    );
+    assert!(err.contains("start paddock and press Enter"), "{err}");
+    assert!(err.contains("its programs end"), "{err}");
 }
 
 #[test]
