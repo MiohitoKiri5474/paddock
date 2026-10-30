@@ -227,6 +227,16 @@ impl Gate {
     }
 }
 
+/// The hold on an attach [`hold_attach`] keeps: dropping it opens the
+/// gate, so a test that fails first leaves no thread waiting.
+struct Hold(Gate);
+
+impl Drop for Hold {
+    fn drop(&mut self) {
+        self.0.open();
+    }
+}
+
 /// The next frame, its length and all; `None` once the connection ends.
 fn next_frame(stream: &mut UnixStream) -> Option<Vec<u8>> {
     let mut len = [0; 4];
@@ -239,9 +249,9 @@ fn next_frame(stream: &mut UnixStream) -> Option<Vec<u8>> {
 
 /// Stand between paddock and the sandbox's server: the server's socket
 /// moves aside, and each connection to `server.sock` goes through to it,
-/// but a request to attach space `held` waits until the gate returned
-/// opens. The server never looks at its socket's path again.
-fn hold_attach(sandbox: &Sandbox, held: &str) -> Gate {
+/// but a request to attach space `held` waits until the hold returned
+/// is dropped. The server never looks at its socket's path again.
+fn hold_attach(sandbox: &Sandbox, held: &str) -> Hold {
     let socket = sandbox.state_dir().join("server.sock");
     let real = sandbox.state_dir().join("server-real.sock");
     std::fs::rename(&socket, &real).unwrap();
@@ -275,7 +285,7 @@ fn hold_attach(sandbox: &Sandbox, held: &str) -> Gate {
             });
         }
     });
-    gate
+    Hold(gate)
 }
 
 /// The space names the sidebar lists, top down.
@@ -316,11 +326,11 @@ fn the_current_space_is_drawn_before_the_others_attach() {
     drop(paddock);
     // No clock: space-1's attach is held until space-2, current, shows.
     // A paddock that attached every space before drawing never would.
-    let gate = hold_attach(&sandbox, &first);
+    let hold = hold_attach(&sandbox, &first);
     let mut again = sandbox.launch();
     again.wait_for_text("SECOND-2\n");
     assert_eq!(sidebar_spaces(&again), ["space-2"], "{}", again.screen());
-    gate.open();
+    drop(hold);
     // In its place, above space-2, which stays current.
     // Waited for as one frame, as the sidebar may be drawn in parts.
     let current = |name: &str| {

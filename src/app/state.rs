@@ -313,8 +313,9 @@ pub struct App {
     /// they still report is left out.
     pub(super) replaced: HashSet<u64>,
     /// Spaces in the backend are still to attach, after the first draw
-    /// ([`App::attach_rest`]).
-    pub(super) attach_later: bool,
+    /// ([`App::attach_rest`]), with what the backend restored, said once
+    /// they are: a failure to attach one does not hide it.
+    pub(super) attach_later: Option<Option<Restored>>,
 }
 
 /// The part of a screen of `(cols, rows)` that shows the current tab's
@@ -440,7 +441,7 @@ impl App {
             upgrade_lost: HashSet::new(),
             next_connection: 0,
             replaced: HashSet::new(),
-            attach_later: false,
+            attach_later: None,
         };
         app.load_dismissed();
         app.open_spaces()?;
@@ -503,8 +504,12 @@ impl App {
                 break;
             }
         }
-        self.attach_later = spaces.len() > self.spaces.len();
-        self.note_restored(restored);
+        // With none attached, every space was tried: none is left.
+        if self.spaces.is_empty() || spaces.len() == self.spaces.len() {
+            self.note_restored(restored);
+        } else {
+            self.attach_later = Some(restored);
+        }
         self.current = self
             .spaces
             .iter()
@@ -520,10 +525,11 @@ impl App {
     /// draw, each in its place in the sidebar, the current space kept.
     /// Whether there were any.
     pub(super) fn attach_rest(&mut self) -> bool {
-        if !std::mem::take(&mut self.attach_later) {
+        let Some(restored) = self.attach_later.take() else {
             return false;
-        }
+        };
         self.attach_missing(true);
+        self.note_restored(restored);
         true
     }
 
