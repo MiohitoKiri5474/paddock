@@ -63,7 +63,7 @@ fn a_program_started_before_an_upgrade_is_still_running_with_its_screen_after_it
     assert_eq!(terminal.scrollback, scrollback, "the same scrollback");
     // The attached paddock attached again: the same screen, and the
     // program still reads.
-    paddock.wait_for_text("programs kept running");
+    paddock.wait_upgraded(&sandbox);
     paddock.wait_for_text("typed-before\ntyped-before\n");
     paddock.type_line("typed-after");
     paddock.wait_for_text("typed-after\ntyped-after\n");
@@ -89,7 +89,7 @@ fn an_attached_paddock_attaches_again_where_it_was() {
     let out = sandbox.run(&["server", "upgrade"], &[], "");
 
     assert!(out.status.success(), "{out:?}");
-    paddock.wait_for_text("programs kept running");
+    paddock.wait_upgraded(&sandbox);
     // The same space and tab, and its shell takes input.
     assert_eq!(paddock.current_tab(), "2:home");
     paddock.wait_for_text("in-second-tab\n");
@@ -199,7 +199,7 @@ fn another_binary_takes_the_terminals_over() {
     let runs = format!("{} server --take-over", copy.display());
     assert!(command.starts_with(&runs), "{command}");
     assert_eq!(sandbox.shells(), shells, "the same shells");
-    paddock.wait_for_text("programs kept running");
+    paddock.wait_upgraded(&sandbox);
     paddock.wait_for_text("typed-before\ntyped-before\n");
     paddock.type_line("typed-after");
     paddock.wait_for_text("typed-after\ntyped-after\n");
@@ -311,7 +311,17 @@ fn a_paddock_with_a_busy_space_attaches_again_once_and_stays() {
          echo tick-$i; sleep 0.005; done",
         stop.display()
     ));
-    paddock.wait_for_text("tick-5\n");
+    // The highest tick drawn: any one from 5 on, not `tick-5` itself,
+    // which scrolls off at once if paddock draws late (a loaded machine)
+    // and is then never on the screen to be seen.
+    let ticks = |screen: &str| {
+        screen
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix("tick-")?.parse::<u32>().ok())
+            .max()
+            .unwrap_or(0)
+    };
+    paddock.wait_for("tick-5 or a later tick", |s| ticks(s) >= 5);
     paddock.command(b"C\r");
     paddock.wait_for_text(PROMPT);
     paddock.type_line("echo in-quiet-space");
@@ -320,18 +330,14 @@ fn a_paddock_with_a_busy_space_attaches_again_once_and_stays() {
     let out = sandbox.run(&["server", "upgrade"], &[], "");
 
     assert!(out.status.success(), "{out:?}");
-    paddock.wait_for_text("programs kept running");
+    paddock.wait_upgraded(&sandbox);
     paddock.type_line("echo after-upgrade");
     paddock.wait_for_text("after-upgrade\n");
     // The busy space, attached again, still streams.
     paddock.command(b"\t");
-    let ticks = |screen: &str| {
-        screen
-            .lines()
-            .filter_map(|l| l.trim().strip_prefix("tick-")?.parse::<u32>().ok())
-            .max()
-            .unwrap_or(0)
-    };
+    // Its ticks drawn first: counted on the quiet space's screen, `seen`
+    // would be 0, and any tick past 20 would do.
+    paddock.wait_for("the busy space's ticks", |s| ticks(s) > 0);
     let seen = ticks(&paddock.screen());
     paddock.wait_for("more ticks", |s| ticks(s) > seen + 20);
     std::fs::write(&stop, "").unwrap();
@@ -482,7 +488,7 @@ fn a_server_of_another_version_is_upgraded_and_its_programs_keep_running() {
     // Yes is the default.
     paddock.type_line("");
 
-    paddock.wait_for_text("programs kept running");
+    paddock.wait_upgraded(&sandbox);
     assert_programs_kept(&sandbox, &mut paddock, server, &shells);
 }
 
@@ -501,7 +507,7 @@ fn an_upgrade_whose_done_is_lost_is_done_if_the_same_server_answers() {
     paddock.wait_for_text("Upgrade it?");
     paddock.type_line("y");
 
-    paddock.wait_for_text("programs kept running");
+    paddock.wait_upgraded(&sandbox);
     assert!(!paddock.full_screen().contains("Restart it?"));
     assert_programs_kept(&sandbox, &mut paddock, server, &shells);
 }
