@@ -144,22 +144,23 @@ fn hook_events_drive_the_agent_row() {
 /// What a case is called, the hook's extra environment, and its event.
 type Case<'a> = (&'a str, &'a [(&'a str, &'a str)], &'a str);
 
-/// tmux-only: the variables a hook outside paddock's terminals may see are
-/// tmux's (another server's `TMUX`, or paddock's without `TMUX_PANE`).
+/// A hook with none of paddock's variables, or in a tmux started in a
+/// paddock terminal (which passed paddock's variables on), runs outside
+/// paddock's terminals: it says nothing, and its events go to the
+/// external log, never the server's.
 #[test]
-fn tmux_only_hooks_outside_paddock_say_nothing_and_go_to_the_external_log() {
+fn hooks_outside_paddock_say_nothing_and_go_to_the_external_log() {
     let sandbox = Sandbox::new();
     let _paddock = ready(&sandbox);
-    let pid = sandbox.state().instance.expect("the instance id");
-    let foreign = format!("/tmp/tmux-501/default,{pid},0");
-    let ours = sandbox.terminal("space-1").hook_env["TMUX"].clone();
-    let foreign_env = [("TMUX", foreign.as_str()), ("TMUX_PANE", "%0")];
-    let no_pane = [("TMUX", ours.as_str())];
-    let cases: [Case; 4] = [
-        ("foreign tmux", &foreign_env, "Stop"),
-        ("no tmux", &[], "Stop"),
-        ("no pane", &no_pane, "Stop"),
-        ("no pane, prompt", &no_pane, "UserPromptSubmit"),
+    let instance = sandbox.state().instance.expect("the instance id");
+    let ours = sandbox.terminal("space-1").hook_env;
+    let mut nested: Vec<(&str, &str)> =
+        ours.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    nested.extend([("TMUX", "/tmp/tmux-501/default,1,0"), ("TMUX_PANE", "%0")]);
+    let cases: [Case; 3] = [
+        ("no paddock terminal", &[], "Stop"),
+        ("tmux in a paddock terminal", nested.as_slice(), "Stop"),
+        ("tmux, prompt", nested.as_slice(), "UserPromptSubmit"),
     ];
     for (what, env, event) in cases {
         let out = sandbox.run(&["hook", event], env, &payload(event));
@@ -171,7 +172,7 @@ fn tmux_only_hooks_outside_paddock_say_nothing_and_go_to_the_external_log() {
     }
     // External sessions: none in the server's log, each in the external one.
     let events = sandbox.path("state/paddock/events");
-    assert!(!events.join(format!("{pid}.jsonl")).exists());
+    assert!(!events.join(format!("native-{instance}.jsonl")).exists());
     let external = std::fs::read_to_string(events.join("external.jsonl")).unwrap();
     let recorded: Vec<Value> = external
         .lines()

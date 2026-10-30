@@ -1,11 +1,10 @@
 //! What paddock keeps in the state directory (`layout.toml`) that the
-//! backend does not hold: which space was current (on tmux; the native
-//! server keeps it in `layout.json`, ADR 0008), and the sidebar's width.
-//! Tabs, splits, sizes and focus live in the backend (ADR 0006). A file
-//! from before, with its `current` tab and `tabs` layouts, still reads:
-//! those fields are ignored.
+//! backend does not hold: the sidebar's width. Tabs, splits, sizes, focus
+//! and the current space live in the server (ADR 0008). A file from
+//! before, with its `current` tab and `tabs` layouts, or the current
+//! space the tmux backend kept here, still reads: those fields are
+//! ignored.
 
-use crate::backend::SpaceId;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -14,10 +13,6 @@ pub const FILE_NAME: &str = "layout.toml";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Saved {
-    /// The current space's id, as the backend spells it (tmux: `$N`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[serde(alias = "item")]
-    pub space: Option<SpaceId>,
     /// The sidebar's width when last changed (`C-a {`, `C-a }`, dragging).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sidebar: Option<u16>,
@@ -61,9 +56,11 @@ mod tests {
     }
 
     #[test]
-    fn a_file_saved_as_item_still_names_the_current_space() {
+    fn a_file_with_the_tmux_backends_current_space_still_reads() {
+        let saved: Saved = toml::from_str("space = \"$4\"\nsidebar = 30").unwrap();
+        assert_eq!(saved.sidebar, Some(30));
         let saved: Saved = toml::from_str("item = \"$4\"").unwrap();
-        assert_eq!(saved.space.as_ref().map(SpaceId::as_str), Some("$4"));
+        assert_eq!(saved, Saved::default());
     }
 
     #[test]
@@ -71,13 +68,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("paddock-saved-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         assert_eq!(load(&dir).unwrap(), None);
-        let saved = Saved {
-            space: Some("$3".into()),
-            sidebar: Some(40),
-        };
+        let saved = Saved { sidebar: Some(40) };
         save(&dir, &saved).unwrap();
         assert_eq!(load(&dir).unwrap(), Some(saved));
-        std::fs::write(dir.join(FILE_NAME), "space = 1").unwrap();
+        std::fs::write(dir.join(FILE_NAME), "sidebar = \"wide\"").unwrap();
         let err = format!("{:#}", load(&dir).unwrap_err());
         assert!(err.contains("layout.toml"), "{err}");
         std::fs::remove_dir_all(&dir).unwrap();

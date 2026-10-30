@@ -27,7 +27,7 @@ mod worktrees;
 pub use dashboard::DashboardFilter;
 pub use rows::{Row, RowId, TaskDetails, TaskPrs, TaskRow};
 
-use crate::backend::{self, Backend, OldTmuxServer, OtherVersion, SpaceId, TerminalId};
+use crate::backend::{self, Backend, OtherVersion, SpaceId, TerminalId};
 use crate::config::Config;
 use crate::git::{Details, Status};
 use crate::paths::Paths;
@@ -81,26 +81,14 @@ pub fn run() -> Result<()> {
     let Some(_instance) = crate::instance::claim(&paths.state_dir)? else {
         return Ok(());
     };
-    let old_tmux = OldTmuxServer::find(&paths, config.backend);
-    let result = run_claimed(paths, &config, old_tmux.as_ref().map(OldTmuxServer::notice));
-    // Printed however paddock ends, after the screen is given back, and
-    // only then remembered as told.
-    if let Some(old) = old_tmux {
-        eprintln!("paddock: {}", old.notice());
-        old.told();
-    }
-    result
+    run_claimed(paths, &config)
 }
 
-/// [`run`] once this paddock is the only one: `notice`, if any, shows in
-/// the tab bar before the config's warnings, so its width does not cut it.
-fn run_claimed(paths: Paths, config: &Config, notice: Option<String>) -> Result<()> {
+/// [`run`] once this paddock is the only one.
+fn run_claimed(paths: Paths, config: &Config) -> Result<()> {
     let state_dir = paths.state_dir.clone();
-    let backend = Backend::new(paths, config.backend);
-    let notice = match (notice, prepare(&backend)?) {
-        (Some(old), Some(upgraded)) => Some(format!("{upgraded}; {old}")),
-        (old, upgraded) => upgraded.or(old),
-    };
+    let backend = Backend::new(paths);
+    let notice = prepare(&backend)?;
     let start_dir = std::env::current_dir().context("no current directory")?;
 
     let (tx, rx) = mpsc::channel();

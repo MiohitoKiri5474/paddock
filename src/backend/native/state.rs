@@ -306,8 +306,7 @@ impl State {
         self.send(space, Frame::Message(Message::Notice(notice)));
     }
 
-    /// Tell every attached client a space was made or ended, as each
-    /// space's connection hears it on tmux.
+    /// Tell every attached client a space was made or ended.
     pub fn notify_spaces(&mut self) {
         self.notify_all(&Notice::SpacesChanged);
     }

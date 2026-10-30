@@ -2,18 +2,14 @@
 //! second copy of paddock) never share state with the real one; and how
 //! paths under home are shown (`~`).
 //!
-//! - `PADDOCK_TMUX_SOCKET`: name of the hidden server's socket (`tmux -L`), default `paddock`.
 //! - `XDG_STATE_HOME`: state lives in `$XDG_STATE_HOME/paddock`, default `~/.local/state/paddock`.
 //! - `XDG_CONFIG_HOME`: config lives in `$XDG_CONFIG_HOME/paddock`, default `~/.config/paddock`.
 
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 
-const DEFAULT_SOCKET: &str = "paddock";
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Paths {
-    pub socket: String,
     pub state_dir: PathBuf,
     pub config_dir: PathBuf,
 }
@@ -40,22 +36,16 @@ impl Paths {
             None => home()?.join(".config"),
         };
         Ok(Self {
-            socket: non_empty("PADDOCK_TMUX_SOCKET").unwrap_or_else(|| DEFAULT_SOCKET.into()),
             state_dir: state_base.join("paddock"),
             config_dir: config_base.join("paddock"),
         })
-    }
-
-    /// paddock's generated tmux config for the hidden server.
-    pub fn tmux_conf(&self) -> PathBuf {
-        self.state_dir.join("tmux.conf")
     }
 }
 
 /// The home directory, for showing paths with `~`.
 pub struct HomePaths {
     home: String,
-    /// tmux reports directories with symlinks resolved (`/tmp` is
+    /// Directories may come with symlinks resolved (`/tmp` is
     /// `/private/tmp` on macOS), so home may be written either way.
     real_home: String,
 }
@@ -104,25 +94,18 @@ mod tests {
     #[test]
     fn defaults_follow_home() {
         let p = Paths::resolve(lookup(&[("HOME", "/h")])).unwrap();
-        assert_eq!(p.socket, "paddock");
         assert_eq!(p.state_dir, PathBuf::from("/h/.local/state/paddock"));
         assert_eq!(p.config_dir, PathBuf::from("/h/.config/paddock"));
-        assert_eq!(
-            p.tmux_conf(),
-            PathBuf::from("/h/.local/state/paddock/tmux.conf")
-        );
     }
 
     #[test]
     fn overrides_win_and_empty_values_are_ignored() {
         let p = Paths::resolve(lookup(&[
             ("HOME", "/h"),
-            ("PADDOCK_TMUX_SOCKET", "test-1"),
             ("XDG_STATE_HOME", "/s"),
             ("XDG_CONFIG_HOME", ""),
         ]))
         .unwrap();
-        assert_eq!(p.socket, "test-1");
         assert_eq!(p.state_dir, PathBuf::from("/s/paddock"));
         assert_eq!(p.config_dir, PathBuf::from("/h/.config/paddock"));
     }

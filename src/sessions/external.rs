@@ -7,7 +7,7 @@
 use super::{log, Agent, HookRecord, Session, Sessions, State};
 use std::collections::HashSet;
 
-/// What an external session's key starts with: never a tmux pane id (`%N`).
+/// What an external session's key starts with: never a terminal id (`%N`).
 const EXTERNAL: &str = "ext:";
 
 /// The key of the external session with id `session_id`.

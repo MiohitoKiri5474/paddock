@@ -238,7 +238,7 @@ mod tests {
             pid: 100,
             tty: "/dev/ttys001".into(),
             scrollback: 12,
-            hook_env: vec![("TMUX_PANE".into(), "%1".into())],
+            hook_env: vec![("PADDOCK_PANE".into(), "%1".into())],
         }];
         // `%2`-`%4` ended between the reads: nothing known of them.
         let unknown = |id: &str, x: u16, width: u16, focused: bool| {
@@ -272,7 +272,7 @@ mod tests {
                                     "id": "%1", "x": 0, "y": 0, "width": 34, "height": 29,
                                     "focused": false, "dir": "/w/api", "command": "zsh",
                                     "pid": 100, "tty": "/dev/ttys001", "scrollback": 12,
-                                    "hook_env": {"TMUX_PANE": "%1"}
+                                    "hook_env": {"PADDOCK_PANE": "%1"}
                                 },
                                 unknown("%2", 35, 33, true),
                             ]

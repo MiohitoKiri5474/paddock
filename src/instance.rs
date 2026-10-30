@@ -51,7 +51,7 @@ pub fn claim(state_dir: &Path) -> Result<Option<Instance>> {
     std::fs::create_dir_all(state_dir)
         .with_context(|| format!("cannot create {}", state_dir.display()))?;
     let path = state_dir.join(LOCK_FILE);
-    // std opens files close-on-exec, so tmux never inherits the lock.
+    // std opens files close-on-exec, so the server never inherits the lock.
     let mut file = OpenOptions::new()
         .read(true)
         .write(true)

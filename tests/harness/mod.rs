@@ -1,18 +1,15 @@
 //! App-level test harness: runs the real `paddock` binary in a pseudo-terminal
-//! against its own tmux socket, state, config and home directories, and reads
-//! what it draws with a VT parser.
+//! against its own state, config and home directories, and reads what it
+//! draws with a VT parser.
 //!
-//! Isolation: every [`Sandbox`] has its own `TMUX_TMPDIR`, so even a bug that
-//! ignored `PADDOCK_TMUX_SOCKET` could not reach the user's tmux server, and
-//! its own `XDG_STATE_HOME`, which holds the native server's socket and lock.
-//! The sandbox ends its tmux server and its native server when dropped.
+//! Isolation: every [`Sandbox`] has its own `XDG_STATE_HOME`, which holds
+//! the server's socket and lock, and its own `TMUX_TMPDIR`, so a tmux a
+//! test starts in a terminal could never reach the user's tmux server. The
+//! sandbox ends its server when dropped.
 //!
 //! Tests ask paddock what runs where (`paddock debug state`, see
-//! [`State`]), so they hold for any backend; only tests of tmux-only
-//! behaviour call tmux, through [`tmux_only`]. Their names start with
-//! `tmux_only_`: `cargo test -- --skip tmux_only` leaves them out.
-//! [`backend`] picks the backend a run is on; [`native_skip`] lists the
-//! tests the native backend cannot pass yet.
+//! [`State`]). [`backend`] finds and stops the sandbox's server;
+//! [`native_skip`] lists the tests the native backend cannot pass yet.
 
 #![allow(dead_code)] // Each test binary uses a different part of the harness.
 
@@ -24,7 +21,6 @@ mod paddock;
 mod panes;
 pub mod stall;
 mod state;
-pub mod tmux_only;
 
 pub use paddock::Paddock;
 #[allow(unused_imports)] // Each test binary uses a different part of them.
@@ -72,7 +68,6 @@ const POPUP_TITLES: &[&str] = &[
     "Delete worktree",
     "Finder",
 ];
-const SOCKET: &str = "paddock-test";
 const CURSOR_QUERY: &[u8] = b"\x1b[6n";
 
 /// Directories and environment one paddock under test lives in.
@@ -142,10 +137,6 @@ impl Sandbox {
         self.path("state/paddock")
     }
 
-    fn tmux_tmpdir(&self) -> PathBuf {
-        self.path("tmux")
-    }
-
     /// Names of the socket files anywhere in the sandbox: a backend that
     /// ran left its socket there.
     pub fn sockets(&self) -> Vec<String> {
@@ -168,13 +159,11 @@ impl Sandbox {
     }
 
     /// The sandbox's variables a process in paddock's terminals has from
-    /// the backend's clean environment: its state directory and where the
-    /// backend listens: tmux's socket (`PADDOCK_TMUX_SOCKET`,
-    /// `TMUX_TMPDIR`), and the state directory, which holds the native
-    /// server's socket. The native backend's own variables (ticket 43)
-    /// join them here.
+    /// the server's clean environment: its state directory, which holds
+    /// the server's socket, and `TMUX_TMPDIR`. The server's own variables
+    /// (ticket 43) join them here.
     pub fn backend_env(&self) -> Vec<(String, String)> {
-        let kept = ["XDG_STATE_HOME", "PADDOCK_TMUX_SOCKET", "TMUX_TMPDIR"];
+        let kept = ["XDG_STATE_HOME", "TMUX_TMPDIR"];
         let env = self.env().into_iter();
         env.filter(|(k, _)| kept.contains(&k.as_str())).collect()
     }
@@ -210,7 +199,6 @@ impl Sandbox {
             ("LANG".into(), "en_US.UTF-8".into()),
             ("TERM".into(), "xterm-256color".into()),
             ("TMUX_TMPDIR".into(), p("tmux")),
-            ("PADDOCK_TMUX_SOCKET".into(), SOCKET.into()),
             ("XDG_STATE_HOME".into(), p("state")),
             ("XDG_CONFIG_HOME".into(), p("config")),
             // Never the real clipboard: copies land in the sandbox's `clipboard` file.
@@ -288,48 +276,10 @@ impl Sandbox {
         }
     }
 
-    /// Run tmux against the sandbox's paddock server, for tmux-only tests
-    /// (see [`tmux_only`]); it fails the test if tmux fails.
-    fn tmux(&self, args: &[&str]) -> String {
-        let out = self.tmux_tolerant(args);
-        assert!(
-            out.status.success(),
-            "tmux {args:?} failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
-        String::from_utf8_lossy(&out.stdout).into_owned()
-    }
-
-    /// [`Self::tmux`] that may fail (as `kill-server` with no server
-    /// running): its whole output.
-    fn tmux_tolerant(&self, args: &[&str]) -> std::process::Output {
-        Command::new("tmux")
-            .env("TMUX_TMPDIR", self.tmux_tmpdir())
-            .env_remove("TMUX")
-            .args(["-L", SOCKET])
-            .args(args)
-            .output()
-            .expect("run tmux")
-    }
-
-    /// Start the sandbox's tmux server as an older paddock left it
-    /// running. Like every tmux call here, it is on the sandbox's socket,
-    /// never the user's.
-    pub fn start_old_tmux_server(&self) {
-        self.tmux(&["-f", "/dev/null", "new-session", "-d", "sleep 600"]);
-    }
-
-    /// End the server [`Self::start_old_tmux_server`] started.
-    pub fn kill_old_tmux_server(&self) {
-        self.tmux(&["kill-server"]);
-    }
-
-    /// Write paddock's `config.toml`, after the `[backend]` table the
-    /// run picks (see [`backend`]) unless `text` has its own.
+    /// Write paddock's `config.toml`.
     pub fn write_config(&self, text: &str) {
         let dir = self.path("config/paddock");
         std::fs::create_dir_all(&dir).expect("config dir");
-        let text = format!("{}{text}", backend::config(text));
         std::fs::write(dir.join("config.toml"), text).expect("write config");
     }
 
@@ -690,7 +640,6 @@ fn write_gh_stub(root: &std::path::Path) {
 
 impl Drop for Sandbox {
     fn drop(&mut self) {
-        self.tmux_tolerant(&["kill-server"]);
         backend::stop_server(&self.state_dir());
         // Shells may still be exiting and writing into the sandbox; retry
         // until the whole tree is gone (TempDir's own cleanup is then a no-op).

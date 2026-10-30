@@ -12,12 +12,9 @@
 /// `file::test` (the file under `tests/`), and the tickets it needs.
 pub const NATIVE_NEEDS: &[(&str, &[&str])] = &[];
 
-/// On a native run, fail the running test at once if it is listed: it
-/// needs tickets the native backend does not have yet.
+/// Fail the running test at once if it is listed: it needs tickets the
+/// native backend does not have yet.
 pub fn check() {
-    if !super::backend::native() {
-        return;
-    }
     // libtest names each test's thread after the test, with one test
     // thread too (`--test-threads=1`, Rust 1.93; checked by
     // `tests/native_server.rs`). Without a name this check cannot say,

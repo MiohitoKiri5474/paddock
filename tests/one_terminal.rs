@@ -2,7 +2,7 @@
 
 mod harness;
 
-use harness::{tmux_only, Sandbox, PROMPT};
+use harness::{Sandbox, PROMPT};
 
 /// Whether process `pid` runs.
 fn alive(pid: &str) -> bool {
@@ -57,70 +57,6 @@ fn typed_text_and_utf8_reach_the_shell() {
     paddock.wait_for_text("漢字-OK");
 }
 
-/// tmux-only: the tmux server's environment and options, and the
-/// variables tmux sets in its panes.
-#[test]
-fn tmux_only_hidden_server_has_a_clean_environment_and_its_own_config() {
-    let sandbox = Sandbox::new();
-    let mut paddock = sandbox.launch();
-    paddock.wait_for_text(PROMPT);
-
-    let global_env = tmux_only::tmux(&sandbox, &["show-environment", "-g"]);
-    assert!(!global_env.contains("SUPACODE_"), "{global_env}");
-    assert!(!global_env.contains("TERM_PROGRAM"), "{global_env}");
-
-    // tmux sets its own TERM_PROGRAM=tmux in panes; the launching app's value must not leak.
-    paddock.type_line("env | grep -c -E 'SUPACODE_|leaky-terminal'; echo env-checked");
-    paddock.wait_for_text("env-checked");
-    // tmux sets its own TERM_PROGRAM in every pane; pin exactly what shells see.
-    paddock.type_line("echo tp=$TERM_PROGRAM tmux-var=${TMUX%%,*}");
-    paddock.wait_for_text("tp=tmux tmux-var=");
-    let tmux_var = paddock
-        .rows()
-        .into_iter()
-        .find(|r| r.starts_with("tp="))
-        .unwrap_or_default();
-    assert!(
-        !tmux_var.contains("/tmp/nope"),
-        "outer TMUX leaked: {tmux_var}"
-    );
-    assert!(
-        paddock.rows().iter().any(|l| l == "0"),
-        "leaked variables:\n{}",
-        paddock.screen()
-    );
-
-    let options = tmux_only::tmux(&sandbox, &["show-options", "-g"]);
-    for expected in ["status off", "prefix None"] {
-        assert!(
-            options.lines().any(|l| l == expected),
-            "missing {expected:?}:\n{options}"
-        );
-    }
-    let server_options = tmux_only::tmux(&sandbox, &["show-options", "-s"]);
-    assert!(
-        server_options.lines().any(|l| l == "escape-time 0"),
-        "{server_options}"
-    );
-    assert!(
-        server_options.lines().any(|l| l == "extended-keys on"),
-        "{server_options}"
-    );
-}
-
-/// tmux-only: the sockets in the sandbox's `TMUX_TMPDIR`.
-#[test]
-fn tmux_only_only_the_paddock_socket_is_used() {
-    let sandbox = Sandbox::new();
-    let mut paddock = sandbox.launch();
-    paddock.wait_for_text(PROMPT);
-    paddock.detach_keys();
-    assert!(paddock.wait_exit());
-
-    // Both paddock and its shell ran with this TMUX_TMPDIR: no "default" socket appeared.
-    assert_eq!(sandbox.sockets(), vec!["paddock-test".to_string()]);
-}
-
 #[test]
 fn mouse_wheel_scrolls_the_terminal_history() {
     let sandbox = Sandbox::new();
@@ -153,25 +89,6 @@ fn mouse_wheel_scrolls_the_terminal_history() {
     paddock.wait_for("back at the bottom", |s| {
         !s.contains("[") && s.contains(PROMPT)
     });
-}
-
-/// tmux-only: the wheel scrolls paddock's own scrollback, never tmux's
-/// copy mode.
-#[test]
-fn tmux_only_the_wheel_leaves_tmux_out_of_copy_mode() {
-    let sandbox = Sandbox::new();
-    let mut paddock = sandbox.launch();
-    paddock.wait_for_text(PROMPT);
-    paddock.type_line("seq 1 200");
-    paddock.wait_for("seq to finish", |s| s.lines().any(|l| l.trim() == "200"));
-
-    for _ in 0..10 {
-        paddock.wheel(true, 10, 10);
-    }
-
-    paddock.wait_for("scrolled view", |s| s.contains("[30/"));
-    let in_mode = ["display-message", "-p", "-t", "space-1", "#{pane_in_mode}"];
-    assert_eq!(tmux_only::tmux(&sandbox, &in_mode).trim(), "0");
 }
 
 #[test]
@@ -241,22 +158,6 @@ fn detaching_keeps_the_shell_and_relaunching_restores_history() {
     again.wait_for_text("after-reattach\n");
 }
 
-/// tmux-only: the generated `tmux.conf`.
-#[test]
-fn tmux_only_config_and_state_follow_the_xdg_overrides() {
-    let sandbox = Sandbox::new();
-    let paddock = sandbox.launch();
-    paddock.wait_for_text(PROMPT);
-
-    let conf = sandbox.path("state/paddock/tmux.conf");
-    let text = std::fs::read_to_string(&conf).expect("generated tmux.conf in XDG_STATE_HOME");
-    assert!(text.contains("set -s escape-time 0"), "{text}");
-    assert!(
-        !sandbox.path("home/.local").exists(),
-        "nothing written under HOME"
-    );
-}
-
 #[test]
 fn exiting_the_shell_quits_paddock_and_the_next_launch_starts_a_new_one() {
     let sandbox = Sandbox::new();
@@ -321,18 +222,4 @@ fn terminals_know_paddocks_state_dir_for_hooks() {
     let state = sandbox.path("state").to_string_lossy().into_owned();
     let want = format!("state-{state}");
     paddock.wait_for("the variable", |s| s.lines().any(|l| l.trim() == want));
-}
-
-/// tmux-only: hooks find the tmux server by `PADDOCK_TMUX_SOCKET`.
-#[test]
-fn tmux_only_terminals_know_paddocks_socket_for_hooks() {
-    let sandbox = Sandbox::new();
-    let mut paddock = sandbox.launch();
-    paddock.wait_for_text(PROMPT);
-
-    paddock.type_line("echo \"pane-$PADDOCK_TMUX_SOCKET\"");
-
-    paddock.wait_for("the variable", |s| {
-        s.lines().any(|l| l.trim() == "pane-paddock-test")
-    });
 }

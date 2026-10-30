@@ -1,40 +1,14 @@
-//! Which backend the suite runs on: `PADDOCK_TEST_BACKEND=native` runs
-//! every test against paddock's own server, anything else or nothing
-//! against the legacy tmux backend, so a plain `cargo test` runs the
-//! tmux-only tests where they pass. Either way the sandbox's config names
-//! the backend (`[backend] kind`), as paddock's own default is native.
-//! The native server lives in the sandbox's state directory, socket and
-//! lock included, so it never meets the user's own.
+//! paddock's server in a sandbox: it lives in the sandbox's state
+//! directory, socket and lock included, so it never meets the user's own.
 //!
-//! On native, run `scripts/test-native.sh`: it skips the tmux-only tests
-//! and those in [`super::native_skip`]. CI runs the suite on both.
+//! Run the suite with `scripts/test-native.sh`: it skips the tests in
+//! [`super::native_skip`].
 
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-/// The environment variable that picks the backend.
-const VAR: &str = "PADDOCK_TEST_BACKEND";
-
-/// Whether this run is on the native backend.
-pub fn native() -> bool {
-    std::env::var(VAR).is_ok_and(|v| v == "native")
-}
-
-/// A config that picks the native backend whatever the run's.
+/// A config that names the backend, as one written before v0.2 may.
 pub const NATIVE: &str = "[backend]\nkind = \"native\"\n";
-
-/// A config that picks the tmux backend whatever the run's.
-pub const TMUX: &str = "[backend]\nkind = \"tmux\"\n";
-
-/// The `[backend]` table a sandbox's config `text` starts with: the run's,
-/// or none if it has its own (a test of one backend's).
-pub fn config(text: &str) -> &'static str {
-    match (text.contains("[backend]"), native()) {
-        (true, _) => "",
-        (false, true) => NATIVE,
-        (false, false) => TMUX,
-    }
-}
 
 /// The pid of the native server running for `state_dir` (paddock's own
 /// state directory), from its lock; `None` if none ever ran.

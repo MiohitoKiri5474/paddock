@@ -2,7 +2,7 @@
 //! `claude agents --json` reports, folded into one state per terminal. Each
 //! session has an [`AgentKind`]; what an event means depends on it.
 //!
-//! Terminals are keyed by tmux pane id (`%N`). Each terminal shows its latest
+//! Terminals are keyed by terminal id (`%N`). Each terminal shows its latest
 //! conversation only: an event from a new session id replaces the old one,
 //! keeping only the terminal's task rows.
 //!
@@ -87,7 +87,7 @@ impl State {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HookRecord {
     pub event: String,
-    /// The tmux pane (`%N`) the hook ran in. An external session's record
+    /// The terminal (`%N`) the hook ran in. An external session's record
     /// has none in the log (the field is left out); once read, it carries
     /// the session's [`external_key`] here.
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -2006,7 +2006,7 @@ mod tests {
         s.reconcile(10, &[agent("newer", "idle", Some("%1"))]);
         assert_eq!(shown(&s), Some(vec![]));
         // A terminal first seen after a dismissal of its pane id (from
-        // before tmux reused it) is shown.
+        // before the server reused it) is shown.
         s.dismiss("%7", None, 20);
         s.reconcile(30, &[agent("x", "idle", Some("%7"))]);
         assert!(s.shown("%7").is_some());

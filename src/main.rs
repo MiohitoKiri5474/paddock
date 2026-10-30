@@ -88,7 +88,7 @@ fn upgrade_server(binary: Option<&str>) -> anyhow::Result<()> {
         None => std::env::current_exe().context("cannot find paddock's own binary")?,
     };
     let paths = paths::Paths::from_env()?;
-    let backend = backend::Backend::new(paths, config::BackendKind::Native);
+    let backend = backend::Backend::new(paths);
     let pid = match backend.upgrade(&exe) {
         Ok(pid) => pid,
         Err(e) => match e.downcast_ref::<backend::NoHandover>() {

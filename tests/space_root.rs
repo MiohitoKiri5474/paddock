@@ -7,7 +7,7 @@
 
 mod harness;
 
-use harness::{tmux_only, Paddock, Sandbox, PROMPT};
+use harness::{Paddock, Sandbox, PROMPT};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -202,32 +202,6 @@ fn c_a_r_makes_the_focused_directory_the_root_with_a_notice() {
     let old = focused_pane(&sandbox, "space-1");
     paddock.command(b"c");
     wait_for_new_pane_in(&paddock, &sandbox, "space-1", &old, &b);
-}
-
-/// tmux-only: a space made before roots is a tmux session without the
-/// option.
-#[test]
-fn tmux_only_a_space_without_a_root_falls_back_to_its_first_tab_s_directory() {
-    let sandbox = Sandbox::new();
-    sandbox.write_config(ROOT_MODE);
-    let mut paddock = ready(&sandbox);
-    let a = dir(&sandbox, "a");
-    let b = dir(&sandbox, "b");
-    // As if made before roots: no option.
-    tmux_only::tmux(
-        &sandbox,
-        &["set-option", "-u", "-t", "=space-1:", "@paddock-root"],
-    );
-    assert_eq!(root(&sandbox, "space-1"), "");
-    cd(&mut paddock, &sandbox, "space-1", &a);
-    paddock.command(b"c");
-    paddock.wait_for_current_tab("2:a");
-    paddock.wait_for_text(PROMPT);
-    cd(&mut paddock, &sandbox, "space-1", &b);
-
-    let old = focused_pane(&sandbox, "space-1");
-    paddock.command(b"c");
-    wait_for_new_pane_in(&paddock, &sandbox, "space-1", &old, &a);
 }
 
 #[test]
