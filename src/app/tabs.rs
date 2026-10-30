@@ -120,18 +120,26 @@ impl App {
         Ok(())
     }
 
-    /// Attach, at the end of the sidebar, the spaces made in the backend by
-    /// someone else (`paddock worktree new`, or by hand); the
-    /// current space stays. Every space's connection hears of a new space,
+    /// Attach, in the backend's order (a new one at the end of the
+    /// sidebar), the spaces made in the backend by someone else
+    /// (`paddock worktree new`, or by hand) or left for after the first
+    /// draw ([`Self::attach_rest`]); the current space stays. Every space's connection hears of a new space,
     /// so one already attached is skipped. A space that ended before it
     /// could be attached is no news.
     pub(super) fn attach_new_spaces(&mut self) {
-        let known: Vec<SpaceId> = self.spaces.iter().map(|s| s.id.clone()).collect();
-        for space in self.backend.spaces() {
-            if known.contains(&space.id) {
+        let order = self.backend.spaces();
+        for (i, space) in order.iter().enumerate() {
+            if self.spaces.iter().any(|s| s.id == space.id) {
                 continue;
             }
-            if let Err(e) = self.attach(&space.id) {
+            // After the last attached space that comes before it.
+            let before = &order[..i];
+            let at = self
+                .spaces
+                .iter()
+                .rposition(|s| before.iter().any(|b| b.id == s.id))
+                .map_or(0, |p| p + 1);
+            if let Err(e) = self.attach_at(&space.id, at) {
                 let alive = self.backend.spaces().iter().any(|s| s.id == space.id);
                 if alive {
                     self.notice = Some(format!("{e:#}"));

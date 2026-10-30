@@ -1,9 +1,10 @@
 //! Ticket 64: a paddock attaching to the native server draws a terminal
 //! as soon with a full scrollback as with none: its screens come first,
 //! its scrollback after, the output read on while it is rebuilt, and
-//! copy mode and the wheel still reach every line of it. Every test
-//! here picks the native backend in its config, so it runs on either
-//! run of the suite.
+//! copy mode and the wheel still reach every line of it. Ticket 65: with
+//! several spaces, it draws the current one before attaching the others.
+//! Every test here picks the native backend in its config, so it runs on
+//! either run of the suite.
 
 mod harness;
 
@@ -11,7 +12,9 @@ use harness::backend::NATIVE;
 use harness::stall::wait_with_progress;
 use harness::{Paddock, Sandbox, PROMPT};
 use std::io::{Read, Write};
-use std::os::unix::net::UnixStream;
+use std::net::Shutdown;
+use std::os::unix::net::{UnixListener, UnixStream};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 /// The copy-mode line's start.
@@ -202,4 +205,141 @@ fn after_attaching_copy_mode_and_the_wheel_reach_the_whole_scrollback() {
         again.wheel(true, 10, 10);
         std::thread::sleep(Duration::from_millis(50));
     }
+}
+
+/// A gate the attach [`hold_attach`] holds waits at, until it opens.
+#[derive(Clone, Default)]
+struct Gate(Arc<(Mutex<bool>, Condvar)>);
+
+impl Gate {
+    fn open(&self) {
+        let (open, changed) = &*self.0;
+        *open.lock().unwrap() = true;
+        changed.notify_all();
+    }
+
+    fn wait(&self) {
+        let (open, changed) = &*self.0;
+        let mut open = open.lock().unwrap();
+        while !*open {
+            open = changed.wait(open).unwrap();
+        }
+    }
+}
+
+/// The next frame, its length and all; `None` once the connection ends.
+fn next_frame(stream: &mut UnixStream) -> Option<Vec<u8>> {
+    let mut len = [0; 4];
+    stream.read_exact(&mut len).ok()?;
+    let mut frame = len.to_vec();
+    frame.resize(4 + u32::from_be_bytes(len) as usize, 0);
+    stream.read_exact(&mut frame[4..]).ok()?;
+    Some(frame)
+}
+
+/// Stand between paddock and the sandbox's server: the server's socket
+/// moves aside, and each connection to `server.sock` goes through to it,
+/// but a request to attach space `held` waits until the gate returned
+/// opens. The server never looks at its socket's path again.
+fn hold_attach(sandbox: &Sandbox, held: &str) -> Gate {
+    let socket = sandbox.state_dir().join("server.sock");
+    let real = sandbox.state_dir().join("server-real.sock");
+    std::fs::rename(&socket, &real).unwrap();
+    let listener = UnixListener::bind(&socket).unwrap();
+    let gate = Gate::default();
+    let attach = format!(r#"{{"Attach":{{"space":"{held}""#);
+    let held = gate.clone();
+    std::thread::spawn(move || {
+        for client in listener.incoming() {
+            let Ok(mut client) = client else { return };
+            let Ok(mut server) = UnixStream::connect(&real) else {
+                return;
+            };
+            let mut back = server.try_clone().unwrap();
+            let mut to_client = client.try_clone().unwrap();
+            std::thread::spawn(move || {
+                let _ = std::io::copy(&mut back, &mut to_client);
+                let _ = to_client.shutdown(Shutdown::Both);
+            });
+            let (attach, gate) = (attach.clone(), held.clone());
+            std::thread::spawn(move || {
+                while let Some(frame) = next_frame(&mut client) {
+                    if String::from_utf8_lossy(&frame).contains(&attach) {
+                        gate.wait();
+                    }
+                    if server.write_all(&frame).is_err() {
+                        break;
+                    }
+                }
+                let _ = server.shutdown(Shutdown::Both);
+            });
+        }
+    });
+    gate
+}
+
+/// The space names the sidebar lists, top down.
+fn sidebar_spaces(p: &Paddock) -> Vec<String> {
+    p.sidebar()
+        .iter()
+        .map(|l| l.trim().to_string())
+        .filter(|l| l.starts_with("space-"))
+        .collect()
+}
+
+/// Open a second space and show `text` in it: space-2, current.
+fn second_space(sandbox: &Sandbox, paddock: &mut Paddock, text: &str) {
+    paddock.command(b"C\r");
+    paddock.wait_for("the second space", |_| sandbox.state().spaces.len() == 2);
+    paddock.wait_for_text(PROMPT);
+    paddock.type_line(&format!("echo {text}"));
+    paddock.wait_for_text(&format!("{text}\n"));
+}
+
+/// Pick space-1 in the sidebar, once it lists both spaces in order.
+fn pick_space_1(p: &mut Paddock) {
+    p.wait_for("both spaces", |_| {
+        sidebar_spaces(p) == ["space-1", "space-2"]
+    });
+    p.command(b"w");
+    p.send(b"k\r");
+}
+
+#[test]
+fn the_current_space_is_drawn_before_the_others_attach() {
+    let sandbox = native();
+    let mut paddock = ready(&sandbox);
+    paddock.type_line("echo FIRST-$((0+1))");
+    paddock.wait_for_text("FIRST-1\n");
+    second_space(&sandbox, &mut paddock, "SECOND-2");
+    let first = sandbox.state().spaces[0].id.clone();
+    drop(paddock);
+    // No clock: space-1's attach is held until space-2, current, shows.
+    // A paddock that attached every space before drawing never would.
+    let gate = hold_attach(&sandbox, &first);
+    let mut again = sandbox.launch();
+    again.wait_for_text("SECOND-2\n");
+    assert_eq!(sidebar_spaces(&again), ["space-2"], "{}", again.screen());
+    gate.open();
+    // In its place, above space-2, which stays current.
+    pick_space_1(&mut again);
+    again.wait_for_text("FIRST-1\n");
+}
+
+#[test]
+fn a_space_attached_after_the_first_draw_has_its_whole_scrollback() {
+    let sandbox = native();
+    let mut paddock = ready(&sandbox);
+    paddock.type_line("seq 1 60000; echo FIL''LED-$((1+1))");
+    wait_while_streaming(&paddock, FILLED);
+    let (top, status) = top_of_history(&mut paddock, None);
+    let lines = total_lines(&status).to_string();
+    assert!(lines.parse::<usize>().unwrap() > 50_000, "{status}");
+    second_space(&sandbox, &mut paddock, "SECOND-2");
+
+    // space-2 is current: space-1 attaches after the first draw.
+    let mut again = attach_again(&sandbox, paddock, "SECOND-2\n");
+    pick_space_1(&mut again);
+    again.wait_for_text(FILLED);
+    assert_eq!(top_of_history(&mut again, Some(&lines)), (top, status));
 }
