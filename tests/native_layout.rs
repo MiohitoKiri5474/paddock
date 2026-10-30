@@ -264,7 +264,9 @@ fn layout_of_version_1(dir: &Path, sub: &Path) -> String {
 /// hand over, so no upgrade is offered: one question, yes by default,
 /// says its programs end and its layout comes back. Enter restarts it,
 /// the layout it saved comes back with a shell in each directory, and
-/// the notice says its programs ended.
+/// the notice says its programs ended. The fake holds no lock, so nothing
+/// is ended here: `restarting_a_server_of_another_version_restores_its_layout`
+/// and `restarting_ends_the_server_holding_the_lock` cover the SIGTERM.
 #[test]
 fn enter_restarts_a_server_too_old_to_hand_over_and_restores_its_layout() {
     let sandbox = native();
@@ -285,7 +287,8 @@ fn enter_restarts_a_server_too_old_to_hand_over_and_restores_its_layout() {
     for words in [
         "pid 4242) speaks protocol version 1",
         "cannot hand its terminals over",
-        "its layout comes back with a fresh shell in each terminal. [Y/n]",
+        "its layout comes back with a fresh shell in each terminal",
+        "without scrollback or agent sessions, which it never saved. [Y/n]",
     ] {
         assert!(asked.contains(words), "{words:?} in {asked}");
     }

@@ -268,7 +268,7 @@ fn a_server_of_version_1_is_said_to_be_unable_to_hand_over() {
         err.contains("(pid 4242) speaks protocol version 1, from a paddock that cannot hand"),
         "{err}"
     );
-    assert!(err.contains("restart it"), "{err}");
+    assert!(err.contains("start paddock and press Enter"), "{err}");
     assert!(err.contains("its programs end"), "{err}");
 }
 

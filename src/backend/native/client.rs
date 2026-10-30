@@ -331,7 +331,7 @@ impl Client {
         stream.set_read_timeout(Some(UPGRADE_TIMEOUT))?;
         let server = match protocol::read(&mut stream, protocol::FROM_SERVER)? {
             Some(Frame::Message(Message::Hello { version, pid, .. }))
-                if version < protocol::HANDOVER_VERSION =>
+                if !protocol::can_hand_over(version) =>
             {
                 let version = Some(version);
                 return Err(NoHandover { pid, version }.into());

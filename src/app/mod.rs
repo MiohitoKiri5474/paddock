@@ -208,7 +208,8 @@ fn restart(backend: &Backend, other: &OtherVersion) -> Result<Option<String>> {
     let question = format!(
         "paddock: {}.\nIt is from before upgrades, so it cannot hand its terminals over.\n\
          Restart it? Its programs and agents end; its layout comes back with a fresh \
-         shell in each terminal. [Y/n] ",
+         shell in each terminal, without scrollback or agent sessions, which it never \
+         saved. [Y/n] ",
         other.mismatch()
     );
     if !ask(&question, true)? {
@@ -251,7 +252,8 @@ fn upgrade(backend: &Backend, other: &OtherVersion) -> Result<Option<String>> {
 }
 
 /// Ask `question` on the terminal: whether the answer is yes, `default`
-/// for an empty one; no, with no terminal to ask on.
+/// for an empty one; no at the end of input, or with no terminal to ask
+/// on.
 fn ask(question: &str, default: bool) -> Result<bool> {
     if !std::io::stdin().is_terminal() {
         return Ok(false);
@@ -259,10 +261,38 @@ fn ask(question: &str, default: bool) -> Result<bool> {
     print!("{question}");
     std::io::stdout().flush()?;
     let mut answer = String::new();
-    std::io::stdin().read_line(&mut answer)?;
-    let answer = answer.trim();
+    let read = std::io::stdin().read_line(&mut answer)?;
+    Ok(answered((read > 0).then_some(answer.as_str()), default))
+}
+
+/// Whether the line `answer` says yes: `default` for an empty one (Enter
+/// alone), no at the end of input (`None`, as after Ctrl-D), which never
+/// counts as the default.
+fn answered(answer: Option<&str>, default: bool) -> bool {
+    let Some(answer) = answer.map(str::trim) else {
+        return false;
+    };
     if answer.is_empty() {
-        return Ok(default);
+        return default;
     }
-    Ok(answer.eq_ignore_ascii_case("y") || answer.eq_ignore_ascii_case("yes"))
+    answer.eq_ignore_ascii_case("y") || answer.eq_ignore_ascii_case("yes")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::answered;
+
+    #[test]
+    fn enter_takes_the_default_and_the_end_of_input_says_no() {
+        assert!(answered(Some("\n"), true));
+        assert!(!answered(Some("\n"), false));
+        assert!(
+            !answered(None, true),
+            "Ctrl-D is no, even when yes is the default"
+        );
+        assert!(answered(Some(" Yes\n"), false));
+        assert!(answered(Some("y"), false), "a last line with no newline");
+        assert!(!answered(Some("n\n"), true));
+        assert!(!answered(Some("maybe\n"), true));
+    }
 }

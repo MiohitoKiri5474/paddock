@@ -51,6 +51,12 @@ pub const VERSION: u32 = 2;
 /// 1) closes the connection at an upgrade: it can only be restarted.
 pub const HANDOVER_VERSION: u32 = 2;
 
+/// Whether a server speaking protocol `version` may hand its terminals
+/// over: not one from before [`HANDOVER_VERSION`].
+pub fn can_hand_over(version: u32) -> bool {
+    version >= HANDOVER_VERSION
+}
+
 /// The largest frame the client reads: a snapshot of 50,000 lines of
 /// scrollback, even with colours changing every few cells, fits.
 pub const FROM_SERVER: usize = 256 << 20;
@@ -440,20 +446,25 @@ impl OtherVersion {
         )
     }
 
-    /// Whether the server may hand its terminals over: not one from
-    /// before [`HANDOVER_VERSION`], which can only be restarted.
+    /// Whether the server may hand its terminals over ([`can_hand_over`]):
+    /// one that cannot can only be restarted.
     pub fn can_hand_over(&self) -> bool {
-        self.version >= HANDOVER_VERSION
+        can_hand_over(self.version)
     }
 }
 
 impl std::fmt::Display for OtherVersion {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let pid = self.pid;
+        // A newer server's layout.json may be one this paddock cannot read.
+        let layout = if self.version < VERSION {
+            "its layout comes back"
+        } else {
+            "its layout comes back if this paddock can read it"
+        };
         write!(
             f,
-            "{}: end it (kill {pid}) and start paddock again; its programs end, and its \
-             layout comes back",
+            "{}: end it (kill {pid}) and start paddock again; its programs end, and {layout}",
             self.mismatch()
         )
     }
@@ -545,6 +556,9 @@ mod tests {
         assert!(said.contains("end it (kill 7)"), "{said}");
         assert!(said.contains("its layout comes back"), "{said}");
         assert!(!said.contains("close every terminal"), "{said}");
+        assert!(!said.contains("if this paddock can read it"), "{said}");
+        let newer = other(999).to_string();
+        assert!(newer.contains("its layout comes back if this paddock can read it"));
     }
 
     /// A connection the other side reset.
