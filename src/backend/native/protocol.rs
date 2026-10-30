@@ -184,10 +184,15 @@ pub enum Request {
     TerminalPids,
     TerminalDetails,
     /// Take this connection as the client attached to the space, shown
-    /// at `size`: any other client of that space is let go.
+    /// at `size`: any other client of that space is let go. With
+    /// `scrollback_after`, each terminal's scrollback comes after its
+    /// screens (see [`Answer::Attached`]); a client that never sends it
+    /// is sent both at once, as before.
     Attach {
         space: SpaceId,
         size: (u16, u16),
+        #[serde(default)]
+        scrollback_after: bool,
     },
     /// Show the attached space at `size` (no reply).
     Resize((u16, u16)),
@@ -259,10 +264,18 @@ pub enum Answer {
     /// resumed; `None` if it rebuilt none, or another client was told.
     Restored(Option<Restored>),
     /// The space is attached: one snapshot frame follows for each
-    /// terminal, in this order, at this size; then its output.
+    /// terminal, in this order, at this size; then its output. With
+    /// `scrollback_after` (asked for, and from a server that knows it),
+    /// those snapshots leave the normal screen's scrollback out, and a
+    /// second frame for each terminal, in the same order, follows them
+    /// before any output: its whole snapshot, of the same moment. A
+    /// client then draws the screens without waiting for the scrollback,
+    /// which takes time to write and to read in proportion to its size.
     Attached {
         structure: Structure,
         terminals: Vec<(TerminalId, (u16, u16))>,
+        #[serde(default)]
+        scrollback_after: bool,
     },
 }
 
@@ -598,6 +611,40 @@ mod tests {
         round_trip(Frame::Upgrade(Upgrade::Probed));
         round_trip(Frame::Upgrade(Upgrade::Done { pid: 42 }));
         round_trip(Frame::Upgrade(Upgrade::Refused("no".into())));
+    }
+
+    #[test]
+    fn an_attach_without_scrollback_after_is_one_from_before_it() {
+        // What a paddock from before ticket 64 sends, and its server
+        // answers: the scrollback comes with the screens.
+        let old = r#"{"Request":{"Attach":{"space":"$1","size":[80,24]}}}"#;
+        let Message::Request(Request::Attach {
+            scrollback_after, ..
+        }) = serde_json::from_str(old).unwrap()
+        else {
+            panic!("an attach");
+        };
+        assert!(!scrollback_after);
+        let attached = Message::Reply(Ok(Answer::Attached {
+            structure: Structure::default(),
+            terminals: Vec::new(),
+            scrollback_after: true,
+        }));
+        let mut old = serde_json::to_value(&attached).unwrap();
+        let fields = &mut old["Reply"]["Ok"]["Attached"];
+        assert!(fields
+            .as_object_mut()
+            .unwrap()
+            .remove("scrollback_after")
+            .is_some());
+        let message: Message = serde_json::from_value(old).unwrap();
+        let Message::Reply(Ok(Answer::Attached {
+            scrollback_after, ..
+        })) = message
+        else {
+            panic!("attached: {message:?}");
+        };
+        assert!(!scrollback_after);
     }
 
     #[test]

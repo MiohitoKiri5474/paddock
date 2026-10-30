@@ -29,6 +29,15 @@ pub enum WentOn {
     Resized,
 }
 
+/// A fresh emulator of `(cols, rows)` fed `snapshot` (a terminal's
+/// snapshot with its scrollback), for [`Terminal::take_scrollback`]. Its
+/// own call, so the work can be done off the event loop.
+pub fn rebuild((cols, rows): (u16, u16), snapshot: &[u8]) -> Emulator {
+    let mut emulator = Emulator::new(cols, rows, SCROLLBACK);
+    emulator.feed(snapshot);
+    emulator
+}
+
 pub struct Terminal {
     emulator: Emulator,
     keys: KeyModeScanner,
@@ -135,6 +144,19 @@ impl Terminal {
         self.went_on.take()
     }
 
+    /// Take `emulator` in place of its own: one rebuilt by [`rebuild`]
+    /// from the snapshot of the same moment as the one this terminal was
+    /// rebuilt from, but with the scrollback, and fed nothing since. Its
+    /// size, scroll offset and selection are this terminal's.
+    pub fn take_scrollback(&mut self, mut emulator: Emulator) {
+        let (cols, rows) = self.emulator.size();
+        if emulator.size() != (cols, rows) {
+            emulator.resize(cols, rows);
+        }
+        emulator.keep_view(&self.emulator);
+        self.emulator = emulator;
+    }
+
     pub fn emulator(&self) -> &Emulator {
         &self.emulator
     }
@@ -147,6 +169,68 @@ impl Terminal {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A terminal of `size` with lines 0 to `lines - 1`, then `then`.
+    fn emulator_with(size: (u16, u16), lines: usize, then: &[u8]) -> Emulator {
+        let mut e = Emulator::new(size.0, size.1, SCROLLBACK);
+        for i in 0..lines {
+            e.feed(format!("\x1b[3{}mline {i}\x1b[0m\r\n", i % 8).as_bytes());
+        }
+        e.feed(then);
+        e
+    }
+
+    /// A terminal rebuilt from `e`'s screens, as a client attaches: then
+    /// the scrollback comes, rebuilt from its whole snapshot.
+    fn attached(e: &mut Emulator) -> (Terminal, Emulator) {
+        let mut t = Terminal::new(e.size());
+        t.output(&e.screens(None));
+        assert_eq!(t.emulator().history_len(), 0, "the screens alone first");
+        (t, rebuild(e.size(), &e.snapshot(None)))
+    }
+
+    #[test]
+    fn the_scrollback_after_the_screens_rebuilds_the_terminal_whole() {
+        for then in [&b"tail\x1b[2;3H"[..], b"\x1b[?1049h\x1b[Hfull\r\nscreen"] {
+            let mut e = emulator_with((12, 4), 30, then);
+            let (mut t, rebuilt) = attached(&mut e);
+            t.take_scrollback(rebuilt);
+            assert_eq!(t.emulator().history_len(), e.history_len());
+            assert_eq!(t.emulator_mut().snapshot(None), e.snapshot(None));
+            // What comes next continues it the same.
+            t.output(b"\x1b[?1049lnext\r\n");
+            e.feed(b"\x1b[?1049lnext\r\n");
+            assert_eq!(t.emulator_mut().snapshot(None), e.snapshot(None));
+        }
+    }
+
+    #[test]
+    fn the_scrollback_takes_the_size_the_terminal_has_since() {
+        let mut e = emulator_with((12, 4), 30, b"tail");
+        let (mut t, rebuilt) = attached(&mut e);
+        t.resize((8, 6));
+        t.take_scrollback(rebuilt);
+        e.resize(8, 6);
+        assert_eq!(t.emulator().size(), (8, 6));
+        assert_eq!(t.emulator().history_len(), e.history_len());
+        assert_eq!(t.emulator_mut().snapshot(None), e.snapshot(None));
+    }
+
+    #[test]
+    fn the_scrollback_keeps_the_view_and_the_selection() {
+        let mut e = emulator_with((12, 4), 30, b"tail");
+        let (mut t, rebuilt) = attached(&mut e);
+        t.emulator_mut().select(1, 0);
+        t.emulator_mut().select_to(2, 3);
+        let selected = t.emulator().selected_text();
+        t.take_scrollback(rebuilt);
+        assert_eq!(t.emulator().scroll_offset(), 0);
+        assert_eq!(t.emulator().selected_text(), selected);
+        // Once there, the view scrolls back into it.
+        t.emulator_mut().scroll(i32::MAX);
+        assert_eq!(t.emulator().scroll_offset(), e.history_len());
+        assert_eq!(t.emulator().row_text(0), "line 0");
+    }
 
     #[test]
     fn status_reports_are_read_even_while_paused() {

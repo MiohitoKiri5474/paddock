@@ -345,6 +345,18 @@ fn handle_backend(
                 terminals_changed: unseen,
             }
         }
+        // A terminal's scrollback, after its screens: before any output.
+        backend::Event::Scrollback { terminal, emulator } => {
+            let taken = app.terminals.get_mut(&terminal).zip(emulator.take());
+            if let Some((t, emulator)) = taken {
+                t.take_scrollback(emulator);
+            }
+            BackendHandled {
+                flow: Flow::Continue,
+                changed: app.shows(&terminal) || app.shows_in_preview(&terminal),
+                terminals_changed: false,
+            }
+        }
         // The space ended: its last terminal exited or was closed.
         backend::Event::Ended if app.space_ended(space) => {
             BackendHandled::terminals_changed(Flow::Continue)
