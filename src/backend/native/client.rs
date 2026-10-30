@@ -743,11 +743,16 @@ impl Client {
         std::thread::spawn(move || {
             // Each terminal's emulator rebuilt with its scrollback, here,
             // off the event loop: the longer it is, the longer it takes.
+            // All read first, so the server's queue drains meanwhile.
+            let mut snapshots = Vec::new();
             for (terminal, size) in later {
                 let Ok(bytes) = read_snapshot(&mut reader, &terminal) else {
                     deliver(Event::Lost);
                     return;
                 };
+                snapshots.push((terminal, size, bytes));
+            }
+            for (terminal, size, bytes) in snapshots {
                 let emulator = Rebuilt::new(terminal::rebuild(size, &bytes));
                 if !deliver(Event::Scrollback { terminal, emulator }) {
                     return;

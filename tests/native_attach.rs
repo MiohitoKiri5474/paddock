@@ -7,6 +7,7 @@
 mod harness;
 
 use harness::backend::NATIVE;
+use harness::stall::wait_with_progress;
 use harness::{Paddock, Sandbox, PROMPT};
 use std::time::{Duration, Instant};
 
@@ -31,6 +32,22 @@ fn ready(sandbox: &Sandbox) -> Paddock {
     let paddock = sandbox.launch();
     paddock.wait_for_text(PROMPT);
     paddock
+}
+
+/// Wait until `text` shows, as long as the screen still changes: under
+/// load, drawing 60,000 lines can take longer than [`harness::TIMEOUT`],
+/// which then counts from the last change.
+fn wait_while_streaming(paddock: &Paddock, text: &str) {
+    wait_with_progress(
+        || paddock.screen(),
+        |screen| screen.contains(text),
+        |_| {
+            format!(
+                "no {text}, no longer changing; screen:\n{}",
+                paddock.full_screen()
+            )
+        },
+    );
 }
 
 /// A new paddock attached to the sandbox's server (the last one gone),
@@ -87,7 +104,7 @@ fn the_first_draw_takes_no_longer_with_a_full_scrollback() {
         paddock = again;
     }
     paddock.type_line(FILL);
-    paddock.wait_for_text(FILLED);
+    wait_while_streaming(&paddock, FILLED);
     let (_again, full) = attach_again(&sandbox, paddock, FILLED);
     // Before ticket 64, the scrollback came first: about 2 s more on an
     // idle machine, 10 s and more on a loaded one.
@@ -103,7 +120,7 @@ fn after_attaching_copy_mode_and_the_wheel_reach_the_whole_scrollback() {
     let sandbox = native();
     let mut paddock = ready(&sandbox);
     paddock.type_line("seq 1 60000; echo FIL''LED-$((1+1))");
-    paddock.wait_for_text(FILLED);
+    wait_while_streaming(&paddock, FILLED);
     // What the paddock that saw it all keeps: 50,000 lines and more.
     let (top, status) = top_of_history(&mut paddock, None);
     let lines = total_lines(&status).to_string();

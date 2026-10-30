@@ -40,7 +40,10 @@ use std::collections::HashMap;
 use std::io::{ErrorKind, Read, Write};
 use std::path::PathBuf;
 
-/// The protocol's version: it changes whenever a message changes.
+/// The protocol's version: it changes whenever a message changes in a
+/// way the other side would misread. A field added with
+/// `#[serde(default)]`, which a side that never sends it reads as before,
+/// changes nothing (as `Attach::scrollback_after`).
 pub const VERSION: u32 = 2;
 
 /// The largest frame the client reads: a snapshot of 50,000 lines of
