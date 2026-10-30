@@ -416,7 +416,10 @@ fn clicks_and_the_wheel_inside_the_float_reach_its_pane() {
 
     paddock.command(b"G");
     wait_for_float(&paddock, &sandbox);
-    wait_for_full_text(&paddock, "ready-for-mouse");
+    // The box's title is the command, `ready-for-mouse` in it: wait for
+    // the line the program wrote, at the box's left border, which comes
+    // after the modes that ask for reports.
+    wait_for_full_text(&paddock, "│ready-for-mouse");
     // Cell (5, 2) inside the box: 1-based (6, 3) in the float's pane.
     let (col, row) = (CORNER.0 as u16 + 1 + 5, CORNER.1 as u16 + 1 + 2);
     paddock.click_screen(col, row);
