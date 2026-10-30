@@ -1,10 +1,10 @@
-//! Tickets 04 and 14: sidebar items (tmux sessions), their tabs (windows)
+//! Tickets 04 and 14: sidebar items (spaces), their tabs
 //! and prefix keys. Shell tabs are named after their directory: the test
 //! shells start in the sandbox's `home`.
 
 mod harness;
 
-use harness::{tmux_only, Paddock, Sandbox, CURRENT_ITEM, PROMPT};
+use harness::{Paddock, Sandbox, CURRENT_ITEM, PROMPT};
 
 /// A launched paddock with its first shell ready.
 fn ready(sandbox: &Sandbox) -> Paddock {
@@ -196,7 +196,7 @@ fn tabs_are_named_after_what_runs_in_them() {
     new_tab(&mut paddock, &["1:home", "2:home"]);
 
     paddock.type_line("cat");
-    // tmux names a tab when its terminal writes: if it looked before cat
+    // The server names a tab when its terminal writes: if it looked before cat
     // had the terminal (a loaded machine), it looks again only at cat's
     // echo. Each key typed is one more look, until the name is there.
     paddock.wait_for_poking("the tab named after cat", b"x", |_| {
@@ -229,7 +229,7 @@ fn background_tabs_keep_receiving_output() {
 fn comma_renames_the_tab_and_the_name_survives_reattach() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
-    paddock.wait_for_tabs(&["1:home"]); // named by tmux by now
+    paddock.wait_for_tabs(&["1:home"]); // named by the server by now
 
     paddock.command(b",");
     paddock.wait_for_popup("Rename tab", "home");
@@ -265,9 +265,9 @@ fn dollar_renames_the_space() {
 fn a_tab_and_a_space_keep_a_hash_in_their_name() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
-    paddock.wait_for_tabs(&["1:home"]); // named by tmux by now
+    paddock.wait_for_tabs(&["1:home"]); // named by the server by now
 
-    // tmux expands formats in names: `v#S` would become `vspace-1`.
+    // tmux expanded formats in names (`v#S` became `vspace-1`); never again.
     paddock.command(b",");
     paddock.wait_for_popup("Rename tab", "home");
     paddock.send(b"\x15v#S\r");
@@ -304,7 +304,7 @@ fn renaming_a_space_to_a_taken_name_shows_an_error_and_keeps_the_old_name() {
 fn renaming_can_be_cancelled_and_does_not_reach_the_shell() {
     let sandbox = Sandbox::new();
     let mut paddock = ready(&sandbox);
-    paddock.wait_for_tabs(&["1:home"]); // named by tmux by now
+    paddock.wait_for_tabs(&["1:home"]); // named by the server by now
 
     paddock.command(b",");
     paddock.wait_for_popup("Rename tab", "home");
@@ -448,29 +448,6 @@ fn reattaching_shows_every_space_and_tab_as_the_backend_has_them() {
     again.wait_for_text("third-tab-marker\n");
 }
 
-/// tmux-only: an older paddock's server is a tmux server.
-#[test]
-fn tmux_only_sessions_of_an_older_paddock_open_as_one_space_each() {
-    let sandbox = Sandbox::new();
-    // As v1 left the server: one session per terminal, and none of the
-    // options paddock added since.
-    for name in ["terminal-1", "api"] {
-        tmux_only::tmux(&sandbox, &["new-session", "-d", "-s", name, "-c", "/"]);
-    }
-    std::fs::create_dir_all(sandbox.path("state/paddock")).unwrap();
-    std::fs::write(
-        sandbox.path("state/paddock/layout.toml"),
-        "current = 1\n[[tabs]]\nfocus = \"$0\"\nroot = { leaf = \"$0\" }\n",
-    )
-    .unwrap();
-
-    let paddock = sandbox.launch();
-
-    wait_for_spaces_at(&paddock, &[("terminal-1", "/"), ("api", "/")]);
-    paddock.wait_for_tabs(&["1:/"]);
-    assert!(!paddock.full_screen().contains("invalid layout"));
-}
-
 #[test]
 fn the_prefix_comes_from_the_config_file() {
     let sandbox = Sandbox::new();
@@ -569,32 +546,6 @@ fn reattaching_a_split_tab_while_one_split_streams_loses_nothing() {
     let mut again = reattach_while_streaming(&sandbox, paddock);
 
     check_stream(&sandbox, &mut again, "space-1:0.0", 0);
-}
-
-/// tmux-only: what paddock draws after a reattach while streaming is what
-/// tmux holds for the terminal, row for row.
-#[test]
-fn tmux_only_a_terminal_reattached_while_streaming_is_drawn_as_tmux_holds_it() {
-    let sandbox = Sandbox::new();
-    let mut paddock = ready(&sandbox);
-    start_stream(&sandbox, &mut paddock);
-
-    let again = reattach_while_streaming(&sandbox, paddock);
-
-    again.wait_for("stream-done and the prompt", |s| {
-        let lines: Vec<&str> = s.lines().map(str::trim_end).collect();
-        lines
-            .windows(2)
-            .any(|w| w[0] == "stream-done" && w[1].starts_with(PROMPT))
-    });
-    let height = usize::from(sandbox.terminal("space-1").height);
-    let held: Vec<String> = tmux_only::tmux(&sandbox, &["capture-pane", "-p", "-t", "space-1"])
-        .lines()
-        .map(|l| l.trim_end().to_string())
-        .collect();
-    let drawn: Vec<String> = again.rows().into_iter().skip(1).take(height).collect();
-    let n = held.len().min(height);
-    assert_eq!(drawn[..n], held[..n], "drawn terminal differs from tmux's");
 }
 
 /// Wait for the stream in terminal `target` (drawn from row 1, column

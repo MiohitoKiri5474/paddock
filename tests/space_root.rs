@@ -1,5 +1,5 @@
-//! Ticket 31: a root directory per space. A space's root is stored in
-//! tmux as the session option `@paddock-root`, set when the space is made
+//! Ticket 31: a root directory per space. A space's root is kept with
+//! the space on the server, set when the space is made
 //! (`C-a C`, `C-a W`, `paddock worktree new`) and changed with `C-a R`.
 //! With `[spaces] new_tab_dir = "root"`, new tabs and splits start there;
 //! by default they start in the focused terminal's directory, as before.
@@ -7,7 +7,7 @@
 
 mod harness;
 
-use harness::{tmux_only, Paddock, Sandbox, PROMPT};
+use harness::{Paddock, Sandbox, PROMPT};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -41,7 +41,7 @@ fn ready(sandbox: &Sandbox) -> Paddock {
 }
 
 /// `cd` the focused terminal of session `space` to `to`, and wait until
-/// tmux sees it there.
+/// the server sees it there.
 fn cd(paddock: &mut Paddock, sandbox: &Sandbox, space: &str, to: &Path) {
     paddock.type_line(&format!("cd '{}'", to.display()));
     paddock.wait_for(&format!("{space} in {}", to.display()), |_| {
@@ -202,32 +202,6 @@ fn c_a_r_makes_the_focused_directory_the_root_with_a_notice() {
     let old = focused_pane(&sandbox, "space-1");
     paddock.command(b"c");
     wait_for_new_pane_in(&paddock, &sandbox, "space-1", &old, &b);
-}
-
-/// tmux-only: a space made before roots is a tmux session without the
-/// option.
-#[test]
-fn tmux_only_a_space_without_a_root_falls_back_to_its_first_tab_s_directory() {
-    let sandbox = Sandbox::new();
-    sandbox.write_config(ROOT_MODE);
-    let mut paddock = ready(&sandbox);
-    let a = dir(&sandbox, "a");
-    let b = dir(&sandbox, "b");
-    // As if made before roots: no option.
-    tmux_only::tmux(
-        &sandbox,
-        &["set-option", "-u", "-t", "=space-1:", "@paddock-root"],
-    );
-    assert_eq!(root(&sandbox, "space-1"), "");
-    cd(&mut paddock, &sandbox, "space-1", &a);
-    paddock.command(b"c");
-    paddock.wait_for_current_tab("2:a");
-    paddock.wait_for_text(PROMPT);
-    cd(&mut paddock, &sandbox, "space-1", &b);
-
-    let old = focused_pane(&sandbox, "space-1");
-    paddock.command(b"c");
-    wait_for_new_pane_in(&paddock, &sandbox, "space-1", &old, &a);
 }
 
 #[test]

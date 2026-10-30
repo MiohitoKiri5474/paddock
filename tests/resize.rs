@@ -1,7 +1,7 @@
 //! Ticket 30: resizing splits. `C-a H/J/K/L` move the focused split's
-//! border by 2 (tmux's `resize-pane`), and repeat without the prefix for
-//! `[keys] repeat_ms`; dragging the border between two splits moves it,
-//! live, and the layout stays in tmux.
+//! border by 2 (like tmux's `resize-pane`), and repeat without the prefix
+//! for `[keys] repeat_ms`; dragging the border between two splits moves
+//! it, live, and the layout stays on the server.
 //!
 //! The screen is 100x30; the sidebar takes 32 columns and the tab bar a row,
 //! so panes get 68x29. Columns here count from the sidebar's right, as the
@@ -131,7 +131,7 @@ fn dragging_the_border_between_splits_resizes_them_live() {
     p.mouse(DRAG, 44, 12, false);
     p.mouse(PRESS, 44, 12, true);
 
-    // The last place goes to tmux on release, however fast the drag.
+    // The last place goes to the server on release, however fast the drag.
     wait_for_split_sizes(&sandbox, &["0.0 44x29", "0.1 23x29"]);
     // No text was selected, no program got the mouse, nothing was focused.
     assert_eq!(sandbox.clipboard(), None);

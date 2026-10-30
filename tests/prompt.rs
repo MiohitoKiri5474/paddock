@@ -126,7 +126,7 @@ fn a_new_space_with_a_taken_name_shows_a_notice_after_the_popup_closes() {
     paddock.wait_for_popup("New space", "space-2");
     paddock.send(b"\x15space-1\r");
 
-    // The popup closes; tmux's reason shows in the tab bar, ahead of the
+    // The popup closes; the server's reason shows in the tab bar, ahead of the
     // command that failed.
     paddock.wait_for_no_popup();
     paddock.wait_for("error notice", |s| {

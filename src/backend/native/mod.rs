@@ -145,7 +145,6 @@ mod tests {
 
     fn paths(state_dir: &Path) -> Paths {
         Paths {
-            socket: "unused".into(),
             state_dir: state_dir.into(),
             config_dir: state_dir.into(),
         }

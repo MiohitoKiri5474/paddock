@@ -1,5 +1,7 @@
 # paddock hosts its own terminals in a server, replacing tmux
 
+> Amended for v0.2 (ticket 55): the `tmux` backend is removed. `[backend] kind = "tmux"` is a config error that says so, and `paddock hook` no longer reads `TMUX_PANE`: a set `TMUX` only marks a tmux started in a paddock terminal, an external session, as `STY` and `ZELLIJ` do.
+
 Supersedes tmux as the host in [ADR 0001](0001-tmux-as-hidden-backend.md) (its clean environment stays), the no-daemon half of [ADR 0003](0003-no-daemon-single-instance.md) (one instance at a time stays), [ADR 0006](0006-sidebar-items-are-tmux-sessions.md), the control-mode half of [ADR 0002](0002-own-renderer-via-control-mode.md), and the reattach seeding and stored key modes of [ADR 0005](0005-alacritty-terminal-emulator.md). paddock still draws every terminal itself with alacritty_terminal (ADR 0005). Like the rest of paddock, the server runs on Apple Silicon Macs only.
 
 tmux gave paddock terminals that outlive the app. It also brought format-expanded names, a layout string paddock cannot parse, key modes lost on reattach, a 3.8 dependency for border dragging, and about 160 tmux queries in the tests. paddock now hosts its terminals itself. `paddock server` is a background process that owns every PTY, the layout (spaces, tabs, splits, floats, zoom), and an emulator per terminal. The app is a client of that server over a Unix socket in `~/.local/state/paddock/`.

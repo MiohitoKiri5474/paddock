@@ -136,7 +136,7 @@ impl Context {
 
     /// Start a shell in a new space named `name` in `dir`, starting the
     /// backend (with paddock's settings) if it does not run. Returns the
-    /// space's name as the backend gave it (tmux writes `.` and `:` as `_`).
+    /// space's name as the backend gave it.
     pub fn new_space(&self, name: &str, dir: &Path) -> anyhow::Result<String> {
         if self.backend.running_instance()?.is_none() {
             self.backend.prepare()?;

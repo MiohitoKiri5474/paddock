@@ -1,8 +1,8 @@
 //! Strips the screen/tmux title escape `ESC k <title> ST` from pane output.
 //!
 //! Shells inside tmux (e.g. oh-my-zsh's termsupport with TERM=tmux-256color)
-//! set the window title this way. tmux control mode hands pane output over
-//! raw, and alacritty_terminal does not know `ESC k`, so it would print the
+//! set the window title this way. paddock's server hands terminal output
+//! over raw, and alacritty_terminal does not know `ESC k`, so it would print the
 //! title into the grid. ST is `ESC \`; BEL is accepted too.
 
 /// A title longer than this without a terminator is given up on: the filter

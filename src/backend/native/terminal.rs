@@ -366,7 +366,7 @@ impl HostedTerminal {
     }
 
     /// The name of a tab that follows what runs in this terminal, as
-    /// paddock's tmux config names one: a shell is named after its
+    /// paddock's tmux config named one before v0.2: a shell is named after its
     /// directory, anything else after its command. `None` while it cannot
     /// say (the shell not started yet).
     pub fn auto_name(&self) -> Option<String> {
@@ -383,7 +383,7 @@ impl HostedTerminal {
     }
 }
 
-/// Whether `command` is a shell, as paddock's tmux config tells one
+/// Whether `command` is a shell, as paddock's tmux config told one
 /// (`^-?(ba|z|fi|da|k|tc|c)?sh$`): `ssh` and `mosh` are not.
 fn is_shell(command: &str) -> bool {
     let name = command.strip_prefix('-').unwrap_or(command);

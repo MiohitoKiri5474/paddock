@@ -1,8 +1,9 @@
 //! Keyboard-protocol requests seen in a program's raw output.
 //!
 //! alacritty_terminal tracks kitty flags itself but not xterm modifyOtherKeys,
-//! and after a reattach tmux only remembers modifyOtherKeys (ADR 0005). This
-//! scanner tracks both so the key encoder has one source of truth.
+//! and after a reattach the tmux backend only remembered modifyOtherKeys
+//! (ADR 0005). This scanner tracks both so the key encoder has one source
+//! of truth.
 
 /// What the program asked for, as far as key encoding is concerned.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

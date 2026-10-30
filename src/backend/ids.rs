@@ -1,5 +1,5 @@
 //! The ids the backend gives spaces, tabs, floats and terminals. Their
-//! spelling is the backend's (tmux writes `$N`, `@N` and `%N`); paddock
+//! spelling is the backend's (`$N`, `@N` and `%N`, as tmux wrote them); paddock
 //! only compares them, shows them in errors, and keeps a space's in
 //! `layout.toml` and a terminal's in the hook event log, which is why they
 //! read back from text. Only the backend makes one; each kind is its own

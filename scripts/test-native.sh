@@ -1,11 +1,6 @@
 #!/bin/sh
-# The app-level suite on the native backend: every test file but the unit
-# tests, without the tmux-only tests (tmux_only_*) and those that wait for
-# a ticket the native backend still needs (tests/harness/native_skip.rs,
-# empty since ticket 42). Arguments go to cargo test, before its `--`.
+# The app-level suite, as CI runs it: every test file but the unit tests,
+# on paddock's own server. Arguments go to cargo test, before its `--`.
 set -eu
 cd "$(dirname "$0")/.."
-skips=$(sed -n 's/.*"[a-z0-9_]*::\([a-z0-9_]*\)".*/--skip \1/p' tests/harness/native_skip.rs)
-# One word per argument: the names hold no spaces.
-# shellcheck disable=SC2086
-PADDOCK_TEST_BACKEND=native exec cargo test --test '*' "$@" -- --skip tmux_only $skips
+exec cargo test --test '*' "$@"

@@ -61,7 +61,7 @@ external_timeout = 10     # minutes an external session stays with no hook event
 refresh_secs = 60         # how often the dashboard and the sidebar ask `gh` for each repository's pull requests; 0 turns PR status off (in `worktree list` too)
 
 [backend]
-kind = "native"           # what hosts the terminals: "native" (the default) or "tmux" (legacy, until v0.2)
+kind = "native"           # what hosts the terminals: paddock's own server, the only kind
 ```
 
 ## Defaults
@@ -92,7 +92,7 @@ Every option, and its value when you leave it out:
 
 ## Notes
 
-`[backend] kind` is `"native"` (the default: paddock's own server, `paddock server`, started in the background and listening on `~/.local/state/paddock/server.sock`, which saves its layout to `layout.json`) or `"tmux"`, the hidden `tmux -L paddock` server earlier releases used, kept until v0.2; anything else is refused at start. Switching kinds does not move running terminals: each backend keeps its own.
+`[backend] kind` is `"native"`, the default and the only kind: paddock's own server, `paddock server`, started in the background and listening on `~/.local/state/paddock/server.sock`, which saves its layout to `layout.json`. `"tmux"`, the hidden `tmux -L paddock` server earlier releases used, was removed in v0.2: it is refused at start with a message to delete the line, as is any other kind.
 
 `[worktrees] directory` must be absolute once `~` is expanded, and not your home directory itself; paddock refuses to start otherwise.
 

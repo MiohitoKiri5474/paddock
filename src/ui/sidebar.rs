@@ -1,5 +1,5 @@
 //! The sidebar, with a border on its right edge: a SPACES section with one
-//! line per space (tmux session, ADR 0006), then an AGENTS section with two
+//! line per space (ADR 0006), then an AGENTS section with two
 //! lines per main agent session, across every space:
 //!
 //! ```text
@@ -769,7 +769,7 @@ mod tests {
 
     #[test]
     fn control_characters_in_names_never_reach_the_screen() {
-        // Names and paths come from tmux and Claude; an escape sequence in
+        // Names and paths come from the server and Claude; an escape sequence in
         // one must not be written to the outer terminal.
         let evil = "a\x1b]52;c;eA==\x07b";
         let buf = draw(

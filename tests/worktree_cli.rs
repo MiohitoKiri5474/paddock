@@ -1,6 +1,6 @@
 //! Ticket 25: `paddock worktree new|open|list|rm`, what `C-a W`, `C-a O`
 //! and sidebar `x` do, without the UI. Against real temporary
-//! repositories and the sandbox's own tmux server; every command runs in
+//! repositories and the sandbox's own server; every command runs in
 //! a sandbox directory, never in paddock's own repository.
 
 mod harness;
@@ -171,7 +171,7 @@ fn a_space_named_after_a_branch_keeps_a_hash() {
     let sandbox = Sandbox::new();
     let dir = repo(&sandbox);
 
-    // tmux expands formats in names: `#S` would become the name itself.
+    // tmux expanded formats in names (`#S` became the name); never again.
     let out = cli(&sandbox, &dir, &["new", "v#S", "--json"]);
     exits(&out, 0, "");
     assert_eq!(json(&out)["space"], "repo/v#S");
@@ -511,6 +511,30 @@ fn rm_refuses_each_risk_with_exit_3_and_deletes_nothing() {
         "main checkout",
     );
     assert!(dir.join(".git").is_dir());
+}
+
+/// A refused `rm` closes nothing: the risk check comes before the
+/// worktree's spaces are closed, so its space, tree and branch all stay.
+/// (A check past its deadline bails at the same point, with exit 4: the
+/// unit test in `src/cli/rm.rs` covers that.)
+#[test]
+fn rm_refused_for_a_risk_leaves_the_worktree_s_space() {
+    let sandbox = Sandbox::new();
+    let dir = repo(&sandbox);
+
+    exits(&cli(&sandbox, &dir, &["new", "feat/t"]), 0, "");
+    assert_eq!(sandbox.space_names(), ["repo/feat/t"]);
+    let tree = real(&worktree(&sandbox, "feat/t"));
+    std::fs::write(tree.join("new.txt"), "x\n").unwrap();
+
+    exits(
+        &cli(&sandbox, &dir, &["rm", "feat/t"]),
+        3,
+        "uncommitted changes",
+    );
+    assert_eq!(sandbox.space_names(), ["repo/feat/t"], "the space stays");
+    assert!(tree.join("new.txt").is_file(), "the worktree stays");
+    assert!(has_branch(&dir, "feat/t"), "the branch stays");
 }
 
 #[test]

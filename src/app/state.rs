@@ -296,8 +296,7 @@ pub struct App {
     pub(super) external: External,
     /// Where new tabs and splits start.
     pub(super) new_tab_dir: NewTabDir,
-    /// The current space as last told to a backend that keeps it (see
-    /// [`Backend::keeps_current`]).
+    /// The current space as last told to the server.
     pub(super) told_current: Option<SpaceId>,
     /// The server said it is upgrading (ADR 0009), on some space's
     /// connection, when the last connection made was this one: a
@@ -464,10 +463,6 @@ impl App {
     /// start the first space; the others attach after the first draw.
     fn open_spaces(&mut self) -> Result<()> {
         let spaces = self.backend.spaces();
-        if !spaces.is_empty() {
-            // A backend from an older paddock lacks newer settings.
-            self.report(|app| app.backend.refresh());
-        }
         let saved = saved::load(&self.state_dir)
             .unwrap_or_else(|e| {
                 self.notice = Some(set_aside(&self.state_dir, saved::FILE_NAME, &e));
@@ -476,16 +471,12 @@ impl App {
             .unwrap_or_default();
         // Before attaching, so the spaces start at their final size.
         self.sidebar_wish = saved.sidebar;
-        // A backend that keeps the current space (native, in
-        // `layout.json`) takes over `layout.toml`'s. Asked before
-        // attaching, as is what the host rebuilt: the native server writes
-        // an attached terminal's scrollback after its screens, under its
-        // lock, and the first draw would wait for an answer asked after.
-        let saved_space = if self.backend.keeps_current() {
-            self.backend.current_space()
-        } else {
-            saved.space
-        };
+        // The server keeps the current space (in `layout.json`). Asked
+        // before attaching, as is what the host rebuilt: the native server
+        // writes an attached terminal's scrollback after its screens,
+        // under its lock, and the first draw would wait for an answer
+        // asked after.
+        let saved_space = self.backend.current_space();
         let restored = self.backend.restored();
         // Only the space to show is attached now, the saved one, else the
         // first that can be: the native server writes each attached

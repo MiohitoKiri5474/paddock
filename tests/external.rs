@@ -1,5 +1,5 @@
 //! Ticket 32: external sessions, Claude running outside paddock's terminals.
-//! Their hooks fire with no paddock `$TMUX_PANE` (here: no tmux at all), or
+//! Their hooks fire with no paddock `$PADDOCK_PANE`, or
 //! `claude agents --json` lists them with no pane; they show dim, last, in
 //! the dashboard and the sidebar's AGENTS, and nothing acts on a pane for
 //! them.

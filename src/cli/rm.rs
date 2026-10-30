@@ -181,7 +181,6 @@ fn check(
 mod tests {
     use super::*;
     use crate::backend::Backend;
-    use crate::config::BackendKind;
     use crate::paths::Paths;
     use std::process::Command;
     use std::time::Duration;
@@ -203,7 +202,7 @@ mod tests {
     }
 
     #[test]
-    fn a_risk_check_past_its_deadline_exits_4_and_leaves_tree_space_and_branch() {
+    fn a_risk_check_past_its_deadline_exits_4_and_leaves_tree_and_branch() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().canonicalize().unwrap();
         let repo = root.join("repo");
@@ -213,7 +212,6 @@ mod tests {
         git(&repo, &["add", "."]);
         git(&repo, &["commit", "-q", "-m", "a"]);
         let paths = Paths {
-            socket: format!("paddock-unit-rm-{}", std::process::id()),
             state_dir: root.join("state"),
             config_dir: root.join("config"),
         };
@@ -221,20 +219,22 @@ mod tests {
         let wt = root.join("wt");
         let config = format!("[worktrees]\ndirectory = {:?}\n", wt.to_string_lossy());
         std::fs::write(paths.config_dir.join("config.toml"), config).unwrap();
-        let backend = Backend::new(paths.clone(), BackendKind::Tmux);
+        // No server runs in the sandbox's state directory, and none
+        // starts: the worktree is made without a space (spaces are the
+        // harness's, tests/worktree_cli.rs), so this unit binary never has
+        // to serve.
+        let backend = Backend::new(paths.clone());
         let mut cx = Context::new(backend, paths, root.clone(), None);
         // Nothing can be checked in no time. The check comes before
         // `claude agents`, so no real Claude is asked.
         cx.risk_deadline = Duration::ZERO;
 
         let tree = cx.tree(Some(&repo)).unwrap();
-        let made = shared::create(&wt, &tree, "feat/t", |name, path| cx.new_space(name, &path));
+        let made = shared::create(&wt, &tree, "feat/t", |_, _| anyhow::Ok(()));
         let got = made
             .as_ref()
             .ok()
             .map(|_| rm(&cx, Some(&repo), "feat/t", Discard::default(), false));
-        let names: Vec<String> = cx.backend.spaces().into_iter().map(|s| s.name).collect();
-        cx.backend.stop();
 
         let (path, _) = made.unwrap();
         let err = got.unwrap().unwrap_err();
@@ -244,7 +244,6 @@ mod tests {
             "couldn't check feat/t in time: nothing deleted"
         );
         assert!(path.is_dir(), "the worktree stays");
-        assert_eq!(names, ["repo/feat/t"], "the space stays");
         let branch = Command::new("git")
             .arg("-C")
             .arg(&repo)

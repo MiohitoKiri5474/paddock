@@ -99,7 +99,7 @@ pub struct Emulator {
 
 impl Emulator {
     /// An emulator that drops its replies to terminal queries: the host
-    /// (tmux, or paddock's server) already answers them for the program.
+    /// (paddock's server) already answers them for the program.
     pub fn new(cols: u16, rows: u16, scrollback: usize) -> Self {
         Self::with_replies(cols, rows, scrollback, Replies::default())
     }

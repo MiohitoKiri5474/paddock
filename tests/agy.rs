@@ -51,7 +51,7 @@ fn write_to(sandbox: &Sandbox, terminal: &str, bytes: &[u8]) {
 }
 
 /// Put a stand-in `agy` in the sandbox's `bin` (first on the terminals'
-/// `PATH`): a program under that name, so tmux names it `agy`. A copy of
+/// `PATH`): a program under that name, so the server names it `agy`. A copy of
 /// paddock, as macOS kills a copy of its own `sleep`, and a link would be
 /// named after its target.
 fn stub_agy(sandbox: &Sandbox) {

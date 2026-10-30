@@ -328,8 +328,7 @@ impl App {
     }
 
     /// Rename the current tab or space in the backend, so the name survives
-    /// reattaching. The backend may adjust a space name (tmux replaces `.`
-    /// and `:`).
+    /// reattaching. The backend may adjust a space name.
     fn rename(&mut self, what: Renamed, name: &str) -> Result<()> {
         let Some(space) = self.current_space() else {
             return Ok(());

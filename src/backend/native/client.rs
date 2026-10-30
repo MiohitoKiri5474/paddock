@@ -13,7 +13,7 @@ use super::protocol::{
 };
 use super::server::log_path;
 use super::{held, saved, socket_path, LOCK};
-use crate::backend::border::{Anchor, Border};
+use crate::backend::border::Border;
 use crate::backend::env::clean_env;
 use crate::backend::{
     Event, FloatId, ListedSpace, Rebuilt, Replay, Restored, SpaceId, SpaceTerminal, Structure,
@@ -597,10 +597,9 @@ impl Client {
             y,
         };
         match self.request(request)? {
-            Answer::Border(hit) => Ok(hit.map(|hit| {
-                let anchor = Anchor::Before(hit.start);
-                Border::new(hit.terminal, hit.axis.is_columns(), anchor)
-            })),
+            Answer::Border(hit) => {
+                Ok(hit.map(|hit| Border::new(hit.terminal, hit.axis.is_columns(), hit.start)))
+            }
             other => Err(unexpected(&other)),
         }
     }
@@ -713,12 +712,6 @@ impl Client {
     pub fn terminal_details(&self) -> Result<Vec<TerminalDetails>> {
         let details = self.query(Request::TerminalDetails, pick!(Answer::Details))?;
         Ok(details.unwrap_or_default())
-    }
-
-    /// End every terminal and the server.
-    #[cfg(test)]
-    pub fn stop(&self) {
-        let _ = self.request(Request::Stop);
     }
 
     /// Attach space `space` at `size`: its structure and each terminal's
@@ -934,7 +927,6 @@ mod upgraded_spaces_tests {
     /// A client whose state directory is `dir` (short, for the socket).
     fn client(dir: &Path) -> Client {
         Client::new(Paths {
-            socket: "paddock-unit-none".into(),
             state_dir: dir.to_path_buf(),
             config_dir: dir.join("config"),
         })

@@ -191,8 +191,8 @@ impl State {
         found.ok_or_else(|| anyhow!("no space {id}"))
     }
 
-    /// An error if a space is named `name` already, in tmux's words,
-    /// which paddock shows.
+    /// An error if a space is named `name` already, in the words tmux
+    /// used (`duplicate session`), which paddock shows.
     pub fn check_space_name(&self, name: &str) -> Result<()> {
         if self.spaces.iter().any(|s| s.name == name) {
             bail!("duplicate session: {name}");
@@ -306,8 +306,7 @@ impl State {
         self.send(space, Frame::Message(Message::Notice(notice)));
     }
 
-    /// Tell every attached client a space was made or ended, as each
-    /// space's connection hears it on tmux.
+    /// Tell every attached client a space was made or ended.
     pub fn notify_spaces(&mut self) {
         self.notify_all(&Notice::SpacesChanged);
     }

@@ -90,7 +90,7 @@ pub fn cells_marked(
 }
 
 /// Draw the borders between the split panes placed at `panes` inside
-/// `area`: tmux leaves one cell between two panes (ADR 0006). A gap beside a
+/// `area`: the backend leaves one cell between two panes (ADR 0006). A gap beside a
 /// pane is a vertical line, any other a horizontal one.
 pub fn borders(area: Rect, panes: &[Rect], buf: &mut Buffer) {
     let right = panes.iter().map(|r| r.right()).max().unwrap_or(0);

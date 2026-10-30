@@ -8,5 +8,5 @@
   "homepage": "https://github.com/MiohitoKiri5474/paddock",
   "repository": "https://github.com/MiohitoKiri5474/paddock",
   "license": "MIT",
-  "keywords": ["paddock", "worktree", "git", "tmux"]
+  "keywords": ["paddock", "worktree", "git"]
 }

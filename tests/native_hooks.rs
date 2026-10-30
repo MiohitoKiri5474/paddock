@@ -94,10 +94,10 @@ fn floats_and_a_second_space_carry_their_own_terminal_for_hooks() {
     paddock.wait_for_text(&format!("space-pane={}\n", second.id));
 }
 
-/// The server's event log is named apart from tmux's, so a tmux server
-/// whose pid equals its instance id never reads it.
+/// The server's event log is named by its instance id, drawn at each
+/// start, so no later server reads an earlier one's.
 #[test]
-fn the_servers_event_log_is_apart_from_tmuxs() {
+fn the_servers_event_log_is_named_by_its_instance_id() {
     let sandbox = Sandbox::new();
     let _paddock = ready(&sandbox);
     let state = sandbox.state();

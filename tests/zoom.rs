@@ -1,4 +1,4 @@
-//! Ticket 29: `C-a z` zooms the focused split to fill its tab, through
+//! Ticket 29: `C-a z` zooms the focused split to fill its tab, like
 //! tmux's `resize-pane -Z`, and again gives the others their places back.
 //!
 //! The screen is 100x30; the sidebar takes 32 columns and the tab bar a row,
@@ -6,9 +6,7 @@
 
 mod harness;
 
-use harness::{
-    cols, in_region, tmux_only, wait_for_split_sizes, wait_in_region, Paddock, Sandbox, PROMPT,
-};
+use harness::{cols, in_region, wait_for_split_sizes, wait_in_region, Paddock, Sandbox, PROMPT};
 
 /// Column of the border after one side-by-side split.
 const V_BORDER: usize = 34;
@@ -171,26 +169,6 @@ fn closing_the_zoomed_split_unzooms() {
     assert!(!zoomed(&sandbox));
     p.wait_for("the border back", |_| border_shown(&p));
     wait_in_region(&p, "left-pane", ALL_ROWS, LEFT);
-}
-
-/// tmux-only: a zoom made by tmux itself, outside paddock.
-#[test]
-fn tmux_only_a_zoom_made_outside_paddock_shows() {
-    let sandbox = Sandbox::new();
-    let mut p = split(&sandbox);
-
-    tmux_only::tmux(&sandbox, &["resize-pane", "-Z", "-t", "space-1:0.0"]);
-
-    p.wait_for_tabs(&["1:home Z"]);
-    wait_for_split_sizes(&sandbox, &["0.0 68x29", "0.1 33x29"]);
-    p.type_line("echo outside-zoom");
-    wait_in_region(&p, "outside-zoom", ALL_ROWS, LEFT);
-    assert!(!border_shown(&p));
-
-    tmux_only::tmux(&sandbox, &["resize-pane", "-Z", "-t", "space-1:0.0"]);
-
-    p.wait_for_tabs(&["1:home"]);
-    p.wait_for("the border back", |_| border_shown(&p));
 }
 
 #[test]

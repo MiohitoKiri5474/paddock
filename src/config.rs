@@ -48,7 +48,7 @@
 //! refresh_secs = 60          # how often to ask gh for each repository's PRs; 0: never
 //!
 //! [backend]
-//! kind = "native"            # or "tmux" (legacy, until v0.2): what hosts the terminals
+//! kind = "native"            # what hosts the terminals: paddock's own server, the only one
 //! ```
 //!
 //! `paddock keys` prints every action with its default keys.
@@ -114,8 +114,6 @@ pub struct Config {
     /// How often each repository's pull requests are read with `gh`
     /// (`[github] refresh_secs`); zero for never.
     pub github_refresh: Duration,
-    /// What hosts the terminals (`[backend] kind`).
-    pub backend: BackendKind,
 }
 
 /// `[spaces] new_tab_dir`: where a new tab or split starts.
@@ -238,8 +236,9 @@ struct RawConfig {
     dashboard: RawDashboard,
     #[serde(default)]
     github: RawGithub,
-    #[serde(default)]
-    backend: RawBackend,
+    /// Read only to check it: `kind` has one value left.
+    #[serde(default, rename = "backend")]
+    _backend: RawBackend,
 }
 
 /// A `[github]` table as written.
@@ -423,7 +422,6 @@ impl Config {
                     .refresh_secs
                     .unwrap_or(DEFAULT_GITHUB_REFRESH_SECS),
             ),
-            backend: raw.backend.kind.unwrap_or_default(),
         })
     }
 }
@@ -450,7 +448,6 @@ impl Default for Config {
             new_tab_dir: NewTabDir::default(),
             external: External::default(),
             github_refresh: Duration::from_secs(DEFAULT_GITHUB_REFRESH_SECS),
-            backend: BackendKind::default(),
         }
     }
 }

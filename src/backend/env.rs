@@ -13,13 +13,13 @@ const KEPT_VARS: &[&str] = &[
     "PATH",
     "LANG",
     "TMPDIR",
+    // Where the user's own tmux keeps its sockets, for a tmux started in a
+    // terminal.
     "TMUX_TMPDIR",
-    // `paddock hook` in a terminal needs paddock's own state dir and socket.
+    // `paddock hook` in a terminal needs paddock's own state dir.
     "XDG_STATE_HOME",
-    "PADDOCK_TMUX_SOCKET",
     // Tests only: the native server's wait for a silent restored shell.
-    // The native server keeps it from its shells; tmux's inherit it,
-    // where nothing reads it.
+    // The native server keeps it from its shells.
     "PADDOCK_RESUME_WAIT_MS",
     // Tests only: shrinks the native server's size limits (input cap,
     // frame size, a client's backlog). Kept from its shells as above.
@@ -68,21 +68,10 @@ mod tests {
             ("LC_ALL", "C"),
             ("PATH", "/bin"),
             ("XDG_STATE_HOME", "/s"),
-            ("PADDOCK_TMUX_SOCKET", "p"),
         ]));
         let keys: Vec<&str> = env.iter().map(|(k, _)| k.as_str()).collect();
-        // Hooks in the terminals must find the same state and socket.
-        assert_eq!(
-            keys,
-            [
-                "HOME",
-                "LC_ALL",
-                "PADDOCK_TMUX_SOCKET",
-                "PATH",
-                "XDG_STATE_HOME",
-                "TERM"
-            ]
-        );
+        // Hooks in the terminals must find the same state.
+        assert_eq!(keys, ["HOME", "LC_ALL", "PATH", "XDG_STATE_HOME", "TERM"]);
         assert!(env.contains(&("TERM".into(), "xterm-256color".into())));
     }
 }

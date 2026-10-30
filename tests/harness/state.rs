@@ -1,6 +1,5 @@
-//! The backend's state as `paddock debug state --json` prints it, so
-//! tests ask paddock, not tmux, what runs where: the same tests then hold
-//! for any backend.
+//! The server's state as `paddock debug state --json` prints it, so
+//! tests ask paddock what runs where, never the server's internals.
 //!
 //! Tests name a terminal by a target ([`State::terminal`]): `space` (its
 //! current tab's focused terminal), `space:N` (tab N's, counting from 0),
