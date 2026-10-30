@@ -17,10 +17,13 @@ use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
+use super::limits::input_max;
+
 /// How the server names itself to XTVERSION.
 const NAME: &str = concat!("paddock ", env!("CARGO_PKG_VERSION"));
 /// The most input that may wait for a program: an input that would take
-/// what waits past it is refused whole.
+/// what waits past it is refused whole. Tests may shrink it
+/// ([`super::limits::input_max`]).
 pub const INPUT_MAX: usize = 64 << 20;
 
 /// Bytes for a program, in order (input and query replies), written by a
@@ -163,7 +166,7 @@ impl Input {
     /// is the user's input's).
     pub fn reply(&self, bytes: Vec<u8>) {
         let waiting = self.queue.waiting();
-        if waiting + bytes.len() <= INPUT_MAX {
+        if waiting + bytes.len() <= input_max() {
             let _ = self.queue.push(bytes);
         }
     }
@@ -176,7 +179,7 @@ impl Input {
         if waiting == 0 {
             self.refusing.store(false, Ordering::Relaxed);
         }
-        waiting + len <= INPUT_MAX
+        waiting + len <= input_max()
     }
 
     /// A refusal: the episode's first, or not.

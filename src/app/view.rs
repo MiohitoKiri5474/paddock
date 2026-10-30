@@ -62,7 +62,7 @@ impl App {
 
     /// Each agent (every row: a main agent session that has not ended, in
     /// any space): its label, state, its space (none for an external
-    /// session), and whether it is in the focused terminal.
+    /// session), its kind, and whether it is in the focused terminal.
     pub(super) fn sidebar_agents(&self, rows: &[Row]) -> Vec<AgentLine> {
         rows.iter()
             .map(|r| AgentLine {
@@ -73,6 +73,7 @@ impl App {
                 } else {
                     self.row_space(r).map(|s| s.name().to_string())
                 },
+                kind: r.kind,
                 current: self.is_current_row(&r.pane),
                 external: r.external,
             })

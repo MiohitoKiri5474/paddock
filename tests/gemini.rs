@@ -61,8 +61,13 @@ fn a_gemini_session_goes_working_waiting_idle_then_ends() {
     paddock.wait_for_text(PROMPT);
 
     gemini(&sandbox, "space-1:0", &["SessionStart"]);
-    // The sidebar names the agent's space; its kind is the dashboard's.
-    wait_row(&paddock, "idle at start", &["● repo", "idle", "space-1"]);
+    // The sidebar names the agent's space and kind under its label.
+    paddock.wait_for("idle at start", |_| {
+        let lines = paddock.sidebar();
+        lines
+            .windows(2)
+            .any(|l| l == [" ● repo  idle", "   space-1  gemini"])
+    });
 
     gemini(&sandbox, "space-1:0", &["BeforeAgent"]);
     wait_row(&paddock, "working", &["● repo", "running"]);
@@ -129,13 +134,16 @@ fn an_external_gemini_session_lands_in_the_external_group() {
         assert!(out.status.success(), "{out:?}");
         assert!(out.stdout.is_empty() && out.stderr.is_empty(), "{out:?}");
     }
-    // One line under the header: dot, label and state, no space.
+    // Two lines under the header: dot, label and state, then only the
+    // kind, no space.
     paddock.wait_for("the external group", |_| {
         let lines = paddock.sidebar();
         let header = lines.iter().position(|l| l == " EXTERNAL");
-        header.is_some_and(|h| lines.get(h + 1).map(String::as_str) == Some(" ● repo  waiting"))
+        header.is_some_and(|h| {
+            lines.get(h + 1..h + 3) == Some(&[" ● repo  waiting".into(), "   gemini".into()])
+        })
     });
-    // Its kind is the dashboard's.
+    // The dashboard's row has its kind too.
     paddock.command(b"o");
     paddock.wait_for("the dashboard's row", |s| {
         s.lines()
