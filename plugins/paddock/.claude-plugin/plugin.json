@@ -1,6 +1,6 @@
 {
   "name": "paddock",
-  "version": "0.1.0-rc.3",
+  "version": "0.1.0-rc.4",
   "description": "Session tracking hooks for paddock, and git worktrees as paddock spaces with the `paddock worktree` command",
   "author": {
     "name": "MiohitoKiri5474"
