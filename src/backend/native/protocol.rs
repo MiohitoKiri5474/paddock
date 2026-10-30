@@ -40,8 +40,22 @@ use std::collections::HashMap;
 use std::io::{ErrorKind, Read, Write};
 use std::path::PathBuf;
 
-/// The protocol's version: it changes whenever a message changes.
+/// The protocol's version: it changes whenever a message changes in a
+/// way the other side would misread. A field added with
+/// `#[serde(default)]`, which a side that never sends it reads as before,
+/// changes nothing (as `Attach::scrollback_after`).
 pub const VERSION: u32 = 2;
+
+/// The first protocol version whose servers can hand their terminals
+/// over (ADR 0009). A server of an older one (v0.1.0-rc.1 and rc.2 speak
+/// 1) closes the connection at an upgrade: it can only be restarted.
+pub const HANDOVER_VERSION: u32 = 2;
+
+/// Whether a server speaking protocol `version` may hand its terminals
+/// over: not one from before [`HANDOVER_VERSION`].
+pub fn can_hand_over(version: u32) -> bool {
+    version >= HANDOVER_VERSION
+}
 
 /// The largest frame the client reads: a snapshot of 50,000 lines of
 /// scrollback, even with colours changing every few cells, fits.
@@ -184,10 +198,15 @@ pub enum Request {
     TerminalPids,
     TerminalDetails,
     /// Take this connection as the client attached to the space, shown
-    /// at `size`: any other client of that space is let go.
+    /// at `size`: any other client of that space is let go. With
+    /// `scrollback_after`, each terminal's scrollback comes after its
+    /// screens (see [`Answer::Attached`]); a client that never sends it
+    /// is sent both at once, as before.
     Attach {
         space: SpaceId,
         size: (u16, u16),
+        #[serde(default)]
+        scrollback_after: bool,
     },
     /// Show the attached space at `size` (no reply).
     Resize((u16, u16)),
@@ -259,10 +278,18 @@ pub enum Answer {
     /// resumed; `None` if it rebuilt none, or another client was told.
     Restored(Option<Restored>),
     /// The space is attached: one snapshot frame follows for each
-    /// terminal, in this order, at this size; then its output.
+    /// terminal, in this order, at this size; then its output. With
+    /// `scrollback_after` (asked for, and from a server that knows it),
+    /// those snapshots leave the normal screen's scrollback out, and a
+    /// second frame for each terminal, in the same order, follows them
+    /// before any output: its whole snapshot, of the same moment. A
+    /// client then draws the screens without waiting for the scrollback,
+    /// which takes time to write and to read in proportion to its size.
     Attached {
         structure: Structure,
         terminals: Vec<(TerminalId, (u16, u16))>,
+        #[serde(default)]
+        scrollback_after: bool,
     },
 }
 
@@ -402,7 +429,7 @@ fn take_id(body: &[u8]) -> Result<(TerminalId, &[u8])> {
 
 /// The running server speaks another protocol version: its pid and
 /// version, as its hello tells. paddock offers to upgrade it, or to
-/// restart it if it cannot hand over.
+/// restart it if it cannot hand over ([`Self::can_hand_over`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OtherVersion {
     pub pid: u32,
@@ -418,14 +445,26 @@ impl OtherVersion {
              and this paddock speaks {VERSION}"
         )
     }
+
+    /// Whether the server may hand its terminals over ([`can_hand_over`]):
+    /// one that cannot can only be restarted.
+    pub fn can_hand_over(&self) -> bool {
+        can_hand_over(self.version)
+    }
 }
 
 impl std::fmt::Display for OtherVersion {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let pid = self.pid;
+        // A newer server's layout.json may be one this paddock cannot read.
+        let layout = if self.version < VERSION {
+            "its layout comes back"
+        } else {
+            "its layout comes back if this paddock can read it"
+        };
         write!(
             f,
-            "{}: close every terminal in it, or end it (kill {pid}), and start paddock again",
+            "{}: end it (kill {pid}) and start paddock again; its programs end, and {layout}",
             self.mismatch()
         )
     }
@@ -503,6 +542,23 @@ mod tests {
             read(&mut bytes.as_slice(), FROM_CLIENT).unwrap(),
             Some(frame)
         );
+    }
+
+    /// Ticket 67: a server of version 1 (from before upgrades) cannot
+    /// hand over; one of this version, or a newer one, may.
+    #[test]
+    fn only_a_server_from_before_upgrades_cannot_hand_over() {
+        let other = |version| OtherVersion { pid: 7, version };
+        assert!(!other(1).can_hand_over());
+        assert!(other(HANDOVER_VERSION).can_hand_over());
+        assert!(other(999).can_hand_over());
+        let said = other(1).to_string();
+        assert!(said.contains("end it (kill 7)"), "{said}");
+        assert!(said.contains("its layout comes back"), "{said}");
+        assert!(!said.contains("close every terminal"), "{said}");
+        assert!(!said.contains("if this paddock can read it"), "{said}");
+        let newer = other(999).to_string();
+        assert!(newer.contains("its layout comes back if this paddock can read it"));
     }
 
     /// A connection the other side reset.
@@ -598,6 +654,40 @@ mod tests {
         round_trip(Frame::Upgrade(Upgrade::Probed));
         round_trip(Frame::Upgrade(Upgrade::Done { pid: 42 }));
         round_trip(Frame::Upgrade(Upgrade::Refused("no".into())));
+    }
+
+    #[test]
+    fn an_attach_without_scrollback_after_is_one_from_before_it() {
+        // What a paddock from before ticket 64 sends, and its server
+        // answers: the scrollback comes with the screens.
+        let old = r#"{"Request":{"Attach":{"space":"$1","size":[80,24]}}}"#;
+        let Message::Request(Request::Attach {
+            scrollback_after, ..
+        }) = serde_json::from_str(old).unwrap()
+        else {
+            panic!("an attach");
+        };
+        assert!(!scrollback_after);
+        let attached = Message::Reply(Ok(Answer::Attached {
+            structure: Structure::default(),
+            terminals: Vec::new(),
+            scrollback_after: true,
+        }));
+        let mut old = serde_json::to_value(&attached).unwrap();
+        let fields = &mut old["Reply"]["Ok"]["Attached"];
+        assert!(fields
+            .as_object_mut()
+            .unwrap()
+            .remove("scrollback_after")
+            .is_some());
+        let message: Message = serde_json::from_value(old).unwrap();
+        let Message::Reply(Ok(Answer::Attached {
+            scrollback_after, ..
+        })) = message
+        else {
+            panic!("attached: {message:?}");
+        };
+        assert!(!scrollback_after);
     }
 
     #[test]

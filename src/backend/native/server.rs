@@ -14,6 +14,7 @@
 
 use super::axis::Axis;
 use super::handover::{self, HandedTerminal, Held};
+use super::limits;
 use super::protocol::{self, Answer, Ending, Frame, Message, Notice, Refusal, Request, Upgrade};
 use super::pty::Program::{self, LoginShell};
 use super::saved::{self, Saver};
@@ -22,7 +23,7 @@ use super::seen::Seen;
 use super::space::{HostedFloat, Space};
 use super::state::{State, Subscriber};
 use super::tab::Tab;
-use super::terminal::{dir_name, HostedTerminal, Input, Sent, INPUT_MAX};
+use super::terminal::{dir_name, HostedTerminal, Input, Sent};
 use super::{lock, pty, restore, socket_path, LOG};
 use crate::backend::env::{clean_env, AGY_STATUS_VAR};
 use crate::backend::{FloatId, SpaceId, TabId, TerminalId};
@@ -71,6 +72,10 @@ pub const RESUME_WAIT_VAR: &str = "PADDOCK_RESUME_WAIT_MS";
 
 struct Shared {
     state: Mutex<State>,
+    /// The state's instance id, which never changes: every hello says
+    /// it, without waiting for the lock (which an attach holds while it
+    /// writes a long scrollback).
+    instance: u32,
     shell: String,
     home: PathBuf,
     /// The shells' environment.
@@ -97,15 +102,17 @@ impl Shared {
     fn new(state: State, paths: &Paths, held: Held) -> Self {
         let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
         let mut env = clean_env(std::env::vars());
-        env.retain(|(k, _)| k != RESUME_WAIT_VAR);
+        env.retain(|(k, _)| k != RESUME_WAIT_VAR && k != limits::DIVISOR_VAR);
         env.push(("COLORTERM".into(), "truecolor".into()));
         env.push((AGY_STATUS_VAR.into(), "on".into()));
         // A server that took over (ADR 0009) reads its hook log again from
         // its start: the same instance, so the same log, and folding it
         // again gives what the server before it had seen.
-        let seen = Seen::new(&paths.state_dir, state.instance());
+        let instance = state.instance();
+        let seen = Seen::new(&paths.state_dir, instance);
         Self {
             state: Mutex::new(state),
+            instance,
             shell: var("SHELL").unwrap_or_else(|| "/bin/sh".into()),
             home: var("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from),
             env,
@@ -514,11 +521,10 @@ fn ready_to_type(spoke: bool, waited: Duration, limit: Duration) -> bool {
 }
 
 fn serve_connection(shared: &Arc<Shared>, conn: u64, mut stream: UnixStream) -> Result<()> {
-    let instance = shared.lock().instance();
-    protocol::send_hello(&mut stream, instance)?;
+    protocol::send_hello(&mut stream, shared.instance)?;
     // An upgrade comes in place of the client's hello, whatever version
     // it speaks.
-    let first = protocol::read(&mut stream, protocol::FROM_CLIENT)?;
+    let first = protocol::read(&mut stream, limits::frame_max())?;
     if let Some(Frame::Upgrade(Upgrade::Ask { exe })) = first {
         return upgrade(shared, &mut stream, &exe);
     }
@@ -528,7 +534,7 @@ fn serve_connection(shared: &Arc<Shared>, conn: u64, mut stream: UnixStream) -> 
     // connection ends, it is discarded whole.
     let mut ongoing = None;
     let ongoing = &mut ongoing;
-    while let Some(frame) = protocol::read(&mut stream, protocol::FROM_CLIENT)? {
+    while let Some(frame) = protocol::read(&mut stream, limits::frame_max())? {
         let request = match frame {
             Frame::Part {
                 terminal,
@@ -561,7 +567,11 @@ fn serve_connection(shared: &Arc<Shared>, conn: u64, mut stream: UnixStream) -> 
             // Once attached, the connection is the writer's: a reply here
             // would land among its frames.
             request if attached => bail!("{request:?} after attaching"),
-            Request::Attach { space, size } => match attach(shared, conn, &stream, &space, size) {
+            Request::Attach {
+                space,
+                size,
+                scrollback_after,
+            } => match attach(shared, conn, &stream, &space, size, scrollback_after) {
                 Ok(()) => {
                     attached = true;
                     continue;
@@ -714,7 +724,7 @@ struct Ongoing {
     data: Vec<u8>,
     /// Its bytes still to come.
     due: usize,
-    /// Bigger than [`INPUT_MAX`]: refused whole.
+    /// Bigger than [`limits::input_max`]: refused whole.
     too_big: bool,
 }
 
@@ -725,7 +735,7 @@ struct Ongoing {
 /// read gets through. A part that does not continue the input before it
 /// (another terminal, or lengths that do not add up) is an error, which
 /// closes the connection: what it collects never passes the input's first
-/// length, nor [`INPUT_MAX`].
+/// length, nor [`limits::input_max`].
 fn input(
     shared: &Shared,
     ongoing: &mut Option<Ongoing>,
@@ -746,7 +756,7 @@ fn input(
             terminal: terminal.clone(),
             data: Vec::new(),
             due: total,
-            too_big: total > INPUT_MAX,
+            too_big: total > limits::input_max(),
         },
     };
     collected.due = rest;
@@ -773,7 +783,7 @@ fn input(
     let program = term.command().unwrap_or_else(|| "its program".into());
     let why = format!(
         "it would take what waits for {program} past {} MiB",
-        INPUT_MAX >> 20
+        limits::input_max() >> 20
     );
     eprintln!("paddock server: refusing input to {terminal}: {why}");
     let space = space.id.clone();
@@ -787,14 +797,17 @@ fn input(
 
 /// Make connection `conn` the attached client of `space`, shown at
 /// `size`: its reply, then each terminal's snapshot, then their output,
-/// all through a writer thread of its own. Any other client of `space`
-/// is let go.
+/// all through a writer thread of its own. With `scrollback_after`, each
+/// terminal's screens go first, and then its whole snapshot: the client
+/// reads the screens while the scrollback is still written. Any other
+/// client of `space` is let go.
 fn attach(
     shared: &Shared,
     conn: u64,
     stream: &UnixStream,
     space: &SpaceId,
     size: (u16, u16),
+    scrollback_after: bool,
 ) -> Result<()> {
     let mut subscriber = Subscriber::new(conn, space.clone(), stream)?;
     let mut state = shared.lock();
@@ -806,23 +819,37 @@ fn attach(
     let shown = state.space_mut(space)?;
     shown.size = size;
     shown.lay_out();
-    let hosted = &mut shown.terminals;
-    let terminals = hosted.iter().map(|t| (t.id.clone(), t.size)).collect();
-    let snapshots: Vec<Frame> = hosted
-        .iter_mut()
-        .map(|t| Frame::Bytes {
-            terminal: t.id.clone(),
-            data: t.snapshot(),
-        })
+    let terminals: Vec<_> = shown
+        .terminals
+        .iter()
+        .map(|t| (t.id.clone(), t.size))
         .collect();
     let structure = state.structure(space)?;
-    let first = std::iter::once(reply(Ok(Answer::Attached {
+    let first = reply(Ok(Answer::Attached {
         structure,
         terminals,
-    })));
-    for frame in first.chain(snapshots) {
-        // A new client: it has had no time to fall behind.
-        let _ = subscriber.queue(frame);
+        scrollback_after,
+    }));
+    // A new client: it has had no time to fall behind.
+    let _ = subscriber.queue(first);
+    // The writer thread sends each frame as it is queued: the screens go
+    // out while the whole snapshots are still written here.
+    let shown = state.space_mut(space)?;
+    if scrollback_after {
+        for t in &mut shown.terminals {
+            let screens = Frame::Bytes {
+                terminal: t.id.clone(),
+                data: t.screens(),
+            };
+            let _ = subscriber.queue(screens);
+        }
+    }
+    for t in &mut shown.terminals {
+        let snapshot = Frame::Bytes {
+            terminal: t.id.clone(),
+            data: t.snapshot(),
+        };
+        let _ = subscriber.queue(snapshot);
     }
     if let Some(old) = state.detach_space(space) {
         state.let_go(old, LAST_WORDS);

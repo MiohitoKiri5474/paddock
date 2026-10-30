@@ -25,21 +25,21 @@ brew install MiohitoKiri5474/paddock/paddock
 
 If an earlier `brew install` failed while tapping, run `brew untap miohitokiri5474/paddock` first. Upgrade with `brew upgrade paddock` (see [Upgrade](docs/server.md#upgrade)).
 
-**Release tarball** (Apple Silicon). Download `paddock-v0.1.0-rc.3-aarch64-apple-darwin.tar.gz` and its `.sha256` from [Releases](https://github.com/MiohitoKiri5474/paddock/releases), then:
+**Release tarball** (Apple Silicon). Download `paddock-v0.1.0-aarch64-apple-darwin.tar.gz` and its `.sha256` from [Releases](https://github.com/MiohitoKiri5474/paddock/releases), then:
 
 ```sh
-shasum -a 256 -c paddock-v0.1.0-rc.3-aarch64-apple-darwin.tar.gz.sha256
-tar xzf paddock-v0.1.0-rc.3-aarch64-apple-darwin.tar.gz
+shasum -a 256 -c paddock-v0.1.0-aarch64-apple-darwin.tar.gz.sha256
+tar xzf paddock-v0.1.0-aarch64-apple-darwin.tar.gz
 xattr -d com.apple.quarantine paddock   # unsigned binary: lets Gatekeeper run it ("No such xattr" is fine)
 sudo mkdir -p /usr/local/bin             # missing on a fresh Apple Silicon Mac
 sudo mv paddock /usr/local/bin/         # or anywhere on your PATH
 ```
 
-**Release tarball** (Linux, x86_64 or aarch64; glibc 2.34 or newer: Ubuntu 22.04, Debian 12, Fedora 35, RHEL 9 or later). Download `paddock-v0.1.0-rc.3-x86_64-unknown-linux-gnu.tar.gz` (or `paddock-v0.1.0-rc.3-aarch64-unknown-linux-gnu.tar.gz` on aarch64; `uname -m` says which) and its `.sha256` from [Releases](https://github.com/MiohitoKiri5474/paddock/releases), then:
+**Release tarball** (Linux, x86_64 or aarch64; glibc 2.34 or newer: Ubuntu 22.04, Debian 12, Fedora 35, RHEL 9 or later). Download `paddock-v0.1.0-x86_64-unknown-linux-gnu.tar.gz` (or `paddock-v0.1.0-aarch64-unknown-linux-gnu.tar.gz` on aarch64; `uname -m` says which) and its `.sha256` from [Releases](https://github.com/MiohitoKiri5474/paddock/releases), then:
 
 ```sh
-sha256sum -c paddock-v0.1.0-rc.3-x86_64-unknown-linux-gnu.tar.gz.sha256
-tar xzf paddock-v0.1.0-rc.3-x86_64-unknown-linux-gnu.tar.gz
+sha256sum -c paddock-v0.1.0-x86_64-unknown-linux-gnu.tar.gz.sha256
+tar xzf paddock-v0.1.0-x86_64-unknown-linux-gnu.tar.gz
 mkdir -p ~/.local/bin && mv paddock ~/.local/bin/   # or anywhere on your PATH
 ```
 
@@ -48,7 +48,7 @@ zsh is not needed, nor tmux unless you use the legacy tmux backend. For notifica
 **Cargo**, from a tag:
 
 ```sh
-cargo install --git https://github.com/MiohitoKiri5474/paddock --tag v0.1.0-rc.3 --locked
+cargo install --git https://github.com/MiohitoKiri5474/paddock --tag v0.1.0 --locked
 ```
 
 If it fails with `failed to authenticate when downloading repository: git@github.com:…` (your git config rewrites GitHub URLs to SSH), let cargo use the `git` command: prefix the command with `CARGO_NET_GIT_FETCH_WITH_CLI=true`, or set `git-fetch-with-cli = true` under `[net]` in `~/.cargo/config.toml`.
@@ -61,7 +61,7 @@ cargo install --path . --locked     # installs ~/.cargo/bin/paddock
 
 ### Upgrade
 
-After you upgrade, run `paddock server upgrade`: the running server hands every terminal to the new paddock. See [Upgrade](docs/server.md#upgrade).
+After you upgrade, run `paddock server upgrade`: the running server hands every terminal to the new paddock. A server from v0.1.0-rc.1 or rc.2 cannot hand over: start paddock and press Enter to restart it, which ends its programs and agents and brings back its layout with a fresh shell in each terminal. See [Upgrade](docs/server.md#upgrade).
 
 ## First run
 

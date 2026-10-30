@@ -17,10 +17,13 @@ use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
+use super::limits::input_max;
+
 /// How the server names itself to XTVERSION.
 const NAME: &str = concat!("paddock ", env!("CARGO_PKG_VERSION"));
 /// The most input that may wait for a program: an input that would take
-/// what waits past it is refused whole.
+/// what waits past it is refused whole. Tests may shrink it
+/// ([`super::limits::input_max`]).
 pub const INPUT_MAX: usize = 64 << 20;
 
 /// Bytes for a program, in order (input and query replies), written by a
@@ -163,7 +166,7 @@ impl Input {
     /// is the user's input's).
     pub fn reply(&self, bytes: Vec<u8>) {
         let waiting = self.queue.waiting();
-        if waiting + bytes.len() <= INPUT_MAX {
+        if waiting + bytes.len() <= input_max() {
             let _ = self.queue.push(bytes);
         }
     }
@@ -176,7 +179,7 @@ impl Input {
         if waiting == 0 {
             self.refusing.store(false, Ordering::Relaxed);
         }
-        waiting + len <= INPUT_MAX
+        waiting + len <= input_max()
     }
 
     /// A refusal: the episode's first, or not.
@@ -309,12 +312,15 @@ impl HostedTerminal {
     /// size: the emulator's snapshot with the scroll region, and
     /// modifyOtherKeys, which alacritty does not keep.
     pub fn snapshot(&mut self) -> Vec<u8> {
-        let mut bytes = self.emulator.snapshot(self.scanner.region);
-        let level = self.keys.modify_other_keys();
-        if level != 0 {
-            bytes.extend_from_slice(format!("\x1b[>4;{level}m").as_bytes());
-        }
-        bytes
+        let bytes = self.emulator.snapshot(self.scanner.region);
+        with_modify_other_keys(bytes, self.keys.modify_other_keys())
+    }
+
+    /// [`Self::snapshot`] without the normal screen's scrollback (see
+    /// [`Emulator::screens`]).
+    pub fn screens(&mut self) -> Vec<u8> {
+        let bytes = self.emulator.screens(self.scanner.region);
+        with_modify_other_keys(bytes, self.keys.modify_other_keys())
     }
 
     /// Draw `bytes` (a restored terminal's saved scrollback, made safe)
@@ -505,6 +511,15 @@ impl Scanner {
         let whole = top >= bottom || (top == 1 && bottom == rows);
         self.region = (!whole).then_some((top, bottom));
     }
+}
+
+/// `bytes` and then modifyOtherKeys at `level`, which alacritty does not
+/// keep, unless off.
+fn with_modify_other_keys(mut bytes: Vec<u8>, level: u8) -> Vec<u8> {
+    if level != 0 {
+        bytes.extend_from_slice(format!("\x1b[>4;{level}m").as_bytes());
+    }
+    bytes
 }
 
 #[cfg(test)]

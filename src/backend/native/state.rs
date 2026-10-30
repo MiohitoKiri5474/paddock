@@ -6,6 +6,7 @@
 //! ([`Notice::Changed`]), which reads it again.
 
 use super::hook;
+use super::limits;
 use super::protocol::{self, Answer, Frame, Message, Notice, Request};
 use super::queue::Queue;
 use super::space::Space;
@@ -25,11 +26,11 @@ use std::time::{Duration, Instant};
 /// Bytes queued for an attached client past which it is behind: a client
 /// that stays behind for [`GRACE`] has stopped reading (not just paused a
 /// moment), and is let go.
-const BEHIND: usize = 16 << 20;
+pub const BEHIND: usize = 16 << 20;
 const GRACE: Duration = Duration::from_secs(5);
 /// Bytes queued past which the client is let go at once, so a program
 /// writing fast never grows the server without bound meanwhile.
-const MAX_QUEUED: usize = 128 << 20;
+pub const MAX_QUEUED: usize = 128 << 20;
 
 /// The client attached to a space: frames for it go through `queue`, in
 /// order, to a thread that writes them.
@@ -69,12 +70,12 @@ impl Subscriber {
         let Some(queued) = self.queue.push(frame) else {
             return Err("it went away");
         };
-        if queued <= BEHIND {
+        if queued <= limits::behind() {
             self.behind = None;
             return Ok(());
         }
         let since = *self.behind.get_or_insert_with(Instant::now);
-        if queued > MAX_QUEUED || since.elapsed() > GRACE {
+        if queued > limits::max_queued() || since.elapsed() > GRACE {
             return Err("it stopped reading");
         }
         Ok(())

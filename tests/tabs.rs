@@ -195,9 +195,19 @@ fn tabs_are_named_after_what_runs_in_them() {
     let mut paddock = ready(&sandbox);
     new_tab(&mut paddock, &["1:home", "2:home"]);
 
-    paddock.type_line("sleep 30");
-    paddock.wait_for_tabs(&["1:home", "2:sleep"]);
+    paddock.type_line("cat");
+    // tmux names a tab when its terminal writes: if it looked before cat
+    // had the terminal (a loaded machine), it looks again only at cat's
+    // echo. Each key typed is one more look, until the name is there.
+    paddock.wait_for_poking("the tab named after cat", b"x", |_| {
+        paddock.tabs().0 == ["1:home", "2:cat"]
+    });
     paddock.send(b"\x03");
+    // C-c only marks cat to die: a line typed before cat runs again is
+    // cat's to read (a read returns what waits before it looks at
+    // signals), and cat dies with it. So the shell must have the terminal
+    // back, its directory's name on the tab again, before `cd /`.
+    paddock.wait_for_tabs(&["1:home", "2:home"]);
     paddock.type_line("cd /");
     paddock.wait_for_tabs(&["1:home", "2:/"]);
 }

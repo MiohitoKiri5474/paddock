@@ -30,8 +30,12 @@ pub fn attach(
     mut deliver: impl FnMut(Event) -> bool + Send + 'static,
 ) -> Result<(ControlClient, Structure, Vec<Replay>)> {
     let (mut control, rx) = ControlClient::attach(server, session)?;
+    // Notifications that come while paddock waits for its replies: a
+    // window renamed during the seeding below is newer than the structure
+    // read, so it must still reach `deliver`.
+    let mut held = Vec::new();
     control.resize(cols, rows)?;
-    wait_reply(&rx)?;
+    wait_reply(&rx, &mut held)?;
     // Read after the resize, so the panes have their final sizes.
     let structure = server.structure(session)?;
     let panes: Vec<_> = structure
@@ -39,8 +43,8 @@ pub fn attach(
         .map(|s| (s.id.clone(), (s.rect.width, s.rect.height)))
         .collect();
     let ids: Vec<&str> = panes.iter().map(|(p, _)| p.as_str()).collect();
-    let seeds = seed::fetch(&mut control, &rx, &ids)?;
-    control.forward(&rx, move |msg| {
+    let seeds = seed::fetch(&mut control, &rx, &ids, &mut held)?;
+    control.forward(held, &rx, move |msg| {
         protocol::event(msg).is_none_or(&mut deliver)
     });
     let replays = panes
@@ -51,6 +55,7 @@ pub fn attach(
                 terminal,
                 size,
                 bytes: seed::stream(&seed)?,
+                scrollback_after: false,
             })
         })
         .collect::<Result<_>>()?;
@@ -89,13 +94,15 @@ impl ControlClient {
     }
 
     /// From now on deliver messages to `deliver`, after first passing it
-    /// everything still queued on `pending`, so nothing is lost or reordered.
+    /// `held` (taken off `pending` earlier) and then everything still
+    /// queued on `pending`, so nothing is lost or reordered.
     pub fn forward(
         &self,
+        held: Vec<Message>,
         pending: &Receiver<Message>,
         deliver: impl FnMut(Message) -> bool + Send + 'static,
     ) {
-        redirect(&self.sink, pending, Box::new(deliver));
+        redirect(&self.sink, held, pending, Box::new(deliver));
     }
 
     /// Send one command line. Several commands joined with ` ; ` run back to
@@ -137,9 +144,14 @@ impl ControlClient {
 
 /// Swap the sink while holding its lock: the reader thread waits, so queued
 /// messages are delivered before any new one.
-fn redirect(sink: &Mutex<Sink>, pending: &Receiver<Message>, mut deliver: Sink) {
+fn redirect(
+    sink: &Mutex<Sink>,
+    held: Vec<Message>,
+    pending: &Receiver<Message>,
+    mut deliver: Sink,
+) {
     let mut current = sink.lock().unwrap_or_else(|e| e.into_inner());
-    for m in pending.try_iter() {
+    for m in held.into_iter().chain(pending.try_iter()) {
         deliver(m);
     }
     *current = deliver;
@@ -168,9 +180,10 @@ fn read_loop(mut r: impl BufRead, sink: &Mutex<Sink>) {
     deliver(Message::Exit);
 }
 
-/// Wait for the next reply on `rx`, discarding everything else that arrives
-/// first (including pane output).
-pub fn wait_reply(rx: &Receiver<Message>) -> Result<Vec<Vec<u8>>> {
+/// Wait for the next reply on `rx`. Notifications that arrive first go to
+/// `held`, for [`ControlClient::forward`]; pane output is discarded (the
+/// replies being waited for capture it).
+pub fn wait_reply(rx: &Receiver<Message>, held: &mut Vec<Message>) -> Result<Vec<Vec<u8>>> {
     let deadline = Instant::now() + REPLY_TIMEOUT;
     loop {
         let left = deadline.saturating_duration_since(Instant::now());
@@ -183,7 +196,8 @@ pub fn wait_reply(rx: &Receiver<Message>) -> Result<Vec<Vec<u8>>> {
                 bail!("tmux error: {}", String::from_utf8_lossy(&lines.concat()))
             }
             Message::Exit => bail!("tmux control client exited"),
-            _ => {}
+            Message::Notification(_) => held.push(msg),
+            Message::Output { .. } => {}
         }
     }
 }
@@ -230,12 +244,13 @@ mod tests {
         let (shared_tx, shared_rx) = mpsc::channel();
         redirect(
             &sink,
+            vec![out(0)],
             &private_rx,
             Box::new(move |m| shared_tx.send(m).is_ok()),
         );
         (sink.lock().unwrap())(out(3));
         let got: Vec<Message> = shared_rx.try_iter().collect();
-        assert_eq!(got, vec![out(1), out(2), out(3)]);
+        assert_eq!(got, vec![out(0), out(1), out(2), out(3)]);
     }
 
     #[test]
@@ -257,8 +272,29 @@ mod tests {
         })
         .unwrap();
         tx.send(Message::Exit).unwrap();
-        assert_eq!(wait_reply(&rx).unwrap(), vec![b"r".to_vec()]);
-        assert!(wait_reply(&rx).unwrap_err().to_string().contains("bad"));
-        assert!(wait_reply(&rx).is_err());
+        let mut held = Vec::new();
+        assert_eq!(wait_reply(&rx, &mut held).unwrap(), vec![b"r".to_vec()]);
+        assert!(wait_reply(&rx, &mut held)
+            .unwrap_err()
+            .to_string()
+            .contains("bad"));
+        assert!(wait_reply(&rx, &mut held).is_err());
+        assert!(held.is_empty());
+    }
+
+    #[test]
+    fn wait_reply_holds_notifications_for_later() {
+        // A window renamed while paddock seeds its panes (ticket 63).
+        let renamed = Message::Notification("%window-renamed @1 home".into());
+        let (tx, rx) = mpsc::channel();
+        tx.send(renamed.clone()).unwrap();
+        tx.send(Message::Reply {
+            ok: true,
+            lines: Vec::new(),
+        })
+        .unwrap();
+        let mut held = Vec::new();
+        wait_reply(&rx, &mut held).unwrap();
+        assert_eq!(held, vec![renamed]);
     }
 }

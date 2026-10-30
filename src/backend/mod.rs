@@ -24,10 +24,12 @@ pub use structure::{Float, Split, Structure, Tab};
 use crate::config::BackendKind;
 use crate::input::Direction;
 use crate::paths::Paths;
+use crate::terminal::emulator::Emulator;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// What a space's connection reports, in order.
@@ -55,7 +57,47 @@ pub enum Event {
     /// Input to `terminal` was refused, and `why` (native only): once,
     /// until its program has taken all that waited.
     InputRefused { terminal: TerminalId, why: String },
+    /// `terminal`'s emulator rebuilt with its scrollback, from the
+    /// snapshot of the moment it was attached (native only): its
+    /// [`Replay`] had only its screens. Comes among its output, which
+    /// [`crate::terminal::Terminal::take_scrollback`] feeds it again.
+    Scrollback {
+        terminal: TerminalId,
+        emulator: Rebuilt,
+    },
 }
+
+/// An emulator rebuilt off the event loop, for [`Event::Scrollback`]:
+/// taken once. Shared, not boxed, only so [`Event`] stays `Clone` and
+/// `PartialEq` (tests compare events): two compare equal only if they
+/// hold the same one.
+#[derive(Clone)]
+pub struct Rebuilt(Arc<Mutex<Option<Emulator>>>);
+
+impl Rebuilt {
+    pub fn new(emulator: Emulator) -> Self {
+        Self(Arc::new(Mutex::new(Some(emulator))))
+    }
+
+    /// The emulator, unless taken already.
+    pub fn take(&self) -> Option<Emulator> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).take()
+    }
+}
+
+impl std::fmt::Debug for Rebuilt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Rebuilt")
+    }
+}
+
+impl PartialEq for Rebuilt {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for Rebuilt {}
 
 /// A space as listed: its id and its current name.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -111,11 +153,16 @@ pub struct Restored {
 
 /// What a terminal held when its space was attached: the bytes that,
 /// fed to a fresh emulator of `size`, rebuild its screen, scrollback,
-/// cursor and modes. Output after them continues the same stream.
+/// cursor and modes. Output after them continues the same stream. From
+/// the native server, the scrollback comes after, as an
+/// [`Event::Scrollback`], so the screens draw at once.
 pub struct Replay {
     pub terminal: TerminalId,
     pub size: (u16, u16),
     pub bytes: Vec<u8>,
+    /// `bytes` are the screens alone: the scrollback comes after, as an
+    /// [`Event::Scrollback`].
+    pub scrollback_after: bool,
 }
 
 /// A running host, which names its hook event log (see

@@ -91,11 +91,18 @@ fn upgrade_server(binary: Option<&str>) -> anyhow::Result<()> {
     let backend = backend::Backend::new(paths, config::BackendKind::Native);
     let pid = match backend.upgrade(&exe) {
         Ok(pid) => pid,
-        Err(e) if e.downcast_ref::<backend::NoHandover>().is_some() => anyhow::bail!(
-            "{e:#}; to restart it instead, start paddock and answer yes when it \
-             offers to (its programs end, and its layout comes back)"
-        ),
-        Err(e) => return Err(e),
+        Err(e) => match e.downcast_ref::<backend::NoHandover>() {
+            // Too old by its version: paddock's restart prompt says yes on Enter.
+            Some(no) if no.version.is_some() => anyhow::bail!(
+                "{e:#}; to restart it instead, start paddock and press Enter at its \
+                 prompt (its programs end, and its layout comes back)"
+            ),
+            Some(_) => anyhow::bail!(
+                "{e:#}; to restart it instead, start paddock and answer yes when it \
+                 offers to (its programs end, and its layout comes back)"
+            ),
+            None => return Err(e),
+        },
     };
     println!(
         "the paddock server (pid {pid}) now runs {}, its programs running on",
