@@ -167,27 +167,56 @@ fn run_claimed(paths: Paths, config: &Config, notice: Option<String>) -> Result<
 /// Get the backend ready ([`Backend::prepare`]) and bring back a saved
 /// layout ([`Backend::resume`]). A server that speaks another protocol
 /// version is said so, with an offer to upgrade it in place to this
-/// paddock (ADR 0009); on no, or with no terminal to ask on, paddock
-/// stops with the same words. See [`upgrade`] for how it goes. A notice
-/// for the tab bar of how an upgrade went, if one ran.
+/// paddock (ADR 0009), or, one too old to hand over, to restart it; on
+/// no, or with no terminal to ask on, paddock stops with the same words.
+/// See [`upgrade`] and [`restart`] for how they go. A notice for the tab
+/// bar of how an upgrade or a restart went, if one ran.
 fn prepare(backend: &Backend) -> Result<Option<String>> {
     let mut notice = None;
     if let Err(e) = backend.prepare() {
         let Some(other) = e.downcast_ref::<OtherVersion>() else {
             return Err(e);
         };
-        let question = format!(
-            "paddock: {}.\nUpgrade it? Its programs keep running. [Y/n] ",
-            other.mismatch()
-        );
-        if !ask(&question, true)? {
-            return Err(e);
-        }
-        notice = upgrade(backend, other)?;
+        notice = if other.can_hand_over() {
+            let question = format!(
+                "paddock: {}.\nUpgrade it? Its programs keep running. [Y/n] ",
+                other.mismatch()
+            );
+            if !ask(&question, true)? {
+                return Err(e);
+            }
+            upgrade(backend, other)?
+        } else {
+            restart(backend, other)?
+        };
         backend.prepare()?;
     }
     backend.resume()?;
     Ok(notice)
+}
+
+/// The notice after a restart: the layout's own ("restored 2 spaces")
+/// follows it.
+const RESTARTED: &str = "paddock server restarted: its programs ended";
+
+/// Offer to restart the server `other`, from before upgrades (ADR 0009),
+/// which cannot hand its terminals over: yes by default, as a restart
+/// is the only way on. It ends the server, programs and all, and a new
+/// one rebuilds its layout (ADR 0008); declined, paddock stops with
+/// `other`.
+fn restart(backend: &Backend, other: &OtherVersion) -> Result<Option<String>> {
+    let question = format!(
+        "paddock: {}.\nIt is from before upgrades, so it cannot hand its terminals over.\n\
+         Restart it? Its programs and agents end; its layout comes back with a fresh \
+         shell in each terminal, without scrollback or agent sessions, which it never \
+         saved. [Y/n] ",
+        other.mismatch()
+    );
+    if !ask(&question, true)? {
+        return Err((*other).into());
+    }
+    backend.restart(other)?;
+    Ok(Some(RESTARTED.to_string()))
 }
 
 /// Upgrade the server `other` to this paddock's own binary: a notice of
@@ -208,7 +237,7 @@ fn upgrade(backend: &Backend, other: &OtherVersion) -> Result<Option<String>> {
                 return Err((*other).into());
             }
             backend.restart(other)?;
-            Ok(None)
+            Ok(Some(RESTARTED.to_string()))
         }
         backend::Upgraded::Ended(why) => {
             println!(
@@ -223,7 +252,8 @@ fn upgrade(backend: &Backend, other: &OtherVersion) -> Result<Option<String>> {
 }
 
 /// Ask `question` on the terminal: whether the answer is yes, `default`
-/// for an empty one; no, with no terminal to ask on.
+/// for an empty one; no at the end of input, or with no terminal to ask
+/// on.
 fn ask(question: &str, default: bool) -> Result<bool> {
     if !std::io::stdin().is_terminal() {
         return Ok(false);
@@ -231,10 +261,38 @@ fn ask(question: &str, default: bool) -> Result<bool> {
     print!("{question}");
     std::io::stdout().flush()?;
     let mut answer = String::new();
-    std::io::stdin().read_line(&mut answer)?;
-    let answer = answer.trim();
+    let read = std::io::stdin().read_line(&mut answer)?;
+    Ok(answered((read > 0).then_some(answer.as_str()), default))
+}
+
+/// Whether the line `answer` says yes: `default` for an empty one (Enter
+/// alone), no at the end of input (`None`, as after Ctrl-D), which never
+/// counts as the default.
+fn answered(answer: Option<&str>, default: bool) -> bool {
+    let Some(answer) = answer.map(str::trim) else {
+        return false;
+    };
     if answer.is_empty() {
-        return Ok(default);
+        return default;
     }
-    Ok(answer.eq_ignore_ascii_case("y") || answer.eq_ignore_ascii_case("yes"))
+    answer.eq_ignore_ascii_case("y") || answer.eq_ignore_ascii_case("yes")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::answered;
+
+    #[test]
+    fn enter_takes_the_default_and_the_end_of_input_says_no() {
+        assert!(answered(Some("\n"), true));
+        assert!(!answered(Some("\n"), false));
+        assert!(
+            !answered(None, true),
+            "Ctrl-D is no, even when yes is the default"
+        );
+        assert!(answered(Some(" Yes\n"), false));
+        assert!(answered(Some("y"), false), "a last line with no newline");
+        assert!(!answered(Some("n\n"), true));
+        assert!(!answered(Some("maybe\n"), true));
+    }
 }

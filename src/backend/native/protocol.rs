@@ -46,6 +46,17 @@ use std::path::PathBuf;
 /// changes nothing (as `Attach::scrollback_after`).
 pub const VERSION: u32 = 2;
 
+/// The first protocol version whose servers can hand their terminals
+/// over (ADR 0009). A server of an older one (v0.1.0-rc.1 and rc.2 speak
+/// 1) closes the connection at an upgrade: it can only be restarted.
+pub const HANDOVER_VERSION: u32 = 2;
+
+/// Whether a server speaking protocol `version` may hand its terminals
+/// over: not one from before [`HANDOVER_VERSION`].
+pub fn can_hand_over(version: u32) -> bool {
+    version >= HANDOVER_VERSION
+}
+
 /// The largest frame the client reads: a snapshot of 50,000 lines of
 /// scrollback, even with colours changing every few cells, fits.
 pub const FROM_SERVER: usize = 256 << 20;
@@ -418,7 +429,7 @@ fn take_id(body: &[u8]) -> Result<(TerminalId, &[u8])> {
 
 /// The running server speaks another protocol version: its pid and
 /// version, as its hello tells. paddock offers to upgrade it, or to
-/// restart it if it cannot hand over.
+/// restart it if it cannot hand over ([`Self::can_hand_over`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OtherVersion {
     pub pid: u32,
@@ -434,14 +445,26 @@ impl OtherVersion {
              and this paddock speaks {VERSION}"
         )
     }
+
+    /// Whether the server may hand its terminals over ([`can_hand_over`]):
+    /// one that cannot can only be restarted.
+    pub fn can_hand_over(&self) -> bool {
+        can_hand_over(self.version)
+    }
 }
 
 impl std::fmt::Display for OtherVersion {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let pid = self.pid;
+        // A newer server's layout.json may be one this paddock cannot read.
+        let layout = if self.version < VERSION {
+            "its layout comes back"
+        } else {
+            "its layout comes back if this paddock can read it"
+        };
         write!(
             f,
-            "{}: close every terminal in it, or end it (kill {pid}), and start paddock again",
+            "{}: end it (kill {pid}) and start paddock again; its programs end, and {layout}",
             self.mismatch()
         )
     }
@@ -519,6 +542,23 @@ mod tests {
             read(&mut bytes.as_slice(), FROM_CLIENT).unwrap(),
             Some(frame)
         );
+    }
+
+    /// Ticket 67: a server of version 1 (from before upgrades) cannot
+    /// hand over; one of this version, or a newer one, may.
+    #[test]
+    fn only_a_server_from_before_upgrades_cannot_hand_over() {
+        let other = |version| OtherVersion { pid: 7, version };
+        assert!(!other(1).can_hand_over());
+        assert!(other(HANDOVER_VERSION).can_hand_over());
+        assert!(other(999).can_hand_over());
+        let said = other(1).to_string();
+        assert!(said.contains("end it (kill 7)"), "{said}");
+        assert!(said.contains("its layout comes back"), "{said}");
+        assert!(!said.contains("close every terminal"), "{said}");
+        assert!(!said.contains("if this paddock can read it"), "{said}");
+        let newer = other(999).to_string();
+        assert!(newer.contains("its layout comes back if this paddock can read it"));
     }
 
     /// A connection the other side reset.

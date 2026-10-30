@@ -1,7 +1,7 @@
-//! Fake native servers of another protocol version (999), listening on a
-//! sandbox's socket, and the frames they speak: a big-endian `u32`
-//! length, a kind byte, then the body. Each sends its hello first, as
-//! every server does.
+//! Fake native servers of another protocol version (999, or 1 from
+//! before upgrades), listening on a sandbox's socket, and the frames they
+//! speak: a big-endian `u32` length, a kind byte, then the body. Each
+//! sends its hello first, as every server does.
 
 use super::Sandbox;
 use std::io::{Read, Write};
@@ -32,12 +32,18 @@ pub fn read_frame(stream: &mut UnixStream) -> Option<Vec<u8>> {
 /// then reads one frame and closes, as a server from before upgrades
 /// does at an upgrade frame it does not know.
 pub fn fake_older_server(sandbox: &Sandbox, pid: u32) {
+    fake_server_of_version(sandbox, pid, 999);
+}
+
+/// [`fake_older_server`], speaking protocol `version`: 1 is a server
+/// from before upgrades (v0.1.0-rc.1 and rc.2).
+pub fn fake_server_of_version(sandbox: &Sandbox, pid: u32, version: u32) {
     std::fs::create_dir_all(sandbox.state_dir()).unwrap();
     let listener = UnixListener::bind(sandbox.state_dir().join("server.sock")).unwrap();
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { return };
-            let hello = format!(r#"{{"Hello":{{"version":999,"pid":{pid}}}}}"#);
+            let hello = format!(r#"{{"Hello":{{"version":{version},"pid":{pid}}}}}"#);
             if send_frame(&mut stream, 0, &hello).is_ok() {
                 let _ = read_frame(&mut stream);
             }

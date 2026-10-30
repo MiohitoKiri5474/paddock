@@ -55,21 +55,31 @@ impl std::fmt::Display for Refused {
 
 impl std::error::Error for Refused {}
 
-/// The running server gave no answer to an upgrade: it is from before
-/// ADR 0009, or its new binary failed once it ran (see `server.log`).
+/// The running server cannot hand over: its hello names a protocol
+/// version from before ADR 0009 (`version`), or it gave no answer to an
+/// upgrade (`None`): it is from before ADR 0009, or its new binary
+/// failed once it ran (see `server.log`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NoHandover {
     pub pid: u32,
+    pub version: Option<u32>,
 }
 
 impl std::fmt::Display for NoHandover {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "the paddock server (pid {}) gave no answer to the upgrade: it may be too old \
-             to hand its terminals over (see server.log)",
-            self.pid
-        )
+        let pid = self.pid;
+        match self.version {
+            Some(version) => write!(
+                f,
+                "the paddock server (pid {pid}) speaks protocol version {version}, from a \
+                 paddock that cannot hand its terminals over"
+            ),
+            None => write!(
+                f,
+                "the paddock server (pid {pid}) gave no answer to the upgrade: it may be too \
+                 old to hand its terminals over (see server.log)"
+            ),
+        }
     }
 }
 
@@ -320,6 +330,12 @@ impl Client {
         // The probe and the rebuild of a big scrollback take a while.
         stream.set_read_timeout(Some(UPGRADE_TIMEOUT))?;
         let server = match protocol::read(&mut stream, protocol::FROM_SERVER)? {
+            Some(Frame::Message(Message::Hello { version, pid, .. }))
+                if !protocol::can_hand_over(version) =>
+            {
+                let version = Some(version);
+                return Err(NoHandover { pid, version }.into());
+            }
             Some(Frame::Message(Message::Hello { pid, .. })) => pid,
             other => bail!("expected the paddock server's hello, got {other:?}"),
         };
@@ -336,7 +352,13 @@ impl Client {
                 }
                 // A server from before ADR 0009 closes the connection at a
                 // frame it does not know.
-                Ok(None) if !probed => return Err(NoHandover { pid: server }.into()),
+                Ok(None) if !probed => {
+                    return Err(NoHandover {
+                        pid: server,
+                        version: None,
+                    }
+                    .into())
+                }
                 Ok(None) => bail!(
                     "the paddock server (pid {server}) ended as it took over, without an \
                      answer: its programs may have ended (see server.log)"

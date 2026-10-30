@@ -61,7 +61,7 @@ cargo install --path . --locked     # installs ~/.cargo/bin/paddock
 
 ### Upgrade
 
-After you upgrade, run `paddock server upgrade`: the running server hands every terminal to the new paddock. See [Upgrade](docs/server.md#upgrade).
+After you upgrade, run `paddock server upgrade`: the running server hands every terminal to the new paddock. A server from v0.1.0-rc.1 or rc.2 cannot hand over: start paddock and press Enter to restart it, which ends its programs and agents and brings back its layout with a fresh shell in each terminal. See [Upgrade](docs/server.md#upgrade).
 
 ## First run
 
