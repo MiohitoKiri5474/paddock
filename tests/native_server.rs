@@ -689,7 +689,11 @@ fn a_paddock_the_server_lets_go_says_so() {
     // a loaded machine's CPU no longer decides whether it gets there.
     let sandbox = small_limits();
     let mut paddock = ready(&sandbox);
-    paddock.type_line("yes");
+    // On the alternate screen, which keeps no scrollback: a new paddock
+    // attaching to 50,000 lines of `y` takes seconds to draw on a loaded
+    // machine (2 to 10 s, 12 at once at load average 95; this way under
+    // 0.3 s).
+    paddock.type_line("printf '\\033[?1049h'; yes");
     paddock.wait_for_text("y\ny\ny\n");
     // Stopped while output piles up, until the server gives up on it.
     let log = sandbox.state_dir().join("server.log");
