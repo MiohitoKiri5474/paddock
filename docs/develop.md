@@ -5,7 +5,7 @@ Building and testing paddock. Back to the [README](../README.md).
 ```sh
 cargo clippy --all-targets -- -D warnings
 cargo test                          # unit + end-to-end tests
-scripts/test-native.sh              # the end-to-end tests on the native backend (the default)
+scripts/test-native.sh              # the end-to-end tests, as CI runs them
 claude plugin validate --strict .   # the plugin marketplace, in full (cargo test checks the basics)
 claude plugin validate --strict plugins/paddock
 gemini extensions validate .        # the Gemini extension (agy installs it too)
