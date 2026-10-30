@@ -6,7 +6,9 @@
 mod harness;
 
 use harness::backend::{alive, server_pid, stop_server, NATIVE};
-use harness::older_server::{fake_older_server, fake_server_ending_at_upgrade};
+use harness::older_server::{
+    fake_older_server, fake_server_ending_at_upgrade, fake_server_of_version,
+};
 use harness::{Paddock, Sandbox, PROMPT};
 use std::io::Write;
 use std::path::Path;
@@ -210,6 +212,121 @@ fn restarting_a_server_of_another_version_restores_its_layout() {
         Some(real(&dir).as_str())
     );
     assert!(server_pid(&sandbox.state_dir()).is_some_and(alive));
+}
+
+/// `layout.json` as a server of protocol version 1 (v0.1.0-rc.1 and
+/// rc.2) writes it: one space in `dir`, a renamed tab split side by side
+/// (`dir` and `sub`, the second focused), and a second tab in `dir`.
+fn layout_of_version_1(dir: &Path, sub: &Path) -> String {
+    let (dir, sub) = (dir.display(), sub.display());
+    format!(
+        r#"{{
+  "version": 1,
+  "current": 0,
+  "spaces": [
+    {{
+      "name": "proj",
+      "root": "{dir}",
+      "size": [70, 22],
+      "current": 0,
+      "tabs": [
+        {{
+          "name": "logs",
+          "auto_name": false,
+          "zoomed": false,
+          "focus": 1,
+          "splits": {{
+            "split": {{
+              "axis": "Columns",
+              "cells": [
+                {{ "weight": 35, "node": {{ "terminal": {{ "dir": "{dir}" }} }} }},
+                {{ "weight": 34, "node": {{ "terminal": {{ "dir": "{sub}" }} }} }}
+              ]
+            }}
+          }}
+        }},
+        {{
+          "name": "proj",
+          "auto_name": true,
+          "zoomed": false,
+          "focus": 0,
+          "splits": {{ "terminal": {{ "dir": "{dir}" }} }}
+        }}
+      ]
+    }}
+  ]
+}}
+"#
+    )
+}
+
+/// Ticket 67: a server from before upgrades (protocol version 1) cannot
+/// hand over, so no upgrade is offered: one question, yes by default,
+/// says its programs end and its layout comes back. Enter restarts it,
+/// the layout it saved comes back with a shell in each directory, and
+/// the notice says its programs ended.
+#[test]
+fn enter_restarts_a_server_too_old_to_hand_over_and_restores_its_layout() {
+    let sandbox = native();
+    let (dir, sub) = (sandbox.path("home/proj"), sandbox.path("home/proj/sub"));
+    std::fs::create_dir_all(&sub).unwrap();
+    let (dir, sub) = (
+        Path::new(&real(&dir)).to_owned(),
+        Path::new(&real(&sub)).to_owned(),
+    );
+    std::fs::create_dir_all(sandbox.state_dir()).unwrap();
+    let layout = layout_of_version_1(&dir, &sub);
+    std::fs::write(sandbox.state_dir().join("layout.json"), layout).unwrap();
+    fake_server_of_version(&sandbox, 4242, 1);
+
+    let mut again = sandbox.launch();
+    again.wait_for_text("Restart it? Its programs and agents end");
+    let asked = again.full_screen().replace('\n', "");
+    for words in [
+        "pid 4242) speaks protocol version 1",
+        "cannot hand its terminals over",
+        "its layout comes back with a fresh shell in each terminal. [Y/n]",
+    ] {
+        assert!(asked.contains(words), "{words:?} in {asked}");
+    }
+    assert!(
+        !asked.contains("Upgrade it?"),
+        "no upgrade offered: {asked}"
+    );
+    again.type_line("");
+
+    again.wait_for_text("its programs ended");
+    again.wait_for_text("restored 1 space");
+    let space = sandbox.space("proj");
+    let tabs: Vec<_> = space.tabs.iter().map(|t| t.splits.len()).collect();
+    assert_eq!(tabs, [2, 1], "{space:#?}");
+    assert_eq!(space.tabs[0].name, "logs");
+    let dir = dir.to_string_lossy();
+    assert_eq!(sandbox.terminal("proj:0.0").dir.as_deref(), Some(&*dir));
+    let sub = sub.to_string_lossy();
+    assert_eq!(sandbox.terminal("proj:0.1").dir.as_deref(), Some(&*sub));
+    assert_eq!(sandbox.terminal("proj:1.0").dir.as_deref(), Some(&*dir));
+    assert!(server_pid(&sandbox.state_dir()).is_some_and(alive));
+}
+
+/// Declined, paddock stops and says how to go on, without telling to
+/// close every terminal, which would lose the layout.
+#[test]
+fn declining_to_restart_a_server_too_old_to_hand_over_stops_paddock() {
+    let sandbox = native();
+    fake_server_of_version(&sandbox, 4242, 1);
+
+    let mut again = sandbox.launch();
+    again.wait_for_text("Restart it?");
+    again.type_line("n");
+    assert!(!again.wait_exit(), "declining fails");
+    let said = again.full_screen().replace('\n', "");
+    assert!(said.contains("end it (kill 4242)"), "{said}");
+    assert!(!said.contains("close every terminal"), "{said}");
+    assert!(
+        server_pid(&sandbox.state_dir()).is_none(),
+        "nothing started"
+    );
 }
 
 /// An upgrade that fails once the server switched (ticket 51): its
