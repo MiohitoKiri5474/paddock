@@ -99,7 +99,13 @@ fn search_jumps_through_the_history_wrapping_and_highlights_matches() {
     // Three `x0y` lines 41 apart: the first two end up in the history.
     // The command line itself reads `x$((i*0))y`, which does not match.
     p.type_line("for i in 1 2 3; do echo \"x$((i*0))y\"; seq 1 40; done");
-    p.wait_for("output", |s| s.lines().any(|l| l == "40"));
+    // Each `seq` ends at 40: all is out only once the prompt follows one.
+    p.wait_for("output", |s| {
+        let lines: Vec<&str> = s.lines().collect();
+        lines
+            .windows(2)
+            .any(|w| w[0] == "40" && w[1].starts_with(PROMPT))
+    });
 
     p.command(b"/");
     p.wait_for("search prompt", |s| s.lines().any(|l| l.trim() == "/"));

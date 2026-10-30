@@ -14,6 +14,7 @@
 
 use super::axis::Axis;
 use super::handover::{self, HandedTerminal, Held};
+use super::limits;
 use super::protocol::{self, Answer, Ending, Frame, Message, Notice, Refusal, Request, Upgrade};
 use super::pty::Program::{self, LoginShell};
 use super::saved::{self, Saver};
@@ -22,7 +23,7 @@ use super::seen::Seen;
 use super::space::{HostedFloat, Space};
 use super::state::{State, Subscriber};
 use super::tab::Tab;
-use super::terminal::{dir_name, HostedTerminal, Input, Sent, INPUT_MAX};
+use super::terminal::{dir_name, HostedTerminal, Input, Sent};
 use super::{lock, pty, restore, socket_path, LOG};
 use crate::backend::env::{clean_env, AGY_STATUS_VAR};
 use crate::backend::{FloatId, SpaceId, TabId, TerminalId};
@@ -97,7 +98,7 @@ impl Shared {
     fn new(state: State, paths: &Paths, held: Held) -> Self {
         let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
         let mut env = clean_env(std::env::vars());
-        env.retain(|(k, _)| k != RESUME_WAIT_VAR);
+        env.retain(|(k, _)| k != RESUME_WAIT_VAR && k != limits::DIVISOR_VAR);
         env.push(("COLORTERM".into(), "truecolor".into()));
         env.push((AGY_STATUS_VAR.into(), "on".into()));
         // A server that took over (ADR 0009) reads its hook log again from
@@ -518,7 +519,7 @@ fn serve_connection(shared: &Arc<Shared>, conn: u64, mut stream: UnixStream) -> 
     protocol::send_hello(&mut stream, instance)?;
     // An upgrade comes in place of the client's hello, whatever version
     // it speaks.
-    let first = protocol::read(&mut stream, protocol::FROM_CLIENT)?;
+    let first = protocol::read(&mut stream, limits::frame_max())?;
     if let Some(Frame::Upgrade(Upgrade::Ask { exe })) = first {
         return upgrade(shared, &mut stream, &exe);
     }
@@ -528,7 +529,7 @@ fn serve_connection(shared: &Arc<Shared>, conn: u64, mut stream: UnixStream) -> 
     // connection ends, it is discarded whole.
     let mut ongoing = None;
     let ongoing = &mut ongoing;
-    while let Some(frame) = protocol::read(&mut stream, protocol::FROM_CLIENT)? {
+    while let Some(frame) = protocol::read(&mut stream, limits::frame_max())? {
         let request = match frame {
             Frame::Part {
                 terminal,
@@ -714,7 +715,7 @@ struct Ongoing {
     data: Vec<u8>,
     /// Its bytes still to come.
     due: usize,
-    /// Bigger than [`INPUT_MAX`]: refused whole.
+    /// Bigger than [`limits::input_max`]: refused whole.
     too_big: bool,
 }
 
@@ -725,7 +726,7 @@ struct Ongoing {
 /// read gets through. A part that does not continue the input before it
 /// (another terminal, or lengths that do not add up) is an error, which
 /// closes the connection: what it collects never passes the input's first
-/// length, nor [`INPUT_MAX`].
+/// length, nor [`limits::input_max`].
 fn input(
     shared: &Shared,
     ongoing: &mut Option<Ongoing>,
@@ -746,7 +747,7 @@ fn input(
             terminal: terminal.clone(),
             data: Vec::new(),
             due: total,
-            too_big: total > INPUT_MAX,
+            too_big: total > limits::input_max(),
         },
     };
     collected.due = rest;
@@ -773,7 +774,7 @@ fn input(
     let program = term.command().unwrap_or_else(|| "its program".into());
     let why = format!(
         "it would take what waits for {program} past {} MiB",
-        INPUT_MAX >> 20
+        limits::input_max() >> 20
     );
     eprintln!("paddock server: refusing input to {terminal}: {why}");
     let space = space.id.clone();

@@ -344,6 +344,21 @@ impl Paddock {
         );
     }
 
+    /// [`Self::wait_for`], sending `poke` at each look while `pred` does
+    /// not hold yet: for what only happens once the terminal writes again
+    /// (tmux names a tab only then), a key whose echo is that write.
+    pub fn wait_for_poking(&self, what: &str, poke: &[u8], pred: impl Fn(&str) -> bool) {
+        self.wait_for(what, |screen| {
+            if pred(screen) {
+                return true;
+            }
+            let mut writer = self.writer.lock().expect("writer lock");
+            writer.write_all(poke).expect("write to pty");
+            writer.flush().expect("flush pty");
+            false
+        });
+    }
+
     pub fn wait_for_text(&self, text: &str) {
         self.wait_for(text, |s| s.contains(text));
     }

@@ -21,6 +21,9 @@ const KEPT_VARS: &[&str] = &[
     // The native server keeps it from its shells; tmux's inherit it,
     // where nothing reads it.
     "PADDOCK_RESUME_WAIT_MS",
+    // Tests only: shrinks the native server's size limits (input cap,
+    // frame size, a client's backlog). Kept from its shells as above.
+    "PADDOCK_LIMITS_DIVISOR",
 ];
 
 /// Set to `on` in every terminal, so Antigravity CLI reports its state
