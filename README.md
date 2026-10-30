@@ -8,7 +8,6 @@ Design: [docs/design.md](docs/design.md). Glossary: [CONTEXT.md](CONTEXT.md). De
 
 - macOS, or Linux on the native backend (the release tarballs are for Apple Silicon Macs and for x86_64 or aarch64 Linux; build from source elsewhere)
 - On Linux, for notifications and copying: `notify-send` (libnotify, e.g. `apt install libnotify-bin`), and `wl-copy` (`wl-clipboard`) on Wayland or `xclip` on X11 (on Wayland, when `wl-copy` is missing or fails, paddock tries `xclip`, which works under XWayland). macOS has its own (`osascript`, `pbcopy`). Without one, paddock says so once in the tab bar and goes on; `PADDOCK_COPY_COMMAND` names another copy program (it reads the text on stdin)
-- tmux (tested with 3.8), only for the legacy tmux backend (`[backend] kind = "tmux"`, kept until v0.2): `brew install tmux` (Homebrew installs it with paddock)
 - Claude Code, Gemini CLI and/or Antigravity CLI (for session tracking; Gemini CLI tested with 0.64, Antigravity CLI with 1.4.3)
 - Rust 1.85+, only to build from source
 - Optional: the GitHub CLI (`gh`, logged in), for pull request status on the dashboard, in the sidebar and in `paddock worktree list`
@@ -43,7 +42,7 @@ tar xzf paddock-v0.1.0-x86_64-unknown-linux-gnu.tar.gz
 mkdir -p ~/.local/bin && mv paddock ~/.local/bin/   # or anywhere on your PATH
 ```
 
-zsh is not needed, nor tmux unless you use the legacy tmux backend. For notifications and copying, install `notify-send` and `wl-copy` or `xclip` (optional; see [Requirements](#requirements)).
+zsh is not needed. For notifications and copying, install `notify-send` and `wl-copy` or `xclip` (optional; see [Requirements](#requirements)).
 
 **Cargo**, from a tag:
 

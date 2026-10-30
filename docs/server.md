@@ -8,25 +8,24 @@ Your terminals run on paddock's server, which keeps running after you leave padd
 
 Agent sessions in those terminals: see [Resume after a restart](connect-agents.md#resume-after-a-restart).
 
-**From paddock 0.0.x (tmux).** paddock now runs on its own server by default, not on a hidden tmux server. The old `tmux -L paddock` server is not migrated: its spaces and programs stay where they are, and the new paddock starts empty. While that server runs, paddock says so in the tab bar, and prints it again however it ends (on leaving, or on an error at start), once per server: once printed, it remembers that server's pid and start time in `~/.local/state/paddock/old-tmux-server`, and a different server is said again. Finish what runs there first: `tmux -L paddock attach` attaches to that old server, with the old paddock's spaces as tmux sessions. Then close it:
+**From paddock 0.0.x (tmux).** paddock runs on its own server, not on a hidden tmux server; the tmux backend was removed in v0.2. If your config still has `[backend] kind = "tmux"`, paddock refuses to start and says to delete that line. An old `tmux -L paddock` server is not migrated, and paddock no longer looks for one: its spaces and programs stay where they are until you close it. Finish what runs there first (`tmux -L paddock attach`, with the old paddock's spaces as tmux sessions), then:
 
 ```sh
 tmux -L paddock kill-server         # ends every terminal of the old paddock
 ```
 
-The new paddock's terminals live on its own server, so `tmux -L paddock attach` never shows them. Hooks in paddock's terminals get `PADDOCK_PANE` and `PADDOCK_SOCKET` instead of `TMUX` and `TMUX_PANE`, by which `paddock hook` tells which terminal an event comes from; a script of yours that read `TMUX_PANE` should read `PADDOCK_PANE` now. To keep the tmux backend until v0.2, set `[backend] kind = "tmux"` (see [Configure](config.md)).
+Hooks in paddock's terminals get `PADDOCK_PANE` and `PADDOCK_SOCKET`, by which `paddock hook` tells which terminal an event comes from; `TMUX` and `TMUX_PANE` are not read any more, so a script of yours that read `TMUX_PANE` should read `PADDOCK_PANE`.
 
 ## Files
 
 - State: `~/.local/state/paddock/` (the server's `server.sock`, `server.lock`, `server.log` and `layout.json`, sidebar width, event logs, dismissed rows, `hook-errors.log`, `gh.log`)
-- The tmux backend's hidden server: `tmux -L paddock ls`
 
 ## Uninstall
 
 ```sh
 paddock hooks uninstall --agent claude --agent gemini --agent agy   # each agent you connected
 # First close every space in paddock (sidebar `x`): the server ends with the last one.
-tmux -L paddock kill-server         # the tmux backend's server, if one still runs
+tmux -L paddock kill-server         # an old paddock's tmux server (0.0.x), if one still runs
 rm -rf ~/.local/state/paddock ~/.config/paddock
 cargo uninstall paddock             # or brew uninstall paddock, or delete the binary you moved
 ```

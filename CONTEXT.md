@@ -7,7 +7,7 @@ paddock is a terminal workspace for running coding agents (Claude Code, Gemini C
 ### Layout
 
 **Space**:
-A named group of tabs you create to organise work, listed in the sidebar's SPACES section. It lives on the paddock server; on the legacy tmux backend, it is a session of the hidden tmux server.
+A named group of tabs you create to organise work, listed in the sidebar's SPACES section. It lives on the paddock server. (Before v0.2, on the tmux backend, it was a session of the hidden tmux server.)
 _Avoid_: workspace, project, group, category
 
 **Space root**:
@@ -18,18 +18,18 @@ _Avoid_: root (alone), home, base (that is a branch), project directory
 The space whose tabs the tab bar shows. It has its own background in the sidebar.
 
 **Tab**:
-One page of a space, holding one or more terminals arranged as splits. It lives on the paddock server; on the legacy tmux backend, it is a window of the space's session.
+One page of a space, holding one or more terminals arranged as splits. It lives on the paddock server.
 
 **Split**:
-A terminal sharing its tab with others, beside or above them. `C-a H/J/K/L` and dragging the border between two splits change their sizes. The paddock server keeps the layout in its layout tree, with each split's share of its row or column; on the legacy tmux backend, a split is a pane and tmux keeps the layout and the sizes.
+A terminal sharing its tab with others, beside or above them. `C-a H/J/K/L` and dragging the border between two splits change their sizes. The paddock server keeps the layout in its layout tree, with each split's share of its row or column.
 _Avoid_: window (that is a tab)
 
 **Zoom**:
-A split filling its tab for a while (`C-a z`), the others hidden but running; the tab bar marks the tab with a `Z`. The paddock server keeps it with the tab's layout tree; on the legacy tmux backend, it is `resize-pane -Z` and lives in tmux.
+A split filling its tab for a while (`C-a z`), the others hidden but running; the tab bar marks the tab with a `Z`. The paddock server keeps it with the tab's layout tree.
 _Avoid_: maximise, fullscreen
 
 **Terminal**:
-One shell inside paddock, shown in a tab, alone or with others. The paddock server runs it on its own PTY, so it keeps running when paddock is closed; on the legacy tmux backend, it is a tmux pane.
+One shell inside paddock, shown in a tab, alone or with others. The paddock server runs it on its own PTY, so it keeps running when paddock is closed.
 _Avoid_: tmux session
 
 **Server**:
@@ -45,7 +45,7 @@ What the server gives the new binary in an upgrade: every space, tab, float and 
 _Avoid_: snapshot (that is one terminal's screen), transfer
 
 **Backend**:
-What hosts the terminals (`[backend] kind`): paddock's own server (the native backend, the default), or the hidden tmux server (the legacy tmux backend, until v0.2). Terminals never move from one to the other: an older paddock's tmux server keeps its own until closed.
+What hosts the terminals: paddock's own server (the native backend), the only one since v0.2. `[backend] kind = "native"` is still accepted; the hidden tmux server (the tmux backend) was removed in v0.2, and `kind = "tmux"` is a config error.
 _Avoid_: engine, runtime
 
 **Sidebar**:
@@ -55,7 +55,7 @@ The panel on the left, which can be shown or hidden: SPACES, two lines per space
 A main agent in the sidebar's AGENTS section. Subagents show only in the dashboard.
 
 **Float**:
-A program shown in a box over the whole screen and hidden again by the prefix and its key, kept running while hidden. Each space has its own float per key. On the paddock server it is a terminal of the space kept apart from its tabs; on the legacy tmux backend, a window of the space's session marked as a float. Never a tab.
+A program shown in a box over the whole screen and hidden again by the prefix and its key, kept running while hidden. Each space has its own float per key. On the paddock server it is a terminal of the space kept apart from its tabs. Never a tab.
 _Avoid_: popup (that is the prompt), overlay
 
 **Session view**:
