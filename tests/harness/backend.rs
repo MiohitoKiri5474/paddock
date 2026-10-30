@@ -1,8 +1,5 @@
 //! paddock's server in a sandbox: it lives in the sandbox's state
 //! directory, socket and lock included, so it never meets the user's own.
-//!
-//! Run the suite with `scripts/test-native.sh`: it skips the tests in
-//! [`super::native_skip`].
 
 use std::path::Path;
 use std::time::{Duration, Instant};

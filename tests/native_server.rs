@@ -1,11 +1,8 @@
-//! Ticket 40: paddock's own server hosts one terminal end to end. Every
-//! test here picks the native backend in its config, so it runs on
-//! either run of the suite.
+//! Ticket 40: paddock's own server hosts one terminal end to end.
 
 mod harness;
 
 use harness::backend::{alive, server_pid, NATIVE};
-use harness::native_skip::NATIVE_NEEDS;
 use harness::older_server::fake_older_server;
 use harness::stall::{finished, wait_with_progress, SEND_TIMEOUT};
 use harness::{Paddock, Sandbox, PROMPT};
@@ -815,87 +812,4 @@ impl Drop for KillOnDrop {
             .stderr(std::process::Stdio::null())
             .status();
     }
-}
-
-/// The test functions in a test file's source: the `fn` after each
-/// `#[test]`, past any other attributes. Tests in a nested module would
-/// be named by its path, which this does not read: it refuses them.
-fn tests_in(file: &str, text: &str) -> Vec<String> {
-    let mut lines = text.lines().map(str::trim);
-    let mut tests = Vec::new();
-    while let Some(line) = lines.next() {
-        let module = line.split_whitespace().any(|w| w == "mod") && line.ends_with('{');
-        assert!(
-            !module,
-            "{file}: a nested module ({line}): name its tests by its path here"
-        );
-        if line != "#[test]" {
-            continue;
-        }
-        let item = lines
-            .by_ref()
-            .find(|l| !l.is_empty() && !l.starts_with("#[") && !l.starts_with("//"))
-            .unwrap_or_default();
-        let name = item
-            .strip_prefix("fn ")
-            .and_then(|rest| rest.split('(').next())
-            .unwrap_or_else(|| panic!("{file}: no fn after #[test]: {item}"));
-        tests.push(name.to_string());
-    }
-    tests
-}
-
-/// Every entry of the native skip list is a test, and its `--skip` (a
-/// substring match) leaves out no test it does not list.
-#[test]
-fn the_native_skip_list_names_tests_and_skips_only_those() {
-    // native_skip::check() reads the running test's name from its thread.
-    assert_eq!(
-        std::thread::current().name(),
-        Some("the_native_skip_list_names_tests_and_skips_only_those")
-    );
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
-    let mut tests = Vec::new();
-    for entry in std::fs::read_dir(&dir).unwrap() {
-        let path = entry.unwrap().path();
-        if path.extension().is_none_or(|e| e != "rs") {
-            continue;
-        }
-        let file = path.file_stem().unwrap().to_string_lossy().into_owned();
-        let text = std::fs::read_to_string(&path).unwrap();
-        for name in tests_in(&file, &text) {
-            tests.push((file.clone(), name));
-        }
-    }
-    let listed = |file: &str, name: &str| {
-        let path = format!("{file}::{name}");
-        NATIVE_NEEDS.iter().any(|(p, _)| *p == path)
-    };
-    for (path, tickets) in NATIVE_NEEDS {
-        let (file, name) = path.split_once("::").unwrap();
-        assert!(!tickets.is_empty(), "{path} needs no ticket: delete it");
-        assert!(
-            tests.iter().any(|(f, n)| f == file && n == name),
-            "{path} is no test"
-        );
-        for (f, n) in &tests {
-            assert!(
-                listed(f, n) || !n.contains(name),
-                "--skip {name} also skips {f}::{n}"
-            );
-        }
-    }
-}
-
-#[test]
-fn test_functions_are_found_past_other_attributes() {
-    let text =
-        "#[test]\n#[ignore = \"slow\"]\n\nfn one() {}\nfn helper() {}\n#[test]\nfn two() {}\n";
-    assert_eq!(tests_in("x", text), ["one", "two"]);
-}
-
-#[test]
-#[should_panic = "a nested module"]
-fn a_nested_test_module_is_refused() {
-    tests_in("x", "pub(crate) mod inner {\n#[test]\nfn one() {}\n}\n");
 }

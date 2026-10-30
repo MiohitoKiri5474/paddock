@@ -8,14 +8,12 @@
 //! sandbox ends its server when dropped.
 //!
 //! Tests ask paddock what runs where (`paddock debug state`, see
-//! [`State`]). [`backend`] finds and stops the sandbox's server;
-//! [`native_skip`] lists the tests the native backend cannot pass yet.
+//! [`State`]). [`backend`] finds and stops the sandbox's server.
 
 #![allow(dead_code)] // Each test binary uses a different part of the harness.
 
 pub mod alerts;
 pub mod backend;
-pub mod native_skip;
 pub mod older_server;
 mod paddock;
 mod panes;
@@ -79,7 +77,6 @@ pub struct Sandbox {
 
 impl Sandbox {
     pub fn new() -> Self {
-        native_skip::check();
         // Short base path: unix socket paths are limited to about 100 bytes on macOS.
         let root = tempfile::Builder::new()
             .prefix("pdk")
