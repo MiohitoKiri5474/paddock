@@ -339,7 +339,7 @@ fn a_live_session_survives_a_server_upgrade_and_is_still_resumed_after_a_restart
     let out = sandbox.run(&["server", "upgrade"], &[], "");
 
     assert!(out.status.success(), "{out:?}");
-    paddock.wait_for_text("programs kept running");
+    paddock.wait_upgraded(&sandbox);
     // The new server knows the session from the hook log, so its first
     // save names it, as its last will.
     wait_for_saved(&sandbox, "the session saved again", |s| {
@@ -438,7 +438,7 @@ fn a_resume_not_typed_yet_and_its_held_keys_pass_an_upgrade() {
 
     let out = sandbox.run(&["server", "upgrade"], &[], "");
     assert!(out.status.success(), "{out:?}");
-    again.wait_for_text("programs kept running");
+    again.wait_upgraded(&sandbox);
     assert_eq!(claude_log(&sandbox), "", "not typed before the shell spoke");
     std::fs::remove_file(&gate).unwrap();
 

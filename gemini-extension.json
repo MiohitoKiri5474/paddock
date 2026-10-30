@@ -1,5 +1,5 @@
 {
   "name": "paddock",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Git worktrees as paddock spaces with the `paddock worktree` command: a skill, and the /paddock:worktree-new and /paddock:worktree-list commands"
 }
