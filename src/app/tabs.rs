@@ -120,25 +120,34 @@ impl App {
         Ok(())
     }
 
-    /// Attach, in the backend's order (a new one at the end of the
-    /// sidebar), the spaces made in the backend by someone else
-    /// (`paddock worktree new`, or by hand) or left for after the first
-    /// draw ([`Self::attach_rest`]); the current space stays. Every space's connection hears of a new space,
+    /// Attach, at the end of the sidebar, the spaces made in the backend by
+    /// someone else (`paddock worktree new`, or by hand); the
+    /// current space stays. Every space's connection hears of a new space,
     /// so one already attached is skipped. A space that ended before it
     /// could be attached is no news.
     pub(super) fn attach_new_spaces(&mut self) {
+        self.attach_missing(false);
+    }
+
+    /// Attach the spaces in the backend not attached yet: at the end of
+    /// the sidebar, or, `in_order`, each after the last attached space
+    /// the backend has before it (the spaces left for after the first
+    /// draw, [`Self::attach_rest`]). The current space stays.
+    pub(super) fn attach_missing(&mut self, in_order: bool) {
         let order = self.backend.spaces();
         for (i, space) in order.iter().enumerate() {
             if self.spaces.iter().any(|s| s.id == space.id) {
                 continue;
             }
-            // After the last attached space that comes before it.
             let before = &order[..i];
-            let at = self
-                .spaces
-                .iter()
-                .rposition(|s| before.iter().any(|b| b.id == s.id))
-                .map_or(0, |p| p + 1);
+            let at = if in_order {
+                self.spaces
+                    .iter()
+                    .rposition(|s| before.iter().any(|b| b.id == s.id))
+                    .map_or(0, |p| p + 1)
+            } else {
+                self.spaces.len()
+            };
             if let Err(e) = self.attach_at(&space.id, at) {
                 let alive = self.backend.spaces().iter().any(|s| s.id == space.id);
                 if alive {

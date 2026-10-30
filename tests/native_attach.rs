@@ -10,7 +10,7 @@ mod harness;
 
 use harness::backend::NATIVE;
 use harness::stall::wait_with_progress;
-use harness::{Paddock, Sandbox, PROMPT};
+use harness::{Paddock, Sandbox, CURRENT_ITEM, PROMPT};
 use std::io::{Read, Write};
 use std::net::Shutdown;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -322,6 +322,19 @@ fn the_current_space_is_drawn_before_the_others_attach() {
     assert_eq!(sidebar_spaces(&again), ["space-2"], "{}", again.screen());
     gate.open();
     // In its place, above space-2, which stays current.
+    // Waited for as one frame, as the sidebar may be drawn in parts.
+    let current = |name: &str| {
+        let rows = again.sidebar();
+        let row = rows.iter().position(|r| r.trim() == name);
+        row.is_some_and(|r| again.colors(u16::try_from(r).unwrap(), 5).1 == CURRENT_ITEM)
+    };
+    again.wait_for("both spaces, space-2 current", |screen| {
+        sidebar_spaces(&again) == ["space-1", "space-2"]
+            && current("space-2")
+            && !current("space-1")
+            && screen.contains("SECOND-2\n")
+            && !screen.contains("FIRST-1")
+    });
     pick_space_1(&mut again);
     again.wait_for_text("FIRST-1\n");
 }

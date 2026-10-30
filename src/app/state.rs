@@ -523,7 +523,7 @@ impl App {
         if !std::mem::take(&mut self.attach_later) {
             return false;
         }
-        self.attach_new_spaces();
+        self.attach_missing(true);
         true
     }
 
