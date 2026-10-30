@@ -1,8 +1,9 @@
 //! Ticket 64: a paddock attaching to the native server draws a terminal
 //! as soon with a full scrollback as with none: its screens come first,
-//! its scrollback after, the output read on while it is rebuilt, and copy
-//! mode and the wheel still reach every line of it. Every test here picks the native backend in its config,
-//! so it runs on either run of the suite.
+//! its scrollback after, the output read on while it is rebuilt, and
+//! copy mode and the wheel still reach every line of it. Every test
+//! here picks the native backend in its config, so it runs on either
+//! run of the suite.
 
 mod harness;
 

@@ -20,6 +20,11 @@ pub const SCROLLBACK: usize = 50_000;
 /// on by itself.
 pub const MAX_HELD: usize = 8 * 1024 * 1024;
 
+/// The most output a terminal keeps while its scrollback is still to come
+/// (8 MiB, see [`Terminal::await_scrollback`]); past it, the scrollback
+/// is not waited for.
+pub const MAX_SINCE_SCREENS: usize = 8 * 1024 * 1024;
+
 /// Why a paused terminal went on by itself.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WentOn {
@@ -53,6 +58,8 @@ pub struct Terminal {
     /// what its emulator was fed and how it was resized since, in order,
     /// for the emulator that takes its place.
     since_screens: Option<Vec<Fed>>,
+    /// How many bytes `since_screens` holds.
+    since_screens_len: usize,
 }
 
 /// What a terminal's emulator went through, for [`Terminal::take_scrollback`].
@@ -73,6 +80,7 @@ impl Terminal {
             held: None,
             went_on: None,
             since_screens: None,
+            since_screens_len: 0,
         }
     }
 
@@ -102,12 +110,21 @@ impl Terminal {
         let bytes = self.titles.filter(bytes);
         self.keys.feed(&bytes);
         self.emulator.feed(&bytes);
-        if let Some(fed) = &mut self.since_screens {
-            if let Some(Fed::Bytes(last)) = fed.last_mut() {
-                last.extend_from_slice(&bytes);
-            } else {
-                fed.push(Fed::Bytes(bytes));
-            }
+        let Some(fed) = &mut self.since_screens else {
+            return;
+        };
+        self.since_screens_len += bytes.len();
+        // Past the cap, or once the output alone fills the scrollback
+        // (the one to come has scrolled out whole), the scrollback is not
+        // waited for: this emulator, which holds all since the screens,
+        // stays.
+        if self.since_screens_len > MAX_SINCE_SCREENS || self.emulator.history_len() >= SCROLLBACK {
+            self.since_screens = None;
+            self.since_screens_len = 0;
+        } else if let Some(Fed::Bytes(last)) = fed.last_mut() {
+            last.extend_from_slice(&bytes);
+        } else {
+            fed.push(Fed::Bytes(bytes));
         }
     }
 
@@ -167,9 +184,13 @@ impl Terminal {
 
     /// Its emulator holds the screens alone, fed it just now: its
     /// scrollback comes later ([`Self::take_scrollback`]). Until then,
-    /// what the emulator goes through is kept.
+    /// what the emulator goes through is kept, up to
+    /// [`MAX_SINCE_SCREENS`]. It starts with the emulator's size, which
+    /// the snapshot's may not be (one under the smallest paddock gives).
     pub fn await_scrollback(&mut self) {
-        self.since_screens = Some(Vec::new());
+        let (cols, rows) = self.emulator.size();
+        self.since_screens = Some(vec![Fed::Resize(cols, rows)]);
+        self.since_screens_len = 0;
     }
 
     /// Take `emulator` in place of its own: one rebuilt by [`rebuild`]
@@ -178,8 +199,14 @@ impl Terminal {
     /// emulator was fed and how it was resized since (see
     /// [`Self::await_scrollback`]) goes through it again, so it shows the
     /// same, scroll offset and selection too, over the whole scrollback.
+    /// Ignored if the terminal no longer waits for it (more output came
+    /// meanwhile than is kept).
     pub fn take_scrollback(&mut self, mut emulator: Emulator) {
-        for fed in self.since_screens.take().unwrap_or_default() {
+        let Some(since_screens) = self.since_screens.take() else {
+            return;
+        };
+        self.since_screens_len = 0;
+        for fed in since_screens {
             match fed {
                 Fed::Bytes(bytes) => emulator.feed(&bytes),
                 Fed::Resize(cols, rows) => emulator.resize(cols, rows),
@@ -267,6 +294,44 @@ mod tests {
         e.feed(b"\r\nlast");
         assert_eq!(t.emulator_mut().snapshot(None), e.snapshot(None));
         assert!(t.since_screens.is_none());
+    }
+
+    #[test]
+    fn past_the_cap_the_scrollback_is_not_waited_for() {
+        let mut e = emulator_with((12, 4), 30, b"tail");
+        let (mut t, rebuilt) = attached(&mut e);
+        // Output that redraws in place: it never fills the history.
+        let redraw = b"\x1b[Hsame screen, again".repeat(MAX_SINCE_SCREENS / 20 + 1);
+        t.output(&redraw);
+        e.feed(&redraw);
+        assert!(t.since_screens.is_none(), "no longer kept");
+        let live = t.emulator_mut().snapshot(None);
+        t.take_scrollback(rebuilt);
+        assert_eq!(
+            t.emulator_mut().snapshot(None),
+            live,
+            "the live state stays"
+        );
+        assert_eq!(t.emulator().history_len(), 0);
+        assert_eq!(t.emulator().row_text(0), e.row_text(0));
+    }
+
+    #[test]
+    fn once_the_output_alone_fills_the_history_the_scrollback_is_not_waited_for() {
+        let mut e = emulator_with((12, 4), 30, b"tail");
+        let (mut t, rebuilt) = attached(&mut e);
+        for i in 0..SCROLLBACK + 4 {
+            let line = format!("{i}\r\n");
+            t.output(line.as_bytes());
+            e.feed(line.as_bytes());
+        }
+        assert!(t.since_screens.is_none());
+        t.take_scrollback(rebuilt);
+        assert_eq!(
+            t.emulator_mut().snapshot(None),
+            e.snapshot(None),
+            "nothing lost"
+        );
     }
 
     #[test]

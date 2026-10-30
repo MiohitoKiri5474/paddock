@@ -741,7 +741,10 @@ impl Client {
         } else {
             Vec::new()
         };
-        // Shared by the reader and the thread that rebuilds.
+        // Shared by the reader and the thread that rebuilds, behind one
+        // lock: their events reach the app in one order, which the
+        // terminal's replay of what it was fed before its scrollback
+        // (`Terminal::take_scrollback`) depends on.
         let deliver = Arc::new(Mutex::new(deliver));
         let deliver = move |event| {
             let mut deliver = deliver.lock().unwrap_or_else(|e| e.into_inner());
