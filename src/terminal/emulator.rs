@@ -245,6 +245,18 @@ impl Emulator {
         self.term.grid().history_size()
     }
 
+    /// Show what `old` shows: its scroll offset and its selection. For an
+    /// emulator that takes `old`'s place with the same screen and more
+    /// scrollback above it: a line keeps its place counted from the
+    /// screen's top, so both stay on the same text. Not alacritty's vi
+    /// cursor: the app keeps its copy-mode cursor itself.
+    pub fn keep_view(&mut self, old: &Self) {
+        let offset = i32::try_from(old.scroll_offset()).unwrap_or(i32::MAX);
+        self.term.scroll_display(Scroll::Delta(offset));
+        self.term.selection.clone_from(&old.term.selection);
+        self.anchor = old.anchor;
+    }
+
     /// The grid point under a viewport position, clamped to the screen.
     fn point(&self, row: u16, col: u16) -> Point {
         let (cols, rows) = self.size();

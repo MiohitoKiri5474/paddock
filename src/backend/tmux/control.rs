@@ -55,6 +55,7 @@ pub fn attach(
                 terminal,
                 size,
                 bytes: seed::stream(&seed)?,
+                scrollback_after: false,
             })
         })
         .collect::<Result<_>>()?;

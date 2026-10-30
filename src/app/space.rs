@@ -27,7 +27,8 @@ pub fn clamp((cols, rows): (u16, u16)) -> (u16, u16) {
 
 impl Space {
     /// Attach space `id` at `size` and rebuild every terminal's screen and
-    /// history. Afterwards every event, in order, goes to `deliver`.
+    /// history (from the native server, the history comes after, as an
+    /// event). Afterwards every event, in order, goes to `deliver`.
     /// Returns the space and a terminal for each of its terminals.
     pub fn attach(
         backend: &Backend,
@@ -42,6 +43,9 @@ impl Space {
             .map(|r| {
                 let mut t = Terminal::new(clamp(r.size));
                 t.output(&r.bytes);
+                if r.scrollback_after {
+                    t.await_scrollback();
+                }
                 (r.terminal, t)
             })
             .collect();

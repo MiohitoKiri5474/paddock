@@ -16,11 +16,12 @@ use super::{held, saved, socket_path, LOCK};
 use crate::backend::border::{Anchor, Border};
 use crate::backend::env::clean_env;
 use crate::backend::{
-    Event, FloatId, ListedSpace, Replay, Restored, SpaceId, SpaceTerminal, Structure, TabId,
-    TerminalDetails, TerminalId,
+    Event, FloatId, ListedSpace, Rebuilt, Replay, Restored, SpaceId, SpaceTerminal, Structure,
+    TabId, TerminalDetails, TerminalId,
 };
 use crate::input::Direction;
 use crate::paths::Paths;
+use crate::terminal;
 use anyhow::{anyhow, bail, Context, Result};
 use std::collections::HashMap;
 use std::os::unix::net::UnixStream;
@@ -699,41 +700,80 @@ impl Client {
     }
 
     /// Attach space `space` at `size`: its structure and each terminal's
-    /// snapshot, then every event, in order, to `deliver`.
+    /// screens, then every event, in order, to `deliver`. From a server
+    /// that sends the scrollback after the screens, each terminal's
+    /// [`Event::Scrollback`] comes too, whenever it is rebuilt, among the
+    /// output (see [`Replay::scrollback_after`]); from an older one, the
+    /// replays have it.
     pub fn attach(
         &self,
         space: &SpaceId,
         size: (u16, u16),
-        mut deliver: impl FnMut(Event) -> bool + Send + 'static,
+        deliver: impl FnMut(Event) -> bool + Send + 'static,
     ) -> Result<(Attached, Structure, Vec<Replay>)> {
         let (mut stream, _) = self.connect()?;
         let request = Request::Attach {
             space: space.clone(),
             size,
+            scrollback_after: true,
         };
         protocol::write(&mut stream, &Frame::Message(Message::Request(request)))?;
-        let (structure, terminals) = match read_reply(&mut stream)? {
+        let (structure, terminals, scrollback_after) = match read_reply(&mut stream)? {
             Answer::Attached {
                 structure,
                 terminals,
-            } => (structure, terminals),
+                scrollback_after,
+            } => (structure, terminals, scrollback_after),
             other => return Err(unexpected(&other)),
         };
         let mut replays = Vec::new();
-        for (terminal, size) in terminals {
-            match protocol::read(&mut stream, protocol::FROM_SERVER)? {
-                Some(Frame::Bytes { terminal: t, data }) if t == terminal => replays.push(Replay {
-                    terminal,
-                    size,
-                    bytes: data,
-                }),
-                other => {
-                    bail!("expected {terminal}'s snapshot from the paddock server, got {other:?}")
-                }
-            }
+        for (terminal, size) in &terminals {
+            let bytes = read_snapshot(&mut stream, terminal)?;
+            replays.push(Replay {
+                terminal: terminal.clone(),
+                size: *size,
+                bytes,
+                scrollback_after,
+            });
         }
+        let later = if scrollback_after {
+            terminals
+        } else {
+            Vec::new()
+        };
+        // Shared by the reader and the thread that rebuilds, behind one
+        // lock: their events reach the app in one order, which the
+        // terminal's replay of what it was fed before its scrollback
+        // (`Terminal::take_scrollback`) depends on.
+        let deliver = Arc::new(Mutex::new(deliver));
+        let deliver = move |event| {
+            let mut deliver = deliver.lock().unwrap_or_else(|e| e.into_inner());
+            deliver(event)
+        };
         let mut reader = stream.try_clone()?;
         std::thread::spawn(move || {
+            // Each whole snapshot read as it comes, and rebuilt by a
+            // thread of its own: the longer it is, the longer that takes,
+            // and the output read on meanwhile.
+            let (rebuild, snapshots) =
+                std::sync::mpsc::channel::<(TerminalId, (u16, u16), Vec<u8>)>();
+            let rebuilt = deliver.clone();
+            std::thread::spawn(move || {
+                for (terminal, size, bytes) in snapshots {
+                    let emulator = Rebuilt::new(terminal::rebuild(size, &bytes));
+                    if !rebuilt(Event::Scrollback { terminal, emulator }) {
+                        return;
+                    }
+                }
+            });
+            for (terminal, size) in later {
+                let Ok(bytes) = read_snapshot(&mut reader, &terminal) else {
+                    deliver(Event::Lost);
+                    return;
+                };
+                let _ = rebuild.send((terminal, size, bytes));
+            }
+            drop(rebuild);
             // The space's end is the server's notice; a connection that
             // ends without it (let go, or the server gone) is lost.
             while let Ok(Some(frame)) = protocol::read(&mut reader, protocol::FROM_SERVER) {
@@ -760,6 +800,14 @@ impl Client {
             deliver(Event::Lost);
         });
         Ok((Attached { stream }, structure, replays))
+    }
+}
+
+/// `terminal`'s snapshot, next on `stream`.
+fn read_snapshot(stream: &mut UnixStream, terminal: &TerminalId) -> Result<Vec<u8>> {
+    match protocol::read(stream, protocol::FROM_SERVER)? {
+        Some(Frame::Bytes { terminal: t, data }) if t == *terminal => Ok(data),
+        other => bail!("expected {terminal}'s snapshot from the paddock server, got {other:?}"),
     }
 }
 

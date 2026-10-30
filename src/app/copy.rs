@@ -275,6 +275,23 @@ impl App {
         self.mode = Mode::Copy(copy);
     }
 
+    /// Search `terminal` again for copy mode's last search, if copy mode
+    /// is on it: its scrollback just came, with more to find.
+    pub(super) fn search_again(&mut self, terminal: &TerminalId) {
+        let Mode::Copy(copy) = &mut self.mode else {
+            return;
+        };
+        let (Some(s), Some(t)) = (&mut copy.search, self.terminals.get(terminal)) else {
+            return;
+        };
+        if copy.terminal != *terminal {
+            return;
+        }
+        let current = s.current.map(|i| s.found[i].start);
+        s.found = t.emulator().find(&s.query);
+        s.current = current.and_then(|c| s.found.iter().position(|f| f.start == c));
+    }
+
     /// Move the cursor to the nearest match `forward` (down) or back (up)
     /// from it, wrapping around; with none, a notice, and it stays.
     fn jump(&mut self, copy: &mut CopyMode, forward: bool) {
