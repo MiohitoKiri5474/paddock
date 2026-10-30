@@ -97,9 +97,13 @@ fn a_split_stops_at_one_column_without_a_notice() {
     let sandbox = Sandbox::new();
     let mut p = split(&sandbox);
 
-    for _ in 0..25 {
-        p.send(b"\x01H");
-    }
+    // One write, the `H`s repeating without the prefix: 25 presses, 8 past
+    // the last column. Sent as 25 `C-a H`, presses still to come when the
+    // split reached one column could show the armed prefix (`C-a`) where
+    // the check below looks for a notice.
+    let mut keys = vec![b'\x01'];
+    keys.extend([b'H'; 25]);
+    p.send(&keys);
 
     wait_for_split_sizes(&sandbox, &["0.0 1x29", "0.1 66x29"]);
     // A notice shows at the right of the tab bar until the next key:
