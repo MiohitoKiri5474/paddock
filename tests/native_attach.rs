@@ -1,7 +1,7 @@
 //! Ticket 64: a paddock attaching to the native server draws a terminal
 //! as soon with a full scrollback as with none: its screens come first,
-//! its scrollback after, and copy mode and the wheel still reach every
-//! line of it. Every test here picks the native backend in its config,
+//! its scrollback after, the output read on while it is rebuilt, and copy
+//! mode and the wheel still reach every line of it. Every test here picks the native backend in its config,
 //! so it runs on either run of the suite.
 
 mod harness;
@@ -9,6 +9,8 @@ mod harness;
 use harness::backend::NATIVE;
 use harness::stall::wait_with_progress;
 use harness::{Paddock, Sandbox, PROMPT};
+use std::io::{Read, Write};
+use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 
 /// The copy-mode line's start.
@@ -51,13 +53,29 @@ fn wait_while_streaming(paddock: &Paddock, text: &str) {
 }
 
 /// A new paddock attached to the sandbox's server (the last one gone),
-/// and how long it took to draw `text`, which its terminal shows.
-fn attach_again(sandbox: &Sandbox, last: Paddock, text: &str) -> (Paddock, Duration) {
+/// once it draws `text`, which its terminal shows.
+fn attach_again(sandbox: &Sandbox, last: Paddock, text: &str) -> Paddock {
     drop(last);
-    let start = Instant::now();
     let again = sandbox.launch();
     again.wait_for(text, |s| s.contains(text));
-    (again, start.elapsed())
+    again
+}
+
+/// Write one message frame holding `json`.
+fn send_message(stream: &mut UnixStream, json: &str) {
+    let len = u32::try_from(json.len() + 1).unwrap().to_be_bytes();
+    stream.write_all(&len).unwrap();
+    stream.write_all(&[0]).unwrap();
+    stream.write_all(json.as_bytes()).unwrap();
+}
+
+/// The next frame's body, its kind byte first.
+fn read_frame(stream: &mut UnixStream) -> Vec<u8> {
+    let mut len = [0; 4];
+    stream.read_exact(&mut len).expect("a frame");
+    let mut body = vec![0; u32::from_be_bytes(len) as usize];
+    stream.read_exact(&mut body).expect("its body");
+    body
 }
 
 /// The copy-mode view after going to the top of the history (`g`): the
@@ -91,28 +109,65 @@ fn total_lines(status: &str) -> &str {
 }
 
 #[test]
-fn the_first_draw_takes_no_longer_with_a_full_scrollback() {
+fn the_screens_come_before_the_scrollback() {
     let sandbox = native();
     let mut paddock = ready(&sandbox);
-    paddock.type_line("echo EMP''TY-$((1+1))");
-    paddock.wait_for_text("EMPTY-2");
-    // The longest of two, for a fair bound on a loaded machine.
-    let mut empty = Duration::ZERO;
-    for _ in 0..2 {
-        let (again, took) = attach_again(&sandbox, paddock, "EMPTY-2");
-        empty = empty.max(took);
-        paddock = again;
-    }
     paddock.type_line(FILL);
     wait_while_streaming(&paddock, FILLED);
-    let (_again, full) = attach_again(&sandbox, paddock, FILLED);
-    // Before ticket 64, the scrollback came first: about 2 s more on an
-    // idle machine, 10 s and more on a loaded one.
-    let bound = empty * 3 + Duration::from_secs(1);
-    assert!(
-        full < bound,
-        "{full:?} to draw with a full scrollback, {empty:?} with none"
+    let space = sandbox.state().spaces[0].id.clone();
+    drop(paddock);
+    // Attached as a paddock since ticket 64 attaches: each terminal's
+    // screens, with no scrollback, then its whole snapshot. No clock:
+    // what decides the first draw is what comes first.
+    let mut stream = UnixStream::connect(sandbox.state_dir().join("server.sock")).unwrap();
+    stream.set_read_timeout(Some(harness::TIMEOUT)).unwrap();
+    assert_eq!(read_frame(&mut stream)[0], 0, "the server's hello");
+    send_message(&mut stream, r#"{"Hello":{"version":2,"pid":1}}"#);
+    let attach = format!(
+        r#"{{"Request":{{"Attach":{{"space":"{space}","size":[80,24],"scrollback_after":true}}}}}}"#
     );
+    send_message(&mut stream, &attach);
+    let reply = String::from_utf8_lossy(&read_frame(&mut stream)).into_owned();
+    assert!(reply.contains(r#""scrollback_after":true"#), "{reply}");
+    let screens = read_frame(&mut stream);
+    let whole = read_frame(&mut stream);
+    assert_eq!((screens[0], whole[0]), (1, 1), "two snapshot frames");
+    let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+    // The screen's last lines, but not the oldest kept ones.
+    assert!(text(&screens).contains("59990"), "the screen");
+    assert!(!text(&screens).contains("\n20000"), "no scrollback");
+    assert!(text(&whole).contains("\n20000"), "the scrollback");
+    assert!(
+        screens.len() * 100 < whole.len(),
+        "{} {}",
+        screens.len(),
+        whole.len()
+    );
+}
+
+#[test]
+fn a_paddock_attaching_while_output_streams_keeps_up_as_its_scrollback_comes() {
+    let sandbox = native();
+    let mut paddock = ready(&sandbox);
+    paddock.type_line(FILL);
+    wait_while_streaming(&paddock, FILLED);
+    paddock.type_line("yes");
+    paddock.wait_for_text("y\ny\ny\n");
+    // The new paddock reads `yes` on while it rebuilds the scrollback:
+    // one that waited for that first could fall behind past the grace
+    // and be let go.
+    let mut again = attach_again(&sandbox, paddock, "y\ny\ny\n");
+    let log = sandbox.state_dir().join("server.log");
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(7) {
+        let said = std::fs::read_to_string(&log).unwrap_or_default();
+        assert!(!said.contains("it stopped reading"), "let go: {said}");
+        assert!(!again.full_screen().contains("lost the connection"));
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    again.send(b"\x03");
+    again.type_line("echo back-$((1+1))");
+    wait_while_streaming(&again, "back-2");
 }
 
 #[test]
@@ -127,7 +182,7 @@ fn after_attaching_copy_mode_and_the_wheel_reach_the_whole_scrollback() {
     assert!(lines.parse::<usize>().unwrap() > 50_000, "{status}");
     assert!(top.parse::<u32>().is_ok(), "a number at the top: {top:?}");
 
-    let (mut again, _) = attach_again(&sandbox, paddock, FILLED);
+    let mut again = attach_again(&sandbox, paddock, FILLED);
     assert_eq!(top_of_history(&mut again, Some(&lines)), (top, status));
     // The wheel scrolls back past the screen, deep into the numbers.
     let live: u32 = again

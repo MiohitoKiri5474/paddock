@@ -345,11 +345,12 @@ fn handle_backend(
                 terminals_changed: unseen,
             }
         }
-        // A terminal's scrollback, after its screens: before any output.
+        // A terminal's scrollback, after its screens and maybe some output.
         backend::Event::Scrollback { terminal, emulator } => {
             let taken = app.terminals.get_mut(&terminal).zip(emulator.take());
             if let Some((t, emulator)) = taken {
                 t.take_scrollback(emulator);
+                app.search_again(&terminal);
             }
             BackendHandled {
                 flow: Flow::Continue,

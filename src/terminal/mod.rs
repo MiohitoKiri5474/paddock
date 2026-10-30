@@ -49,6 +49,16 @@ pub struct Terminal {
     held: Option<Vec<u8>>,
     /// Why the terminal last went on by itself, until asked.
     went_on: Option<WentOn>,
+    /// While its scrollback is still to come ([`Self::await_scrollback`]):
+    /// what its emulator was fed and how it was resized since, in order,
+    /// for the emulator that takes its place.
+    since_screens: Option<Vec<Fed>>,
+}
+
+/// What a terminal's emulator went through, for [`Terminal::take_scrollback`].
+enum Fed {
+    Bytes(Vec<u8>),
+    Resize(u16, u16),
 }
 
 impl Terminal {
@@ -62,6 +72,7 @@ impl Terminal {
             reports: Vec::new(),
             held: None,
             went_on: None,
+            since_screens: None,
         }
     }
 
@@ -91,6 +102,13 @@ impl Terminal {
         let bytes = self.titles.filter(bytes);
         self.keys.feed(&bytes);
         self.emulator.feed(&bytes);
+        if let Some(fed) = &mut self.since_screens {
+            if let Some(Fed::Bytes(last)) = fed.last_mut() {
+                last.extend_from_slice(&bytes);
+            } else {
+                fed.push(Fed::Bytes(bytes));
+            }
+        }
     }
 
     /// The status reports read since the last call, in order.
@@ -115,6 +133,9 @@ impl Terminal {
             }
             self.go_on();
             self.emulator.resize(cols, rows);
+            if let Some(fed) = &mut self.since_screens {
+                fed.push(Fed::Resize(cols, rows));
+            }
         }
     }
 
@@ -144,11 +165,26 @@ impl Terminal {
         self.went_on.take()
     }
 
+    /// Its emulator holds the screens alone, fed it just now: its
+    /// scrollback comes later ([`Self::take_scrollback`]). Until then,
+    /// what the emulator goes through is kept.
+    pub fn await_scrollback(&mut self) {
+        self.since_screens = Some(Vec::new());
+    }
+
     /// Take `emulator` in place of its own: one rebuilt by [`rebuild`]
-    /// from the snapshot of the same moment as the one this terminal was
-    /// rebuilt from, but with the scrollback, and fed nothing since. Its
-    /// size, scroll offset and selection are this terminal's.
+    /// from the snapshot of the same moment as the screens this terminal
+    /// was rebuilt from, but with the scrollback. What this terminal's
+    /// emulator was fed and how it was resized since (see
+    /// [`Self::await_scrollback`]) goes through it again, so it shows the
+    /// same, scroll offset and selection too, over the whole scrollback.
     pub fn take_scrollback(&mut self, mut emulator: Emulator) {
+        for fed in self.since_screens.take().unwrap_or_default() {
+            match fed {
+                Fed::Bytes(bytes) => emulator.feed(&bytes),
+                Fed::Resize(cols, rows) => emulator.resize(cols, rows),
+            }
+        }
         let (cols, rows) = self.emulator.size();
         if emulator.size() != (cols, rows) {
             emulator.resize(cols, rows);
@@ -185,6 +221,7 @@ mod tests {
     fn attached(e: &mut Emulator) -> (Terminal, Emulator) {
         let mut t = Terminal::new(e.size());
         t.output(&e.screens(None));
+        t.await_scrollback();
         assert_eq!(t.emulator().history_len(), 0, "the screens alone first");
         (t, rebuild(e.size(), &e.snapshot(None)))
     }
@@ -202,6 +239,34 @@ mod tests {
             e.feed(b"\x1b[?1049lnext\r\n");
             assert_eq!(t.emulator_mut().snapshot(None), e.snapshot(None));
         }
+    }
+
+    #[test]
+    fn output_and_resizes_before_the_scrollback_go_through_it_again() {
+        let mut e = emulator_with((12, 4), 30, b"tail");
+        let (mut t, rebuilt) = attached(&mut e);
+        let mut both = |f: &dyn Fn(&mut Terminal, &mut Emulator)| f(&mut t, &mut e);
+        both(&|t, e| {
+            t.output(b"\r\nmore one\r\nmore two\r\n");
+            e.feed(b"\r\nmore one\r\nmore two\r\n");
+        });
+        both(&|t, e| {
+            t.resize((9, 5));
+            e.resize(9, 5);
+        });
+        both(&|t, e| {
+            t.output(b"after\x1b]0;title\x07 resize");
+            e.feed(b"after resize");
+        });
+        assert!(t.emulator().history_len() < e.history_len());
+        t.take_scrollback(rebuilt);
+        assert_eq!(t.emulator().history_len(), e.history_len());
+        assert_eq!(t.emulator_mut().snapshot(None), e.snapshot(None));
+        // Kept only until then.
+        t.output(b"\r\nlast");
+        e.feed(b"\r\nlast");
+        assert_eq!(t.emulator_mut().snapshot(None), e.snapshot(None));
+        assert!(t.since_screens.is_none());
     }
 
     #[test]

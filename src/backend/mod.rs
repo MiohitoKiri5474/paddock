@@ -59,8 +59,8 @@ pub enum Event {
     InputRefused { terminal: TerminalId, why: String },
     /// `terminal`'s emulator rebuilt with its scrollback, from the
     /// snapshot of the moment it was attached (native only): its
-    /// [`Replay`] had only its screens. Comes before any of its output,
-    /// for [`crate::terminal::Terminal::take_scrollback`].
+    /// [`Replay`] had only its screens. Comes among its output, which
+    /// [`crate::terminal::Terminal::take_scrollback`] feeds it again.
     Scrollback {
         terminal: TerminalId,
         emulator: Rebuilt,
@@ -68,7 +68,9 @@ pub enum Event {
 }
 
 /// An emulator rebuilt off the event loop, for [`Event::Scrollback`]:
-/// taken once. Events compare equal only if they hold the same one.
+/// taken once. Shared, not boxed, only so [`Event`] stays `Clone` and
+/// `PartialEq` (tests compare events): two compare equal only if they
+/// hold the same one.
 #[derive(Clone)]
 pub struct Rebuilt(Arc<Mutex<Option<Emulator>>>);
 
@@ -158,6 +160,9 @@ pub struct Replay {
     pub terminal: TerminalId,
     pub size: (u16, u16),
     pub bytes: Vec<u8>,
+    /// `bytes` are the screens alone: the scrollback comes after, as an
+    /// [`Event::Scrollback`].
+    pub scrollback_after: bool,
 }
 
 /// A running host, which names its hook event log (see

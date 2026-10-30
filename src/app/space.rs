@@ -43,6 +43,9 @@ impl Space {
             .map(|r| {
                 let mut t = Terminal::new(clamp(r.size));
                 t.output(&r.bytes);
+                if r.scrollback_after {
+                    t.await_scrollback();
+                }
                 (r.terminal, t)
             })
             .collect();

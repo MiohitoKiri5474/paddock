@@ -700,15 +700,16 @@ impl Client {
     }
 
     /// Attach space `space` at `size`: its structure and each terminal's
-    /// screens, then every event, in order, to `deliver`: first each
-    /// terminal's [`Event::Scrollback`] (from a server that sends the
-    /// scrollback after the screens; from an older one, the replays have
-    /// it).
+    /// screens, then every event, in order, to `deliver`. From a server
+    /// that sends the scrollback after the screens, each terminal's
+    /// [`Event::Scrollback`] comes too, whenever it is rebuilt, among the
+    /// output (see [`Replay::scrollback_after`]); from an older one, the
+    /// replays have it.
     pub fn attach(
         &self,
         space: &SpaceId,
         size: (u16, u16),
-        mut deliver: impl FnMut(Event) -> bool + Send + 'static,
+        deliver: impl FnMut(Event) -> bool + Send + 'static,
     ) -> Result<(Attached, Structure, Vec<Replay>)> {
         let (mut stream, _) = self.connect()?;
         let request = Request::Attach {
@@ -732,6 +733,7 @@ impl Client {
                 terminal: terminal.clone(),
                 size: *size,
                 bytes,
+                scrollback_after,
             });
         }
         let later = if scrollback_after {
@@ -739,25 +741,36 @@ impl Client {
         } else {
             Vec::new()
         };
+        // Shared by the reader and the thread that rebuilds.
+        let deliver = Arc::new(Mutex::new(deliver));
+        let deliver = move |event| {
+            let mut deliver = deliver.lock().unwrap_or_else(|e| e.into_inner());
+            deliver(event)
+        };
         let mut reader = stream.try_clone()?;
         std::thread::spawn(move || {
-            // Each terminal's emulator rebuilt with its scrollback, here,
-            // off the event loop: the longer it is, the longer it takes.
-            // All read first, so the server's queue drains meanwhile.
-            let mut snapshots = Vec::new();
+            // Each whole snapshot read as it comes, and rebuilt by a
+            // thread of its own: the longer it is, the longer that takes,
+            // and the output read on meanwhile.
+            let (rebuild, snapshots) =
+                std::sync::mpsc::channel::<(TerminalId, (u16, u16), Vec<u8>)>();
+            let rebuilt = deliver.clone();
+            std::thread::spawn(move || {
+                for (terminal, size, bytes) in snapshots {
+                    let emulator = Rebuilt::new(terminal::rebuild(size, &bytes));
+                    if !rebuilt(Event::Scrollback { terminal, emulator }) {
+                        return;
+                    }
+                }
+            });
             for (terminal, size) in later {
                 let Ok(bytes) = read_snapshot(&mut reader, &terminal) else {
                     deliver(Event::Lost);
                     return;
                 };
-                snapshots.push((terminal, size, bytes));
+                let _ = rebuild.send((terminal, size, bytes));
             }
-            for (terminal, size, bytes) in snapshots {
-                let emulator = Rebuilt::new(terminal::rebuild(size, &bytes));
-                if !deliver(Event::Scrollback { terminal, emulator }) {
-                    return;
-                }
-            }
+            drop(rebuild);
             // The space's end is the server's notice; a connection that
             // ends without it (let go, or the server gone) is lost.
             while let Ok(Some(frame)) = protocol::read(&mut reader, protocol::FROM_SERVER) {
