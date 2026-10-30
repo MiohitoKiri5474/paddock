@@ -17,7 +17,8 @@ const STATE_FORMAT: &str = "#{alternate_on} #{cursor_x} #{cursor_y} #{cursor_fla
 #{mouse_any_flag} #{mouse_sgr_flag} #{scroll_region_upper} #{scroll_region_lower} #{history_size} \
 #{pane_key_mode}";
 const STATE_FIELDS: usize = 14;
-/// How many times [`fetch`] asks for the panes' states before it settles.
+/// How many times [`fetch`] asks for the panes' states, each cut short,
+/// before it fails.
 const STATE_ASKS: usize = 5;
 
 /// What tmux holds for a pane, as captured.
@@ -54,14 +55,20 @@ pub fn fetch(
     panes: &[&str],
     held: &mut Vec<Message>,
 ) -> Result<Vec<Seed>> {
-    let mut asks = 1;
-    loop {
+    for _ in 1..STATE_ASKS {
         let seeds = fetch_once(control, rx, panes, held)?;
-        if asks == STATE_ASKS || seeds.iter().all(|s| state_fields(&s.state).is_some()) {
+        if seeds.iter().all(|s| state_fields(&s.state).is_some()) {
             return Ok(seeds);
         }
-        asks += 1;
     }
+    let seeds = fetch_once(control, rx, panes, held)?;
+    if let Some(cut) = seeds.iter().find(|s| state_fields(&s.state).is_none()) {
+        bail!(
+            "unexpected pane state from tmux, asked {STATE_ASKS} times: {:?}",
+            cut.state
+        );
+    }
+    Ok(seeds)
 }
 
 fn fetch_once(

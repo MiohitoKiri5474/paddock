@@ -28,6 +28,9 @@ const HISTORY_LIMIT: u32 = 50_000;
 const AUTO_NAME: &str = "#{?#{m/r:^-?(ba|z|fi|da|k|tc|c)?sh$,#{pane_current_command}},\
 #{b:pane_current_path},#{pane_current_command}}";
 
+/// True for a window tmux names that it left without a name.
+const UNNAMED: &str = "#{&&:#{automatic-rename},#{==:#{window_name},}}";
+
 /// paddock's own tmux config: no prefix, no status line, no key delay.
 pub fn config(shell: &str) -> String {
     [
@@ -175,7 +178,10 @@ impl Server {
             .map(drop)
     }
 
-    /// Session `id`'s windows and panes; see [`structure`].
+    /// Session `id`'s windows and panes; see [`structure`]. A tab tmux
+    /// left unnamed is also given its name again ([`Self::rename_again`]),
+    /// so a read may change a tab's name, which comes as
+    /// `%window-renamed`.
     pub fn structure(&self, id: &str) -> Result<Structure> {
         let structure = self
             .run(&["list-panes", "-s", "-t", id, "-F", structure::FORMAT])
@@ -195,10 +201,13 @@ impl Server {
     /// loaded machine reaches now and then, and names the window `""`
     /// until its program writes again, maybe never (a shell at its
     /// prompt). Setting `automatic-rename` makes tmux look again at once;
-    /// the new name comes as `%window-renamed`. Best effort: a tab left
-    /// unnamed is no reason to fail the read.
+    /// the new name comes as `%window-renamed`. tmux checks the window
+    /// again as it acts, in the same command, so a name the user gave it
+    /// since (which turns `automatic-rename` off) is kept. Best effort: a
+    /// tab left unnamed is no reason to fail the read.
     fn rename_again(&self, window: &str) {
-        let _ = self.run(&["set-option", "-w", "-t", window, "automatic-rename", "on"]);
+        let set = format!("set-option -w -t {window} automatic-rename on");
+        let _ = self.run(&["if-shell", "-F", "-t", window, UNNAMED, &set]);
     }
 
     /// Open a new window (tab) running the user's shell in `cwd` at the end
@@ -646,6 +655,55 @@ mod tests {
         // The format reads the float marker paddock sets.
         let marker = format!("#{{{}}}\x1f", structure::FLOAT_OPTION);
         assert!(PANE_FORMAT.starts_with(&marker), "{PANE_FORMAT}");
+    }
+
+    #[test]
+    fn a_window_left_unnamed_is_named_again_and_a_users_name_is_kept() {
+        let tmp = tempfile::tempdir().unwrap();
+        let server = Server::new(Paths {
+            socket: format!("paddock-unit-unnamed-{}", std::process::id()),
+            state_dir: tmp.path().join("state"),
+            config_dir: tmp.path().join("config"),
+        });
+        server.write_config().unwrap();
+        let dir = tmp.path().canonicalize().unwrap().join("proj");
+        std::fs::create_dir(&dir).unwrap();
+        let name_once = |window: &str, want: &str| {
+            let start = std::time::Instant::now();
+            loop {
+                let got = server.display(window, "#{window_name}").unwrap_or_default();
+                if got == want || start.elapsed() > std::time::Duration::from_secs(5) {
+                    return got;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        };
+        let got = server.new_session("t", &dir, (80, 24)).and_then(|s| {
+            let window = server.display(s.as_str(), "#{window_id}")?;
+            // As tmux leaves a window whose name took too long: unnamed,
+            // still named by tmux.
+            let w = window.as_str();
+            server.run(&["set-option", "-w", "-t", w, "automatic-rename-format", ""])?;
+            server.run(&["set-option", "-w", "-t", w, "automatic-rename", "on"])?;
+            let unnamed = name_once(w, "");
+            server.run(&["set-option", "-w", "-u", "-t", w, "automatic-rename-format"])?;
+            server.rename_again(w);
+            let named = name_once(w, "proj");
+            // A name the user gave stays, and so does tmux not naming it.
+            server.rename_window(w, "mine")?;
+            server.rename_again(w);
+            let kept = server.display(w, "#{window_name} #{automatic-rename}")?;
+            Ok((unnamed, named, kept))
+        });
+        let socket = server.run(&["display-message", "-p", "#{socket_path}"]);
+        let _ = server.run(&["kill-server"]);
+        if let Ok(socket) = socket {
+            let _ = std::fs::remove_file(socket.trim());
+        }
+        let (unnamed, named, kept) = got.unwrap();
+        assert_eq!(unnamed, "");
+        assert_eq!(named, "proj");
+        assert_eq!(kept, "mine 0");
     }
 
     #[test]
