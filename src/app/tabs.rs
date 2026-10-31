@@ -126,12 +126,29 @@ impl App {
     /// so one already attached is skipped. A space that ended before it
     /// could be attached is no news.
     pub(super) fn attach_new_spaces(&mut self) {
-        let known: Vec<SpaceId> = self.spaces.iter().map(|s| s.id.clone()).collect();
-        for space in self.backend.spaces() {
-            if known.contains(&space.id) {
+        self.attach_missing(false);
+    }
+
+    /// Attach the spaces in the backend not attached yet: at the end of
+    /// the sidebar, or, `in_order`, each after the last attached space
+    /// the backend has before it (the spaces left for after the first
+    /// draw, [`Self::attach_rest`]). The current space stays.
+    pub(super) fn attach_missing(&mut self, in_order: bool) {
+        let order = self.backend.spaces();
+        for (i, space) in order.iter().enumerate() {
+            if self.spaces.iter().any(|s| s.id == space.id) {
                 continue;
             }
-            if let Err(e) = self.attach(&space.id) {
+            let before = &order[..i];
+            let at = if in_order {
+                self.spaces
+                    .iter()
+                    .rposition(|s| before.iter().any(|b| b.id == s.id))
+                    .map_or(0, |p| p + 1)
+            } else {
+                self.spaces.len()
+            };
+            if let Err(e) = self.attach_at(&space.id, at) {
                 let alive = self.backend.spaces().iter().any(|s| s.id == space.id);
                 if alive {
                     self.notice = Some(format!("{e:#}"));
